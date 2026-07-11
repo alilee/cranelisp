@@ -277,3 +277,22 @@ Sprint 16 task D5. Created 2026-03-09.
 | P5-LOW | No or-patterns | 6.6.3 | Parser naturally rejects these |
 | P5-LOW | No guards | 6.6.4 | Parser naturally rejects these |
 | P5-LOW | `trueness` is symbol not boolean | 1.3.3 | Parser tested; very low risk |
+
+## S108 — repl/spec.md §1.5 Vec/List rows: `+Neg` downgraded pending explicit negatives
+
+The S86 coverage-reconciliation commit (`2fd73002`) mechanically clobbered
+seven §1.5 value-display citations onto one test
+(`nullary_constructor_bare_lookup_dot_notation` — under-asserting; deleted by
+`/testing` in S108), carrying stale `[Tested+Neg]`
+tags for the Vec and List rows whose original negative tests
+(`display_vec_empty`, `display_list_nil`, …) no longer exist under those names.
+The S108 C1 repair (FIXME 0557) re-pointed all seven rows at verified live
+tests and **downgraded Vec and List to `[Tested]`** — no `_neg_`/`_not_` test
+pins those rows today.
+
+Upgrade candidates (route to `/testing` when scheduled):
+
+| Row | Current citation(s) | Missing negative |
+|---|---|---|
+| §1.5 Vec | `display_exact::display_exact_vec_value_lines`, `repl_introspection::vec_value_display_shows_element_content` | empty-Vec `[]` + no raw-pointer/no-truncation negative (exact-line tests partially subsume — full-line equality asserts absence on that line) |
+| §1.5 List | `repl_introspection::display_user_list_value_shows_elements_and_nil`, `display_exact::display_exact_user_list_recursive_form_whole_line` | explicit no-raw-pointer / no-forced-tail negative sibling |

@@ -592,10 +592,14 @@ def main() -> int:
             ("tests/repl_introspection.rs", "defmacro_display_single_clause"),
         "ring3_repl::r3_defmacro_display_multi_clause":
             ("tests/repl_introspection.rs", "defmacro_display_multi_clause"),
-        # repl/spec.md §4.1.2 constructor lookup.
+        # repl/spec.md §4.1.2 constructor lookup. The legacy test asserted
+        # BOTH the dot-notation ctor and the qualified type home — matched
+        # by the S108 §4.1.2 guard (the earlier target
+        # nullary_constructor_bare_lookup_dot_notation under-asserted and
+        # was deleted S108, FIXME 0557).
         "e2e::e2e_s1_1_constructor_lookup":
             ("tests/repl_introspection.rs",
-             "nullary_constructor_bare_lookup_dot_notation"),
+             "nullary_constructor_bare_lookup_shows_deftype_and_qualified_home"),
         # repl/spec.md §5.3 — type_error_mentions_expected_and_actual,
         # e2e_s5_3_type_error_shows_expected_actual, error_has_source_span:
         # current type-error tests assert "type error" surfaces but NOT that

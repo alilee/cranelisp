@@ -525,7 +525,10 @@ impl CompilerSession {
     ///
     /// Handles special forms, macros, builtin types, user types, traits,
     /// and non-nullary constructors (spec §4.1). Returns None for symbols
-    /// that should be evaluated normally (variables, functions, nullary ctors).
+    /// that should be evaluated normally (variables, functions, and
+    /// non-concrete nullary ctors — after S108 D2, concrete nullary ctors
+    /// introspect; only result-only-polymorphic nullary ctors fall through
+    /// to the value path).
     pub(crate) fn check_bare_symbol_introspection(&self, sexp: &Sexp) -> Option<EvalResult> {
         let name = match sexp {
             Sexp::Symbol(name, _) => name.as_str(),
@@ -623,9 +626,21 @@ impl CompilerSession {
                     })
                 }
                 DefKind::Constructor { field_count, .. } => {
-                    // Nullary constructors evaluate to values; non-nullary get
-                    // introspection.
-                    if *field_count == 0 {
+                    // D2 (S108): a nullary ctor's disposition splits by
+                    // CONCRETENESS (`Type::is_concrete()`, the single-source
+                    // predicate, types.rs:92):
+                    // - non-concrete nullary (result-only-polymorphic, e.g. bare
+                    //   `None`: `∀a. (Option a)`) → `None`, falling through to the
+                    //   §1.5.1 value display `:(prelude/Option a) Option.None`
+                    //   with NO `; deftype`.
+                    // - concrete nullary (e.g. user `Red`: `user/Color`) →
+                    //   introspection, routed via `format_def_entry`'s Constructor
+                    //   arm to the §4.1.2 definition line
+                    //   `:user/Color user/Color.Red ; deftype`.
+                    // Non-nullary ctors always introspect. This collapses the
+                    // former duplicate value-vs-introspection path for concrete
+                    // nullary ctors while preserving §1.5.1 for polymorphic ones.
+                    if *field_count == 0 && !scheme.ty.is_concrete() {
                         None
                     } else {
                         Some(EvalResult::Def {
@@ -757,5 +772,106 @@ mod tests {
         assert_eq!(m.len(), 1, "Val results never write");
         // Batch mode (store absent): a defining result is a silent no-op.
         record_defining_turn_source(None, &def_result("user", "solo", true), "(defn solo [x] x)");
+    }
+
+    // -----------------------------------------------------------------------
+    // D2 (S108) — the concreteness discriminator in the bare-symbol gate.
+    // A nullary ctor routes to introspection ONLY when its scheme is concrete
+    // (spec §4.1.2, e.g. user `Red`); a non-concrete nullary ctor (result-only-
+    // polymorphic, e.g. `None`) returns `None` and falls through to the §1.5.1
+    // value display. Non-nullary ctors always introspect.
+    // -----------------------------------------------------------------------
+
+    use crate::code::SessionSymbolTable;
+    use crate::session_v4::{CompilerSession, SessionSettings, RunMode};
+    use cranelisp_types::{
+        CodegenBehaviour, FQTypeName, Scheme, TypeName, Visibility,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    fn d2_session() -> CompilerSession {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 1,
+            run_mode: RunMode::Repl,
+        };
+        CompilerSession::new(settings, tmp.keep(), "user")
+    }
+
+    /// Build a nullary `DefKind::Constructor` Def whose scheme type is the ADT
+    /// `type_name` applied to `args` — `args` empty ⇒ concrete, a `Var` arg ⇒
+    /// non-concrete.
+    fn nullary_ctor_entry(type_name: &str, args: Vec<Type>) -> ModuleEntry<crate::code::Code> {
+        let fqtn = FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(type_name));
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: StdHashMap::new(),
+            ty: Type::ADT(fqtn.clone(), args),
+        };
+        ModuleEntry::def(
+            scheme,
+            DefKind::Constructor {
+                got_slot: 0,
+                type_name: fqtn,
+                tag: 0,
+                field_count: 0,
+                internal: false,
+                type_def: None,
+                mode_summary: None,
+            },
+        )
+        .visibility(Visibility::Public)
+        .build()
+    }
+
+    fn install_in_user(s: &CompilerSession, name: &str, entry: ModuleEntry<crate::code::Code>) {
+        let user = s.current_module_path();
+        if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
+            table.insert(Symbol::from(name), entry);
+        } else {
+            let mut table = SessionSymbolTable::new_with_params(user.clone());
+            table.insert(Symbol::from(name), entry);
+            s.shared.symbol_tables.insert(user, table);
+        }
+    }
+
+    // A CONCRETE nullary ctor (`Red : user/Color`, no type args) routes to the
+    // introspection path — a display-only `EvalResult::Def` — so the caller
+    // formats the §4.1.2 definition line `:user/Color user/Color.Red ; deftype`.
+    #[test]
+    fn concrete_nullary_ctor_routes_to_introspection() {
+        let s = d2_session();
+        install_in_user(&s, "Red", nullary_ctor_entry("Color", Vec::new()));
+        let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Red".into(), Span::SYNTHETIC));
+        match out {
+            Some(EvalResult::Def { defined, symbol, .. }) => {
+                assert!(!defined, "bare lookup must be display-only (defined:false)");
+                assert_eq!(symbol.symbol.as_ref(), "Red");
+            }
+            Some(_) => panic!("concrete nullary ctor `Red` must introspect as a Def, not a Val"),
+            None => panic!(
+                "concrete nullary ctor `Red` MUST introspect (Some(Def)), not fall to \
+                 the value path"
+            ),
+        }
+    }
+
+    // A NON-CONCRETE nullary ctor (`Nada : ∀a. (user/Opt a)`) is NOT
+    // introspected — the gate returns `None`, so the caller falls through to
+    // the §1.5.1 polymorphic value display (preserving bare `None`'s behaviour).
+    #[test]
+    fn non_concrete_nullary_ctor_falls_through_to_value_path() {
+        let s = d2_session();
+        install_in_user(&s, "Nada", nullary_ctor_entry("Opt", vec![Type::Var(0)]));
+        let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Nada".into(), Span::SYNTHETIC));
+        assert!(
+            out.is_none(),
+            "non-concrete nullary ctor `Nada` MUST NOT introspect (falls to §1.5.1 \
+             value display)"
+        );
     }
 }

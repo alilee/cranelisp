@@ -2547,9 +2547,15 @@ impl CompilerSession {
                         // `user/user/Point.Point`) is the Root-C defect (FIXME 0321).
                         let ctor_display = {
                             let info = type_def.as_deref().cloned().or_else(|| {
-                                let scope = self.current_module_path();
+                                // D1 (S108, FIXME-0321 mis-qualify class): root
+                                // the fallback chain-lookup at the ctor's already-
+                                // RESOLVED HOME `module` (the fn param), NOT
+                                // `current_module_path()`. At the home the TypeDef
+                                // is local so the chain terminates at depth 0; a
+                                // seeded/prelude-globbed ctor resolves its product
+                                // facet instead of missing and mis-qualifying.
                                 cranelisp_types::lookup_type_def_chain(
-                                    &self.shared.symbol_tables, &scope, &tn,
+                                    &self.shared.symbol_tables, module, &tn,
                                 )
                             });
                             match info {
@@ -2672,11 +2678,18 @@ impl CompilerSession {
     pub(crate) fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
         let mut result = format!(":{module}/{type_name} ; deftype");
         let tn = TypeName::from(type_name);
-        let scope = self.current_module_path();
         // FIXME 0192 method 2: `get_type_constructors` deleted; inline the
         // 1-line wrapper over the relocated `lookup_type_def_chain`.
+        //
+        // D1 (S108): root the constructor chain-lookup at the type's already-
+        // RESOLVED HOME `module` (the fn already holds it), NOT
+        // `current_module_path()`. At the home the TypeDef is local, so the
+        // chain terminates at depth 0 and the implicit-prelude outer-scope hop
+        // never arises — a seeded ADT (Option/Result/IO) reached via the
+        // prelude glob keeps its `; match:` section (spec §4.1.3), same as a
+        // user deftype (which worked only incidentally when scope == home).
         if let Some(info) = cranelisp_types::lookup_type_def_chain(
-            &self.shared.symbol_tables, &scope, &tn,
+            &self.shared.symbol_tables, module, &tn,
         ) && !info.constructors.is_empty() {
             // `TypeDefInfo.constructors` is now `Vec<Symbol>` (S70 — the
             // `ConstructorInfo` struct retired; ctor metadata lives on each
@@ -2684,6 +2697,10 @@ impl CompilerSession {
             let names: Vec<&str> = info.constructors.iter().map(|c| c.as_ref()).collect();
             result.push_str(&format_related_section("match", &names));
         }
+        // The `; impl:` lookup stays SCOPE-rooted (Decision-45 Pattern B) —
+        // trait enumeration is the current module's view, deliberately not the
+        // type's home.
+        let scope = self.current_module_path();
         let trait_names = cranelisp_types::get_impls_for_type_chain(
             &self.shared.symbol_tables, &scope, &tn,
         );
@@ -3927,6 +3944,35 @@ mod fq_arg_tests {
         assert!(!out.contains("codegen error"), "no codegen wrapper; got: {out}");
         assert!(!out.contains("runtime panic:"), "no slot prefix; got: {out}");
         assert!(!out.contains("0..0"), "no synthetic span; got: {out}");
+    }
+
+    // D1 (S108): `format_type_display` for a type whose resolved home is NOT
+    // the current REPL module surfaces its constructors under `; match:`. The
+    // bootstrapped `Option` lives in `primitives`; the current module is
+    // `user`. Rooting the constructor chain-lookup at the RESOLVED HOME
+    // `module` (the param) — not `current_module_path()` (`user`) — makes the
+    // TypeDef local so the chain terminates at depth 0 and the seeded ADT keeps
+    // its `; match:` section. spec: repl/spec.md §4.1.3
+    #[test]
+    fn format_type_display_roots_match_section_at_resolved_home() {
+        let s = session();
+        let prim = ModuleFullPath::from("primitives");
+        // Sanity: the current module is NOT the type's home, so the pre-fix
+        // scope-rooted lookup (from `user`) would have missed the ctors.
+        assert_ne!(s.current_module_path(), prim);
+        let out = s.format_type_display("Option", &prim);
+        assert!(
+            out.contains(":primitives/Option ; deftype"),
+            "primary line must qualify the home; got: {out}"
+        );
+        assert!(
+            out.contains("; match:"),
+            "seeded ADT resolved from a non-current home MUST surface `; match:`; got: {out}"
+        );
+        assert!(
+            out.contains("None") && out.contains("Some"),
+            "`; match:` MUST list ctors None and Some; got: {out}"
+        );
     }
 }
 

@@ -25,7 +25,7 @@
 | `/spec` | Authority (scribe) | `spec/` | Normative spec text, scribed — the **user** arbitrates semantics; `/spec` records and frames open questions as prose |
 | `/arch` | Authority | `design/arch/`; `crates/cranelisp-types/`; public-API surfaces of every crate | Interface types, principles, Decisions, public-API approvals |
 | `/qa` | Authority | `tests/plan/` (incl. `PLAN.md`, the normative spec → tests bridge) | Test strategy, risk assessment, coverage process & traceability audit, defect attribution & cross-crate triage briefs |
-| `/testing` | Test production | Test sources under `tests/` (files, fixtures, helpers); `tests/plan/ledger.md`; `tests/CLAUDE.md` | Spec-traceable e2e tests authored to `/qa`'s plan; repro isolation & reduction; ledger upkeep |
+| `/testing` | Test production | Test sources under `tests/` (files, fixtures, helpers); `tests/CLAUDE.md` | Spec-traceable e2e tests authored to `/qa`'s plan; repro isolation & reduction; `// defect:` notation upkeep (`tests/CLAUDE.md` §"Defect-repro notation"; ledger retired S108) |
 | `/audit` | Authority | `audits/` | Rolling whole-context assessments with recommendations (one bounded context per sprint; see §2.6) |
 | `/design` | Per-crate triad — design role | `design/{crate}/{crate}.md` for all 6 crate-shaped surfaces (narrow deployment) | Crate overview + subordinate topic docs; does not edit code |
 | `/dev` | Per-crate triad — implementation role | All 6 crate-shaped surfaces (narrow deployment) — see §1.3 | Implementation code + unit tests |
@@ -176,7 +176,7 @@ trigger 6 (`artefacts.md` §II.4).
 | Per-crate design | `design/{crate}/{crate}.md` (+ subordinates) | `/design` | What the crate should be — direction, intent, codified design decisions |
 | Code conventions per directory | `CLAUDE.md` per directory | Directory-owning skill | How the code is — data structures, invariants, conventions |
 | Test plan + coverage process | `tests/plan/` (`PLAN.md` normative) | `/qa` | Spec → tests bridge; risk register; coverage verdicts |
-| E2e tests | `tests/` (sources, fixtures, helpers); `tests/plan/ledger.md` | `/testing` | Normative spec-conformance evidence, authored to `/qa`'s plan |
+| E2e tests | `tests/` (sources, fixtures, helpers) | `/testing` | Normative spec-conformance evidence, authored to `/qa`'s plan; repro tests carry `// defect:` tags |
 | Whole-context audit assessments | `audits/{context}-sNNN.md` | `/audit` | Accumulated-state assessments + recommendations (§2.6) |
 | Artefact structure & model allocation | `sprints/artefacts.md` | `/sprint` | Allocation table, escalation protocol, shim contract, audit cycle |
 | Unit tests | `crates/{crate}/src/.../mod.rs` (`#[cfg(test)]`) | `/dev` | Per-crate invariants, written alongside implementation |

@@ -5,7 +5,7 @@ Test infrastructure for the Cranelisp reimplementation.
 **Ownership.** `tests/plan/` is owned by `/qa` (strategy, risk, coverage
 process, attribution; `plan/PLAN.md` is the normative spec → tests bridge).
 Everything else here — `tests/*.rs`, `tests/helpers/`, `tests/fixtures/`,
-`tests/scripts/`, `plan/ledger.md` upkeep, and this file — is owned by
+`tests/scripts/`, `// defect:` notation upkeep, and this file — is owned by
 `/testing`. Per-crate `#[cfg(test)]` unit tests are `/dev`'s and live in
 `crates/{crate}/src/`, not here.
 
@@ -32,7 +32,7 @@ preserves it for provenance only.
 | File | Purpose |
 |---|---|
 | `PLAN.md` | Normative spec → tests bridge; every e2e test traces to a row. |
-| `ledger.md` | Failure ledger — current intentional REDs + per-defect owners. `/testing` keeps it current. |
+| `ledger.md` | RETIRED S108 (tombstone only). Triage = the inline defect-comment/FIXME convention; analysis = `// defect:` notation (see §"Defect-repro notation"). History in git. |
 | `risks.md` | Qualitative risk register. |
 | `coverage-gaps.md` | Per-crate coverage analysis. |
 | `negative-coverage.md` | `[Tested]` → `[Tested+Neg]` upgrade register. |
@@ -61,7 +61,7 @@ Supporting directories:
 ```
 tests/
   CLAUDE.md              — this file
-  plan/                  — /qa's plan + ledger + tooling (see above)
+  plan/                  — /qa's plan + tooling (see above)
   helpers/
     mod.rs               — module declarations only (pub mod e2e; pub mod regex;)
     e2e.rs               — the e2e harness: `Cranelisp` builder + subprocess
@@ -245,6 +245,100 @@ mechanical public-API drift guards against the per-crate facades in
 `design/arch/facades/`; the baseline regeneration workflow is `/dev` + `/design`
 + `/review`'s (see `plan/implementation-slice-s66.md`).
 
+## Defect-repro notation (`// defect:`)
+
+Every **repro test** — a test born from a defect, committed per root
+`CLAUDE.md` §"Usability Findings and Defects" — carries ONE greppable
+`// defect:` line beside its `// spec:` comment:
+
+```rust
+// spec: repl/spec.md §4.1.2 — bare nullary-ctor lookup classification
+// defect: class=wrong-scope-lookup locus=src/repl.rs::format_type_display found=S108 owner=/dev
+#[test]
+fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() { ... }
+```
+
+This replaces the retired failure ledger (`plan/ledger.md`, retired S108) as
+the substrate for defect frequency/locus/recurrence analysis. Unlike the
+ledger — which by its own discipline held only *currently-failing* tests —
+the notation rides the permanent corpus, so analysis works over **GREEN
+repros too**: a fixed defect keeps contributing to the class-frequency and
+hotspot signals forever.
+
+**Fields** (all four required; single line; no free text):
+
+- `class=<class>` — the defect class, from the controlled vocabulary below.
+  Free-text fragments defeat `uniq -c`; if no class fits, request a vocabulary
+  addition from `/qa` — adding a class is a `/qa` edit to this list.
+- `locus=<file:line-or-seam>` — where the bug lived: `file.rs:NNN` at fix
+  time, or a stable seam name (`src/repl.rs::format_trait_display`,
+  `host<->platform marshal boundary`). Prefer the seam form — line numbers rot.
+- `found=S<NN>` — the sprint the defect was found in.
+- `owner=/<skill>` — the skill that owned the **fix** (not the discoverer).
+
+**Controlled `class=` vocabulary** (owned by `/qa`; seeded S108 from
+evidenced classes):
+
+| Class | Meaning (evidence) |
+|---|---|
+| `wrong-scope-lookup` | Lookup rooted at the wrong scope/module, e.g. `current_module_path()` instead of the symbol's resolved home (S108 D1/D2; FIXME 0558) |
+| `display-envelope-mirror` | Two formatter paths for one display concept diverge (S108 D2 dual-path; the FIXME 0321 mis-qualify class) |
+| `rc-miscount` | Refcount inc/dec imbalance — leak or premature free (S97 ADT-wrapping-Vec; S101 vec-COW copy-branch leak; S94 catch-runtime-error leak) |
+| `uaf` | Use-after-free / dangling pointer (TCO tail-arg alias; S97–98 grid Vec double-free) |
+| `marshal-overrun` | Byte-level over/under-write at the host↔platform marshalling boundary (S86 DEF-6 base-vs-payload pointer) |
+| `mode-divergence` | REPL / `--run` / `--link` behaviour divergence — always a defect (S98 0499; S102 0484) |
+| `prelude-scope-miss` | Prelude-provided symbol unreachable or mis-resolved via the implicit outer-scope fallback (S59 prelude-parity; FIXME 0558 sibling) |
+| `silent-accept` | Invalid input accepted without error (S107 deftype trailing-form-after-field-bracket class) |
+| `null-got-slot` | Call through an unpopulated/NULL GOT slot → SIGSEGV (S100–101 vec-query value-use family) |
+
+**Rules:**
+
+- ONLY defect-repro tests carry `// defect:`. Ordinary spec-coverage tests do
+  not — the signal is defect density, and tagging everything erases it.
+- The notation is applied by `/testing` at repro time (and retro-tagged
+  opportunistically); the vocabulary is `/qa`'s.
+- A repro's comment states its defect in the PAST tense once fixed. A GREEN
+  repro carrying present-tense "DEFECT (open)" framing lets a future
+  regression pose as a known guard — strip the framing when the fix lands.
+
+**Analysis recipes** (the point of the structure):
+
+```bash
+# recurring-class frequency — the /arch-escalation signal (a class that
+# keeps recurring is an architecture problem, not an instance problem)
+grep -rh "// defect:" tests/ | grep -o "class=[a-z-]*" | sort | uniq -c | sort -rn
+
+# hotspot seams
+grep -rh "// defect:" tests/ | grep -o "locus=[^ ]*" | sort | uniq -c | sort -rn
+
+# per-sprint defect trend
+grep -rh "// defect:" tests/ | grep -o "found=S[0-9]*" | sort | uniq -c
+```
+
+## Failing-test discipline (migrated from the retired ledger)
+
+Regression triage runs on the inline convention (root `CLAUDE.md` §Testing):
+every intentional RED — a failing-not-ignored defect guard — traces to an
+open defect (FIXME or annotation) naming the owner; a RED that does not so
+trace is a **genuine regression**. `#[ignore]` on a spec violation hides the
+fact and is itself a defect.
+
+**Forbidden dispositions** — these words close investigation prematurely and
+forfeit the regression guard; they are banned in test comments, FIXMEs,
+triage notes, and reports:
+
+- `flaky` — never. Local tests are deterministic; if a test fails
+  intermittently, the cause is a real race, ordering bug, or uninitialised
+  state. Per user directive 2026-04-21: *"we need to be really clear about
+  'flaky' — that is not a thing in local tests."*
+- `timing-sensitive` — equivalent to flaky. Tests that assume a particular
+  scheduling order are either testing something real (name it and pin it) or
+  they are incorrectly written (fix them).
+- `documented race` — the race is the bug. Fix it.
+- `pre-existing` — not a disposition; it relies on commit-SHA amnesia. A
+  failure either traces to an open defect with a named owner and a target
+  sprint, or it is a regression to fix now.
+
 ## Isolating Cross-Crate Failures
 
 When an e2e test fails and the root cause could be in any crate (typecheck?
@@ -302,8 +396,8 @@ cargo llvm-cov report                               # text summary
 ```
 
 Name real `--test` targets (see `ls tests/*.rs`); there are no `ringN` binaries.
-Current baseline figures and per-crate gap analysis live in
-`plan/ledger.md` and `plan/coverage-gaps.md` — not restated here, they decay.
+Per-crate gap analysis lives in `plan/coverage-gaps.md` — not restated here,
+it decays.
 
 **Known limitation — JIT code not covered:** Cranelisp compiles user code via
 Cranelift JIT at runtime; LLVM instrumentation covers only the Rust compiler

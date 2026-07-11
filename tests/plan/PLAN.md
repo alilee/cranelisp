@@ -102,8 +102,9 @@ side or the other, do not let them diverge.
 1. **Conformance** — every spec section, every MUST. The bulk of the
    plan. Authored from `spec/` + `repl/spec.md`.
 2. **Regression guards** — minimum-repro tests committed for resolved
-   defects. Each row cites the originating defect (sprint, FIXME,
-   ledger entry). These exist forever per
+   defects. Each row cites the originating defect (sprint, FIXME, and
+   the test's `// defect:` tag per `tests/CLAUDE.md` §"Defect-repro
+   notation"). These exist forever per
    `memory/feedback_repros_join_suite.md`; their value as guards
    outlives the fix.
 3. **Negative-coverage upgrades** — rows where a `[Tested ...]`
@@ -208,19 +209,21 @@ Per METHOD.md §2:
   any per-crate D/D/R cycle begins, `/qa` writes the failing e2e
   tests this plan calls for, sprint-wide. The failing tests scope
   what the per-crate triads make pass. Failing-not-ignored.
-- **Phase 6/7 (Assess/Close).** `/qa` updates row statuses and ledger
-  entries to reflect what shipped, what didn't, and what was
-  ignored with reason. The Phase 7 outcome cites plan-vs-tests
-  integrity and ledger integrity.
+- **Phase 6/7 (Assess/Close).** `/qa` updates row statuses to reflect
+  what shipped, what didn't, and what was ignored with reason. The
+  Phase 7 outcome cites plan-vs-tests integrity and RED-vs-known-defect
+  integrity (every RED traces to an open defect naming its owner —
+  root `CLAUDE.md` §Testing).
 
 ## Subordinate documents
 
-- **`ledger.md`** — failure ledger. Every test currently failing in
-  `cargo nextest run --no-fail-fast` MUST have an entry. Verified at
-  every sprint open and close. Allowed dispositions:
-  `under-investigation`, `out-of-scope (owner=/skill)`,
-  `exemplar-gap (owner=/port)`. Forbidden: `flaky`, `pre-existing`,
-  `documented race`, `timing-sensitive`.
+- **`ledger.md`** — RETIRED S108 (tombstone only; history in git).
+  Regression triage runs on the inline defect-comment/FIXME convention
+  (root `CLAUDE.md` §Testing); defect frequency/locus/recurrence
+  analysis runs on the `// defect:` notation (`tests/CLAUDE.md`
+  §"Defect-repro notation"). The forbidden-disposition discipline
+  (`flaky`, `pre-existing`, `documented race`, `timing-sensitive`)
+  lives on in `tests/CLAUDE.md` §"Failing-test discipline".
 - **`helpers.md`** — design of the e2e helper API surface in
   `tests/helpers/`. The "shiny e2e test helper environment" the
   Sprint 64 strategy direction calls for. Authored by `/qa`,

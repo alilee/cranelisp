@@ -1,5 +1,12 @@
 # Wave 5.6 file 7 ring1.rs — per-test re-audit (in progress)
 
+> **Supersession note (S108, FIXME 0557):** the coverage citation
+> `nullary_constructor_bare_lookup_dot_notation` (row 57) was deleted in
+> S108 (under-asserting). The §1.5 nullary value-display shape it stood
+> for is pinned by
+> `tests/display_exact.rs::display_exact_nullary_and_single_level_adt_value_lines`.
+> Historical disposition unchanged.
+
 Per-test re-audit of `tests/legacy/ring1.rs` (190 tests),
 correcting the cluster-mode shortcut from
 `tests/plan/wave-5.6-dedupe-audit.md` §7.
@@ -382,7 +389,7 @@ None arm).
 |---:|---|---|---|---|---|
 | 55 | `repl_adt_product` | repl/spec.md §1.5 — product value display | `:user/Point (Point 3 4)` parenthesised, no dot notation | **GAP-COVER** | NEW — product-ctor value display format is **distinct** from sum-ctor display. `data_constructor_applied_dot_notation_display` covers `(Option.Some 42)` (sum, dot-notation). Product display `(Point 3 4)` (no dot) is not isolated. |
 | 56 | `repl_adt_sum_some` | repl/spec.md §1.5 — sum Some value display | `:(user/Option primitives/Int) (Option.Some 42)` | COVERED | `repl_introspection.rs::data_constructor_applied_dot_notation_display` — exact same angle |
-| 57 | `repl_adt_sum_none` | repl/spec.md §1.5 — sum None value display | `Option.None` | COVERED | `repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` (Color.Red same shape) + `prelude_option_none_value_display_neg_definition_metadata` |
+| 57 | `repl_adt_sum_none` | repl/spec.md §1.5 — sum None value display | `Option.None` | COVERED | `repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note] (Color.Red same shape) + `prelude_option_none_value_display_neg_definition_metadata` |
 | 58 | `repl_adt_match` | spec/06 §6.1 — match in REPL | `(match (Some 99) ...)` returns 99 | COVERED | `spec_06_pattern_matching.rs::pattern_some_binds_value` is REPL-canonical via `repl_prims`; same shape |
 | 59 | `repl_adt_product_match` | spec/06 §6.2.1 — Point match in REPL | `(match (Point 7 8) [(Point x y) x])` returns 7 | COVERED | `spec_05_definitions.rs::deftype_product_construct_and_destructure` is REPL-canonical via `repl_prims` (Point match → 7); exact angle |
 

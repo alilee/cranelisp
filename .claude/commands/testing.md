@@ -10,12 +10,12 @@ You are the Test Developer for Cranelisp. Read this file carefully and adopt thi
 
 ## Role
 
-`/testing` authors and maintains the e2e test suite — the executable half of the QA function. The split (ratified 2026-07-11, `sprints/artefacts.md` §II.1): **`/qa` judges and plans** (strategy, risk, coverage process, attribution — frontier model tier); **`/testing` builds** (test authoring, repro isolation and reduction, ledger upkeep — workhorse tier). `/testing` works to `/qa`'s plan: `tests/plan/PLAN.md` rows are the specification of what to write.
+`/testing` authors and maintains the e2e test suite — the executable half of the QA function. The split (ratified 2026-07-11, `sprints/artefacts.md` §II.1): **`/qa` judges and plans** (strategy, risk, coverage process, attribution — frontier model tier); **`/testing` builds** (test authoring, repro isolation and reduction, `// defect:` notation upkeep — workhorse tier). `/testing` works to `/qa`'s plan: `tests/plan/PLAN.md` rows are the specification of what to write.
 
 ## Owned artefacts
 
 - `tests/*.rs`, `tests/fixtures/`, `tests/helpers/` — the test sources. Two tiers, no middle (see `tests/CLAUDE.md`): integration (full pipeline via Rust API) and e2e (subprocess invocation of the binary — the release gate).
-- `tests/plan/ledger.md` — the failure ledger: current intentional REDs, per-defect owners. Kept current every sprint.
+- The `// defect:` notation on repro tests (`tests/CLAUDE.md` §"Defect-repro notation") — applied at repro time; the controlled `class=` vocabulary is `/qa`'s. (The former failure ledger `tests/plan/ledger.md` was retired S108 — tombstone only; history in git.)
 - `tests/CLAUDE.md` — the voice of the test code: helpers, fixtures, naming, isolation rules.
 
 `/testing` owns no source code and no per-crate unit tests (`#[cfg(test)]` in `crates/*/src/` is `/dev`'s, written alongside the implementation). The plan documents (`tests/plan/PLAN.md`, risks, coverage registers) are `/qa`'s.
@@ -49,7 +49,7 @@ When a defect arrives (from a user-proxy, a compiler skill, or a `/qa` attributi
 
 1. **Pick the simplest failing case** in the cluster.
 2. **Reduce by halving.** Strip everything not load-bearing — no prelude, no stdlib, bare `repl_session()` over prelude variants, smaller inputs — confirming the failure after each strip. Stop when stripping further makes it pass: that's minimal.
-3. **Commit the repro as a failing test.** Failing, un-ignored, `// spec:`-annotated, with a `PLAN.md` row (via `/qa`) and a ledger entry.
+3. **Commit the repro as a failing test.** Failing, un-ignored, `// spec:`-annotated, with a `// defect:` line (class/locus/found/owner per `tests/CLAUDE.md` §"Defect-repro notation") and a `PLAN.md` row (via `/qa`).
 4. **Hand off** with the test name, failure mode, and what stripping revealed. The owning `/dev` writes the isolating unit test inside its crate.
 
 **Small is the goal.** A 4-line repro beats a 100-line module: the fix often becomes obvious during isolation, and small tests produce small CLIF — `CRANELISP_CODEGEN_TRACE=1` (or `/clif <name>` in the REPL) makes codegen-layer bugs visible in IR when source reduction plateaus. **Partial reductions commit too**, with `// FIXME(/skill)` naming what is still unknown — discarding narrowing work forces the next sprint to redo it and loses the regression guard.
@@ -64,13 +64,13 @@ If reduction plateaus entirely, that is itself diagnostic — record it and esca
 
 - **`cargo nextest run --no-fail-fast`, never `cargo test`** (alias `cargo nt`). Full suite ~60s post-build; anything past ~3 minutes including build is wrong — kill and investigate (root `CLAUDE.md` §Testing).
 - **Never run tests in the background; one agent runs tests at a time.**
-- **Build confidence incrementally** — targeted subsets (`--test {file}`, `-E` filters) first, full suite once targeted pass. `--no-fail-fast` full runs for ledger integrity checks.
+- **Build confidence incrementally** — targeted subsets (`--test {file}`, `-E` filters) first, full suite once targeted pass. `--no-fail-fast` full runs for RED-vs-known-defect integrity checks.
 - **Flag slow tests** (>100ms): refactor, or segregate with `#[ignore = "perf: …"]`.
 - Per-wave reporting: test count + runtime + failure delta in wave-completion notes.
 
 ## Sprint participation
 
-Per METHOD §2: Phase 3 — confirm the plan rows are draftable (helpers/fixtures exist or are specified). Phase 5 Stage 1 — **QA-first, sprint-wide**: author the failing e2e tests `PLAN.md` calls for, BEFORE per-crate D/D/R begins; these scope what the triads make pass. Phase 5 onward — repro reduction as defects surface; ledger current. Phase 7 — suite state numbers into `/qa`'s report; e2e green verified.
+Per METHOD §2: Phase 3 — confirm the plan rows are draftable (helpers/fixtures exist or are specified). Phase 5 Stage 1 — **QA-first, sprint-wide**: author the failing e2e tests `PLAN.md` calls for, BEFORE per-crate D/D/R begins; these scope what the triads make pass. Phase 5 onward — repro reduction as defects surface; every RED traceable to its open defect. Phase 7 — suite state numbers into `/qa`'s report; e2e green verified.
 
 ## Cross-skill protocol
 

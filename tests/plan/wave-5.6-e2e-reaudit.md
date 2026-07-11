@@ -1,5 +1,16 @@
 # Wave 5.6 file 6 e2e.rs — per-test re-audit (in progress)
 
+> **Supersession note (S108, FIXME 0557):** the carry-forward target
+> `nullary_constructor_bare_lookup_dot_notation` recommended below was
+> authored, later found to under-assert (its substring passed on buggy
+> output), and **deleted in S108**. Successors: the §4.1.2 introspection
+> claim (dot-notation + qualified home + `; deftype` — rows #74/#115) is
+> pinned by `tests/repl_introspection.rs::nullary_constructor_bare_lookup_shows_deftype_and_qualified_home`;
+> the §1.5 nullary VALUE-display claim (row #6) is pinned by
+> `tests/display_exact.rs::display_exact_nullary_and_single_level_adt_value_lines`
+> (runtime-elicited — post-S108-D2 a bare ctor lookup is an introspection
+> display, not a value display). Historical dispositions below unchanged.
+
 Per-test re-audit of `tests/legacy/e2e.rs` (148 tests),
 correcting the cluster-mode shortcut from
 `tests/plan/wave-5.6-dedupe-audit.md` §6.
@@ -49,7 +60,7 @@ regression-naming patterns or Sprint-attributed defect repros):
 | 3 | `e2e_s1_2_int_display_qualified` | repl/spec.md §1.2 — fully-qualified `:primitives/Int` | identical to #2 | DUPLICATE-IN-LEGACY | duplicate of #2 (same input, same assertion); #2 is canonical e2e instance |
 | 4 | `e2e_s1_2_bool_display_qualified` | repl/spec.md §1.2 — fully-qualified Bool display | `(eq-i64 3 3)` → `:primitives/Bool true` | COVERED | `repl_introspection.rs::display_bool_true` + `spec_appendix_a_builtins.rs::primitive_eq_i64_true` |
 | 5 | `e2e_s1_2_string_display_qualified` | repl/spec.md §1.2 — fully-qualified String display | `"hello"` → `:primitives/String "hello"` | COVERED | `repl_introspection.rs::display_string_literal` + `spec_03_types.rs::primitive_string_display` |
-| 6 | `e2e_s1_5_nullary_ctor_dot_notation` | repl/spec.md §1.5 — nullary ctor dot notation | `Red` → `Color.Red` | **GAP-COVER** | No carry-forward asserts the *bare-symbol* nullary ctor display in dot-notation form. `repl_introspection.rs::constructor_display` covers ctor display via deftype but not bare-symbol lookup of nullary ctor → dot notation. Recommended target: `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation`. Cite repl/spec.md §1.5. |
+| 6 | `e2e_s1_5_nullary_ctor_dot_notation` | repl/spec.md §1.5 — nullary ctor dot notation | `Red` → `Color.Red` | **GAP-COVER** | No carry-forward asserts the *bare-symbol* nullary ctor display in dot-notation form. `repl_introspection.rs::constructor_display` covers ctor display via deftype but not bare-symbol lookup of nullary ctor → dot notation. Recommended target: `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note]. Cite repl/spec.md §1.5. |
 | 7 | `e2e_s1_5_data_ctor_dot_notation` | repl/spec.md §1.5 — data ctor dot notation | `(Some 42)` → `(Option.Some 42)` | **GAP-COVER** | `repl_introspection.rs::constructor_display` covers some ctor display but not the parenthesised `(Option.Some 42)` value-display form for an applied data ctor. `spec_06_pattern_matching.rs` shape uses `(Some 42)` only inside match — not as displayed form. Recommended target: `tests/repl_introspection.rs::data_constructor_applied_dot_notation_display`. Cite repl/spec.md §1.5. |
 | 8 | `e2e_s1_5_prelude_option_some_display` | repl/spec.md §1.5 — prelude-Option `(Some 42)` formatted (not raw pointer) | `(Some 42)` with prelude → `(Option.Some 42)`; NEG: not a raw pointer | **GAP-COVER (REGRESSION-GUARD)** | Source comment marks BUG. `repl_introspection.rs::constructor_display` uses local deftype, not the prelude path that exposes the raw-pointer regression. Recommended target: `tests/repl_introspection.rs::prelude_option_some_display_neg_raw_pointer`. Cite repl/spec.md §1.5; preserves negative assertion (no raw heap pointer in result). |
 | 9 | `e2e_s1_5_prelude_option_none_display` | repl/spec.md §1.5 — prelude-Option `None` value display (not definition display) | `None` with prelude → `Option.None`; NEG: no `; deftype`, no `fn.option/` | **GAP-COVER (REGRESSION-GUARD)** | Source comment marks BUG. Distinct from #8 — the value-vs-definition display angle for nullary prelude ctor. Recommended target: `tests/repl_introspection.rs::prelude_option_none_value_display_neg_definition_metadata`. Cite repl/spec.md §1.5. |
@@ -149,7 +160,7 @@ regression-naming patterns or Sprint-attributed defect repros):
 
 For each: name + recommended target file + rationale.
 
-1. `e2e_s1_5_nullary_ctor_dot_notation` → `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` — bare-symbol nullary ctor display in dot notation (§1.5).
+1. `e2e_s1_5_nullary_ctor_dot_notation` → `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note] — bare-symbol nullary ctor display in dot notation (§1.5).
 2. `e2e_s1_5_data_ctor_dot_notation` → `tests/repl_introspection.rs::data_constructor_applied_dot_notation_display` — applied data ctor `(Option.Some 42)` parenthesised value-display form (§1.5).
 3. `e2e_s1_5_prelude_option_some_display` (REGRESSION-GUARD) → `tests/repl_introspection.rs::prelude_option_some_display_neg_raw_pointer` — known prelude raw-pointer-display BUG; neg-assertion preserved (§1.5).
 4. `e2e_s1_5_prelude_option_none_display` (REGRESSION-GUARD) → `tests/repl_introspection.rs::prelude_option_none_value_display_neg_definition_metadata` — value-vs-definition display for prelude None; neg-assertion preserved (§1.5).
@@ -274,7 +285,7 @@ regression-naming patterns or Sprint-attributed defect repros):
 
 | # | Test name | Spec property | Angle | Disposition | Notes |
 |---:|---|---|---|---|---|
-| 74 | `e2e_s1_1_constructor_lookup` | repl/spec.md §1.1 — bare ctor lookup shows `Color.Red` + `user/Color` | `Red` after `(deftype Color Red Green Blue)` → both ctor dot-notation AND qualified type | COVERED | absorbed by chunk-1 #6 (`e2e_s1_5_nullary_ctor_dot_notation`) recommendation `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` — same input, same assertion. The §1.1 vs §1.5 spec citation overlap reflects the same property (bare ctor lookup); no additional carry-forward needed. |
+| 74 | `e2e_s1_1_constructor_lookup` | repl/spec.md §1.1 — bare ctor lookup shows `Color.Red` + `user/Color` | `Red` after `(deftype Color Red Green Blue)` → both ctor dot-notation AND qualified type | COVERED | absorbed by chunk-1 #6 (`e2e_s1_5_nullary_ctor_dot_notation`) recommendation `tests/repl_introspection.rs::nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note] — same input, same assertion. The §1.1 vs §1.5 spec citation overlap reflects the same property (bare ctor lookup); no additional carry-forward needed. |
 
 #### Cluster R — /imports + /list category headers (tests 75-77, lines 1296-1340)
 
@@ -393,7 +404,7 @@ Corrected counts: **COVERED 33, GAP-COVER 17, REGRESSION-GUARD 5** (≡ #9 isola
 - **Self-doc parametrisation**: chunk 1 (#32 `if`, #33 `let`) + chunk 2 (#67 `fn`, #68 `defn`, #69 `deftype`, #70 `match`, #91 `defmacro`) + #71-73 operators all share the same "bare-symbol → no error + Fn signature" property at different keywords. `/sprint` to decide whether to author 9 separate carry-forwards or 1 parametrised test that iterates over `["if", "let", "fn", "defn", "deftype", "match", "defmacro", "+", "=", "<"]`. The latter is more maintainable; the former preserves per-keyword regression naming.
 - **#82 disposition**: I initially classified `e2e_s11_1_neg_expand_non_macro_unchanged` as GAP-COVER, then corrected to COVERED (`expand_neg_non_macro_unchanged` exists). Flagging in case `/sprint` wants the explicit `neg_` regression-naming preserved (current carry-forward uses `_neg_` infix but not the `neg_` prefix shape from legacy).
 - **#65/#66 session compositions**: These are multi-step session smoke tests. Composite coverage is preserved by piecewise carry-forwards (#52 + persistence + match-in-defn). `/sprint` to decide whether to author a dedicated multi-feature session test or rely on piecewise coverage. Default disposition: COVERED.
-- **#74 §1.1 vs chunk-1 #6 §1.5 overlap**: Both cite different spec sections for the same property (bare-ctor-lookup). The chunk-1 recommendation `nullary_constructor_bare_lookup_dot_notation` is one carry-forward serving both citations. `/sprint` to confirm — no double-authoring needed.
+- **#74 §1.1 vs chunk-1 #6 §1.5 overlap**: Both cite different spec sections for the same property (bare-ctor-lookup). The chunk-1 recommendation `nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note] is one carry-forward serving both citations. `/sprint` to confirm — no double-authoring needed.
 - **#90 SIGILL gap-doc**: Source comment marks "currently this causes SIGILL — the test documents the gap." Ported as-is, the carry-forward will FAIL until `/backend` (or `/typecheck`) resolves the runtime-error path. `/sprint` to decide whether to:
   (a) port as failing test now (per `feedback_failing_not_ignored.md` — failing tests stay failing), or
   (b) port as `#[ignore]` with FIXME pointing to the resolver skill.
@@ -478,7 +489,7 @@ regression-naming patterns or Sprint-attributed defect repros):
 | 112 | `e2e_s4_1_bare_special_form_classification` | repl/spec.md §4.1.5 — bare `if` shows `; special form` classification | `if\n` → `; special form` substring | **GAP-COVER** | Strictly stronger than chunk-1 #32 (which only asserts no-error + Fn/Bool). The `; special form` *classification token* is the universal-format requirement. Recommended target: `tests/repl_introspection.rs::bare_special_form_if_classification_token` (could absorb chunk-1 #32 + #33 + chunk-2 #67-70 + #91 via parametrisation, asserting `; special form` for all 9 forms). Cite repl/spec.md §4.1.5. |
 | 113 | `e2e_s4_1_bare_macro_defmacro` | repl/spec.md §4.1.6 — bare macro shows `; defmacro` AND clause signature `; [x] -> Sexp` | `(defmacro inc ...)\ninc\n` → both substrings | **GAP-COVER** | `repl_introspection.rs::single_clause_defmacro_classified` asserts `; defmacro` on definition line; bare-lookup path with clause-signature `; [x] -> Sexp` is uncovered (`grep "\\[x\\] -> Sexp"` returns zero outside legacy). Distinct from `bare_macro_lookup` which doesn't assert the `[x] -> Sexp` shape. Recommended target: `tests/repl_introspection.rs::bare_macro_lookup_shows_clause_signature`. Cite repl/spec.md §4.1.6. |
 | 114 | `e2e_s4_1_bare_builtin_type` | repl/spec.md §4.1.3 — bare builtin `Int` shows `; type` + `primitives/Int` | `Int\n` → both substrings | **GAP-COVER** | No carry-forward asserts the `; type` *classification token* for builtin primitive types (`grep "; type"` in carry-forwards returns zero hits). Distinct from chunk-1 #34 (`bare_primitive_type_int_displays_type_info`) which only asserts no-error + "Int" presence. Recommended target: `tests/repl_introspection.rs::bare_builtin_type_int_shows_type_classification`. Cite repl/spec.md §4.1.3. |
-| 115 | `e2e_s4_1_bare_constructor_classification` | repl/spec.md §4.1.2 — bare ctor `Red` shows `; deftype` classification | `(deftype Color ...)\nRed\n` → `; deftype` | DUPLICATE-IN-LEGACY | Identical input + same property class as chunk-1 #6 (`e2e_s1_5_nullary_ctor_dot_notation`) which has recommendation `nullary_constructor_bare_lookup_dot_notation`. Same input, different (looser) assertion (#115 checks `; deftype`, #6 checks dot-notation `Color.Red`). Parametrisable into one carry-forward. Treating as DUPLICATE within legacy/e2e.rs's own scope; net carry-forward absorbs both. |
+| 115 | `e2e_s4_1_bare_constructor_classification` | repl/spec.md §4.1.2 — bare ctor `Red` shows `; deftype` classification | `(deftype Color ...)\nRed\n` → `; deftype` | DUPLICATE-IN-LEGACY | Identical input + same property class as chunk-1 #6 (`e2e_s1_5_nullary_ctor_dot_notation`) which has recommendation `nullary_constructor_bare_lookup_dot_notation` [deleted S108 — see supersession note]. Same input, different (looser) assertion (#115 checks `; deftype`, #6 checks dot-notation `Color.Red`). Parametrisable into one carry-forward. Treating as DUPLICATE within legacy/e2e.rs's own scope; net carry-forward absorbs both. |
 
 #### Cluster DD — /list neg: ctors not in Fns (test 116, lines 1999-2011)
 
@@ -745,8 +756,10 @@ files (ring0 at 97%) survive cluster-mode.
    GAP-COVERs, no Sprint attribution).
 5. **#115 disposition (DUPLICATE-IN-LEGACY) — confirm absorption.**
    Chunk-1 #6's recommended carry-forward
-   (`nullary_constructor_bare_lookup_dot_notation`) should be
-   strengthened to assert BOTH the dot-notation form AND the
+   (`nullary_constructor_bare_lookup_dot_notation` [deleted S108 — the
+   strengthened form exists as
+   `nullary_constructor_bare_lookup_shows_deftype_and_qualified_home`])
+   should be strengthened to assert BOTH the dot-notation form AND the
    `; deftype` classification token. Confirm this is acceptable to
    `/sprint`; otherwise re-disposition #115 as GAP-COVER and author
    separately.

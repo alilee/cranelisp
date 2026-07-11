@@ -39,6 +39,17 @@ use crate::agent::types::{AgentModel, AgentRequest, AgentState, ModelResponse, T
 const PROVIDER_VAR: &str = "CRANELISP_AGENT_PROVIDER";
 const MODEL_VAR: &str = "CRANELISP_AGENT_MODEL";
 
+/// The completion budget for every agent request (rig `CompletionRequest.max_tokens`).
+/// Anthropic's Messages API makes `max_tokens` MANDATORY — a request that omits it is
+/// rejected outright (`RequestError: max_tokens must be set for Anthropic`), which
+/// broke every turn against the default provider (FIXME 0554). `build_request` is the
+/// single shared assembly for `complete` and `complete_streaming` (Principle 7), so
+/// setting it here repairs both transports at once. Sized for the STREAMING case — the
+/// agent loop drives `stream` (S107): a low cap truncates a tool-call turn mid-thought,
+/// so 64K is the sane streaming default (a per-model/configurable budget would thread a
+/// field through `AgentRequest`; the constant is the minimal correct fix).
+const AGENT_MAX_TOKENS: u64 = 65536;
+
 /// Build the agent state for this session (§3.4). `enabled` is the resolved
 /// `--agent` runtime toggle (§6.4 opt-in-twice — the FIRST opt-in is the `agent`
 /// feature, the SECOND is this flag + a reachable provider). When `enabled` is
@@ -182,6 +193,9 @@ impl<M: CompletionModel> RigModel<M> {
             .preamble(preamble)
             .messages(history)
             .tools(tools)
+            // Anthropic REQUIRES max_tokens; omitting it 400s before a token streams
+            // (FIXME 0554). Set on the shared builder so both transports carry it.
+            .max_tokens(AGENT_MAX_TOKENS)
             .build()
     }
 }
@@ -1397,6 +1411,41 @@ mod tests {
              position is currently wire-invalid; a future contiguity fix flips this \
              guard. transcript={:?}",
             state.transcript
+        );
+    }
+
+    // spec: design/int/agent.md §6 — every assembled rig `CompletionRequest` MUST
+    // carry `max_tokens` (FIXME 0554). Anthropic's Messages API makes the field
+    // MANDATORY; without it EVERY turn 400s before a token streams
+    // (`RequestError: max_tokens must be set for Anthropic`). `build_request` is
+    // the single shared assembly for `complete` and `complete_streaming`
+    // (Principle 7), so this one assertion guards BOTH transports.
+    //
+    // This is a UNIT test, not an e2e, BECAUSE the defect is not e2e-reproducible:
+    // the agent module is `#[cfg(feature = "agent")]` (the default suite never
+    // compiles it), the e2e stub provider (`CRANELISP_AGENT_PROVIDER=stub`) bypasses
+    // `RigModel`/`build_request` entirely, and CI cannot call the live Anthropic API.
+    // Constructing `build_request` against the `MockModel` (the real rig
+    // `CompletionModel` trait, below the membrane) is the only path that observes the
+    // assembled `CompletionRequest.max_tokens`.
+    #[test]
+    fn build_request_sets_max_tokens_for_anthropic() {
+        let rig = RigModel::new(MockModel::new(Vec::new()))
+            .expect("tokio current-thread runtime builds");
+        // A representative request — a plain user turn, no tools/transcript needed:
+        // the missing field is on the shared builder, independent of request content.
+        let req = AgentRequest { user: "what model are you?".to_string(), ..Default::default() };
+
+        let rig_req = rig.build_request(&req);
+
+        assert!(
+            rig_req.max_tokens.is_some(),
+            "build_request must set max_tokens — Anthropic rejects a request that omits it"
+        );
+        assert_eq!(
+            rig_req.max_tokens,
+            Some(AGENT_MAX_TOKENS),
+            "build_request must set max_tokens to the AGENT_MAX_TOKENS budget"
         );
     }
 }

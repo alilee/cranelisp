@@ -92,11 +92,22 @@ fn display_exact_primitive_value_lines() {
 
 // spec: repl/spec.md §1.5 — nullary constructor (`Type.Ctor`) and
 // single-level parameterized constructor value lines, exact.
+//
+// The nullary row MUST be driven through a genuine RUNTIME path, not a bare
+// `Red` lookup: post-S108-D2 a bare nullary-ctor lookup is a §4.1.2
+// introspection display (`:user/Color user/Color.Red ; deftype`,
+// tests/repl_introspection.rs::nullary_constructor_bare_lookup_shows_deftype_and_qualified_home),
+// NOT the §1.5 value display. To pin the §1.5 value line `:user/Color Color.Red`
+// we produce the constructor value through a real runtime call — `(defn f [] Red)`
+// then `(f)` — so `Red` is genuinely the value-display output, not a lookup. The
+// applied-ctor sibling `(MkWrap 7)` is already a genuine runtime constructor
+// application, so it needs no such rework.
 #[test]
 fn display_exact_nullary_and_single_level_adt_value_lines() {
     let out = repl(
         "(deftype Color Red Green Blue)\n\
-         Red\n\
+         (defn f [] Red)\n\
+         (f)\n\
          (deftype (Wrap a) (MkWrap [:a v]))\n\
          (MkWrap 7)\n",
     )

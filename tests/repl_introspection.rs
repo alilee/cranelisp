@@ -1064,16 +1064,45 @@ fn sig_unknown_name_graceful() {
 // memory/feedback_repros_join_suite.md.
 // =============================================================================
 
-// spec: repl/spec.md §1.5 — bare nullary constructor lookup displays in dot
-// notation `Type.Ctor` form (the value-display shape, distinct from the
-// definition display covered by `deftype_display_enum`).
-// (carry: legacy/e2e.rs::e2e_s1_5_nullary_ctor_dot_notation)
+// spec: repl/spec.md §4.1.2 — a BARE nullary-constructor lookup is a
+// Constructor INTROSPECTION display `:{type} {module}/{Type.Ctor} ; deftype`
+// (spec example: `Red` -> `:user/Color user/Color.Red ; deftype`). It MUST be
+// enveloped identically to an applied/function-typed ctor's bare lookup
+// (`Some` -> `:(Fn [a] (…/Option a)) primitives/Option.Some ; deftype`): same
+// `; deftype` suffix, same `{module}/` qualifier on the ctor home.
+// defect: class=display-envelope-mirror locus=src/eval.rs::check_bare_symbol_introspection found=S108 owner=/dev
+//
+// Fixed S108 (D2). Before the fix a bare CONCRETE nullary ctor showed
+// `:user/Color Color.Red` — dropping BOTH the module qualifier and `; deftype`.
+// `check_bare_symbol_introspection` special-cased `field_count == 0` and routed
+// nullary ctors to runtime EVALUATION + the value-display envelope (src/display.rs
+// `:{type} {ctor}`) instead of the introspection envelope (src/repl.rs
+// `format_def_entry` Constructor arm: `:{type} {module}/{ctor} ; deftype`) — two
+// code paths formatting one concept, diverged. The fix collapsed the duplication,
+// routing only the CONCRETE bare nullary ctor through the same `format_def_entry`
+// Constructor arm as applied ctors, discriminated by `Type::is_concrete()`
+// (crates/cranelisp-types/src/types.rs). The divergence never extended to the
+// seeded `Option`/`None`: bare `None` is result-only-polymorphic and its value
+// display WITHOUT `; deftype` (`:(prelude/Option a) Option.None`) is AS-SPECIFIED
+// by §1.5.1 (`None` is a value, not an instance of this defect — pinned green by
+// prelude_option_none_value_display_neg_definition_metadata); the non-concrete
+// case falls to the §1.5.1 value display, and the display.rs value path remains
+// for genuine runtime values (§1.5, e.g. `(Some 42)`).
 #[test]
-fn nullary_constructor_bare_lookup_dot_notation() {
-    repl("(deftype Color Red Green Blue)
+fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() {
+    let out = repl("(deftype Color (Red) (Green))
 Red
-")
-    .assert_stdout_contains("Color.Red");
+");
+    // Assert the FULL §4.1.2 line as one substring — the `; deftype` and the
+    // qualified `user/Color.Red` together. A looser `contains("; deftype")`
+    // would false-pass on the `deftype` DEFINITION echo (`:user/Color ; deftype`).
+    assert!(
+        out.stdout.contains(":user/Color user/Color.Red ; deftype"),
+        "bare nullary ctor 'Red' MUST display ':user/Color user/Color.Red ; deftype' \
+         per §4.1.2 (qualified ctor home + '; deftype' classification), enveloped \
+         identically to an applied ctor; got:\n{}",
+        out.stdout
+    );
 }
 
 // spec: repl/spec.md §1.5 — applied data constructor displays in
@@ -1764,6 +1793,47 @@ Color
     );
 }
 
+// spec: repl/spec.md §4.1.3 — a bare type lookup MUST surface the `; match:`
+// constructor section for EVERY deftype-classified ADT, including the
+// primitives-SEEDED ADTs (Option/Result/IO) reached via the implicit prelude
+// glob — not only user-module deftypes. §4.1.3's canonical example IS `Option`
+// → `; match:` / `;  None Some`.
+// defect: class=wrong-scope-lookup locus=src/repl.rs::format_type_display found=S108 owner=/dev
+//
+// Fixed S108 (D1). Before the fix `format_type_display` looked up constructors
+// via `lookup_type_def_chain` from `current_module_path()` ("user"), NOT the
+// type's resolved home (primitives), so for a seeded ADT the chain never
+// reached the home and the primary line surfaced without `; match:`. A user
+// deftype (Rotation) worked only incidentally because scope == home; Some/None
+// resolved individually, so the ctor DATA existed — a reverse-lookup scope bug,
+// not missing data. The fix roots the constructor chain-lookup at the resolved
+// home `module` the function already holds (at the home the TypeDef is local,
+// chain terminates depth 0).
+#[test]
+fn seeded_option_bare_lookup_includes_match_section() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("Option\n")
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Option ; deftype"),
+        "bare 'Option' MUST surface ':primitives/Option ; deftype'; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; match:"),
+        "bare seeded ADT 'Option' MUST surface '; match:' section per §4.1.3, \
+         same as a user deftype; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("None") && out.stdout.contains("Some"),
+        "bare 'Option' '; match:' section MUST list constructors None and Some; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: repl/spec.md §4.1.4 — bare trait lookup shows `; deftrait`
 // classification AND a `; defn:` section listing methods.
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_trait_defn_section)
@@ -2205,8 +2275,9 @@ fn data_constructor_product_no_dot_notation_display() {
     );
 }
 
-// spec: repl/spec.md §1.2 — closure-as-value MUST display with the
-// `<closure>` token in the value position. Only the negative companion
+// spec: repl/spec.md §1.2, §1.5 — closure-as-value MUST display with the
+// `<closure>` token in the value position (the `<closure>` shape appears in
+// both the §1.2 value-line and the §1.5 Closure row). Only the negative companion
 // `defn_display_neg_not_closure` exists (asserting top-level defns do
 // NOT show "closure"); the positive `<closure>` formatter assertion was
 // uncovered. The closure produced by `(make-adder 5)` returns a fn value,

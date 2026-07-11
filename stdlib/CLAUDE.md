@@ -9,6 +9,10 @@ state and the conventions a module author needs at the keyboard — do **not**
 re-inventory modules or re-list "what works" here; that duplicates the plan and
 decays. When they disagree, the plan wins.
 
+**`stdlib/BACKLOG.md`** is the groomed inventory of requested library functions
+(Clojure-modeled) surfaced during testing — distinct from defects and usability
+FIXMEs; `/stdlib` grooms it, `/sprint` pulls high-priority rows into increments.
+
 ## Current State
 
 The project is in **Phase H (release compiler)**; the ring model that once gated

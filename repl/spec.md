@@ -469,15 +469,15 @@ Values are runtime results and have no module scope. They are displayed bare.
 | `Int` | decimal integer (e.g., `42`, `-7`) | 0 | [Tested tests/repl_introspection::display_int_result] |
 | `Bool` | `true` or `false` | 0 | [Tested tests/repl_introspection::display_bool_true] |
 | `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_introspection::display_float_result] |
-| `String` | `"contents"` with escapes | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| `String` | `"contents"` with escapes | 1 | [Tested tests/display_exact::display_exact_primitive_value_lines] |
+| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/display_exact::display_exact_nullary_and_single_level_adt_value_lines] |
+| Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
+| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Closure | `<closure>` | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested+Neg tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
-| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Closure | `<closure>` | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
+| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
+| List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
+| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
@@ -1052,7 +1052,7 @@ user> map
 | constrained fn shows constraints | [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification] |
 | overloaded fn shows all variants | [Tested tests/repl_introspection::display_overloaded_fn_shows_all_variants] |
 
-#### 4.1.2 Constructors [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation]
+#### 4.1.2 Constructors [Tested tests/repl_introspection::nullary_constructor_bare_lookup_shows_deftype_and_qualified_home]
 
 Primary line only. Classification `deftype` (constructors are created by `deftype`). Nullary constructors have no function type — just the ADT type.
 
@@ -3483,7 +3483,7 @@ user> (g 1)
 |---|---|
 | body-only redefinition prints only the §1.3 confirmation — no cascade sections | [Tested+Neg tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles] |
 | existing closure values pick up the new body at their next call | [Tested+Neg tests/repl_redefinition.rs::redefine_body_only_stale_closure_late_binds_new_body] |
-| body-only redefinition turn stays at today's single-symbol cost | [Tested tests/perf/l_d1_turn_latency.py (gate-time perf lane, not in canonical nextest; S101 Wave-5 record: median 0.0ms both polarities, tests/plan/ledger.md); slot-churn negative: tests/repl_persist_redefine.rs::persist_body_only_redefinition_neg_keeps_slot] |
+| body-only redefinition turn stays at today's single-symbol cost | [Tested tests/perf/l_d1_turn_latency.py (gate-time perf lane, not in canonical nextest; S101 Wave-5 record: median 0.0ms both polarities, ledger S101 entry — git history of tests/plan/ledger.md, retired S108); slot-churn negative: tests/repl_persist_redefine.rs::persist_body_only_redefinition_neg_keeps_slot] |
 
 ### 18.3 Signature-Changing Redefinition — The Cascade Report [S101]
 
