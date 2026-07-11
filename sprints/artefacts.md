@@ -2,7 +2,7 @@
 
 > **Owner**: `/sprint`.
 > **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
-> Increments A–D executed and verified 2026-07-11; increments E–F pending.
+> Increments A–E executed and verified 2026-07-11; increment F pending.
 > Open obligations: S108 Phase 1 disposes `audits/cranelisp-backend-s107.md`;
 > S108 audit slot = `cranelisp-typecheck`.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
@@ -477,12 +477,17 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   risk done-bars; an acid-test addendum was appended to
   `audits/cranelisp-backend-s107.md` (audit×1 supplementary dispatch,
   fable/xhigh, default).
-- **E — Settings + residue hygiene**: purge the 13 stale macOS-path lines
-  from `settings.local.json` + re-baseline permissions; delete the stale
-  `.claude/projects/-Users-alilee-…` memory directory (all four files
-  obsolete — audit §II.9); remove the untracked `sketch/` droppings
-  (`.DS_Store`/`.cranelisp_history` in otherwise-empty dirs); delete
-  `tests/plan/baseline.md` (renamed to `ledger.md`; both currently exist).
+- **E — Settings + residue hygiene** — **EXECUTED 2026-07-11**: the 13 stale
+  macOS-path permission lines purged from `settings.local.json`, plus a
+  re-baseline pass dropping dead one-shot grants (embedded commit-message
+  templates, shell-loop fragments, `/tmp` one-shots, a duplicate) and the
+  hazardous standing `Bash(rm -rf *)` allow (re-add deliberately if wanted);
+  53 grants remain, grouped. The stale
+  `.claude/projects/-Users-alilee-…` memory directory deleted (4 obsolete
+  ring/S28–49-era files — audit §II.9); `sketch/` droppings removed
+  (directory now fully gone, matching the S87 deletion record);
+  `tests/plan/baseline.md` deleted (renamed to `ledger.md` 2026-05-03; both
+  had existed since).
 - **F — CLAUDE.md decay reset** (any time after A; serial dispatches, all
   opus[1m] — the audit already did the judgment): execute the per-file
   verdicts in `sprints/audits/decay-audit-2026-07-11.md`. REWRITE:
