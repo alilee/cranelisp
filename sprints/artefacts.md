@@ -62,7 +62,12 @@ Five artefact kinds, each with one owner and one home:
 3. **Localized memories** (`CLAUDE.md` per directory) — "how the code is":
    API gotchas, invariants with provenance, seam maps, debug hooks. Governed
    by the three-way content split: *process* → command definition;
-   *decisions/direction* → design docs; *mechanics* → `CLAUDE.md`.
+   *decisions/direction* → design docs; *mechanics* → `CLAUDE.md`. A
+   localized memory is a **current-state document, not a changelog**: at most
+   ONE "current state" section, consolidated at iteration close — per-
+   iteration narratives live in the archive. Stacked sprint-stamped sections
+   are the named decay smell; the coordinator's close checklist includes a
+   consolidation pass on files touched that iteration.
 4. **Change-control files** — numbered request files; any role may file
    against any role; only the target resolves and deletes; the coordinator
    gates waves on open items but never deletes.
@@ -151,10 +156,17 @@ coordinator's dispatch contract.
 4. Author command definitions (role-owned) and shims (coordinator-owned).
 5. Amend the coordinator's dispatch contract: agent-type dispatch, dispatch
    log, escalation triggers, close-time audit.
-6. Fill localized-memory gaps for every bounded context the workhorse tier
+6. **Decay-audit the existing memories before seeding new ones** — reset,
+   don't accrete. Sweep every localized memory and the harness memory store
+   for: dead references, superseded facts (retired roles/protocols/vocabulary
+   still cited as live), stale counts and baselines, changelog accretion, and
+   duplication with canonical docs. A restructure built on decayed memory
+   ships the decay to every future dispatch — the workhorse tier trusts what
+   it reads.
+7. Fill localized-memory gaps for every bounded context the workhorse tier
    will be deployed into — written local memory is what keeps the workhorse
    from re-deriving invariants.
-7. Schedule adoption as independent increments, each safe alone, each with a
+8. Schedule adoption as independent increments, each safe alone, each with a
    named fallback.
 
 ---
@@ -314,8 +326,13 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   retired commands; split `qa.md` → `qa.md` (strategy/risk/coverage/triage)
   + `testing.md` (authoring/repro/ledger) with METHOD §1 category update and
   `tests/CLAUDE.md` ownership note (`tests/plan/` → `/qa`, test sources →
-  `/testing`); rewrite root `CLAUDE.md`'s stale skill table to the live 13;
-  **user ratifies §II.3**.
+  `/testing`); **full root `CLAUDE.md` reset** per the audit (§II.9): skill
+  table to the live 13, dead refs dropped (`pipeline-v4*.md`,
+  `design/arch/roadmap.md`, `memory/*` paths — the failing-not-ignored and
+  unit-test-per-fix rules stated inline instead), ring model demoted to
+  historical, METHOD-duplicated protocol prose compressed to pointers; fix
+  the two command files citing `METHOD_PROPOSED` as current (`design.md`,
+  `review.md`); **user ratifies §II.3**.
 - **B — Command frontmatter**: `model:` + `effort:` on the 13 live commands.
   Interactive-only effect; cannot break sprint dispatch. Verify
   `fable`/`opus[1m]` alias behavior interactively before proceeding.
@@ -329,9 +346,25 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
 - **D — Escalation live + CLAUDE.md seeding**: §II.4 triggers become binding
   (they need the dispatch log from C); seed the 7 crate `CLAUDE.md` files via
   serial `/dev` dispatches (§II.5).
-- **E — Settings hygiene**: purge stale macOS paths from
-  `settings.local.json` + re-baseline permissions; disposition of the stale
-  `.claude/projects/-Users-alilee-…` directory.
+- **E — Settings + residue hygiene**: purge the 13 stale macOS-path lines
+  from `settings.local.json` + re-baseline permissions; delete the stale
+  `.claude/projects/-Users-alilee-…` memory directory (all four files
+  obsolete — audit §II.9); remove the untracked `sketch/` droppings
+  (`.DS_Store`/`.cranelisp_history` in otherwise-empty dirs); delete
+  `tests/plan/baseline.md` (renamed to `ledger.md`; both currently exist).
+- **F — CLAUDE.md decay reset** (any time after A; serial dispatches, all
+  opus[1m] — the audit already did the judgment): execute the per-file
+  verdicts in `sprints/audits/decay-audit-2026-07-11.md`. REWRITE:
+  `tests/CLAUDE.md` (`/qa`+`/testing`), `spec/CLAUDE.md` (`/spec`),
+  `stdlib/CLAUDE.md` (`/stdlib`), `exemplar/CLAUDE.md` (`/port`),
+  `design/CLAUDE.md` (`/arch`), `design/review/CLAUDE.md` (`/review`). TRIM:
+  `src/CLAUDE.md` (`/dev`), `design/arch/CLAUDE.md` (`/arch`),
+  `crates/cranelisp-typecheck/CLAUDE.md` (`/dev`+`/design` — relocate design
+  prose to `design/typecheck/`), the four small
+  `design/{frontend,backend,typecheck,platform}/CLAUDE.md` (`/design`),
+  `repl/CLAUDE.md` (`/repl`, two phrases). Each dispatch consumes its audit
+  section as the work-list; the audit record is then archived state, not a
+  living document.
 
 ### II.8 Mechanics assumptions and fallbacks
 
@@ -348,8 +381,32 @@ increment:
    pinned in shim frontmatter only.
 4. **Agent-type dispatch availability** in the harness — increment C's live
    test; fallback is the per-dispatch `model` param (§II.7 C).
-5. **Portability note**: root `CLAUDE.md`'s `memory/feedback_*.md` citations
-   resolve to the harness memory store
-   (`~/.claude/projects/<project>/memory/`), which is per-machine. They are
-   live on this machine — do not "fix" them — but §II.4 is written
-   self-contained so the escalation protocol survives a machine move.
+5. **Memory-citation note** (revised by the 2026-07-11 audit): repo docs'
+   `memory/*.md` citations resolve — when they resolve at all — to the
+   per-machine harness store (`~/.claude/projects/<project>/memory/`), and
+   one (`feedback_failing_not_ignored.md`, cited by root `CLAUDE.md` and
+   `tests/plan/ledger.md`) exists nowhere. Reset rule (applied in increments
+   A and F): canonical docs state their rules inline and do not cite
+   harness-store paths. §II.4 is already written self-contained.
+
+### II.9 Decay reset (audited 2026-07-11)
+
+Findings and per-file verdicts: **`sprints/audits/decay-audit-2026-07-11.md`**
+(point-in-time record at commit `456a433d`). Summary: of the 20 repo
+`CLAUDE.md` files, 7 need REWRITE (root, tests, spec, stdlib, exemplar,
+design/, design/review — dominated by retired-skill ownership, deleted-
+`sketch/` references, retired ring vocabulary, and stacked per-sprint
+"Current State" logs up to 16 sprints stale), 8 need TRIM, 5 are verifiably
+clean (`design/arch/principles/`, `design/int/`, `design/intrinsics/`,
+`repl/demos/`, `user/`). The harness memory store was audited file-by-file:
+2 retired immediately (content verbatim in spec §3.11 / METHOD §2.2), 2
+updated (stale baselines stripped), 2 retire when this proposal ratifies, 2
+are load-bearing via by-name citations and retire only with their citing
+docs, 13 kept live. The stale macOS-era store (4 files) deletes whole in
+increment E.
+
+Reset execution: increment A carries the root-`CLAUDE.md` rewrite (it is the
+entry-point doc and its skill table is already A's work); increment F
+carries the remaining per-owner file resets; increment E carries the
+residue deletions. All reset dispatches run at opus[1m] — the audit already
+did the judgment; execution is mechanical against the recorded work-lists.
