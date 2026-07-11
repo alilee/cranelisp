@@ -1017,6 +1017,272 @@ observable end-to-end symptom (no literal escape codes anywhere; `--no-color` cl
 
 ---
 
+## 14A. S107 render/streaming design (0554 / 0556 / 0555)
+
+Three S107 findings extend Cluster A's render surface. All stay agent-output-only, fully
+`#[cfg(feature="agent")]`, int-private (no `cranelisp-types` change — Phase-2 confirmed). The
+normative contracts are `repl/spec.md` §3.11 (0554), §17.2 item 3 / §17.13.2 (0556), and
+§17.22 (0555). **Sequencing is load-bearing (Phase-2): 0556 lands before 0555** — the streaming
+renderer consumes the code-vs-prose framing split 0556 defines.
+
+### 14A.1 — 0554: aligned `let`/`match` fences (reuse, no agent-side work)
+
+The agent's ```lisp fences already route through `crate::pretty::pretty_print_str` (§14.5,
+Principle-7 reuse — the same printer `/sexp`/`/source` use). The 0554 pair-aware layout is a
+**structural change inside `pp` itself** (`src/pretty.rs`), designed in
+`design/int/terminal-styling.md` §"Aligned `let`/`match` pair layout". Because the agent
+consumes that printer unmodified, agent-emitted `let`/`match` fences inherit the aligned
+columns with **zero `render.rs` change**. This is the whole point of the §14.5 reuse seam: fix
+the printer once, every consumer (introspection *and* the agent) is fixed. The only S107
+render.rs coupling is that a lisp fence must now emit **un-guttered** (§14A.2) so its bytes are
+byte-identical to `pretty_print_str` output (the §3.11 / §17.13.2 MUST).
+
+### 14A.2 — 0556: render-side gutter split (code fences copy-clean)
+
+**Problem (`repl/spec.md` §17.2 item 3 / §17.13.2 [S107]).** Today `render_agent_prose` builds
+one `body` string (prose runs markdown-formatted + lisp runs pretty-printed, concatenated),
+then wraps the **whole** thing in `style::agent_prose`, which prefixes **every** line — prose
+*and* code — with `▌ `. A multi-line copy of a ```lisp block therefore drags `▌ ` into the
+clipboard on each line and the example cannot be re-run verbatim (FIXME 0556).
+
+**Design — gutter per-run at the leaf, not once over the body.** The split lands in
+`render_agent_prose`: instead of guttering the assembled body once, gutter **prose runs only**,
+and append **lisp runs un-guttered**. `style::agent_prose` stays exactly as-is (it remains the
+prose gutterer); it is simply no longer called over a body that contains code. This is the
+Phase-2 **render-side structural split** — NOT the rejected "keep the gutter, expose an
+un-guttered copy elsewhere" alternative (there is one render path; the code bytes on screen
+*are* the copyable bytes).
+
+Two shared leaf helpers make the emission a single source of truth (they are reused verbatim by
+the streaming renderer §14A.3, which is how the differential invariant is guaranteed):
+
+| Helper (`render.rs`, private) | Emits |
+|---|---|
+| `push_prose_run(out, text)` | `style::agent_prose(&markdown_to_terminal(text))` — every line guttered `▌ `, markdown-formatted (§14.3). |
+| `push_lisp_block(out, code)` | `crate::pretty::pretty_print_str(code.trim_matches('\n'))` + a trailing `\n` — **no gutter on any line**, byte-identical (colour-off) to `/sexp`/`/source`. |
+
+`render_agent_prose` becomes:
+
+```
+for run in split_fences(prose):
+    Run::Prose(text) => push_prose_run(&mut out, &text)     // guttered
+    Run::Lisp(code)  => push_lisp_block(&mut out, &code)    // UN-guttered — the 0556 fix
+```
+
+Notes for `/dev`:
+- **Both `markdown_to_terminal` and `agent_prose` are line-independent** (each formats/gutters
+  per `lines()`), so `push_prose_run` over a whole multi-line run equals concatenated
+  per-line calls — the property the streaming path (§14A.3) relies on.
+- **Empty-run hygiene.** `agent_prose` emits a lone gutter line for an *empty* body; guard so
+  an empty prose run (e.g. a fence immediately at buffer start) contributes no stray `▌` line.
+- The surrounding prose's gutter now marks the code block's boundary by its **absence** on the
+  code lines (§17.2 item 3) — no caption line is emitted for the MVP (the spec permits, does
+  not require, one).
+- `/qa` re-baselines the non-TTY agent golden (§17.13.3) + the §14.6 leaf-styling guard —
+  flagged, not authored here.
+
+### 14A.3 — 0555: streaming the terminal answer (S1–S5)
+
+The arch S1–S5 decomposition (`sprints/SPRINT.md` §"Streaming"), concretised. The whole feature
+is agent-gated + int-internal; the only cross-cutting mechanism is the new `AgentModel` membrane
+method (S1) — **not** a `cranelisp-types` type. Normative: `repl/spec.md` §17.22.
+
+#### S1 — the neutral streaming membrane (`agent/types.rs`)
+
+Add one method to the object-safe `AgentModel` trait, with a **default impl that delegates to
+`complete`** (whole prose as one delta) so every non-streaming impl — the stub, Ollama, any
+future provider — keeps working unchanged (bounds the blast radius; the Phase-2 fallback
+constraint):
+
+```rust
+pub trait AgentModel: Send {
+    fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String>;
+
+    /// Stream the terminal answer's prose as neutral text deltas into `sink`,
+    /// returning the SAME final `ModelResponse` `complete` would. Default: no real
+    /// streaming — run `complete`, emit the whole `Done` prose as one delta.
+    fn complete_streaming(
+        &mut self,
+        request: &AgentRequest,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
+        let resp = self.complete(request)?;
+        if let ModelResponse::Done(prose) = &resp {
+            sink(prose);            // one delta = the whole answer
+        }
+        Ok(resp)                    // ToolCalls: nothing streamed (tool-call turns not streamed)
+    }
+}
+```
+
+The sink carries **raw model text** (markdown), not rendered bytes — the renderer (S3) owns
+formatting. `rig` types stay below the membrane. The default impl IS the "one-delta case"
+that makes the differential invariant (§17.22) trivially hold for non-streaming providers.
+
+#### S2 — provider streaming impl (`agent/provider.rs`)
+
+`RigModel::complete_streaming` mirrors `complete` but drives `self.model.stream(rig_req)` in
+one `block_on`, forwarding **text** deltas and reusing the existing `lower_response` to build
+the final `ModelResponse` from the stream's aggregated `choice`:
+
+```rust
+fn complete_streaming(&mut self, request, sink) -> Result<ModelResponse, String> {
+    crate::agent::trace::emit_request(request);
+    let rig_req = /* identical build to `complete`: preamble + history + prompt + tools */;
+    let choice = self.runtime.block_on(async {
+        use futures::StreamExt;                                   // see dep note below
+        let mut stream = self.model.stream(rig_req).await
+            .map_err(|e| format!("stream failed: {e}"))?;
+        while let Some(item) = stream.next().await {
+            match item.map_err(|e| format!("stream error: {e}"))? {
+                StreamedAssistantContent::Text(t) => sink(&t.text), // forward prose deltas live
+                _ => {}                                             // tool-call / reasoning deltas: accumulated in stream.choice, NOT streamed
+            }
+        }
+        Ok::<_, String>(stream.choice.clone())                    // aggregated at Poll::Ready(None)
+    })?;
+    let lowered = agent_request::lower_response(choice);          // SAME lowering as `complete`
+    crate::agent::trace::emit_response(&lowered, request.turn);
+    Ok(lowered)
+}
+```
+
+- **Only `Text` deltas reach `sink`** — rig accumulates tool-call/reasoning items into
+  `stream.choice` (verified: `rig_core::streaming` `poll_next` sets `choice` on stream-end),
+  which `lower_response` turns into `ToolCalls` or `Done`. So a **tool-call turn streams no
+  prose** (the §17.22 constraint) yet still returns the right `ModelResponse`; incidental
+  narration text before a tool call renders through the same renderer (benign, in-contract —
+  it is not the "streamed tool-call delta assembly" that is deferred).
+- **Dependency note (the one Cargo edit `/dev` makes).** `.next()` needs `futures::StreamExt`
+  in scope. `futures` is currently transitive-only (present in `Cargo.lock`); add it as a
+  **direct, agent-gated optional dep** — `futures = { version = "…", optional = true }` and
+  `agent = ["dep:rig-core", "dep:tokio", "dep:serde_json", "dep:futures"]`. This is int-internal
+  and feature-gated — **no `cranelisp-types` / workspace-edge change** (Phase-2 invariant
+  intact). (Alternatively `tokio-stream::StreamExt`, but `futures` is already downloaded.)
+- **The `MockModel` real `stream` impl (`provider.rs` tests, ~L387).** Replace the
+  `unimplemented!("…never streams…")` with a real impl so the rig-boundary loop test exercises
+  streaming: return a `StreamingCompletionResponse::stream(inner)` whose `inner:
+  StreamingResult<MockRaw>` is a boxed stream yielding one `RawStreamingChoice::Message(text)`
+  per scripted text chunk followed by a `RawStreamingChoice::FinalResponse(MockRaw)` — so the
+  aggregated `choice` lowers identically to the `completion` path. This makes the rig test
+  assert both the streamed deltas AND the wire-valid continuation request.
+
+#### S3 — the `StreamingRenderer` state machine (`agent/render.rs`)
+
+A stateful renderer that consumes **raw markdown deltas** and emits rendered bytes
+incrementally, matching `render_agent_prose`'s output when the full text is concatenated. It is
+line-buffered (partial trailing line withheld until its newline — §17.22 line-granular) and
+fence-aware (buffer within an open ```lisp fence, flush formatted at fence-close).
+
+```rust
+struct StreamingRenderer {
+    line_buf: String,                 // partial trailing line, no newline yet
+    fence: Option<(bool, String)>,    // Some(is_lisp, body) ⇒ inside a fence (state: inside-fence)
+}
+```
+
+State machine (two states: **outside-fence** = `fence.is_none()`, **inside-fence** =
+`fence.is_some()`):
+
+```
+push(delta, out):                                   // called per model delta
+    line_buf += delta
+    while let Some(nl) = line_buf.find('\n'):
+        line = line_buf.drain(..=nl) minus '\n'
+        process_line(line, out)                     // complete line only
+
+process_line(line, out):
+    if line.trim_start().strip_prefix("```") is Some(info):
+        match fence.take():
+            None            => fence = Some((info∈{lisp,cranelisp}, ""))   // OPEN — emit nothing
+            Some((lisp,buf)) => if lisp { push_lisp_block(out, &buf) }      // CLOSE — un-guttered (§14A.2)
+                                else     { push_prose_run(out, &buf) }      //   non-lisp fence = literal prose block
+    else:
+        match fence.as_mut():
+            Some((_, buf)) => { buf += line; buf += "\n" }                  // INSIDE — buffer, no echo
+            None           => push_prose_run(out, line)                     // OUTSIDE — gutter + format LIVE, per line
+
+finish(out):                                        // end of the turn's stream
+    if !line_buf.is_empty() { process_line(take(line_buf), out) }           // flush partial trailing line
+    if let Some((lisp,buf)) = fence.take():                                 // unterminated fence at EOF
+        if lisp { push_lisp_block(out, &buf) } else { push_prose_run(out, &buf) }
+```
+
+- **Byte-identity with `render_agent_prose` is structural, not hoped-for.** `process_line`
+  reuses the **same** `push_prose_run` / `push_lisp_block` leaves (§14A.2) and the **same**
+  fence-classification predicate as `split_fences`. Prose is line-independent (§14A.2 note), so
+  per-line `push_prose_run` concatenates to the whole-run render; lisp is buffered and flushed
+  whole through the identical `pretty_print_str`. **Recommended durable end-state (Principle 7 /
+  Principle 18 — enforce the invariant by construction):** re-express `render_agent_prose(text)`
+  as "drive one `StreamingRenderer` with `text` as a single delta into a `String` sink, then
+  `finish`." Then there is literally one render path and the §17.22 differential invariant
+  cannot drift. (0556 lands the run-based split first per sequencing; 0555 then unifies onto the
+  renderer.) To keep `split_fences`' classifier single-source, factor its per-line
+  `strip_prefix("```")` + info-string parse into a shared `classify_fence_line(line)` both call.
+- **Line-granularity** is what preserves the invariant while streaming: sub-line/token flushing
+  is explicitly *not* required (§17.22), and would break byte-identity for a partially-formatted
+  markdown span.
+
+#### S4 — `agent_turn` wiring (`agent/mod.rs`)
+
+`agent_complete` (the model-call shim, `mod.rs:396`) grows a streaming sibling; the loop drives
+S3 through the S1 sink:
+
+```
+// in the loop step, replacing the `agent_complete` call + the Done render:
+let mut renderer = StreamingRenderer::new();
+let resp = {
+    let mut sink = |delta: &str| renderer.push(delta, stdout);
+    self.agent_complete_streaming(&req, &mut sink)?   // borrows model like agent_complete
+};
+renderer.finish(stdout);                              // flush partial line / open fence
+match resp {
+    ModelResponse::Done(prose) => {
+        // DO NOT call render_agent_prose again — the renderer already emitted it live.
+        self.agent.as_mut().map(|s| s.record_assistant(&prose));   // unchanged: transcript + loop continuation
+        return;
+    }
+    ModelResponse::ToolCalls(calls) => { /* unchanged pull path — renderer flushed any narration */ }
+}
+```
+
+- **`agent_complete_streaming`** is the borrow-confining shim (mirrors `agent_complete`): take
+  `self.agent.model` mutably for the call. The sink closure borrows `renderer` + `stdout`; the
+  model borrow is disjoint (distinct field), so the existing take-the-handle-out discipline
+  still applies.
+- **The returned `ModelResponse` is unchanged** — `record_assistant`, the transcript wire-valid
+  invariant, the tool-call/pull path, and the give-up/budget tail all keep working on the same
+  value. Streaming changes *how the Done prose reached the screen*, nothing about the loop's
+  control flow or state.
+- **Trace/log fire on the accumulated text** — `RigModel::complete_streaming` calls the same
+  `trace::emit_request`/`emit_response` (on the lowered final response, §S2) as `complete`, so
+  the §17.21 trace + §17.20 log records are byte-for-byte what they are today (the accumulated
+  answer, not per-delta) — the log↔trace `turn` join is unaffected.
+- **The Done arm no longer calls `render_agent_prose`** — that is the one behavioural edit in
+  the loop; forgetting it double-renders. The dormant/error/tool-call/budget paths are untouched
+  (they never streamed).
+
+#### S5 — the differential-invariant hook (for `/qa`)
+
+The invariant (§17.22 MUST): streamed-concatenated output == `render_agent_prose` over the same
+complete text (colour-off). The hook `/qa` asserts against:
+
+- Feed a **multi-delta** answer through a `StreamingRenderer` into a `String` sink (splitting the
+  same full text at arbitrary byte boundaries — mid-line, mid-fence, mid-span), `finish`, and
+  compare to `render_agent_prose(full_text)`. Equal for every split ⇒ streaming changed only
+  *when* bytes emit, never *which*.
+- Because the recommended S3 end-state expresses `render_agent_prose` AS a one-delta drive of the
+  same renderer, this test degenerates to "delta-splitting is invariant" — the exact property at
+  risk (partial-line / partial-fence buffering bugs). The stub emits multiple `Done` deltas via
+  the S1 default path's single delta OR (with a streaming-capable stub) several — either way the
+  concatenation MUST match.
+- **`/dev`'s mandatory unit tests** (per `src/CLAUDE.md`) pin, at the seam: (a) a fence split
+  across two deltas still flushes one whole pretty-printed un-guttered block at close; (b) a
+  prose line split across deltas emits exactly one guttered line; (c) colour-off output carries
+  no literal `\x1b` (the §14.6 leaf guard, now over the streaming path too).
+
+---
+
 ## 15. Cluster B — Build mode: the confirm-gated write arm (rung 5, R3)
 
 The agent's **first write path**. **R3 (binding): the submitted form re-enters via the

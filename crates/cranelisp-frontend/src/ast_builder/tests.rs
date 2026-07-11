@@ -898,6 +898,41 @@
         }
     }
 
+    // spec: 05-definitions §5.2 — a constructor with a bare type and no field
+    // name (`(L :Int)` — missing the `[:Type name]` brackets) MUST be rejected,
+    // not silently accepted as a nullary constructor. Regression guard for the
+    // silent-enum collapse (S107 item 1).
+    #[test]
+    fn test_build_deftype_nameless_ctor_field_rejected() {
+        let err = parse_and_build_program("(deftype Rotation (L :Int) (R :Int))").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("bracketed") && msg.contains("field name"),
+            "expected a diagnostic naming the missing bracketed field name, got: {msg}"
+        );
+    }
+
+    // spec: 05-definitions §5.2 — the rejection above must be NARROW: a
+    // correctly-bracketed sum type still builds a unary constructor with one field.
+    #[test]
+    fn test_build_deftype_bracketed_ctor_field_still_ok() {
+        let prog =
+            parse_and_build_program("(deftype Rotation (L [:Int n]) (R [:Int n]))").unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef {
+                name, constructors, ..
+            } => {
+                assert_eq!(name, "Rotation");
+                assert_eq!(constructors.len(), 2);
+                assert_eq!(constructors[0].name, "L");
+                assert_eq!(constructors[0].fields.len(), 1);
+                assert_eq!(constructors[1].name, "R");
+                assert_eq!(constructors[1].fields.len(), 1);
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
     // -- REPL input --
 
     // spec: 02-grammar §2.1 — REPL top-level expression

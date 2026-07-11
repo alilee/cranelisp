@@ -241,6 +241,97 @@ const SPECIAL_FORM_INDENT: &[&str] = &[
 ];
 ```
 
+### Aligned `let`/`match` pair layout — FIXME 0554 (S107) [normative: `repl/spec.md` §3.11]
+
+`let` binding lists and `match` arm lists are **pair-structured** vectors: the binding
+`Sexp::Bracket` reads as consecutive `(left, right)` pairs — `[l0 r0 l1 r1 …]` → `(l0,r0)
+(l1,r1) …`. Before S107 the printer sent that bracket through the generic `pp_bracket`
+path, which smeared pairs across lines (the FIXME 0554 defect). S107 makes the layout a
+**byte-reproducible MUST** (`repl/spec.md` §3.11 P0–P5, the byte-exact `rotate` fixture).
+
+**Durability constraint (Phase-2, binding).** Pair-awareness is implemented as **structural
+recognition on the `Sexp` tree**, *never* string post-processing. The printer recognises the
+binding/arm `Sexp::Bracket` of a recognised head and lays it out from the tree. Recognised
+heads for S107 are exactly **`let`** (the binding vector is its first `[...]` argument) and
+**`match`** (the arm vector is the `[...]` following the scrutinee). This is a display
+contract only — no language-semantics change, no other form's layout changes.
+
+**Column model.** `repl/spec.md` §3.11's 1-based-looking "column N" values map directly onto
+`pp`'s existing 0-based `indent` parameter (character offset from the left margin): the `let`
+that "sits at column 2" is `pp(let_sexp, indent=2, …)`. So the pair layout reuses `pp`'s
+existing absolute-column threading with **no new coordinate system**.
+
+**Dispatch seam (`pp_list`).** The recognition sits at the **top of `pp_list`**, *before* the
+`FLAT_THRESHOLD` measurement, because P0 forces multi-line whenever a recognised vector has
+≥2 pairs even if the whole form would fit flat:
+
+```
+fn pp_list(children, indent, in_head):
+    if empty { … }
+    if is_type_annotation_list(children) { … }          // unchanged
+    if let Some(s) = try_pp_pair_form(children, indent, in_head) { return s }  // NEW — let/match ≥2 pairs
+    // unchanged flat/threshold path below (0/1-pair let/match fall through here)
+    if flat.len() <= FLAT_THRESHOLD { return pp_list_flat(…) }
+    return pp_list_multiline(…)
+```
+
+`try_pp_pair_form` returns `None` (→ existing layout) for any non-recognised head, a vector
+not present at the expected position, **fewer than 2 pairs** (P0 — nothing to align), or an
+**odd** element count (P5 graceful fallback — the pre-existing bracket layout, never a crash
+or dropped element). It returns `Some(text)` only when it takes over the whole form.
+
+**Head-line + pair-vector placement.** The recognised head keeps its pre-vector arguments on
+the head line (rendered flat), which fixes the vector's `[` column:
+- **`let`**: head line is `(let [`. The `[` column = `indent + len("(let ")` = `indent + 5`;
+  the left-column start (first left-term char) = `[`col + 1 = `indent + 6`. The `let` **body**
+  forms (everything after the binding vector) follow on new lines at the special-form body
+  indent `indent + 2`, exactly as today.
+- **`match`**: head line is `(match <scrutinee> [` — the arm vector stays **on the head line**
+  after the scrutinee (this is the one deviation from the generic special-form arm, which
+  would drop the second argument to a body line). The `[` column = `indent + len("(match ") +
+  flatwidth(scrutinee) + 1`; left-column start = `[`col + 1. (The scrutinee is rendered flat
+  on the head line — a bounded simplification; §3.11's contract is on the arm-vector
+  alignment, and the fixtures use simple scrutinees.)
+
+**The pair-vector formatter** (`pair_vector_layout`, a ≤~40-line helper — keeps `pp_list`
+and `try_pp_pair_form` within the `src/CLAUDE.md` ~100-line budget):
+
+```
+pair_vector_layout(pairs: &[(&Sexp,&Sexp)], left_col: usize) -> String:
+    W = max over pairs of pairs[i].left.format_flat().len()   // P3 — per-vector, unstyled widths
+    right_col = left_col + W + 1                              // P3 — one min space after widest left
+    out = "["
+    for (i,(left,right)) in pairs.enumerate():
+        if i > 0 { out += "\n" + " "*left_col }               // P1/P2 — one pair per line, left column
+        left_flat = pp(left, 0, false)                        // rendered flat (styled); width via format_flat
+        out += left_flat
+        out += " " * (right_col - left_col - left.format_flat().len())   // P3 pad to right column
+        out += pp(right, right_col, false)                    // P4 — right term as if opening AT right_col
+    out += "]"                                                // attaches to the last right term's final line
+```
+
+Key points, each pinned to a §3.11 rule:
+- **P2/P3 widths are unstyled** — `format_flat().len()`, matching the existing threshold-
+  measurement discipline (ANSI never inflates a column count). Determinism (byte-exact
+  colour-off) follows: padding is space runs computed from unstyled widths; colour-on only
+  wraps the same characters in SGR at the same columns.
+- **P4 recursion is free.** Passing `indent = right_col` into `pp(right, right_col, false)`
+  makes the nested form compute *its* continuation indent relative to `right_col` — precisely
+  "printed as if its opening column were the right-column start." A multi-line `if` value
+  indents its body to `right_col + 2` (the ordinary special-form +2, delegated); a nested
+  `match` value re-enters `try_pp_pair_form` with its own per-vector `W` (P0–P4 recurse).
+- **The closing `]` attaches to the last line** of the last pair's right term (no newline
+  before it) — reproducing the fixture's `new-pos)]`.
+- **`as_pairs(bracket_children) -> Option<Vec<(&Sexp,&Sexp)>>`** is the tiny even-count
+  splitter; `None` on an odd count routes P5 to the fallback.
+
+This is verified against the byte-exact `rotate` fixture in `repl/spec.md` §3.11 (which `/qa`
+pins as an e2e): the `let`'s three left terms `d`/`new-pos`/`final-pos` give `W=9`,
+`right_col = 8+9+1 = 18`; the `d`-value nested `match` recurses with its own `W=5`,
+`right_col = 28+5+1 = 34`. Because the same printer backs `/sexp`, `/source`, **and** the
+agent's ```lisp fences (`design/int/agent.md` §14.5), all three inherit the aligned layout
+with no extra wiring.
+
 ### Line Length Measurement
 
 The 40-character threshold is measured on unstyled text. The pretty-printer computes `flat_len` by calling `Sexp::format_flat()` (existing method on Sexp) which produces unstyled text. Escape sequences are never counted toward line length.

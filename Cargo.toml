@@ -142,7 +142,7 @@ thread-caching-alloc = ["dep:mimalloc"]
 # provider-agnostic boundary, R3-amended) and a current-thread `tokio` runtime
 # (rig's completion methods are async; `agent_turn` is synchronous to the user's
 # Enter, so it `block_on`s a current-thread runtime).
-agent = ["dep:rig-core", "dep:tokio", "dep:serde_json"]
+agent = ["dep:rig-core", "dep:tokio", "dep:serde_json", "dep:futures"]
 
 # Sprint 88 Phase 5 Wave 3: the embedded-agent LLM client, optional + gated by
 # the `agent` feature (above). `default-features = false` drops rig's default
@@ -179,6 +179,16 @@ features = ["rt", "macros"]
 # default build's dependency surface is unchanged.
 [dependencies.serde_json]
 version = "1"
+optional = true
+
+# Agent-only (S107 streaming, FIXME 0555): `futures::StreamExt` drives rig's
+# `CompletionModel::stream` in `RigModel::complete_streaming`, and the test
+# `MockModel::stream` builds a `futures::stream::iter`. `futures` is already in
+# `Cargo.lock` transitively (through rig / tokio); declared here as a DIRECT,
+# agent-gated optional dep so `.next()` / `stream::iter` are in scope. int-internal
+# + feature-gated — no `cranelisp-types` / workspace-edge change (Phase-2 invariant).
+[dependencies.futures]
+version = "0.3"
 optional = true
 
 # Sprint 99 Wave 0.2: the thread-caching global allocator (feature

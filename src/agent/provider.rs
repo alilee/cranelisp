@@ -168,6 +168,24 @@ impl<M: CompletionModel> RigModel<M> {
     }
 }
 
+impl<M: CompletionModel> RigModel<M> {
+    /// Build the rig `CompletionRequest` from the neutral `AgentRequest` via the
+    /// membrane (`request.rs`) + the model's own builder — the SAME assembly for
+    /// `complete` and `complete_streaming` (Principle 7, single source of truth).
+    fn build_request(&self, request: &AgentRequest) -> rig_core::completion::CompletionRequest {
+        let preamble = agent_request::preamble(request);
+        let history = agent_request::history_messages(request);
+        let prompt = agent_request::prompt_message(request);
+        let tools = agent_request::tool_definitions(request);
+        self.model
+            .completion_request(prompt)
+            .preamble(preamble)
+            .messages(history)
+            .tools(tools)
+            .build()
+    }
+}
+
 impl<M: CompletionModel> AgentModel for RigModel<M> {
     fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String> {
         // Trace mode (`CRANELISP_AGENT_TRACE=<path>`, §28.1): APPEND the assembled
@@ -179,20 +197,7 @@ impl<M: CompletionModel> AgentModel for RigModel<M> {
         // request's own `turn` id stamps the persisted block (the log↔trace join).
         crate::agent::trace::emit_request(request);
 
-        // Build the rig request via the membrane (`request.rs`) + the model's
-        // own builder (it carries the model handle rig needs).
-        let preamble = agent_request::preamble(request);
-        let history = agent_request::history_messages(request);
-        let prompt = agent_request::prompt_message(request);
-        let tools = agent_request::tool_definitions(request);
-
-        let rig_req = self
-            .model
-            .completion_request(prompt)
-            .preamble(preamble)
-            .messages(history)
-            .tools(tools)
-            .build();
+        let rig_req = self.build_request(request);
 
         let resp = self
             .runtime
@@ -201,6 +206,49 @@ impl<M: CompletionModel> AgentModel for RigModel<M> {
 
         let lowered = agent_request::lower_response(resp.choice);
         // The response belongs to the request's turn — stamp the same `turn` id.
+        crate::agent::trace::emit_response(&lowered, request.turn);
+        Ok(lowered)
+    }
+
+    fn complete_streaming(
+        &mut self,
+        request: &AgentRequest,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
+        // Same trace + request assembly as `complete` (§14A.3 S2) — only the
+        // transport differs: drive `stream` in ONE `block_on` and forward TEXT
+        // deltas to `sink`, then lower the stream's aggregated `choice` with the
+        // SAME `lower_response`. Trace/log fire on the accumulated final response
+        // (the §17.21 record is byte-for-byte what `complete` produces, §14A.3 S4).
+        crate::agent::trace::emit_request(request);
+
+        let rig_req = self.build_request(request);
+        // Bind a local reference so the async block borrows `self.model` only
+        // (never `self` wholesale), keeping it disjoint from `self.runtime`.
+        let model = &self.model;
+        let choice = self.runtime.block_on(async move {
+            use futures::StreamExt;
+            use rig_core::streaming::StreamedAssistantContent;
+            let mut stream = model
+                .stream(rig_req)
+                .await
+                .map_err(|e| format!("stream failed: {e}"))?;
+            while let Some(item) = stream.next().await {
+                // Only TEXT deltas stream live. Tool-call / reasoning items are
+                // accumulated into `stream.choice` (which `lower_response` turns
+                // into `ToolCalls`/`Done`), so a tool-call turn streams NO prose
+                // (§17.22 constraint) yet still returns the right `ModelResponse`.
+                if let StreamedAssistantContent::Text(t) =
+                    item.map_err(|e| format!("stream error: {e}"))?
+                {
+                    sink(&t.text);
+                }
+            }
+            // The aggregated assistant content is set when the inner stream ends.
+            Ok::<_, String>(stream.choice.clone())
+        })?;
+
+        let lowered = agent_request::lower_response(choice);
         crate::agent::trace::emit_response(&lowered, request.turn);
         Ok(lowered)
     }
@@ -386,9 +434,45 @@ mod tests {
 
         async fn stream(
             &self,
-            _request: CompletionRequest,
+            request: CompletionRequest,
         ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
-            unimplemented!("the agent loop never streams (block_on completion only)")
+            use rig_core::streaming::{RawStreamingChoice, RawStreamingToolCall, StreamingResult};
+            // Mirror `completion`: record the request + advance the script cursor,
+            // so the streaming loop test exercises the SAME capture/replay — the
+            // agent loop now drives `stream` (S107), not `completion`.
+            self.requests.lock().unwrap().push(request);
+            let idx = {
+                let mut c = self.cursor.lock().unwrap();
+                let i = *c;
+                *c += 1;
+                i
+            };
+            let content = self
+                .script
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| vec![AssistantContent::text(String::new())]);
+            // Lower each scripted assistant-content item to a raw streaming choice
+            // so the aggregated `stream.choice` matches what `completion` returns
+            // (text → Message delta; tool call → ToolCall), then a FinalResponse
+            // terminator so `stream.choice` is populated at stream-end.
+            let mut raws: Vec<Result<RawStreamingChoice<MockRaw>, CompletionError>> = Vec::new();
+            for c in content {
+                match c {
+                    AssistantContent::Text(t) => raws.push(Ok(RawStreamingChoice::Message(t.text))),
+                    AssistantContent::ToolCall(tc) => {
+                        raws.push(Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+                            tc.id.clone(),
+                            tc.function.name.clone(),
+                            tc.function.arguments.clone(),
+                        ))))
+                    }
+                    _ => {}
+                }
+            }
+            raws.push(Ok(RawStreamingChoice::FinalResponse(MockRaw)));
+            let inner: StreamingResult<MockRaw> = Box::pin(futures::stream::iter(raws));
+            Ok(StreamingCompletionResponse::stream(inner))
         }
     }
 

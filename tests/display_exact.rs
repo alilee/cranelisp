@@ -39,7 +39,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::Cranelisp;
+use helpers::e2e::{Cranelisp, PreludeVariant};
 use helpers::regex::compiler;
 
 fn repl(lines: &str) -> helpers::e2e::CrOutput {
@@ -408,4 +408,265 @@ fn r5_value_layout_construct_match_extract_is_sound() {
     )
     .assert_ok();
     assert_answer_line(&out, ":primitives/Float 3.14");
+}
+
+// =============================================================================
+// S107 item 2 — FIXME 0554: `/sexp` & `/source` aligned `let`/`match` column
+// layout (repl/spec.md §3.11). Byte-reproducible MUST (colour-off). The §3.11
+// worked `rotate` example is the assertion target; the P0/P5 edge rules get
+// their own guards. `/source` and `/sexp` share `crate::pretty::pretty_print`,
+// so both MUST emit the same bytes. Home: this file (byte-exact block asserts).
+//
+// RED on HEAD: `src/pretty.rs` is pair-unaware and SMEARS the binding pairs
+// across lines; the aligned two-column layout does not exist yet. Flips GREEN
+// when the pair-awareness lands. G-3 drafting rule: the non-TTY REPL writes the
+// `user> ` prompt verbatim, so the pinned block is asserted as a byte-exact
+// SUBSTRING of stdout (the pretty-printer emits it as contiguous clean lines),
+// not whole-stdout equality.
+// =============================================================================
+
+/// TestStandard-prelude REPL capture — the `rotate` fixture needs the operators
+/// `-` / `+` / `<` (Num/Ord), which the standard test prelude provides.
+fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin(lines)
+        .output()
+}
+
+/// The §3.11 `rotate` fixture: the worked-example `defn` plus the free-standing
+/// supporting definitions it references (`L`/`R` constructors, `Position`,
+/// `pos`). The pretty-printed bytes of `rotate` depend only on `rotate`'s own
+/// parsed form, so the surrounding definitions do not perturb the block.
+const ROTATE_FIXTURE: &str = "\
+(deftype Rotation (L [:Int l]) (R [:Int r]))
+(deftype Position [:Int p])
+(defn pos [x] (match x [(Position n) n]))
+(defn rotate [p r] (let [d (match r [(L l) (- 0 l) (R r) r]) new-pos (+ (pos p) d) final-pos (if (< new-pos 0) (+ new-pos 100) new-pos)] (Position final-pos)))
+";
+
+/// The byte-exact §3.11 worked-output block for `/sexp rotate` (colour-off) —
+/// copied verbatim from repl/spec.md §3.11 lines 992–1000: the aligned `let`
+/// left column at 8 / right column at 18, the nested two-arm `match` arm column
+/// at 28 / right column at 34, and the multi-line `if` body at column 20. No
+/// trailing newline — asserted as a contiguous byte-exact substring.
+const ROTATE_SEXP_BLOCK: &str = concat!(
+    "(defn rotate\n",
+    "  [p r]\n",
+    "  (let [d         (match r [(L l) (- 0 l)\n",
+    "                            (R r) r])\n",
+    "        new-pos   (+ (pos p) d)\n",
+    "        final-pos (if (< new-pos 0)\n",
+    "                    (+ new-pos 100)\n",
+    "                    new-pos)]\n",
+    "    (Position final-pos)))",
+);
+
+// spec: repl/spec.md §3.11 — `/sexp rotate` MUST render the aligned `let`/`match`
+// column layout byte-for-byte (the §3.11 worked example). Byte-exact SUBSTRING
+// assertion of the pinned 9-line block (G-3: the `user> ` prompt interleaves, so
+// the block is a substring, not whole-stdout). RED on HEAD (the pre-S107 printer
+// smears the binding pairs); GREEN when `src/pretty.rs` pair-awareness lands.
+#[test]
+fn sexp_rotate_aligned_let_match_byte_exact() {
+    let out = repl_std(&format!("{ROTATE_FIXTURE}/sexp rotate\n"));
+    assert!(
+        out.stdout.contains(ROTATE_SEXP_BLOCK),
+        "/sexp rotate MUST emit the §3.11 byte-exact aligned block:\n\
+         --- expected (byte-exact substring) ---\n{ROTATE_SEXP_BLOCK}\n\
+         --- actual stdout ---\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.11 — `/source rotate` shares `crate::pretty::pretty_print`
+// with `/sexp`, so it MUST emit the IDENTICAL byte-exact aligned block (the two
+// commands must not diverge). RED on HEAD (same smear); GREEN with the shared
+// pair-awareness fix.
+#[test]
+fn source_rotate_aligned_matches_sexp_byte_exact() {
+    let out = repl_std(&format!("{ROTATE_FIXTURE}/source rotate\n"));
+    assert!(
+        out.stdout.contains(ROTATE_SEXP_BLOCK),
+        "/source rotate MUST emit the SAME §3.11 byte-exact aligned block as \
+         /sexp (shared pretty_print path):\n\
+         --- expected (byte-exact substring) ---\n{ROTATE_SEXP_BLOCK}\n\
+         --- actual stdout ---\n{}",
+        out.stdout
+    );
+}
+
+/// The byte-exact §3.11 aligned block for `/sexp f` where
+/// `f = (defn f [r] (match r [(L l) l (R r) r]))`. The two-arm `match` is forced
+/// multi-line (P0), which propagates to the enclosing flat-fitting `defn` (P0
+/// force-multiline propagation, FIXME 0554). The arm PATTERNS sit in the left
+/// column (col 12, after `(match r [`), byte-aligned one above the other, and
+/// the arm BODIES sit at the aligned right column (col 18 = leftCol 12 + W 5 + 1).
+/// Byte-exact substring captures BOTH the pattern left-column alignment AND the
+/// body right-column alignment (§3.11 P1–P3) — a smeared or mis-columned layout
+/// fails where a mere "not on the same line" needle would pass. Cross-checked
+/// against `src/pretty.rs::p0_parent_of_two_arm_match_forces_multiline_aligned`.
+const MATCH_F_SEXP_BLOCK: &str = concat!(
+    "(defn f\n",
+    "  [r]\n",
+    "  (match r [(L l) l\n",
+    "            (R r) r]))",
+);
+
+// spec: repl/spec.md §3.11 — P0/P1 trigger: a two-arm `match` that would fit a
+// flat line MUST render multi-line aligned; the arms MUST NOT be collapsed onto
+// one line (the pre-S107 smear), AND the arm patterns/bodies MUST be COLUMN-
+// ALIGNED (patterns in the left column, bodies at the shared right column). The
+// former guard only asserted the two patterns were not on one line — a false
+// green that did not pin alignment (the /review IMPORTANT). This now asserts the
+// byte-exact aligned block, which encodes both the pattern left-column and body
+// right-column positions. GREEN with the S107 pair-awareness fix.
+#[test]
+fn sexp_two_arm_match_forces_multiline_neg() {
+    let out = repl_std(
+        "(deftype Rotation (L [:Int l]) (R [:Int r]))\n\
+         (defn f [r] (match r [(L l) l (R r) r]))\n\
+         /sexp f\n",
+    );
+    // (1) The patterns MUST NOT share a line (the pre-S107 smear).
+    let shared = out
+        .stdout
+        .lines()
+        .any(|l| l.contains("(L l)") && l.contains("(R r)"));
+    assert!(
+        !shared,
+        "a two-arm `match` MUST render multi-line aligned (P0/P1) — the two arm \
+         patterns `(L l)` and `(R r)` MUST NOT share a line (the pre-S107 smear); \
+         got:\n{}",
+        out.stdout
+    );
+    // (2) The arms MUST be COLUMN-ALIGNED — asserted byte-exact (§3.11 P1–P3).
+    // This is the strengthening the false-green guard was missing: the layout
+    // must be column-aligned, not merely split across lines.
+    assert!(
+        out.stdout.contains(MATCH_F_SEXP_BLOCK),
+        "a two-arm `match` MUST render COLUMN-ALIGNED (§3.11 P1–P3): the arm \
+         patterns share a left column and the bodies share the right column. \
+         Byte-exact substring assertion:\n\
+         --- expected (byte-exact substring) ---\n{MATCH_F_SEXP_BLOCK}\n\
+         --- actual stdout ---\n{}",
+        out.stdout
+    );
+}
+
+/// The byte-exact §3.11 aligned block for `/sexp g` where
+/// `g = (defn g [x] (let [a 1 bb 2] a))` — the FLAT-PARENT case the S107 Blocker
+/// (FIXME 0554) was about. The enclosing `defn` fits flat (≤40 cols) but contains
+/// a ≥2-pair `let`, so P0 forces the `let` multi-line and that force PROPAGATES to
+/// the enclosing `defn`: it too renders multi-line so the `let`'s right column
+/// aligns to its true INDENTED position (col 13 = leftCol 8 + W 3 + 1), never the
+/// flat-parent column-0 smear that the Blocker exhibited. Cross-checked against
+/// `src/pretty.rs::p0_parent_of_two_pair_let_forces_multiline_aligned` (byte-exact).
+const FLAT_PARENT_LET_BLOCK: &str = concat!(
+    "(defn g\n",
+    "  [x]\n",
+    "  (let [a  1\n",
+    "        bb 2]\n",
+    "    a))",
+);
+
+// spec: repl/spec.md §3.11 — P0 force-multiline PROPAGATION to a flat-fitting
+// parent (FIXME 0554, the S107 Blocker). `(defn g [x] (let [a 1 bb 2] a))` fits
+// flat but wraps a ≥2-pair `let`; the `let` forces itself multi-line+aligned and
+// that force propagates up so the enclosing `defn` also renders multi-line and
+// the `let`'s two-column layout aligns to its true indented position — NOT the
+// column-0 smear the pre-fix flat-parent path produced. Byte-exact SUBSTRING (G-3:
+// the non-TTY `user> ` prompt interleaves, so the block is a substring). GREEN
+// with the S107 fix in `src/pretty.rs` — the Blocker's e2e regression guard.
+#[test]
+fn sexp_flat_parent_two_pair_let_forces_multiline_aligned() {
+    let out = repl("(defn g [x] (let [a 1 bb 2] a))\n/sexp g\n");
+    assert!(
+        out.stdout.contains(FLAT_PARENT_LET_BLOCK),
+        "a flat-fitting `defn` wrapping a ≥2-pair `let` MUST render multi-line so \
+         the `let` two-column layout aligns to its indented position (§3.11 P0 \
+         force-multiline propagation), NOT a column-0 smear. Byte-exact substring:\n\
+         --- expected (byte-exact substring) ---\n{FLAT_PARENT_LET_BLOCK}\n\
+         --- actual stdout ---\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.11 — P0/P5 edge (stability guard): a `let` with ONE
+// binding pair has nothing to align, so it MUST follow the pre-existing
+// flat/threshold layout UNCHANGED — it MUST NOT be forced into the two-column
+// layout. GREEN today and MUST stay GREEN across the fix (proves P0's "≥2 pairs"
+// trigger does not over-reach to single-pair lets).
+#[test]
+fn sexp_single_pair_let_flat_fallback() {
+    let out = repl_std("(defn g [] (let [x 5] x))\n/sexp g\n");
+    // The single binding pair stays flat: name and value share the line.
+    let flat = out.stdout.lines().any(|l| l.contains("(let [x 5]"));
+    assert!(
+        flat,
+        "a single-pair `let` MUST stay flat (P0 requires ≥2 pairs to align) — \
+         `[x 5]` must not be split into two-column layout; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.11 — P5 graceful fallback (robustness guard): a `match`
+// with an ODD element count (malformed, not cleanly pairable) MUST be handled
+// gracefully — no crash, no panic, the session survives. Today this is rejected
+// cleanly at parse time (`match arms must have an even number of elements`); the
+// guard pins that the pair-aware printer, once it lands, still cannot be driven
+// to a panic / signal-kill by an odd-count vector. GREEN today; stability guard.
+#[test]
+fn sexp_odd_count_match_arm_no_crash_neg() {
+    let out = repl_std(
+        "(deftype Rotation (L [:Int l]) (R [:Int r]))\n\
+         (defn od [r] (match r [(L l) (R r) r]))\n\
+         (+ 2 3)\n",
+    );
+    // Not signal-killed (no SIGSEGV / SIGABRT panic on the odd-count vector).
+    assert!(
+        out.status.code().is_some(),
+        "an odd-count `match` MUST NOT crash the process (P5 graceful fallback); \
+         the process was signalled. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // A clean diagnostic is produced (the odd count is reported, not swallowed).
+    assert!(
+        out.stdout.to_lowercase().contains("even number of elements")
+            || out.stdout.to_lowercase().contains("error"),
+        "an odd-count `match` MUST produce a clean diagnostic, not a panic; got:\n{}",
+        out.stdout
+    );
+    // The session SURVIVES: the following form still evals (no crash, no drop).
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "the REPL MUST survive an odd-count `match` — the following `(+ 2 3)` must \
+         eval to `:primitives/Int 5`; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.11 — 0-pair edge (stability guard): an empty binding
+// vector `(let [] body)` has nothing to align and MUST render without a crash and
+// with no spurious alignment padding. GREEN today (`(let [] 7)` renders flat);
+// stability guard that the pair-aware printer handles the empty vector.
+#[test]
+fn sexp_empty_let_binding_no_crash() {
+    let out = repl_std("(defn e [] (let [] 7))\n/sexp e\n");
+    assert!(
+        out.status.code().is_some(),
+        "an empty-binding `let` MUST NOT crash the process; the process was \
+         signalled. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // The empty-binding let renders with no spurious padding — `(let [] 7)` flat.
+    assert!(
+        out.stdout.lines().any(|l| l.contains("(let [] 7)")),
+        "an empty-binding `let` MUST render `(let [] 7)` flat with no spurious \
+         alignment padding; got:\n{}",
+        out.stdout
+    );
 }

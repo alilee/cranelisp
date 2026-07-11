@@ -355,14 +355,196 @@ fn pp_list(children: &[Sexp], indent: usize, in_head: bool) -> String {
         return pp_type_annotation_list(children, indent, in_head);
     }
 
+    // Aligned `let`/`match` pair layout (repl/spec.md §3.11 P0–P5).
+    // Sits before the FLAT_THRESHOLD check because P0 forces multi-line whenever
+    // a recognised binding/arm vector has >=2 pairs, even if the whole form fits flat.
+    if let Some(s) = try_pp_pair_form(children, indent, in_head) {
+        return s;
+    }
+
     // Compute flat representation to measure length.
     let flat = flat_list(children);
-    if flat.len() <= FLAT_THRESHOLD {
+    // Take the flat path only when it fits AND no descendant is a forced
+    // multi-line pair-form (repl/spec.md §3.11 P0). The flat path (`pp_list_flat`)
+    // renders children at `indent = 0`, so a nested >=2-pair `let`/`match` would
+    // align to column 0 instead of its true position deep in the parent line
+    // (FIXME 0554). Skipping the flat path forces this enclosing form multi-line,
+    // threading a correct `indent` down to the pair-form. The subtree scan is
+    // bounded: it runs only when `flat.len() <= FLAT_THRESHOLD`, so the subtree
+    // examined is itself <= FLAT_THRESHOLD chars of content — no O(n^2) blow-up.
+    if flat.len() <= FLAT_THRESHOLD && !children.iter().any(subtree_contains_pair_form) {
         return pp_list_flat(children, in_head);
     }
 
     // Multi-line mode.
     pp_list_multiline(children, indent, in_head)
+}
+
+/// Does `sexp` contain — at any depth — a form that §3.11 P0 forces multi-line
+/// (a `let` with a >=2-pair binding vector, or a `match` with a >=2-pair arm
+/// vector)? Such a form MUST render multi-line even when it would fit flat, so
+/// every ENCLOSING form must also avoid the pair-unaware flat path (which would
+/// render the nested form at `indent = 0`, misaligned). Single-sources the
+/// force-multiline decision with `try_pp_pair_form`. Short-circuits on the first
+/// hit.
+fn subtree_contains_pair_form(sexp: &Sexp) -> bool {
+    match sexp {
+        Sexp::List(children, _) => {
+            is_forced_pair_form(children) || children.iter().any(subtree_contains_pair_form)
+        }
+        Sexp::Bracket(children, _) => children.iter().any(subtree_contains_pair_form),
+        _ => false,
+    }
+}
+
+/// True when `children` is a `let`/`match` form whose binding/arm vector holds
+/// **>=2 pairs** — the P0 force-multiline trigger. Mirrors the recognition in
+/// `try_pp_let`/`try_pp_match` (even-count vector via `as_pairs`, so an odd or
+/// wrong-shaped vector is NOT forced — it falls back to flat, per P5).
+fn is_forced_pair_form(children: &[Sexp]) -> bool {
+    match children.first().and_then(head_symbol_name).as_deref() {
+        Some("let") => matches!(
+            children.get(1),
+            Some(Sexp::Bracket(items, _)) if as_pairs(items).is_some_and(|p| p.len() >= 2)
+        ),
+        Some("match") => {
+            children.len() == 3
+                && matches!(
+                    &children[2],
+                    Sexp::Bracket(items, _) if as_pairs(items).is_some_and(|p| p.len() >= 2)
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Aligned pair-layout dispatch for `let` / `match` (repl/spec.md §3.11).
+///
+/// Structural recognition on the `Sexp` tree (Phase-2 durability MUST — never
+/// string post-processing). Returns `Some(text)` only when it takes over the
+/// whole form: a recognised head (`let`/`match`) whose binding/arm vector holds
+/// **>=2 pairs** (P0). Returns `None` — falling through to the existing
+/// flat/threshold layout — for any non-recognised head, a missing/wrong-shaped
+/// vector, fewer than 2 pairs (nothing to align), or an odd element count
+/// (P5 graceful fallback).
+fn try_pp_pair_form(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+    match head_symbol_name(children.first()?)?.as_str() {
+        "let" => try_pp_let(children, indent, in_head),
+        "match" => try_pp_match(children, indent, in_head),
+        _ => None,
+    }
+}
+
+/// `(let [l0 r0 l1 r1 …] body…)` — the binding vector is the first `[...]` arg
+/// (§3.11). The `[` sits at column `indent + len("(let ")` (= `indent + 5`), so
+/// the left column starts at `indent + 6`. Body forms follow at the special-form
+/// body indent (`indent + 2`), unchanged.
+fn try_pp_let(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+    let binding = match children.get(1) {
+        Some(Sexp::Bracket(items, _)) => items,
+        _ => return None,
+    };
+    let pairs = as_pairs(binding)?;
+    if pairs.len() < 2 {
+        return None; // P0 — 0/1 pair has nothing to align.
+    }
+    let (open, close) = pair_form_brackets(in_head);
+    let head = styled("let", Style::Bold);
+    // Prefix "(let " is 5 unstyled columns; the `[` lands at indent + 5, its
+    // content (left column) at indent + 6.
+    let left_col = indent + 6;
+    let mut result = format!("{open}{head} ");
+    result.push_str(&pair_vector_layout(&pairs, left_col));
+
+    let body_indent = indent + 2;
+    let pad = " ".repeat(body_indent);
+    for body in &children[2..] {
+        result.push('\n');
+        result.push_str(&pad);
+        result.push_str(&pp(body, body_indent, false));
+    }
+    result.push_str(&close);
+    Some(result)
+}
+
+/// `(match <scrutinee> [l0 r0 l1 r1 …])` — the arm vector is the `[...]`
+/// following the scrutinee (§3.11). The scrutinee stays flat on the head line;
+/// the `[` sits at `indent + len("(match ") + flatwidth(scrutinee) + 1`, so the
+/// left column starts one past that.
+fn try_pp_match(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+    // Exactly `(match scrut [arms])` — arm vector must be the final element.
+    if children.len() != 3 {
+        return None;
+    }
+    let scrutinee = &children[1];
+    let arms = match &children[2] {
+        Sexp::Bracket(items, _) => items,
+        _ => return None,
+    };
+    let pairs = as_pairs(arms)?;
+    if pairs.len() < 2 {
+        return None; // P0 — 0/1 pair has nothing to align.
+    }
+    let (open, close) = pair_form_brackets(in_head);
+    let head = styled("match", Style::Bold);
+    let scrut_styled = pp(scrutinee, 0, false);
+    // Prefix "(match " (7) + scrutinee (flat) + " " (1); the `[` lands after it,
+    // and the left column starts one past the `[`.
+    let left_col = indent + 7 + scrutinee.format_flat().len() + 1 + 1;
+    let mut result = format!("{open}{head} {scrut_styled} ");
+    result.push_str(&pair_vector_layout(&pairs, left_col));
+    result.push_str(&close);
+    Some(result)
+}
+
+/// The `(` / `)` for a pair-layout form, bolded when in head position.
+fn pair_form_brackets(in_head: bool) -> (String, String) {
+    if in_head {
+        (styled("(", Style::Bold), styled(")", Style::Bold))
+    } else {
+        ("(".to_string(), ")".to_string())
+    }
+}
+
+/// Split a bracket's children into consecutive `(left, right)` pairs.
+/// `None` on an odd count (P5 graceful fallback — never crashes, never drops).
+fn as_pairs(items: &[Sexp]) -> Option<Vec<(&Sexp, &Sexp)>> {
+    if !items.len().is_multiple_of(2) {
+        return None;
+    }
+    Some(items.chunks_exact(2).map(|c| (&c[0], &c[1])).collect())
+}
+
+/// Lay out a pair-structured vector as aligned two-column pairs (§3.11 P1–P4).
+///
+/// `left_col` is the absolute column of the left-term column (one past the `[`).
+/// `W` = the max flat (unstyled) width over all left terms of this one vector;
+/// the right column starts at `left_col + W + 1` (one min space after the widest
+/// left term). Each right term is printed as if its opening column were the
+/// right-column start (P4 — multi-line right terms indent under the right column
+/// via `pp`'s ordinary recursive rules). The closing `]` attaches to the last
+/// right term's final line.
+fn pair_vector_layout(pairs: &[(&Sexp, &Sexp)], left_col: usize) -> String {
+    let w = pairs
+        .iter()
+        .map(|(l, _)| l.format_flat().len())
+        .max()
+        .unwrap_or(0);
+    let right_col = left_col + w + 1;
+
+    let mut out = String::from("[");
+    for (i, (left, right)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(&" ".repeat(left_col)); // P1/P2 — one pair per line, left column.
+        }
+        out.push_str(&pp(left, 0, false)); // left term rendered flat (styled)
+        let left_width = left.format_flat().len();
+        out.push_str(&" ".repeat(right_col - left_col - left_width)); // P3 pad to right column
+        out.push_str(&pp(right, right_col, false)); // P4 — right term opens at right_col
+    }
+    out.push(']');
+    out
 }
 
 /// Check if a list is a type annotation list (first child is :symbol).
@@ -517,7 +699,9 @@ fn pp_bracket(children: &[Sexp], indent: usize) -> String {
     // Flat representation for length measurement.
     let parts: Vec<String> = children.iter().map(|c| c.format_flat()).collect();
     let flat = format!("[{}]", parts.join(" "));
-    if flat.len() <= FLAT_THRESHOLD {
+    // As in `pp_list`: the single-line path renders children at `indent = 0`, so
+    // avoid it when a descendant is a forced multi-line pair-form (FIXME 0554).
+    if flat.len() <= FLAT_THRESHOLD && !children.iter().any(subtree_contains_pair_form) {
         // Single line: no head-position bolding in brackets.
         let styled_parts: Vec<String> = children.iter().map(|c| pp(c, 0, false)).collect();
         return format!("[{}]", styled_parts.join(" "));
@@ -534,8 +718,12 @@ fn pp_bracket(children: &[Sexp], indent: usize) -> String {
         let child_str = pp(child, child_indent, false);
         // Try to fit on the current line.
         // Use unstyled length to avoid ANSI escape sequences inflating the count.
+        // A forced multi-line pair-form child (FIXME 0554) never shares a line —
+        // it must open at `child_indent` where `pp` aligns it correctly.
         let child_flat_len = child.format_flat().len();
-        if unstyled_line_len + 1 + child_flat_len <= FLAT_THRESHOLD {
+        if !subtree_contains_pair_form(child)
+            && unstyled_line_len + 1 + child_flat_len <= FLAT_THRESHOLD
+        {
             result.push(' ');
             unstyled_line_len += 1 + child_flat_len;
             result.push_str(&child_str);
@@ -658,5 +846,201 @@ mod tests {
         // Typical REPL definition: `:Type name ; class`
         let result = pretty_print_str(":(Fn [primitives/Int] primitives/Int) user/double");
         assert!(result.contains("user/double"));
+    }
+
+    // --- §3.11 aligned let/match pair layout (P0–P5) ---------------------------
+    //
+    // These exercise the pair-aware printer directly on Sexp trees parsed from
+    // source. Colour is off in the test process, so bytes are exact.
+
+    /// Parse one form and pretty-print it (colour-off).
+    fn pp_form(src: &str) -> String {
+        let sexps = cranelisp_frontend::parse(src).unwrap();
+        pretty_print(&sexps[0])
+    }
+
+    #[test]
+    fn p0_two_pair_let_aligns_two_columns() {
+        // spec: repl/spec.md §3.11 P0/P1/P2/P3 — a >=2-pair let renders one pair
+        // per line with a shared right column at leftCol + W + 1.
+        let out = pp_form("(let [a 1 bb 2] a)");
+        let expected = concat!(
+            "(let [a  1\n",
+            "      bb 2]\n",
+            "  a)",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+    }
+
+    #[test]
+    fn p0_two_arm_match_aligns_and_forces_multiline() {
+        // spec: repl/spec.md §3.11 P0 — a two-arm match that would fit flat MUST
+        // render multi-line aligned; the arm patterns MUST NOT share a line.
+        let out = pp_form("(match x [(A a) 1 (B b) 2])");
+        let expected = concat!(
+            "(match x [(A a) 1\n",
+            "          (B b) 2])",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+        assert!(
+            !out.lines().any(|l| l.contains("(A a)") && l.contains("(B b)")),
+            "arm patterns must not share a line:\n{out}"
+        );
+    }
+
+    #[test]
+    fn p3_right_column_uses_widest_left_term() {
+        // spec: repl/spec.md §3.11 P3 — W = max flat width over ALL left terms of
+        // the vector; the right column is leftCol + W + 1. `final-pos` (9) is the
+        // widest of d/new-pos/final-pos, so every value aligns to that column.
+        let out = pp_form("(let [d 1 new-pos 2 final-pos 3] d)");
+        let expected = concat!(
+            "(let [d         1\n",
+            "      new-pos   2\n",
+            "      final-pos 3]\n",
+            "  d)",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+        // Each value begins at the same column (leftCol 6 + W 9 + 1 = 16).
+        for line in out.lines().take(3) {
+            let col = line.find(['1', '2', '3']);
+            if let Some(c) = col {
+                assert_eq!(c, 16, "value must align to right column 16: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn p0_single_pair_let_falls_back_to_flat() {
+        // spec: repl/spec.md §3.11 P0 — a 1-pair let has nothing to align and
+        // follows the pre-existing flat layout unchanged.
+        let out = pp_form("(let [x 5] x)");
+        assert_eq!(out, "(let [x 5] x)", "got:\n{out}");
+    }
+
+    #[test]
+    fn p5_odd_count_let_binding_falls_back() {
+        // spec: repl/spec.md §3.11 P5 — an odd element count (malformed) falls
+        // back to the pre-existing bracket layout, never a crash or dropped item.
+        // Build the Sexp directly (an odd binding vector won't survive real let
+        // parsing, but the printer must still handle it gracefully).
+        use cranelisp_types::Span;
+        let sp = Span::new(0, 0);
+        let odd_binding = Sexp::Bracket(
+            vec![
+                Sexp::Symbol("a".into(), sp),
+                Sexp::Int(1, sp),
+                Sexp::Symbol("b".into(), sp),
+            ],
+            sp,
+        );
+        let form = Sexp::List(
+            vec![
+                Sexp::Symbol("let".into(), sp),
+                odd_binding,
+                Sexp::Symbol("a".into(), sp),
+            ],
+            sp,
+        );
+        let out = pretty_print(&form);
+        // No panic; all three binding elements are preserved somewhere.
+        assert!(out.contains('a') && out.contains('1') && out.contains('b'), "got:\n{out}");
+    }
+
+    #[test]
+    fn p4_nested_multiline_right_term_indents_under_right_column() {
+        // spec: repl/spec.md §3.11 P4 — a multi-line right term (here a nested
+        // two-arm match) opens at the right column and its continuation lines
+        // indent relative to that column (its own per-vector W recurses).
+        let out = pp_form("(let [d (match r [(L l) 1 (R r) 2]) e 9] d)");
+        let expected = concat!(
+            "(let [d (match r [(L l) 1\n",
+            "                  (R r) 2])\n",
+            "      e 9]\n",
+            "  d)",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+    }
+
+    #[test]
+    fn p0_zero_pair_empty_let_binding_stays_flat() {
+        // spec: repl/spec.md §3.11 P0 — an empty binding vector has nothing to
+        // align and renders flat with no spurious padding.
+        let out = pp_form("(let [] 7)");
+        assert_eq!(out, "(let [] 7)", "got:\n{out}");
+    }
+
+    // --- §3.11 P0 force-multiline propagation to ancestors (FIXME 0554) --------
+    //
+    // A >=2-pair let/match forces itself multi-line even when it would fit flat.
+    // Every ENCLOSING form must then also render multi-line so a correct indent
+    // threads down; otherwise the flat parent path renders the nested pair-form
+    // at column 0, visibly misaligned.
+
+    #[test]
+    fn p0_parent_of_two_pair_let_forces_multiline_aligned() {
+        // spec: repl/spec.md §3.11 P0 — the enclosing `defn` fits flat (<=40)
+        // but contains a >=2-pair let, so it MUST render multi-line and the let's
+        // right column MUST align to its true (indented) position, not column 0.
+        let out = pp_form("(defn g [x] (let [a 1 bb 2] a))");
+        let expected = concat!(
+            "(defn g\n",
+            "  [x]\n",
+            "  (let [a  1\n",
+            "        bb 2]\n",
+            "    a))",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+    }
+
+    #[test]
+    fn p0_parent_of_two_arm_match_forces_multiline_aligned() {
+        // spec: repl/spec.md §3.11 P0 — same propagation for a two-arm match that
+        // would fit flat inside its enclosing `defn`.
+        let out = pp_form("(defn f [r] (match r [(L l) l (R r) r]))");
+        let expected = concat!(
+            "(defn f\n",
+            "  [r]\n",
+            "  (match r [(L l) l\n",
+            "            (R r) r]))",
+        );
+        assert_eq!(out, expected, "got:\n{out}");
+    }
+
+    #[test]
+    fn p0_deep_nesting_propagates_through_ancestors() {
+        // spec: repl/spec.md §3.11 P0 — the force propagates through more than one
+        // enclosing level; every ancestor renders multi-line and the pair-form
+        // aligns to its deep indent, never column 0.
+        let out = pp_form("(do (defn g [x] (let [a 1 bb 2] a)))");
+        // No line other than the let's own may carry a mis-columned `bb`; the
+        // binding pair `bb` must sit under `a` (right column stable).
+        let a_col = out.lines().find_map(|l| l.find("[a ")).map(|c| c + 1);
+        let bb_col = out.lines().find_map(|l| l.find("bb "));
+        assert_eq!(a_col, bb_col, "left column must align:\n{out}");
+        assert!(out.contains("bb 2]"), "pair form must be aligned:\n{out}");
+    }
+
+    #[test]
+    fn p0_bracket_parent_of_two_pair_let_does_not_share_line() {
+        // spec: repl/spec.md §3.11 P0 — a bracket holding a >=2-pair let must not
+        // render single-line (which would place the let at column 0). The let is
+        // pushed to its own line and aligns correctly.
+        let out = pp_form("[x (let [a 1 bb 2] a)]");
+        assert!(out.contains('\n'), "bracket must break to multi-line:\n{out}");
+        let a_col = out.lines().find_map(|l| l.find("[a ")).map(|c| c + 1);
+        let bb_col = out.lines().find_map(|l| l.find("bb "));
+        assert_eq!(a_col, bb_col, "nested let left column must align:\n{out}");
+    }
+
+    #[test]
+    fn subtree_predicate_detects_nested_and_ignores_shallow() {
+        // Unit-level guard on the propagation predicate itself.
+        let two_pair = cranelisp_frontend::parse("(defn g [x] (let [a 1 bb 2] a))").unwrap();
+        assert!(subtree_contains_pair_form(&two_pair[0]));
+        let one_pair = cranelisp_frontend::parse("(defn g [x] (let [a 1] a))").unwrap();
+        assert!(!subtree_contains_pair_form(&one_pair[0]));
+        let no_pair = cranelisp_frontend::parse("(defn g [x] (+ x 1))").unwrap();
+        assert!(!subtree_contains_pair_form(&no_pair[0]));
     }
 }

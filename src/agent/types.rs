@@ -108,6 +108,32 @@ pub trait AgentModel: Send {
     /// response. The request is the assembled prompt: system primer + harvest +
     /// transcript + tool defs + the current user turn.
     fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String>;
+
+    /// Stream the terminal answer's prose as neutral text deltas into `sink`,
+    /// returning the SAME final `ModelResponse` `complete` would (§14A.3 S1,
+    /// `repl/spec.md` §17.22). The `sink` carries RAW model text (markdown), not
+    /// rendered bytes — the renderer (`agent/render.rs`) owns formatting; the
+    /// membrane stays rig-free.
+    ///
+    /// DEFAULT: no real streaming — run `complete`, emit the whole `Done` prose as
+    /// ONE delta. This is the §17.22 Fallback (a non-streaming provider — the stub,
+    /// Ollama, any future impl): "one delta carrying the whole answer" is the
+    /// one-delta case of the same contract, so the differential invariant holds
+    /// trivially. A `ToolCalls` response streams nothing (tool-call turns are NOT
+    /// streamed this sprint). The default bounds the streaming blast radius —
+    /// every non-streaming impl keeps working unchanged; only `RigModel`
+    /// (`provider.rs`) and the deterministic stub override it.
+    fn complete_streaming(
+        &mut self,
+        request: &AgentRequest,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
+        let resp = self.complete(request)?;
+        if let ModelResponse::Done(prose) = &resp {
+            sink(prose);
+        }
+        Ok(resp)
+    }
 }
 
 /// The provider-neutral assembled request (§3.3). `request.rs` translates this

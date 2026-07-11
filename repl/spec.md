@@ -924,6 +924,93 @@ commands reject is a broken self-documentation loop.
 | `/sig` on an imported bare name prints the full §3.8 primary line | [Tested tests/repl_mod_devloop.rs::sig_imported_name_shows_full_signature_line] |
 | a cascade `broken:` name is pasteable into `/info` | [Tested tests/repl_mod_devloop.rs::cascade_report_broken_name_pasteable_into_info] |
 
+### 3.11 Code Pretty-Printing — Aligned `let`/`match` Column Layout [S107]
+
+`/sexp <name>` and `/source <name>` render a definition's parsed form through the shared
+S-expression pretty-printer (the same printer §17.13.2 routes agent ```lisp fences through).
+This subsection makes the layout of a **pair-structured binding vector** — the `let` binding
+list and the `match` arm list — a **normative, byte-reproducible MUST**, so `/qa` can assert the
+exact output for a fixed fixture. It resolves FIXME 0554 (the pre-S107 printer was pair-unaware
+and smeared binding pairs across lines). Everything below is a display contract only — it changes
+no language semantics and no other form's layout.
+
+**Structural recognition (Phase-2 durability constraint — binding on `/dev(src)`).** Pair-awareness
+MUST be implemented as **structural recognition on the `Sexp` tree**, not string post-processing:
+the printer recognises the binding/arm `Sexp::Bracket` of a recognised head as a sequence of
+`(left, right)` pairs and lays it out from the tree. The recognised heads for S107 are exactly
+**`let`** (the binding vector is its first `[...]` argument) and **`match`** (the arm vector is the
+`[...]` argument following the scrutinee). Other binding-vector special forms MAY adopt the same
+layout later; `let` and `match` are the required set this sprint.
+
+**A "pair-structured vector"** is the recognised `[...]` argument read as consecutive pairs:
+`[l0 r0 l1 r1 …]` → pairs `(l0,r0) (l1,r1) …`. The **left term** is the binding name (`let`) or the
+pattern (`match`); the **right term** is the value (`let`) or the arm body (`match`).
+
+**Layout rules (each an individually checkable MUST):**
+
+- **P0 — Trigger.** A pair-structured vector with **2 or more pairs** MUST render in aligned
+  pair layout (P1–P4). This **forces the enclosing `let`/`match` form multi-line even when it would
+  otherwise fit the flat threshold** — an aligned two-arm `match` never collapses to one line. A
+  vector with **0 or 1 pair** has nothing to align and follows the pre-existing flat/threshold
+  layout unchanged. [S107]
+- **P1 — One pair per line.** In pair layout each `(left, right)` pair MUST begin on its own line.
+  A pair's left term, the next pair's left term, and any right term MUST NOT share a line
+  (the pre-S107 smear defect). [S107]
+- **P2 — Left column.** The left terms MUST be left-aligned into a single column whose start is the
+  column immediately after the vector's opening `[`. Each left term is rendered flat. [S107]
+- **P3 — Right column (deterministic alignment position).** Let `W` = the maximum flat width, in
+  columns, over **all** left terms of that one vector. The right column start MUST be
+  `leftColumnStart + W + 1` (one space of minimum separation after the widest left term). Every
+  pair's right term MUST begin at that column; a left term narrower than `W` is padded with spaces
+  to reach it. `W` is computed per vector (not globally), giving a single byte-reproducible
+  alignment position. [S107]
+- **P4 — Multi-line right terms indent under the right column.** When a right term is itself
+  rendered multi-line (a nested `match`/`if`/`let`, or any form exceeding the flat threshold), its
+  **first** line begins at the right column (P3) and **every continuation line** MUST be indented
+  relative to the right-column start using the pretty-printer's ordinary recursive rules for that
+  form (i.e. the nested form is printed as if its opening column were the right-column start). A
+  nested pair-structured vector recursively obeys P0–P4 with its own per-vector `W`. [S107]
+- **P5 — Graceful fallback.** A recognised vector with an **odd** element count (not cleanly
+  pairable — malformed source) MUST fall back to the pre-existing non-pair bracket layout and MUST
+  NOT crash or drop elements. [S107]
+
+**Determinism.** For a fixed input `Sexp`, P0–P5 produce **byte-for-byte identical** output every
+time (colour-off); with colour on, only SGR spans are added around the same characters, at the same
+columns. This is the contract `/qa` pins against a fixed `let`/`match` fixture. [S107]
+
+**Worked example (byte-exact — the FIXME 0554 `rotate` fixture).** Source:
+
+```
+(defn rotate [p r] (let [d (match r [(L l) (- 0 l) (R r) r]) new-pos (+ (pos p) d) final-pos (if (< new-pos 0) (+ new-pos 100) new-pos)] (Position final-pos)))
+```
+
+`/sexp rotate` (and `/source rotate`) MUST render exactly (colour-off; the `defn`/params/`if`
+wrapping is the pre-existing special-form body-indent layout, unchanged — only the aligned `let`
+and nested `match` blocks are the S107 contract):
+
+```
+(defn rotate
+  [p r]
+  (let [d         (match r [(L l) (- 0 l)
+                            (R r) r])
+        new-pos   (+ (pos p) d)
+        final-pos (if (< new-pos 0)
+                    (+ new-pos 100)
+                    new-pos)]
+    (Position final-pos)))
+```
+
+Column derivation (for the tests to pin). The `let` sits at column 2 (the `defn` body indent), so
+its `[` is at column 7 and the left column starts at column 8. The three left terms are `d` (width
+1), `new-pos` (7), `final-pos` (9) → `W = 9`, so the right column starts at `8 + 9 + 1 = 18`: `d` is
+padded with 9 spaces, `new-pos` with 3, `final-pos` with 1, and each value begins at column 18. The
+`d` value is a two-arm `match` (P0 fires): its arm vector opens at column 27, its left column starts
+at column 28, its two patterns `(L l)`/`(R r)` are each width 5 → arm right column `28 + 5 + 1 = 34`,
+and the second arm continuation `(R r) r])` is indented to column 28 (P4). The `final-pos` value is a
+multi-line `if` whose body lines indent to column 20 (`if` opens at column 18; ordinary +2 body
+indent — P4 delegating to the existing rule). The binding vector's closing `]` attaches to the last
+body line (`new-pos)]`). [S107]
+
 ## 4. Self-Documentation Contract
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
@@ -1375,7 +1462,7 @@ The palette assigns one colour per semantic role. There are no user-configurable
 | Slash command category headers (`Fns:`, `Types:`, etc.) | bold | `\033[1m` | `\033[0m` | Anchors for scanning `/list`, `/imports`, `/exports` |
 | Slash command body (symbol names, info lines) | default | — | — | Dense informational content; styling would add noise |
 | Startup banner | dim | `\033[2m` | `\033[0m` | One-time context; should not dominate |
-| Agent prose frame (`▌` gutter + agent text) | bright magenta gutter, default body | `\033[95m` (gutter) | `\033[0m` | Reserved exclusively for the agent's *prose* — makes model output unmistakable from deterministic REPL output (§17.2). Only the prose is framed; agent-issued commands and their results use their normal roles. [S88] |
+| Agent prose frame (`▌` gutter + agent text) | bright magenta gutter, default body | `\033[95m` (gutter) | `\033[0m` | Reserved exclusively for the agent's *prose* — makes model output unmistakable from deterministic REPL output (§17.2). Only **prose** is guttered; agent-issued commands and their results use their normal roles, and (S107, FIXME 0556) **agent-emitted ```lisp code blocks render un-guttered / `▌`-free so they copy-paste clean** (§17.2 item 3, §17.13.2). [S88] [S107] |
 | Agent-input prompt (`agent>` glyph at agent-echo sites) | dim, bright-magenta `agent` token | `\033[2m` + `\033[95m` (the `agent` token) | `\033[0m` | The prompt prefix shown when the agent "types" a line — a pulled read command (§17.2) or a Build-submit echo (§17.14). Distinct from the dim human prompt (§2.1) and from the `▌` prose gutter, so the transcript reads honestly: who issued each line. Degrades under `--no-color`/non-TTY to the plain-text token `agent>` (no SGR). [S89] |
 
 Notes on specific choices:
@@ -2181,9 +2268,13 @@ When the agent takes a turn, its output has two kinds, rendered differently so t
 
 2. **Agent-issued commands and their results** — when the agent reads (`/source foo`, `/info bar`, `/refs baz`) or proposes a write or shell command (§17.7), the command line and its output render in **NORMAL deterministic REPL style** (§1, §3, §10) — exactly as if the user had typed them. They ARE normal REPL output (`design/arch/repl-embedded-agent.md` §4.4). The command appears echoed as a REPL line (so the user watches the agent reach for the introspection vocabulary and learns it by observation), and its result uses the result's normal role (cyan type prefix, dim comment drawer, the `/list` layout, etc.). These MUST NOT be wrapped in the prose frame. [S88]
 
-The contract: **only the agent's prose is framed; everything the agent does deterministically is unframed and indistinguishable from a user keystroke's output.** This makes the deterministic-vs-model boundary unmistakable in every rendering mode. [S88]
+3. **Agent-emitted code — copy-clean, un-guttered (`▌`-free) [S107].** A pretty-printed ```lisp / ```cranelisp fenced form that the agent **shows as part of its answer** (§17.13.2 — the agent *displaying* code, distinct from an agent-issued `/source` pull) MUST render with **no per-line `▌` gutter on any code line**. This is the FIXME 0556 resolution: the gutter is emitted as literal line-leading text, so a multi-line selection over guttered code drags `▌ ` into the clipboard on every line and the example cannot be copied and re-run verbatim. Every code line a user would select MUST therefore be gutter-free. Concretely: the code block's bytes MUST be **exactly** what the deterministic pretty-printer produces for that form — byte-identical (colour-off) to `/sexp`/`/source` output for the same form (§3.11, §17.13.2) — with nothing prepended to any line. The surrounding **prose** lines keep their `▌` gutter (item 1), so the code block is set off from the conversation by the gutter boundary itself: the gutter's presence still marks "the agent is talking," and its **absence** marks "this is copyable code." The implementation MAY additionally caption the block with a single guttered marker line above it, but the code lines themselves MUST carry no gutter. The **"keep the gutter but expose an un-guttered copy elsewhere"** alternative is explicitly **rejected** (Phase-2 durability constraint) — this is a render-side structural split of code vs prose, not a second copy channel. [S107]
 
-A turn therefore reads on screen as an interleaving of framed prose and unframed REPL lines — e.g. a prose sentence, then an echoed `/source` line and its normal output, then more prose, then a proposed `(defn …)` shown (not submitted) as a normal definition echo. The whole interleaving is part of the replayable transcript (§15). [S88]
+The contract: **the agent's prose is framed with the `▌` gutter; agent-emitted code and everything the agent does deterministically are un-guttered and byte-clean to copy.** This makes the deterministic-vs-model boundary unmistakable in every rendering mode while keeping every copyable line paste-ready. [S107]
+
+A turn therefore reads on screen as an interleaving of framed prose, un-guttered pretty-printed code blocks, and unframed deterministic REPL lines — e.g. a prose sentence, then a gutter-free ```lisp block the agent is showing, then an echoed `/source` line and its normal output, then more prose, then a proposed `(defn …)` shown (not submitted) as a normal definition echo. The whole interleaving is part of the replayable transcript (§15). [S107]
+
+**Guards this touches (for `/qa`).** Revising the code-line framing changes the bytes `render_agent_prose` emits for any fixture containing a ```lisp fence: the non-TTY byte-identical golden for agent output (the `--no-color` no-literal-escape transcript, §17.13.3) and the design-side §14.6 leaf-styling guard (`design/int/agent.md` §14.6) MUST be re-baselined to the un-guttered code shape when this lands. The change is agent-feature-gated (`#[cfg(feature = "agent")]`); the default REPL render path is untouched. [S107]
 
 ### 17.3 Consent Model [S88]
 
@@ -2467,9 +2558,9 @@ This is a **bounded** terminal formatter for the markdown the model emits — no
 
 #### 17.13.2 Fenced Lisp Renders via the Pretty-Printer [S89]
 
-When the model's prose contains a fenced code block whose info-string is `lisp` (or `cranelisp`) — `` ```lisp … ``` `` — the block's body MUST be rendered through the **deterministic S-expression pretty-printer** (the same printer `/source` and `/sexp` use, §3.1, §10) — syntax-highlighted and indented — **not** emitted as a raw fence. The pretty-printed block renders **inside** the `▌` prose frame (it is part of the agent's *answer* — the agent *showing* code — distinct from an agent-issued `/source` pull, which is the agent *running a command* and renders unframed with the `agent>` prompt, §17.12). A fence with a **non-Lisp** info-string (e.g. `` ```sh ``) is left as a literal block (markdown-formatted, not pretty-printed). [S89]
+When the model's prose contains a fenced code block whose info-string is `lisp` (or `cranelisp`) — `` ```lisp … ``` `` — the block's body MUST be rendered through the **deterministic S-expression pretty-printer** (the same printer `/source` and `/sexp` use, §3.1, §3.11, §10) — syntax-highlighted, indented, and (for `let`/`match`) pair-aligned per §3.11 — **not** emitted as a raw fence. It is part of the agent's *answer* — the agent *showing* code — distinct from an agent-issued `/source` pull, which is the agent *running a command* and renders unframed with the `agent>` prompt (§17.12). A fence with a **non-Lisp** info-string (e.g. `` ```sh ``) is left as a literal block (markdown-formatted, not pretty-printed). [S89]
 
-The pretty-printed fence MUST honour the colour mode: syntax-highlighted when colour is enabled, plain indented text under `--no-color`/non-TTY — degrading via the **same** global colour gate as every other styled output (§10.1, §10.7), never a separate one. [S89]
+**Copy-clean, un-guttered [S107].** Per §17.2 item 3 (FIXME 0556), the pretty-printed code block MUST render with **no per-line `▌` gutter** — the surrounding prose stays guttered, but every code line the user might select-and-copy is gutter-free, and the block's bytes are **byte-identical (colour-off) to `pretty_print_str` / `/sexp` output for the same form**. (Before S107 this block was routed through the prose frame and carried the gutter on every line, polluting copy-paste — the defect 0556 fixes.) The pretty-printed fence MUST honour the colour mode: syntax-highlighted when colour is enabled, plain indented text under `--no-color`/non-TTY — degrading via the **same** global colour gate as every other styled output (§10.1, §10.7), never a separate one. [S89] [S107]
 
 #### 17.13.3 No Raw ANSI Escape Codes — Normative (the S88 defect) [S89]
 
@@ -3147,6 +3238,58 @@ then **scroll the trace** to that same `turn` marker to read the **full request 
 produced it. The `turn` index is the only coupling required between the sinks — each remains
 independently writable (one may be set without the other), but when **both** are set they share the
 index so the index→content join is mechanical. [S90]
+
+### 17.22 Streaming the Agent's Terminal Answer [S107]
+
+Before S107 the agent produced its whole answer with a single blocking completion, then rendered it
+all at once: the user watched a dead prompt until the complete answer materialised (FIXME 0555).
+S107 makes the terminal answer **stream** — the prose appears incrementally as the model emits it —
+while keeping the rendered result **byte-identical** to the all-at-once render it replaces. This
+subsection is the normative streaming behaviour + the guard that protects the goldens. It is
+agent-feature-gated (`#[cfg(feature = "agent")]`); feature-off, dormant, or on a non-streaming
+provider the REPL behaves exactly as before (see "Fallback" below). [S107]
+
+**What streams — the terminal `Done` prose only (Phase-2 de-risk constraint).** Streaming applies to
+the agent's **terminal answer** — the prose the turn ends on (the model's final `Done` response, the
+one that produced the dead-prompt pause). **Tool-call turns are NOT streamed this sprint**: when the
+agent reaches for a read (§17.2, §17.12) the pull command and its result render as today
+(unframed, after the tool runs). This is an explicit, **non-foreclosed** seam — a deliberate S107
+non-goal, not an architectural limit — and the streaming design MUST leave it reachable later
+(streamed tool-call delta assembly is the fiddly part deferred). [S107]
+
+**How prose streams — line-by-line as deltas arrive.** The terminal answer's **prose** MUST render
+**incrementally**: as text deltas arrive from the model, each **complete prose line** is formatted
+(markdown → terminal, §17.13.1) and emitted **inside the `▌` frame** the moment it is complete, so
+the user sees the answer build line by line rather than after a pause. A partial trailing line MAY be
+withheld until its newline arrives (line-granular streaming is sufficient — sub-line/token flicker is
+not required). [S107]
+
+**How code streams — it does not; a ```lisp fence renders formatted at fence-close.** A fenced
+```lisp / ```cranelisp block **CANNOT stream token-by-token**: the deterministic pretty-printer
+(§3.11, §17.13.2) needs the **whole form** to parse and align it. Therefore, while a fence is open,
+its body MUST be **buffered** (not echoed raw), and the **formatted, pretty-printed, un-guttered**
+block (§17.2 item 3, §17.13.2) MUST be emitted **at the closing fence**. The user sees prose stream
+live, then a formatted code block appear whole when its fence closes — never a raw half-formatted
+fence. (Phase-2 constraint: this is the buffer-within-fence renderer; the "stream raw then reformat"
+half-measure is **rejected**.) [S107]
+
+**The differential invariant (normative MUST — the goldens' guard).** The streamed-then-concatenated
+output MUST be **byte-identical** to `render_agent_prose` (§17.13, the all-at-once renderer) over the
+**same complete answer text**, with colour off. That is: streaming changes only **when** bytes reach
+the screen, never **which** bytes. Concatenating everything the streaming path emits for a turn MUST
+equal the single-shot render of that turn's full text — same gutter on prose lines, same un-guttered
+formatted code block, same `--no-color` cleanliness (no literal escape codes, §17.13.3). This
+invariant is what lets the existing non-TTY agent goldens and the §17.13.2 leaf-styling guards keep
+protecting the rendered result even though the emission is now incremental; `/qa` asserts it directly
+(feed a multi-delta stub answer, concatenate the streamed emission, compare to `render_agent_prose`
+of the whole text). [S107]
+
+**Fallback — a non-streaming path degrades to today's behaviour (Phase-2 de-risk constraint).** When
+the agent feature is compiled out, dormant, or backed by a provider that does not stream, the answer
+MUST render exactly as before — the whole terminal prose delivered as a single unit through the same
+renderer — with **no** user-visible regression. Because the differential invariant holds, "one delta
+carrying the whole answer" and "many deltas" produce identical bytes, so the non-streaming path is
+just the one-delta case of the same contract. [S107]
 
 ## 18. Redefinition Semantics — Dependent Recompilation, Broken Symbols, and the Frozen World [S102]
 

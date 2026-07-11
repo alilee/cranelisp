@@ -262,9 +262,23 @@ impl CompilerSession {
                 crate::agent::log::LogEvent::new("exchange").turn(current_turn),
             );
 
-            // Run the model. Take the handle out across the call so we can mutate
-            // `self` (for pulls) without aliasing the borrow.
-            let resp = match self.agent_complete(&req) {
+            // Run the model, STREAMING the terminal answer's prose LIVE (§14A.3 /
+            // §17.22). The Done prose renders incrementally through the
+            // `StreamingRenderer` as raw text deltas arrive: complete prose lines
+            // gutter + format the moment they complete, and a ```lisp fence buffers
+            // and flushes formatted + un-guttered at its close. A fresh renderer per
+            // loop step. Tool-call turns stream NO prose (§17.22 — not streamed this
+            // sprint); their pull path below is unchanged. The sink closure borrows
+            // `renderer` + `stdout` (locals, disjoint from `self`), so the model
+            // handle can be borrowed mutably for the call as before. On the error
+            // path we still `finish` (flush any buffered partial line / open fence).
+            let mut renderer = crate::agent::render::StreamingRenderer::new();
+            let result = {
+                let mut sink = |delta: &str| renderer.push(delta, stdout);
+                self.agent_complete_streaming(&req, &mut sink)
+            };
+            renderer.finish(stdout);
+            let resp = match result {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = write!(
@@ -278,12 +292,11 @@ impl CompilerSession {
 
             match resp {
                 ModelResponse::Done(prose) => {
-                    // Cluster A (§14): the model's terminal prose is markdown —
-                    // route it through the agent renderer (markdown→terminal +
-                    // ```lisp fences pretty-printed, all inside the `▌` frame),
-                    // not raw into `agent_prose`. This is the single styling site
-                    // for prose (§14.6 style-once-at-the-leaf).
-                    let _ = write!(stdout, "{}", crate::agent::render::render_agent_prose(&prose));
+                    // The renderer ALREADY emitted the terminal prose live (§14A.3
+                    // S4) — do NOT render it again here (a second render would
+                    // double-render). The returned `ModelResponse` is unchanged, so
+                    // the transcript record + loop continuation are identical to the
+                    // non-streaming path.
                     if let Some(state) = self.agent.as_mut() {
                         state.record_assistant(&prose);
                     }
@@ -390,10 +403,17 @@ impl CompilerSession {
         }
     }
 
-    /// Run one completion against the configured model. Split out so the borrow
-    /// of `self.agent` is confined here (the model handle is mutably borrowed for
-    /// the call; the surrounding loop mutates `self` for pulls separately).
-    fn agent_complete(&mut self, req: &AgentRequest) -> Result<ModelResponse, String> {
+    /// Run one STREAMING completion against the configured model (§14A.3 S4). The
+    /// borrow-confining sibling of the former `agent_complete`: it takes the model
+    /// handle mutably for the call while the sink (which borrows the renderer +
+    /// stdout, both loop-locals disjoint from `self`) forwards raw text deltas.
+    /// A non-streaming provider degrades via the `AgentModel::complete_streaming`
+    /// default (one delta carrying the whole answer, §17.22 Fallback).
+    fn agent_complete_streaming(
+        &mut self,
+        req: &AgentRequest,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
         let state = self
             .agent
             .as_mut()
@@ -402,7 +422,7 @@ impl CompilerSession {
             .model
             .as_mut()
             .ok_or_else(|| "agent dormant".to_string())?;
-        model.complete(req)
+        model.complete_streaming(req, sink)
     }
 }
 

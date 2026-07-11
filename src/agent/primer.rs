@@ -13,6 +13,12 @@
 /// The always-on language primer, embedded at build time (§7.1). Included in
 /// EVERY request as system content (`request.rs`), so the model is grounded in
 /// Cranelisp on every turn regardless of what the harvest carries.
+///
+/// MAINTAINER: the primer's `syntax` topic-name list must stay in sync with
+/// `src/syntax/cheatsheet.txt`'s `=== topic: <name> ===` delimiters — see
+/// `design/int/agent.md §22.4` (the gated primer edit). This obligation lives
+/// here in code, NOT in `primer.txt`, since everything in the `.txt` is model
+/// prompt context and should address the model, not human developers.
 pub const LANGUAGE_PRIMER: &str = include_str!("primer.txt");
 
 /// Borrow the primer text. A function (not just the const) so the call site

@@ -1,0 +1,35 @@
+; Code formatting — /sexp and /source align let bindings and match arms
+; The self-documenting REPL shows a definition's source through a pair-aware
+; pretty-printer: let bindings and match arms render one pair per line, with the
+; names/patterns in a left column and the values/bodies in an aligned right
+; column. /sexp (parsed form) and /source (stored source) share the same printer,
+; so they agree byte-for-byte. This is a regression guard for repl/spec.md §3.11.
+
+; A multi-binding let — names left-aligned, values at the aligned right column.
+; `total`, `label`, `doubled` form the left column; the widest name sets where
+; every value begins:
+
+(defn stats [xs] (let [total (+ 1 2) label "sum" doubled (* total 2)] doubled))
+/sexp stats
+
+; A multi-arm match — patterns left-aligned, arm bodies at the aligned right
+; column. A two-or-more-arm match always renders multi-line (never collapsed):
+
+(deftype Signal (Stop) (Slow) (Go))
+(defn action [s] (match s [(Stop) "halt" (Slow) "ease off" (Go) "drive on"]))
+/sexp action
+
+; /source shares the printer with /sexp — same bytes, no divergence:
+
+/source action
+
+; Both combined, nested: a let whose first value is itself a match, whose second
+; value is an arithmetic expression, and whose third is a multi-line if. Each
+; binding value aligns to the same right column, and the nested match aligns its
+; own arm columns independently. This is the §3.11 `rotate` fixture:
+
+(deftype Rotation (L [:Int l]) (R [:Int r]))
+(deftype Position [:Int p])
+(defn position-value [x] (match x [(Position n) n]))
+(defn rotate [p r] (let [d (match r [(L l) (- 0 l) (R r) r]) new-pos (+ (position-value p) d) final-pos (if (< new-pos 0) (+ new-pos 100) new-pos)] (Position final-pos)))
+/sexp rotate

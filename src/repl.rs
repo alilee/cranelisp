@@ -3199,8 +3199,8 @@ pub(crate) fn append_name_category(buf: &mut String, label: &str, names: &[Strin
 pub(crate) fn format_prelude_implicit_group(names: &[String]) -> String {
     let mut out = String::from(
         "Prelude (implicit):  \
-         ; available via the prelude outer scope, \
-         shadowed by any explicit import/def of the same name\n",
+         ; available via the prelude outer scope; a local def or a clashing \
+         import of the same name conflicts — use the fully-qualified name\n",
     );
     append_layout_body(&mut out, names);
     out
@@ -4037,6 +4037,18 @@ mod prelude_group_layout_tests {
             header.starts_with("Prelude (implicit):")
                 && header.contains("available via the prelude outer scope"),
             "the header suffix comment MUST be preserved; header={header:?}",
+        );
+        // The suffix MUST describe the §8.6.4 CONFLICT semantics, NOT "shadowing":
+        // a def (or a clashing import) of a prelude name is a compile-time error
+        // resolved by the fully-qualified name — never a silent override.
+        assert!(
+            header.contains("conflicts") && header.contains("fully-qualified"),
+            "suffix MUST describe the §8.6.4 conflict + FQ resolution; header={header:?}",
+        );
+        assert!(
+            !header.contains("shadow"),
+            "prelude names are NOT shadowed by a def/import of the same name — \
+             that is a §8.6.4 conflict; header={header:?}",
         );
     }
 

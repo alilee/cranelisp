@@ -61,6 +61,18 @@ narration is verified line-by-line against emitted CLIF in
 It uses bare `primitives` (like the perf fixtures) rather than the curated surface,
 so each function's IR isolates one optimization.
 
+`code-formatting.demo` (un-numbered, sorts after the numbered arc) is a
+REPL-tooling regression guard, not a language-capability one: it exercises the
+pair-aware `/sexp` / `/source` pretty-printer — the aligned `let`-binding and
+`match`-arm column layout normatively specified in `repl/spec.md §3.11` (FIXME
+0554, S107). It defines a multi-binding `let`, a multi-arm `match`, and the
+`rotate` fixture (a `let` whose values are a nested `match`, an arithmetic
+expression, and a multi-line `if`), then shows each through `/sexp` (and, for
+`match`, `/source` too — asserting the two commands agree byte-for-byte). It is
+deliberately outside the "demonstrate the language, not the changelog" arc — its
+subject is the printer, not a language feature — and guards the §3.11 aligned
+output against regression. Replay: `DEMO_FAST=1 ./repl/showcase code-formatting`.
+
 ## The archive (regression guards)
 
 `archive/` holds the historical sprint/ring-named demos (`ring*`, `v4*`, `s81`).

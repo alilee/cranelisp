@@ -441,6 +441,7 @@ dependencies = [
  "cranelisp-types",
  "criterion",
  "dashmap",
+ "futures",
  "libc",
  "libloading",
  "mimalloc",

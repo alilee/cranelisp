@@ -181,6 +181,109 @@ fn deftype_sum_with_field_match() {
     .assert_stdout_contains(":primitives/Int 5");
 }
 
+// spec: spec/05-definitions.md §5.2 — a data constructor's fields are a
+// bracketed [:Type name] list (grammar §5.2: constructor = name | '(' name
+// docstring? field_list ')'; field_list = '[' field_def* ']'). A bare
+// `(Ctor :Type)` — no brackets, no field name — is NOT a valid constructor.
+// DEFECT (found S106 via the /int embedded agent; user-reported): the frontend
+// SILENTLY ACCEPTS `(L :Int)`, parsing `:Int` as a type annotation on the
+// constructor and DROPPING the field — L/R collapse to NULLARY constructors (a
+// silent enum). `(deftype Rotation (L :Int) (R :Int))` thus registers an enum
+// with nullary L/R instead of erroring, discarding both intended Int fields
+// with no diagnostic (`L` then introspects as a value `:user/Rotation
+// Rotation.L`, not `(Fn [Int] Rotation)`). Expected: a compile error naming the
+// missing field name / brackets.
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
+// (no error is emitted); GREEN when the frontend rejects the nameless field.
+// FIXME(/frontend)
+#[test]
+fn deftype_ctor_nameless_type_field_rejected_neg() {
+    let out = repl_prims("(deftype Rotation (L :Int) (R :Int))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "a constructor field `(L :Int)` — no brackets, no field name — MUST be a \
+         compile error per §5.2 (fields are [:Type name] lists), not silently \
+         accepted as a nullary constructor; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/05-definitions.md §5.2 — POSITIVE companion to the nameless-field
+// rejection (S107 item 1): a CORRECTLY-bracketed sum type still constructs. This
+// guards that the frontend's rejection of a bare `(L :Int)` is NARROW — it MUST
+// NOT break the well-formed `(L [:Int n])` constructor. `L` introspects as the
+// unary constructor function `(Fn [primitives/Int] user/Rotation)` and `(L 5)`
+// builds the value `(Rotation.L 5)`. GREEN today; MUST stay GREEN across the fix.
+#[test]
+fn deftype_sum_bracketed_field_still_constructs() {
+    let out = repl_prims(
+        "(deftype Rotation (L [:Int n]) (R [:Int n]))\n\
+         L\n\
+         (L 5)\n",
+    );
+    // L is a first-class unary constructor function, NOT a nullary value.
+    out.assert_stdout_contains_all(&[
+        ":(Fn [primitives/Int] user/Rotation) user/Rotation.L",
+        // (L 5) builds a real value — the constructor is not degraded to an enum.
+        ":user/Rotation (Rotation.L 5)",
+    ]);
+}
+
+// spec: spec/05-definitions.md §5.2 — TIGHTER NEGATIVE for the silent-enum bug
+// (S107 item 1). Companion to `deftype_ctor_nameless_type_field_rejected_neg`
+// (which asserts the presence of an `error`); this pins the SPECIFIC symptom that
+// MUST NOT occur: after the malformed `(deftype Rotation (L :Int) (R :Int))`, the
+// bare `L` MUST NOT introspect as a NULLARY value `:user/Rotation Rotation.L`
+// (the exact silent-enum collapse — the `:Int` field swallowed and `L` degraded
+// to a fieldless constructor). FAILING-NOT-IGNORED per
+// memory/feedback_failing_not_ignored.md — RED today (`L` introspects as the
+// nullary `:user/Rotation Rotation.L`); GREEN when the frontend rejects the
+// nameless field so `L` is never registered as a nullary ctor. FIXME(/frontend)
+#[test]
+fn deftype_ctor_nameless_field_not_nullary_neg() {
+    let out = repl_prims(
+        "(deftype Rotation (L :Int) (R :Int))\n\
+         L\n",
+    );
+    // The nullary-value introspection is the silent-enum symptom the fix removes.
+    assert!(
+        !out.stdout.contains(":user/Rotation Rotation.L"),
+        "after the malformed `(L :Int)` field, `L` MUST NOT introspect as a \
+         nullary value `:user/Rotation Rotation.L` — the `:Int` field must not be \
+         silently swallowed into a fieldless constructor (§5.2); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/05-definitions.md §5.2 — a data constructor's grammar is
+// `'(' name docstring? field_list ')'` — there is NOTHING legal after the
+// `field_list`. A form appearing AFTER a valid `[:Type name]` field bracket
+// therefore MUST be a compile error, not silently dropped.
+// DEFECT (found S107 via code review; DISTINCT from the item-1 nameless-field
+// case `deftype_ctor_nameless_type_field_rejected_neg` above): `build_constructor_def`
+// in `cranelisp-frontend` only inspects the child immediately after the ctor name
+// (`children[next]`) and IGNORES anything after the field bracket. So
+// `(deftype Box (Box [:Int n] extra))` SILENTLY ACCEPTS `Box` as a one-field
+// constructor and DISCARDS the trailing `extra` with no diagnostic — `Box`
+// introspects as `(Fn [primitives/Int] user/Box)` exactly as if `extra` were
+// never written. Expected: a compile error naming the unexpected trailing form.
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
+// (the trailing form is silently dropped, no error is emitted); GREEN when
+// `/frontend` rejects the trailing form after the field bracket.
+// FIXME(/frontend)
+#[test]
+fn deftype_ctor_trailing_form_after_field_bracket_rejected_neg() {
+    let out = repl_prims("(deftype Box (Box [:Int n] extra))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "a constructor form after a valid `[:Type name]` field bracket \
+         (`(Box [:Int n] extra)`) MUST be a compile error per §5.2 (grammar: \
+         constructor = '(' name docstring? field_list ')' — nothing follows the \
+         field_list), not silently dropped; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/05-definitions.md §5.2 — product type
 #[test]
 fn deftype_product_construct_and_destructure() {

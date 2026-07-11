@@ -940,6 +940,24 @@ fn agent_output_no_literal_ansi_escape_when_color_off_neg() {
         "the agent answer must have rendered (framed), stdout={}",
         out.stdout
     );
+    // (c) S107 re-baseline (§17.2 item 3, FIXME 0556): the ```lisp code lines
+    // MUST be copy-clean — NO per-line `▌` gutter on any code line. Identify the
+    // code lines by the code-only token `add-i64` (never in the prose) and assert
+    // none carries the gutter. RED on HEAD: today the fence line renders as
+    // `▌ (defn double …)`; GREEN when the item-3 render split lands.
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "agent ```lisp code lines MUST be un-guttered (`▌`-free) so they copy \
+         clean (§17.2 item 3, FIXME 0556); found guttered code line(s): {:?}\n\
+         stdout={}",
+        guttered_code,
+        out.stdout
+    );
 }
 
 // spec: repl/spec.md §17.13.2 — the fenced ```lisp form is routed through the
@@ -986,6 +1004,22 @@ fn agent_output_lisp_fence_pretty_printed_styled() {
             out.stdout
         );
     }
+    // S107 re-baseline (§17.2 item 3, FIXME 0556): the pretty-printed code lines
+    // MUST carry NO `▌` gutter (copy-clean). The gutter glyph `▌` is a raw byte
+    // regardless of colour, so the check holds in both colour modes. RED on HEAD
+    // (the fence line renders `▌ (defn double …)`); GREEN with the render split.
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "the pretty-printed ```lisp code lines MUST be un-guttered (`▌`-free) \
+         (§17.2 item 3, FIXME 0556); found guttered code line(s): {:?}\nstdout={}",
+        guttered_code,
+        out.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1193,527 @@ fn agent_session_render_golden_transcript() {
         !out.stdout.contains(ESC_SGR),
         "the whole agent session under --no-color must contain NO literal ANSI \
          escape (\\x1b[), stdout={:?}",
+        out.stdout
+    );
+    // (5) S107 re-baseline (§17.13.3 whole-session golden; §17.2 item 3, FIXME
+    // 0556): the ```lisp code lines are gutter-free (copy-clean) while the prose
+    // lines keep their `▌` gutter — the render split is code-only. RED on HEAD
+    // (the fence line renders `▌ (defn target …)`); GREEN with the render split.
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "the ```lisp code lines MUST be un-guttered (`▌`-free) (§17.2 item 3); \
+         found guttered code line(s): {:?}\nstdout={}",
+        guttered_code,
+        out.stdout
+    );
+    // The surrounding PROSE keeps its gutter (the split is code-only): the prose
+    // sentence carrying "cleaner version" MUST be guttered.
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l.contains("cleaner version") && l.contains('\u{258c}')),
+        "agent prose lines MUST keep the `▌` gutter (code-only split, §17.2 item \
+         3); the prose line carrying \"cleaner version\" must be guttered.\n\
+         stdout={}",
+        out.stdout
+    );
+}
+
+// ===========================================================================
+// S107 item 3 — FIXME 0556: agent gutter copy shape (repl/spec.md §17.2 item 3,
+// §17.13.2 "Copy-clean, un-guttered [S107]", §10.3). Normative MUST: agent-
+// emitted ```lisp / ```cranelisp code fences render with NO per-line `▌` gutter
+// on any code line, and the code block's bytes are byte-identical (colour-off)
+// to `/sexp` / `pretty_print_str` for the same form — nothing prepended.
+// Surrounding PROSE lines keep their `▌` gutter (the split is code-only).
+//
+// RED on HEAD: `src/style.rs::agent_prose` gutters EVERY line via `text.lines()`,
+// so today the ```lisp fence line renders `▌ (defn double …)`. Flips GREEN when
+// the render-side structural split lands in `src/agent/render.rs` (gutter prose,
+// frame code fences un-guttered). Drives the real binary via the stub provider.
+// ===========================================================================
+
+/// Extract the `/sexp <name>` pretty-print block from a captured session: the
+/// non-empty lines strictly between the `; sexp for <name>` marker line and the
+/// next REPL prompt. These lines are emitted clean (no prompt prefix) by the
+/// pretty-printer, so they are the byte-exact deterministic reference for the
+/// agent-fence parity check.
+#[cfg(feature = "agent")]
+fn sexp_block(stdout: &str, name: &str) -> Vec<String> {
+    let marker = format!("; sexp for {name}");
+    let mut lines = stdout.lines();
+    for l in lines.by_ref() {
+        if l.contains(&marker) {
+            break;
+        }
+    }
+    let mut block = Vec::new();
+    for l in lines {
+        // A prompt line ends the pretty-print block.
+        if l.contains("ms; user>") {
+            break;
+        }
+        if l.trim().is_empty() {
+            continue;
+        }
+        block.push(l.to_string());
+    }
+    block
+}
+
+// spec: repl/spec.md §17.2 — the core 0556 MUST: an agent ```lisp fence renders
+// with NO `▌` gutter on any code line. Identify the code lines by the code-only
+// token `add-i64` (never in the prose) and assert none carries the gutter. RED
+// on HEAD (all lines guttered via `text.lines()`); GREEN with the render split.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_lisp_fence_code_lines_ungutter_neg() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // The turn rendered (framed prose present) — so the absence check is real.
+    assert!(
+        out.stdout.contains('\u{258c}'),
+        "the agent answer must have rendered (framed), stdout={}",
+        out.stdout
+    );
+    // Every CODE line MUST be gutter-free (the core 0556 MUST).
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "agent ```lisp code lines MUST carry NO `▌` gutter so they copy clean \
+         (§17.2 item 3, FIXME 0556); found guttered code line(s): {:?}\nstdout={}",
+        guttered_code,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.13.2 — byte parity: the rendered agent code block is
+// byte-identical (colour-off) to `/sexp` output for the same form (nothing
+// prepended). In one session define `double`, capture `/sexp double`, then show
+// the same form via an `/ask` ```lisp fence; assert each `/sexp` block line
+// appears VERBATIM (gutter-free, full-line-equal) in the agent region. RED on
+// HEAD: the agent line is `▌ (defn double …)` — not byte-equal to the un-guttered
+// `/sexp` line; GREEN when the fence renders un-guttered through the same printer.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_lisp_fence_bytes_equal_sexp_output() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "(defn double [x] (add-i64 x x))\n\
+         /sexp double\n\
+         /ask how do I double a number?\n",
+    );
+    let block = sexp_block(&out.stdout, "double");
+    assert!(
+        !block.is_empty(),
+        "the /sexp double pretty-print block must be captured; stdout={}",
+        out.stdout
+    );
+    // The agent region is everything from the terminal prose onward (excludes the
+    // earlier /sexp echo so the parity check targets the agent-rendered fence).
+    let agent_start = out
+        .stdout
+        .find("Here is a definition")
+        .expect("the agent prose must render");
+    let agent_region = &out.stdout[agent_start..];
+    for bl in &block {
+        assert!(
+            agent_region.lines().any(|al| al == bl),
+            "the agent ```lisp code block MUST be byte-identical (colour-off) to \
+             `/sexp` output — nothing prepended (§17.2 item 3, §17.13.2): the \
+             /sexp line {bl:?} MUST appear VERBATIM (gutter-free, full line) in \
+             the agent region.\n--- /sexp block ---\n{block:#?}\n\
+             --- agent region ---\n{agent_region}"
+        );
+    }
+}
+
+// spec: repl/spec.md §17.2 — the split is CODE-ONLY: the surrounding prose lines
+// (before AND after the fence) MUST still carry the `▌` gutter. GREEN today
+// (prose is guttered) and MUST stay GREEN across the fix (the un-guttering is
+// scoped to code lines, never the prose framing).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_prose_lines_keep_gutter() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n\
+         prose: That defines double.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // The prose line BEFORE the fence keeps its gutter.
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l.contains("Here is a definition") && l.contains('\u{258c}')),
+        "the prose line before the fence MUST keep its `▌` gutter (code-only \
+         split, §17.2 item 3); stdout={}",
+        out.stdout
+    );
+    // The prose line AFTER the fence keeps its gutter too.
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l.contains("That defines double") && l.contains('\u{258c}')),
+        "the prose line after the fence MUST keep its `▌` gutter (code-only \
+         split, §17.2 item 3); stdout={}",
+        out.stdout
+    );
+}
+
+// ===========================================================================
+// S107 item 4 — FIXME 0555: streaming the agent's terminal answer
+// (`--features agent`; repl/spec.md §17.22). The terminal `Done` prose streams
+// line-by-line as deltas arrive; a ```lisp fence is BUFFERED while open and
+// emitted formatted + un-guttered at fence-close; tool-call turns are NOT
+// streamed (explicit seam). The load-bearing MUST is the DIFFERENTIAL INVARIANT:
+// streamed-then-concatenated output is byte-identical (colour-off) to the
+// single-shot render of the same answer — streaming changes only WHEN bytes
+// reach the screen, never WHICH bytes.
+//
+// The streaming impl (arch S1–S5) is landed and the stub `<|delta|>` DSL
+// (`src/agent/stub.rs::DELTA_SPLIT`, FIXME 0555 — G-1 unblocked) scripts MULTIPLE
+// deltas within one terminal turn, including a boundary INSIDE a ```lisp fence.
+// These five e2e are GREEN against the landed impl (integration confirmation);
+// the load-bearing pure `== render_agent_prose` differential test is the
+// by-construction unit test in `src/agent/render.rs` (per G-1 the test infra was
+// impl, so these e2e are not failing-first — documented in `tests/plan/ledger.md`).
+// They drive the real binary through CRANELISP_AGENT_PROVIDER=stub, zero network.
+// ===========================================================================
+
+/// Extract the framed agent-answer region from a captured non-TTY session: from
+/// the first `▌` gutter glyph (start of the framed answer) up to — but excluding —
+/// the newline before the following REPL prompt. This drops the surrounding
+/// `N+Nms; user> ` prompt lines (whose timing varies run-to-run) so the agent
+/// region can be compared byte-for-byte across delta chunkings (G-3 — the non-TTY
+/// prompt interleaves the capture).
+#[cfg(feature = "agent")]
+fn agent_answer_region(stdout: &str) -> &str {
+    let start = stdout
+        .find('\u{258c}')
+        .expect("agent answer must render (gutter glyph present)");
+    let rest = &stdout[start..];
+    // The answer ends at the next REPL prompt (`…; user> `). Trim back to the
+    // newline that precedes that prompt line (excludes its variable timing).
+    match rest.find("; user>") {
+        Some(i) => &rest[..rest[..i].rfind('\n').unwrap_or(0)],
+        None => rest,
+    }
+}
+
+// spec: repl/spec.md §17.22 — the DIFFERENTIAL INVARIANT (the load-bearing MUST,
+// e2e proxy): a terminal answer scripted with `<|delta|>` splits (INCLUDING one
+// boundary INSIDE the ```lisp fence body) produces final rendered bytes
+// byte-identical (colour-off) to the SAME answer scripted as a SINGLE delta.
+// Delta chunking changes only WHEN bytes reach the screen, never WHICH bytes:
+// same gutter on prose lines, same un-guttered pretty-printed fence. G-3: the
+// non-TTY `user> ` prompt interleaves, so assert the framed answer BLOCK as a
+// byte-exact SUBSTRING + the extracted agent regions equal each other.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_streaming_bytes_equal_single_shot() {
+    // (a) the whole answer as ONE delta (no `<|delta|>` markers — the one-delta /
+    // §17.22 Fallback case).
+    let single = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n\
+         prose: That defines double.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // (b) the SAME answer scripted as MANY deltas — one boundary lands INSIDE the
+    // ```lisp fence body (mid-form), one after the leading prose line, one after
+    // the opening fence. The marker-stripped full text is identical to (a).
+    let multi = stub_repl_flags(
+        "done: Here is a definition:<|delta|>\n\
+         prose: ```lisp<|delta|>\n\
+         prose: (defn double [x]<|delta|> (add-i64 x x))\n\
+         prose: ```\n\
+         prose: That defines double.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // The exact framed answer BLOCK: prose lines guttered `▌ `, the pretty-printed
+    // ```lisp form on its OWN line UN-guttered, then the trailing prose guttered.
+    // (Byte-exact substring per G-3 — the surrounding prompt/timing is excluded.)
+    const BLOCK: &str = "\u{258c} Here is a definition:\n\
+                         (defn double [x] (add-i64 x x))\n\
+                         \u{258c} That defines double.";
+    assert!(
+        single.stdout.contains(BLOCK),
+        "single-delta render must contain the exact framed answer block; stdout={:?}",
+        single.stdout
+    );
+    assert!(
+        multi.stdout.contains(BLOCK),
+        "multi-delta render must contain the exact framed answer block; stdout={:?}",
+        multi.stdout
+    );
+    // The differential invariant end-to-end: the extracted agent regions are
+    // byte-identical across the two chunkings (only WHEN differs, never WHICH). A
+    // mismatch here is a REAL streaming defect — not something to paper over.
+    let a = agent_answer_region(&single.stdout);
+    let b = agent_answer_region(&multi.stdout);
+    assert_eq!(
+        a, b,
+        "streamed (multi-delta) and single-shot agent regions MUST be byte-identical \
+         (§17.22 differential invariant)"
+    );
+    // colour-off cleanliness: no literal escape leaked in either capture.
+    assert!(
+        !single.stdout.contains(ESC_SGR) && !multi.stdout.contains(ESC_SGR),
+        "no literal ANSI escape may leak under --no-color; single={:?} multi={:?}",
+        single.stdout,
+        multi.stdout
+    );
+}
+
+// spec: repl/spec.md §17.22 — a ```lisp fence split ACROSS delta boundaries is
+// BUFFERED while open and emitted as ONE whole formatted, un-guttered block at
+// fence-close: no raw fence markers survive, no half-formatted mid-fence fragment
+// appears, and no code line carries the `▌` gutter.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_streaming_fence_emitted_whole_at_close_neg() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:<|delta|>\n\
+         prose: ```lisp<|delta|>\n\
+         prose: (defn double [x]<|delta|> (add-i64 x x))\n\
+         prose: ```<|delta|>\n\
+         prose: That defines double.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // (a) NO raw fence markers survive — the fence is buffered while open and
+    // emitted formatted at fence-close (§17.22 "renders formatted at fence-close").
+    assert!(
+        !out.stdout.contains("```"),
+        "a delta-split ```lisp fence must NOT leak raw fence markers — it is \
+         buffered then emitted whole at close (§17.22); stdout={:?}",
+        out.stdout
+    );
+    // (b) the pretty-printed form appears as ONE whole line despite the mid-fence
+    // delta boundary (buffer-within-fence: the boundary does not split the form).
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l == "(defn double [x] (add-i64 x x))"),
+        "the fence must render as ONE whole pretty-printed form line despite the \
+         mid-fence delta boundary; stdout={:?}",
+        out.stdout
+    );
+    // (c) no code line carries the `▌` gutter (identify code lines by `add-i64`,
+    // never in the prose) — the streamed fence is copy-clean.
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "the streamed fence code line MUST be un-guttered (`▌`-free); found: {:?}\n\
+         stdout={}",
+        guttered_code,
+        out.stdout
+    );
+    // (d) +neg: no half-formed mid-fence fragment line surfaces (the mid-fence
+    // delta boundary must NOT surface `(defn double [x]` as its own line).
+    assert!(
+        !out.stdout.lines().any(|l| l.trim() == "(defn double [x]"),
+        "no half-formed mid-fence fragment line may surface mid-stream; stdout={:?}",
+        out.stdout
+    );
+    // Sanity: the turn rendered (framed prose present) so the absences are real.
+    assert!(
+        out.stdout.contains('\u{258c}'),
+        "the agent answer must have rendered (framed); stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.22 — a multi-delta terminal answer renders the correct
+// final result (the observable proxy; per G-2 true incrementality/timing is not
+// observable through the post-exit captured pipe). Assert the rendered result:
+// each prose line framed (guttered), IN ORDER, and the fenced code un-guttered +
+// whole.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_terminal_answer_streams_incrementally() {
+    let out = stub_repl_flags(
+        "done: First line.<|delta|>\n\
+         prose: Second line.<|delta|>\n\
+         prose: ```lisp<|delta|>\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n\
+         prose: Third line.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // Each prose line renders framed (guttered) — the correct final result of the
+    // multi-delta streaming path.
+    for line in ["First line.", "Second line.", "Third line."] {
+        assert!(
+            out.stdout
+                .lines()
+                .any(|l| l.contains(line) && l.contains('\u{258c}')),
+            "prose line {line:?} must render guttered (framed); stdout={}",
+            out.stdout
+        );
+    }
+    // The fenced form renders whole + un-guttered (copy-clean).
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l == "(defn double [x] (add-i64 x x))"),
+        "the fenced form must render whole + un-guttered; stdout={:?}",
+        out.stdout
+    );
+    let guttered_code: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.contains("add-i64") && l.contains('\u{258c}'))
+        .collect();
+    assert!(
+        guttered_code.is_empty(),
+        "code lines MUST be un-guttered; found {:?}\nstdout={}",
+        guttered_code,
+        out.stdout
+    );
+    // The streamed prose lines appear IN ORDER in the capture.
+    let p1 = out.stdout.find("First line").expect("First line renders");
+    let p2 = out.stdout.find("Second line").expect("Second line renders");
+    let p3 = out.stdout.find("Third line").expect("Third line renders");
+    assert!(
+        p1 < p2 && p2 < p3,
+        "the streamed prose lines must appear in order; stdout={}",
+        out.stdout
+    );
+    // colour-off clean.
+    assert!(
+        !out.stdout.contains(ESC_SGR),
+        "no literal ANSI escape under --no-color; stdout={:?}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.22 — the streaming path applies ONLY to the terminal
+// `Done` prose (explicit S107 seam): a turn that issues a TOOL CALL is NOT
+// streamed — its pull command + result render as today (unframed pull with the
+// `agent>` prompt, after the tool runs); only the terminal `Done` prose that
+// follows streams framed. Pins the seam boundary.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_tool_call_turn_not_streamed() {
+    let out = stub_repl_flags(
+        "tool: source target\n\
+         done: that is the source of target\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask show me target\n",
+    );
+    // The tool-call turn is NOT streamed: the pull renders as-today — the `agent>`
+    // command echo, UNFRAMED (no `▌` gutter on the pull line).
+    let pull_line = out
+        .stdout
+        .lines()
+        .find(|l| l.contains("/source target"))
+        .unwrap_or_else(|| panic!("the pulled command must render; stdout={}", out.stdout));
+    assert!(
+        pull_line.contains("agent>"),
+        "the pull renders as-today with the `agent>` prompt; line={pull_line:?}"
+    );
+    assert!(
+        !pull_line.contains('\u{258c}'),
+        "the tool-call pull is NOT framed (not streamed — §17.22 seam); line={pull_line:?}"
+    );
+    // The pull RESULT (the source of target) renders UNFRAMED too (tool-call turn).
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l.contains("(defn target [x] (add-i64 x 1))") && !l.contains('\u{258c}')),
+        "the pull result renders unframed (the tool-call turn is not streamed); stdout={}",
+        out.stdout
+    );
+    // Only the terminal `Done` prose is streamed → framed.
+    assert!(
+        out.stdout
+            .lines()
+            .any(|l| l.contains("that is the source of target") && l.contains('\u{258c}')),
+        "the terminal Done prose must render framed (streamed); stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.22 — Fallback: a provider relying on the DEFAULT
+// `AgentModel::complete_streaming` (whole `Done` prose as ONE delta) degrades to
+// today's behaviour — the one-delta answer renders EXACTLY as the all-at-once
+// render (framed prose + un-guttered pretty-printed fence, `--no-color`-clean).
+// A stub script with no `<|delta|>` markers exercises the one-delta path (the
+// same bytes the trait default emits).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_non_streaming_provider_degrades() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n\
+         prose: That defines double.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // Renders exactly as the all-at-once render: the framed answer BLOCK appears
+    // byte-exact (prose guttered, fence un-guttered on its own line).
+    const BLOCK: &str = "\u{258c} Here is a definition:\n\
+                         (defn double [x] (add-i64 x x))\n\
+                         \u{258c} That defines double.";
+    assert!(
+        out.stdout.contains(BLOCK),
+        "the one-delta (non-streaming) answer must render exactly as all-at-once \
+         (§17.22 Fallback): the framed block appears byte-exact; stdout={:?}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("```"),
+        "no raw fence markers may survive (fence is pretty-printed); stdout={:?}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains(ESC_SGR),
+        "no literal ANSI escape under --no-color; stdout={:?}",
         out.stdout
     );
 }
@@ -2080,19 +2635,25 @@ fn primer_match_uses_flat_bracket_arms_not_paren_grouped() {
 
 // spec: spec/07-traits.md §7.1 — the primer's `deftrait` examples MUST use the
 // spec-correct shape with method sigs as DIRECT children
-// (`(deftrait Show (show [a] String))`), NOT the outer-bracket shape
-// (`(deftrait Show [(show [a] String)])`) which fails to parse ("expected
-// list"). RED on HEAD: primer.txt lines 46 + 128 carry the outer-bracket shape.
-// Flips green when /dev 1d rewrites the primer's deftrait example + summary.
+// (`(deftrait Describe (describe [a] String))`), NOT the outer-bracket shape
+// (`(deftrait Describe [(describe [a] String)])`) which fails to parse ("expected
+// list"). The primer's worked example uses the trait name `Describe` (NOT `Show`):
+// reusing the prelude method name `show` makes the prelude's `str` — which calls
+// `show` — recurse into the user's own impl → stack overflow; the primer's
+// adjacent guidance (primer.txt ~L154) now warns against reusing a prelude method
+// name. The test's INTENT is unchanged — the `deftrait` example uses method sigs
+// as DIRECT children, not the outer-bracket `[(...)]` shape. Current primer.txt:
+// L50 (special-forms summary) + L157 (worked example) both carry the direct-child
+// shape. GREEN. Guards against a regression to the non-compiling outer-bracket.
 #[test]
 fn primer_deftrait_uses_direct_children_not_outer_bracket() {
     let primer = primer_asset();
     // +neg: the outer-bracket deftrait (the WRONG shape, verified non-compiling)
     // must NOT appear — neither in the worked example nor the summary.
     assert!(
-        !primer.contains("(deftrait Show [(show"),
-        "primer must NOT use the outer-bracket `(deftrait Show [(show …)])` — it \
-         fails to parse (\"expected list\"); method sigs are direct children \
+        !primer.contains("(deftrait Describe [(describe"),
+        "primer must NOT use the outer-bracket `(deftrait Describe [(describe …)])` \
+         — it fails to parse (\"expected list\"); method sigs are direct children \
          (spec/07 §7.1)"
     );
     assert!(
@@ -2102,9 +2663,11 @@ fn primer_deftrait_uses_direct_children_not_outer_bracket() {
          no outer `[ ]` (spec/07 §7.1)"
     );
     // The spec-correct shape (method sig as a direct child) must be present.
+    // `Describe`, not `Show`: the method name must not collide with a prelude
+    // method (`show`), which would recurse the prelude's `str` into the impl.
     assert!(
-        primer.contains("(deftrait Show (show [a] String))"),
-        "primer must use the spec-correct `(deftrait Show (show [a] String))` \
+        primer.contains("(deftrait Describe (describe [a] String))"),
+        "primer must use the spec-correct `(deftrait Describe (describe [a] String))` \
          shape (method sigs as direct children, spec/07 §7.1) so the documented \
          example compiles"
     );

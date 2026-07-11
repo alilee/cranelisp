@@ -33,11 +33,15 @@ Comments start with `;`. Modules are namespaces; a fully-qualified name is
 
 == Special forms ==
 
+Notation: `[ ]` are LITERAL brackets you must type (Cranelisp vectors) — NOT an
+"optional" marker. `...` means "repeat as needed". Lowercase words (name,
+params, body) are placeholders; everything else is typed verbatim.
+
   (defn name [params...] body)        ; define a function
-  (defn name [params...] :Ret body)   ; with an explicit return-type annotation
+  (defn name [params...] :Ret body)   ; :Ret pins the return type (a :Type on the body)
   (defn name ([p] b) ([p q] b))       ; multi-signature: variants dispatched on arg types/arity
   (deftype Name [fields...])          ; product type (single constructor)
-  (deftype Name (Ctor1 ...) (Ctor2 ...)) ; sum type (multiple constructors)
+  (deftype Name (Ctor1 [:T f]) Ctor2)    ; sum type; ctor fields are [:Type name] lists
   (let [x v y w] body)                ; sequential local bindings
   (if cond then else)                 ; conditional
   (fn [params...] body)               ; anonymous function (lambda)
@@ -60,9 +64,7 @@ content: FORM, EXAMPLE, NOT-this, SPEC cross-link). The available topics are:
 
 These are CORE-LANGUAGE topic names only — for prelude/stdlib symbols in scope,
 read the harvested session context below (do not assume a symbol exists; pull
-`list` / `sig` / `doc` to confirm). (SYNC NOTE for /dev + /docs: this topic-name
-list MUST stay in sync with src/syntax/cheatsheet.txt's `=== topic: <name> ===`
-delimiters — agent.md §22.4.)
+`list` / `sig` / `doc` to confirm).
 
 == Cranelisp is NOT Clojure or Common Lisp ==
 
@@ -104,8 +106,9 @@ Primitive functions live in the `primitives` module (e.g. `add-i64`,
 
 == Canonical idioms ==
 
-A function with a docstring:
-  (defn square [x] "Return x times itself." (* x x))
+A function with a docstring (the docstring goes BETWEEN the name and the
+params — NEVER after the params, which is a parse error):
+  (defn square "Return x times itself." [x] (* x x))
 
 A recursive function (self-recursion + `if` + bare operators — no `recur`):
   (defn fib [n]
@@ -125,24 +128,34 @@ parameter so the recursive call IS the last operation:
 
 A constrained polymorphic function over Num (the constraint comes from using a
 Num operator on a type variable; the inferred scheme carries the `Num` bound):
-  (defn double [a] (+ a a))     ; :: (Fn [a] a) where a: Num
+  (defn double [a] (+ a a))     ; :: (Fn [:Num a] a)  (the Num bound shows inline)
   ; To pin the element type explicitly, annotate:
   (defn double-int [x] :Int (+ x x))
 
-A product type and its constructor:
+A product type and its constructor (fields are [:Type name] pairs, in brackets):
   (deftype Point [:Int x :Int y])
   (Point 1 2)
+  (x (Point 1 2))                     ; -> :primitives/Int 1  (accessor by field name)
 
-A sum type and a match over it (match arms are FLAT pat/body pairs in ONE [ ]):
-  (deftype Shape (Circle :Float) (Rect :Float :Float))
+A sum type with a docstring and a match over it. The docstring goes AFTER the
+type name, inside the form (a string after the closing paren is a dead
+expression, not a docstring). Each variant's fields are a [:Type name] bracket
+list — never a bare `(Ctor :Type)` (no brackets, no field name). Match arms are
+FLAT pat/body pairs in ONE [ ]:
+  (deftype Shape "A 2-D shape."
+    (Circle [:Float radius])
+    (Rect [:Float width :Float height]))
   (defn area [s]
     (match s
       [(Circle r) (* 3.14159 (* r r))
        (Rect w h) (* w h)]))
 
-A trait + impl (method sigs are DIRECT children — no outer [ ] around them):
-  (deftrait Show (show [a] String))
-  (impl Show Int (defn show [x] (int-to-string x)))
+A trait + impl (method sigs are DIRECT children — no outer [ ] around them).
+Don't name a method after a prelude method (e.g. `show`): the prelude's `str`
+calls `show`, so it would recurse into your impl. Use a fresh name; `str` is the
+prelude value-to-String function:
+  (deftrait Describe (describe [a] String))
+  (impl Describe Int (defn describe [x] (str x)))
 
 A module with a preamble (the leading `;;` comment block documents intent):
   ;; geometry — points and shapes.

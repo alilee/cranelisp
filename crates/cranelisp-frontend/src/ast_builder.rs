@@ -602,10 +602,24 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
             let (docstring, next) = extract_optional_docstring(children, 1);
 
             let fields = if next < children.len() {
-                if let Sexp::Bracket(..) = &children[next] {
-                    build_field_list(&children[next])?
-                } else {
-                    vec![]
+                match &children[next] {
+                    Sexp::Bracket(..) => build_field_list(&children[next])?,
+                    // A trailing form that is neither a docstring nor a
+                    // `[:Type name]` bracket is malformed (spec §5.2 requires
+                    // constructor fields to be a bracketed list). Historically
+                    // this fell through to `vec![]`, silently dropping the field
+                    // and collapsing e.g. `(L :Int)` to a NULLARY constructor
+                    // (a silent enum). Reject it with a self-documenting error.
+                    other => {
+                        return Err(parse_err(
+                            &format!(
+                                "constructor `{name}` field must be a bracketed `[:Type name]` \
+                                 list; found a bare form with no field name. Write \
+                                 `({name} [:Type name])` — e.g. `({name} [:Int n])`"
+                            ),
+                            other.span(),
+                        ));
+                    }
                 }
             } else {
                 vec![]

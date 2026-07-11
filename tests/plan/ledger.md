@@ -36,6 +36,68 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 107 Phase-5 Stage-1 — QA-first RED set (/qa, 2026-07-10)
+
+SHA `52389dfa` (HEAD at authoring). The Stage-1 failing-not-ignored tests from
+`tests/plan/s107-test-plan.md`. Each flips GREEN when its named `/dev` seam lands.
+Item 4 (streaming, §17.22) was **DEFERRED** at Phase-3 (the `AgentModel::complete_streaming`
+membrane + the stub multi-delta channel did not exist), then **UNBLOCKED**: S1–S5 landed the
+streaming impl and `src/agent/stub.rs::DELTA_SPLIT` (the `<|delta|>` DSL, FIXME 0555) closed
+harness gap G-1. The five item-4 e2e (below) are therefore **GREEN integration confirmation**,
+NOT failing-first — the load-bearing pure `== render_agent_prose` differential invariant is the
+by-construction unit test in `src/agent/render.rs` (per G-1 the test infra WAS the impl).
+
+**Item 1 — deftype nameless-field rejection (owner `/dev(cranelisp-frontend)`, target S107):**
+
+- `spec_05_definitions::deftype_ctor_nameless_field_not_nullary_neg` — RED.
+  Signature: `after the malformed (L :Int) field, L MUST NOT introspect as a nullary
+  value :user/Rotation Rotation.L` — HEAD renders `:user/Rotation Rotation.L` (silent
+  enum). Companion positive `deftype_sum_bracketed_field_still_constructs` is GREEN
+  (proves the reject is narrow). The pre-existing `deftype_ctor_nameless_type_field_rejected_neg`
+  stays RED (unchanged).
+- `spec_05_definitions::deftype_ctor_trailing_form_after_field_bracket_rejected_neg` — RED.
+  **Separate, pre-existing silent-acceptance** found S107 via code review (DISTINCT from the
+  nameless-field case above): a form appearing AFTER a valid `[:Type name]` field bracket is
+  silently dropped (`build_constructor_def` only inspects the child after the ctor name, ignoring
+  anything past the bracket). Signature: `(deftype Box (Box [:Int n] extra))` — HEAD silently
+  accepts `Box` as a one-field ctor (`:(Fn [primitives/Int] user/Box) user/Box`) and discards
+  `extra` with no error; MUST reject the trailing form per §5.2 grammar (nothing follows the
+  field_list). GREEN when `/dev(cranelisp-frontend)` rejects the trailing form.
+
+**Item 2 — §3.11 aligned `let`/`match` layout (owner `/dev(src)` — `src/pretty.rs`, target S107):**
+
+- `display_exact::sexp_rotate_aligned_let_match_byte_exact` — RED (byte-exact §3.11 block absent; HEAD smears the binding pairs).
+- `display_exact::source_rotate_aligned_matches_sexp_byte_exact` — RED (same, via shared `pretty_print`).
+- `display_exact::sexp_two_arm_match_forces_multiline_neg` — RED (HEAD collapses the 2-arm match onto one line).
+- GREEN stability guards (stay GREEN across the fix): `sexp_single_pair_let_flat_fallback`, `sexp_odd_count_match_arm_no_crash_neg`, `sexp_empty_let_binding_no_crash`.
+
+**Item 3 — FIXME 0556 agent gutter copy shape (`--features agent`; owner `/dev(src)` — `src/agent/render.rs`, target S107):**
+
+- `agent::agent_lisp_fence_code_lines_ungutter_neg` — RED (fence line renders `▌ (defn …)`).
+- `agent::agent_lisp_fence_bytes_equal_sexp_output` — RED (agent code line ≠ un-guttered `/sexp` line).
+- Re-baselined existing goldens, now RED until the render split lands: `agent_output_no_literal_ansi_escape_when_color_off_neg`, `agent_output_lisp_fence_pretty_printed_styled`, `agent_session_render_golden_transcript`.
+- GREEN (stays GREEN — code-only split): `agent_prose_lines_keep_gutter`.
+
+**Item 4 — FIXME 0555 streaming the agent's terminal answer (`--features agent`; §17.22; owner `/dev(src)` — `src/agent/render.rs` + `src/agent/stub.rs`, landed S107):**
+
+- Five e2e added to `tests/agent.rs`, all **GREEN** against the landed S1–S5 impl (integration
+  confirmation, not failing-first — G-1 test infra was impl; see the header note above):
+  - `agent::agent_streaming_bytes_equal_single_shot` — the differential-invariant e2e proxy: a
+    `<|delta|>`-split answer (one boundary INSIDE the ```lisp fence) renders byte-identical
+    (colour-off) to the single-delta script — extracted agent regions equal + framed BLOCK
+    byte-exact substring. **The load-bearing GREEN** (a mismatch would be a real streaming defect).
+  - `agent::agent_streaming_fence_emitted_whole_at_close_neg` — a fence split across deltas emits
+    ONE whole un-guttered pretty-printed block (no raw ```` ``` ````, no half-form fragment, no gutter).
+  - `agent::agent_terminal_answer_streams_incrementally` — multi-delta answer → correct final result,
+    prose guttered / code un-guttered, prose lines in order (G-2: timing not observable post-exit).
+  - `agent::agent_tool_call_turn_not_streamed` — the §17.22 seam: a tool-call turn's pull renders
+    unframed as today; only the terminal `Done` prose streams framed.
+  - `agent::agent_non_streaming_provider_degrades` — the one-delta Fallback renders exactly as the
+    all-at-once render (framed prose + un-guttered fence, byte-exact block, `--no-color`-clean).
+- Paired UNIT obligations (`/dev(src)`, NOT `/qa`): the pure `StreamingRenderer` concat
+  `== render_agent_prose` differential test + fence-buffering + membrane default-fallback, in
+  `src/agent/render.rs` — the direct MUST the e2e can only proxy (G-2).
+
 ### Sprint 105 Phase-7 close — residual-attribution guards RECLASSIFIED to GREEN (/qa, 2026-07-08)
 
 **Supersedes the Wave-1 "durable RED records" entry (below).** Phase-7 action 1
