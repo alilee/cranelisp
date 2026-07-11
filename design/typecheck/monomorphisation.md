@@ -415,6 +415,50 @@ not. **The one `cranelisp-types` shape change is the `Polymorphic` *input* arm (
 > does not — successor discovery reads the re-checked body's `mono_expr_types`
 > (already in hand inside `monomorphise_call`).
 
+### 3.7 Cross-module body-recheck scoping — the three load-bearing facts (S83, FIXME 0355)
+
+A constrained (trait-bound) fn defined in an imported module and *called*
+cross-module is collected by `collect_imported_constrained_calls`
+(`program.rs`) → `monomorphise_call` (`traits.rs`). The resulting mono variant
+(`cmp$Int+Int`) is an ordinary concrete `UserFn` `Def` registered in the
+**caller's** module with its own GOT slot; the existing concrete-mono codegen
+path wires it and its trait-method callees — **no backend special-case**. §3.5
+covers how the instance is *named* (home-qualified mangle). This subsection
+covers how its body is *re-checked correctly*, which is a separate correctness
+concern.
+
+The mono path threads `home: Option<&ModuleFullPath>` — the **defining** module,
+`Some` for an imported generic, else `state.current_module` — into
+`get_constrained_fn`, `recheck_body_for_mono`, `resolve_inner_constrained_calls`,
+and `verify_constraints`. Three scoping facts are load-bearing; get any one
+wrong and the call mis-typechecks, with the characteristic symptom being a
+**spurious `no impl of trait T for type X`**:
+
+1. **Body re-check switches `state.current_module` to `home`.** The body's bare
+   references (`show`, `str-concat`, trait methods) must resolve in the defining
+   module's import context, not the caller's. Without the switch a name the
+   defining module imported but the caller does not is reported unresolved.
+
+2. **Constraint verification resolves through the instantiation map, not the raw
+   scheme var_ids.** `scheme.constraints` are keyed by the scheme's ORIGINAL
+   quantified var_ids; only the FRESH instantiated vars are unified into
+   `state.subst`. Cross-module the original var_ids are stale **and may
+   collide** with a caller var — observed: `cmp`'s constraint var resolving to
+   the caller's `IO` (from `main`'s `Pure`), yielding "no impl of Eq/Display for
+   IO". `instantiate_and_resolve` returns the original→fresh `var_mapping`;
+   `verify_constraints` resolves each constrained var through it first. The
+   local same-module path masked this because the original var_id happened to
+   stay live in `state.subst`.
+
+3. **Impl lookup for verification roots in `home` too.** `verify_constraints`
+   runs with `current_module` switched to `home`, so `has_impl_with_state` finds
+   a defining-module-local (non-prelude) trait impl. A run that only exercised
+   prelude-resident impls masked this via the prelude outer scope; a
+   `helper`-module-local trait/impl exposes the gap.
+
+Guarded by
+`program::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`.
+
 ---
 
 ## 4. The §3.11.1 ambiguity check (0373 ii) — SECONDARY backstop, POSITION-COMPLETE, predicate-shared

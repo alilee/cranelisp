@@ -46,10 +46,10 @@ You do not implement. You arbitrate and you author normative artefacts (cross-cr
 
 ## Owned artefacts
 
-- `design/arch/` — overview, principles, decisions, bounded-contexts, **facade specs** (`design/arch/facades/{crate}.md`), interfaces, roadmap, working migration docs, archive (see §Target documentation set).
+- `design/arch/` — overview, principles, decisions, bounded-contexts, interfaces, roadmap, working migration docs, archive (see §Target documentation set). Per-crate public-surface truth lives in source rustdoc + `bounded-contexts.md`; the `facades/` directory is **retired** (facade *spec* files folded into rustdoc + BC S69–S81; only S69/S70 audit records remain).
 - `crates/cranelisp-types/` — cross-crate types and traits (the *code* that is the contract).
 - Root `Cargo.toml` — workspace structure.
-- Per-crate **facade** review authority — the facade *implementation* (`crates/{crate}/src/lib.rs` and equivalent) *lives in* the owning crate and is edited by `/dev` (narrow), but every change to the facade or to its top-of-file doc-comment requires `/arch` approval. The facade *spec* (`design/arch/facades/{crate}.md`) is `/arch`-authored and `/arch`-edited; it states the as-designed surface against which the implementation is reviewed. See §Facade specs and §Facade convention.
+- Per-crate **facade** review authority — the facade *implementation* (`crates/{crate}/src/lib.rs` and equivalent) *lives in* the owning crate and is edited by `/dev` (narrow), but every change to the facade or to its top-of-file doc-comment requires `/arch` approval. Facade *spec* files (`design/arch/facades/{crate}.md`) are **retired** (S69–S81); the as-designed surface is now stated by the crate's source rustdoc (crate-root `//!` + per-item `///`) with cross-surface narrative in `bounded-contexts.md`, against which the implementation is reviewed. See §The as-designed surface record and §Facade convention.
 
 `/arch` owns no source code outside `crates/cranelisp-types/`.
 
@@ -76,7 +76,7 @@ These documents are mutually consistent and audited together:
 - `design/arch/overview.md` — newcomer bridge
 - `design/arch/principles.md` (index) + `design/arch/principles/NN-*.md` (one file per principle)
 - `design/arch/bounded-contexts.md` — per-surface bounded-context statements
-- `design/arch/facades/{crate}.md` — per-surface facade specs (one per crate-shaped surface) — **including intent, rationale, and load-bearing rejected alternatives**
+- source rustdoc (crate-root `//!` + per-item `///`) — per-surface as-designed public surface, including intent and rationale; cross-surface narrative + load-bearing rejected alternatives live in `bounded-contexts.md` (dedicated facade *spec* files retired S69–S81)
 - `design/arch/interfaces.md` — narrative companion to `crates/cranelisp-types/`
 - `design/arch/sequences/*.mmd` + `*.svg` — sequence diagrams (two families: concurrency-invariant + execution-flow); index at `design/arch/sequences/README.md`
 - `design/arch/CLAUDE.md` — the index / cross-reference document itself
@@ -91,7 +91,7 @@ Outside the canonical set:
 Before any edit lands, ask: **if this commitment, correction, or invariant had already been resolved, where in the permanent set would a future reader expect to find it?** That location is the target. Update that location. Do not create alternative homes (notes files, side-tables, separate "rationale" documents). The permanent set is the only durable home; interim artefacts (audit findings, walk-through-log entries, working migration docs) must resolve into it.
 
 **The permanent set:**
-- `facades/{crate}.md` — per-surface shape + intent + rationale + load-bearing rejected alternatives + cross-surface commitments
+- source rustdoc + `bounded-contexts.md` — per-surface shape + intent + rationale + load-bearing rejected alternatives + cross-surface commitments (dedicated facade *spec* files retired S69–S81)
 - `bounded-contexts.md` — cross-surface narrative ("why these surfaces exist as separate surfaces")
 - `principles.md` + `principles/NN-*.md` — cross-cutting architectural axioms
 - `sequences/*.mmd` — dynamic cross-crate interaction
@@ -155,49 +155,42 @@ All types and traits that cross crate boundaries live in `crates/cranelisp-types
 
 Authoring is `/arch`-only. Consumers file FIXME `target: /arch` for additions or shape changes. The narrative companion to the types crate is `design/arch/interfaces.md` — it explains the *why* of each boundary type; the *what* is the code itself.
 
-**Out of scope for the types crate**: free functions, the providing crate's re-export shape, and the `pub` / `pub(crate)` boundary within a providing crate. Those are captured in per-crate **facade specs** (next section), not in `cranelisp-types`.
+**Out of scope for the types crate**: free functions, the providing crate's re-export shape, and the `pub` / `pub(crate)` boundary within a providing crate. Those are captured in the providing crate's source rustdoc + `bounded-contexts.md` (next section), not in `cranelisp-types`.
 
-## Facade specs — as-designed surface per crate
+## The as-designed surface record — source rustdoc + bounded-contexts
 
-`cranelisp-types` captures cross-crate types and traits in code. It cannot capture free function signatures, re-exports, or per-crate visibility decisions. Those are projected by `/arch` through per-crate **facade specs**:
+`cranelisp-types` captures cross-crate types and traits in code. It cannot capture free function signatures, re-exports, or per-crate visibility decisions. The dedicated **facade *spec* files** that once projected those (`design/arch/facades/{crate}.md`) are **retired** (S69–S81; `int` last, S81 — see `design/arch/CLAUDE.md`). The as-designed public surface now lives in two homes:
 
-`design/arch/facades/{crate}.md` — one file per surface (`frontend`, `typecheck`, `backend`, `runtime`, `platform`, `int`). Each file contains:
+- **Source rustdoc** — the crate-root `//!` + per-item `///` in `crates/{crate}/src/lib.rs` and its modules. This is the canonical statement of what the crate exposes: free functions (e.g. `pub fn parse(source: &str) -> Result<Vec<Sexp>, ParseError>`), re-exports, sealed-trait impls, `#[non_exhaustive]` DTOs, public consts.
+- **`bounded-contexts.md`** — the cross-surface narrative: why the surface exists, its consumed surface (which other crates it depends on; cycles forbidden), and load-bearing rejected alternatives.
 
-- **Bounded context citation** — one-line summary + link to `design/arch/bounded-contexts.md`.
-- **Public surface, as-designed** — Rust-like signatures for everything the crate is *expected* to expose: free functions (e.g. `pub fn parse(source: &str) -> Result<Vec<Sexp>, ParseError>`), re-exports from `cranelisp-types`, public consts.
-- **Consumed surface** — what this crate imports from other crates (i.e., which other facades it depends on). Cycles forbidden.
-- **Sealed traits** — which traits in `cranelisp-types` the crate implements; sealed-supertrait pattern enforced.
-- **`#[non_exhaustive]` DTOs** — confirms which public DTOs are non-exhaustive.
-
-The facade spec is **target-stating**, full stop. It describes what the crate's public surface should be — never what it is today, never what to demote, never what to migrate. Drift detection between as-designed and as-built is the job of `cargo-public-api` (M4-pending) and `/review`'s per-PR audit, NOT the facade spec.
+The record is **target-stating**: it describes what the crate's public surface should be. Drift between as-designed and as-built is caught by the per-crate `cargo-public-api` baseline (`crates/{crate}/public-api.txt`, frozen S67) and `/review`'s per-PR audit — see §Baseline-diff discipline in `design/arch/CLAUDE.md`.
 
 **Conveyance to the triad**:
 
-- `/design` (narrow per crate) reads `design/arch/facades/{crate}.md` + `design/arch/bounded-contexts.md` at the start of every invocation. The facade spec is what *should* be public; the bounded context is *why*. `/design` proposes facade-spec changes via FIXME `target: /arch` when its design intent requires a new public item.
-- `/dev` (narrow per crate) implements only what the facade spec authorizes. If implementation needs an item not in the spec, `/dev` files FIXME `target: /arch` to extend the spec — never silently publishes. Internal items default to `pub(crate)`.
-- `/review` (narrow per crate) compares as-built to as-designed every change set: walks the public surface against the facade spec; runs `cargo-public-api` diff against the tracked file once M4 lands; flags any over-exposure or under-exposure as a finding (drift in either direction is the same defect).
-- `/arch` updates the facade spec when a sprint's anticipated public-API changes are approved in Phase 3, and reviews the spec for currency at every Phase 2 architecture review.
-
-**Migration from current state**. The facade spec states the target, not the current state. Today's `lib.rs` files were grown organically and almost certainly diverge from the spec in both directions (over-exposure of internal items, under-exposure of items the spec mandates). Closing the gap is per-crate migration work tracked separately (M5 `pub(crate)` downgrade, M6 facade refactor per METHOD_PROPOSED §15). The facade spec is the destination; the migrations are how each crate gets there.
+- `/design` (narrow per crate) reads the crate's source rustdoc + `design/arch/bounded-contexts.md` at the start of every invocation. The rustdoc is what *should* be public; the bounded context is *why*. `/design` proposes surface changes via FIXME `target: /arch` when its design intent requires a new public item.
+- `/dev` (narrow per crate) implements only what the surface record authorizes. If implementation needs an item not in it, `/dev` files FIXME `target: /arch` to extend it — never silently publishes. Internal items default to `pub(crate)`.
+- `/review` (narrow per crate) compares as-built to as-designed every change set: walks the public surface against the rustdoc + BC statement; runs the `cargo-public-api` diff against the tracked baseline; flags any over-exposure or under-exposure as a finding (drift in either direction is the same defect).
+- `/arch` approves surface-record changes when a sprint's anticipated public-API changes are settled in Phase 3, and reviews the record for currency at every Phase 2 architecture review.
 
 ## Facade convention — `lib.rs` mechanics
 
-The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `facade.rs`. The facade spec (above) states *what* the crate exposes; this section states *how* `lib.rs` carries it.
+The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `facade.rs`. The surface record (above) states *what* the crate exposes; this section states *how* `lib.rs` carries it.
 
 1. **Top-of-file doc comment** — states the bounded context (1–3 paragraphs) and cites `design/arch/bounded-contexts.md` for the canonical statement. `/arch` approves changes to this doc comment.
-2. **Re-exports only** — `lib.rs` contains no logic. It `pub use`s items from internal modules. Internal modules default to `pub(crate)` (§Public-API discipline). **No re-exports of `cranelisp-types` items** per Principle 15 — facade types live with their behavior; consumers import directly from each crate they need. **External-audience exception**: a facade whose external audience would not otherwise depend on `cranelisp-types` (e.g., `cranelisp-platform` for out-of-tree DLL authors) MAY re-export the upstream items its public API uses; the exception is justified inline in the facade spec.
+2. **Re-exports only** — `lib.rs` contains no logic. It `pub use`s items from internal modules. Internal modules default to `pub(crate)` (§Public-API discipline). **No re-exports of `cranelisp-types` items** per Principle 15 — facade types live with their behavior; consumers import directly from each crate they need. **External-audience exception**: a facade whose external audience would not otherwise depend on `cranelisp-types` (e.g., `cranelisp-platform` for out-of-tree DLL authors) MAY re-export the upstream items its public API uses; the exception is justified inline in the crate's source rustdoc.
 3. **`#[non_exhaustive]` on every public DTO** — adding fields is non-breaking. **Exemption**: DTOs carrying `#[repr(C)]` or `#[repr(transparent)]` do NOT also carry `#[non_exhaustive]`. They are layout contracts (consumed by JIT-emitted code or DLL hosts as raw bytes / raw bits), governed by an explicit `ABI_VERSION` bump, not by source-level evolution guards. See Principle 14.
 4. **Sealed traits** (private supertrait pattern) on every trait the types crate publishes for cross-crate impls — only `/arch` extends.
 5. **`cargo-public-api` tracked file per crate** — committed at `crates/{crate}/api.txt` (location convention; M4 confirms the tooling). Any diff requires `/arch` approval. (Setup is M4 in METHOD_PROPOSED §15.)
 
 ## Sequence diagrams
 
-`design/arch/sequences/{flow}.{mmd,svg}` — first-class arch artefacts depicting flows in terms of the facade signatures they traverse. They are NOT illustrations or supporting context; they are normative architectural specifications, peers with `bounded-contexts.md`, the facade specs, and the Decision register. Two sets exist today: `exec-flow-*` (compile / link / run / repl / runtime / redefine) and `concurrency-*` (per-coordination-primitive). Both expand as the architecture's surface coverage grows.
+`design/arch/sequences/{flow}.{mmd,svg}` — first-class arch artefacts depicting flows in terms of the facade signatures they traverse. They are NOT illustrations or supporting context; they are normative architectural specifications, peers with `bounded-contexts.md` and the source rustdoc surface record. Two sets exist today: `exec-flow-*` (compile / link / run / repl / runtime / redefine) and `concurrency-*` (per-coordination-primitive). Both expand as the architecture's surface coverage grows.
 
 **Each diagram MUST reflect the facades it depicts**:
 
 - Every named participant is either a crate (frontend, typecheck, backend, runtime, platform), an integration-layer entity (Sess, Sched, Worker, ST_m1, …), or a stdlib/test consumer.
-- Every arrow between participants is a function call or return, named with the **exact** facade signature (free function name + argument types + return type) drawn from `design/arch/facades/{crate}.md`. No invented call shapes; no diagram-only convenience names.
+- Every arrow between participants is a function call or return, named with the **exact** facade signature (free function name + argument types + return type) drawn from the crate's public source rustdoc. No invented call shapes; no diagram-only convenience names.
 - Every Note over participants describes invariants or state transitions in terms the facade or BC can ground.
 
 **Lockstep maintenance rule.** Every facade change that alters a name, signature, parameter, return type, or call shape MUST trigger a sequence-diagram sweep in the same wave:
@@ -240,7 +233,7 @@ Per-crate design choices (within one bounded context) belong in `design/{crate}/
 | `design/arch/principles/` | Architectural Principles register; one file per Principle; index in `principles.md`. |
 | `design/arch/fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
 | `design/arch/bounded-contexts.md` | Per-surface bounded-context full statements. |
-| `design/arch/facades/{crate}.md` | Per-surface facade specs — as-designed public surface (free functions, re-exports, `pub`/`pub(crate)` decisions). One file per surface. |
+| source rustdoc + `bounded-contexts.md` | Per-surface as-designed public surface (free functions, re-exports, `pub`/`pub(crate)` decisions). Dedicated facade *spec* files (`design/arch/facades/{crate}.md`) retired S69–S81; `facades/` now holds only S69/S70 audit records. |
 | `design/arch/sequences/` | Sequence diagrams (`.mmd` source + rendered `.svg`) — first-class arch artefacts. Each diagram depicts a flow in terms of the facade signatures it traverses. **MUST be kept in lockstep with the facades they reference**: every facade change that alters a name, signature, or call shape requires a corresponding update to every sequence diagram that references it. See §Sequence diagrams below. |
 | `design/arch/interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
 | `design/arch/roadmap.md` | Technical / architectural roadmap (delivery progress is `sprints/ROADMAP.md`, owned by `/sprint`). |
@@ -305,7 +298,6 @@ When acting as or spawning a subagent, never run commands that discard uncommitt
 - **Forbidden**: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f` / `-fd`, branch switches that would overwrite unstaged changes.
 - **Permitted**: `git stash` + `git stash pop` pairs ONLY IF the pop is guaranteed to complete cleanly. If the pop conflicts, resolve or STOP and report — never discard the stash.
 
-See `memory/feedback_no_git_stash_agents.md`.
 
 ## Testing ownership
 

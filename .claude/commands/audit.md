@@ -42,7 +42,7 @@ The dispatch runs **read-only**, late in the sprint (Phase 6/7 window, after the
 - the context's source (including its unit-test modules and their submodule×scenario-class shape),
 - its design docs (`design/{context}/`) and the relevant bounded-context sections,
 - its localized memory (`CLAUDE.md`),
-- integration/e2e coverage touching it (`tests/plan/`),
+- e2e coverage touching it (`tests/plan/`),
 - **the previous assessment of this context** (`audits/`) — start from its accepted/declined trail,
 - recent sprint archives and FIXME history touching the context.
 

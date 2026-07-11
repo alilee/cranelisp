@@ -1,6 +1,6 @@
 # design/typecheck/
 
-Solution design documents for the Cranelisp typechecker (inference, traits, monomorphisation). Owned by the `/typecheck` skill.
+Solution design documents for the Cranelisp typechecker (inference, traits, monomorphisation). Owned by `/design`, narrow-deployed to this crate.
 
 ## Purpose
 
@@ -9,7 +9,6 @@ These documents describe *how* the typechecker solves problems — algorithms, d
 This is distinct from:
 - `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
 - `spec/03-types.md`, `spec/07-traits.md` — the *language definition* (what behaviour is correct)
-- `sketch/docs/` — the *prototype rationale* (how the prototype did it, for reference)
 
 ## What to Document
 
@@ -18,7 +17,7 @@ This is distinct from:
 - **ADT type checking**: constructor inference, pattern exhaustiveness, type parameter instantiation
 - **Monomorphisation**: specialisation collection, cross-module specialisation, cache interaction
 - **Scope and environment**: scope stack design, variable resolution, module interaction
-- **Per-ring evolution**: what changes at each ring, why, and what was considered but rejected
+- **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
 
 ## Conventions
 

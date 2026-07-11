@@ -1,6 +1,6 @@
 # design/platform/
 
-Solution design documents for the Cranelisp platform layer (runtime, platform abstraction, DLL system). Owned by the `/platform` skill.
+Solution design documents for the Cranelisp platform layer (runtime, platform abstraction, DLL system). Owned by `/design`, narrow-deployed to this crate.
 
 ## Purpose
 
@@ -9,7 +9,6 @@ These documents describe *how* the platform layer solves problems — allocator 
 This is distinct from:
 - `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
 - `spec/10-io.md`, `spec/12-runtime.md` — the *language definition* (what runtime behaviour is correct)
-- `sketch/docs/` — the *prototype rationale* (how the prototype did it, for reference)
 
 ## What to Document
 
@@ -17,7 +16,7 @@ This is distinct from:
 - **RC primitives**: atomic operations, trace mode (`CRANELISP_RC_TRACE`), debug assertions
 - **String runtime**: `HeapString` implementation, intern strategy (if any), rope preparation
 - **Platform abstraction**: DLL interface, platform trait design, IO dispatch
-- **Per-ring evolution**: what changes at each ring, why, and what was considered but rejected
+- **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
 
 ## Conventions
 

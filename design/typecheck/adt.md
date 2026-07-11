@@ -78,11 +78,43 @@ Point :: (Fn [Int Int] Point)
 
 Scheme: `{ vars: [], ty: Fn([Int, Int], ADT("Point", [])) }`
 
-## Product Type Handling
+## Product Type Handling — the dual-facet constructor (S79 Option 3a, FIXME 0319)
 
-When a single constructor has the same name as the type (e.g., `(deftype Point [:Int x :Int y])`), a name collision occurs in the symbol table: the `TypeDef` entry and `Constructor` entry compete for the same key.
+When a single constructor has the same name as the type (e.g., `(deftype Rectangle [:Int w :Int h])`), a name collision occurs in the symbol table: the type name and the constructor name are one key.
 
-**Solution**: The `Constructor` entry is registered first. When the `TypeDef` entry is registered (which overwrites the `Constructor`), the constructor's scheme is extracted and stored in `ModuleEntry::TypeDef { constructor_scheme: Some(scheme), ... }`. The `lookup_in_symbol_table` method checks for `TypeDef` entries with a `constructor_scheme` and returns the scheme when found.
+**Design**: The surviving `"Rectangle"` entry is the **got-slotted constructor
+`Def`** (exactly like a sum ctor) carrying a **type facet** —
+`DefKind::Constructor { type_def: Some(Box<TypeDefInfo>), .. }`. A **sum/enum**
+type instead registers a separate `ModuleEntry::TypeDef`, and its ctors carry
+`type_def: None`. A product ctor's scheme lives canonically on its own
+`Def.scheme` and its field names on `Def.param_names`. `is_product` is computed
+in `adt.rs::register_type_def_with_ctor_infos` (`ctors.len()==1 &&
+ctor-name==type-name`), which either registers a separate `TypeDef` (sum/enum)
+OR attaches the facet to the lone ctor `Def` (product) — never both.
+
+- **`checker::type_def_view_of(&ModuleEntry) -> Option<&TypeDefInfo>`** is the
+  single "entry as a type" reader: `Some` for a `TypeDef`, OR for a product
+  ctor's `type_def: Some(td)`. Every site needing an entry *as a type* routes
+  through it (`ModuleReadView::lookup_type_def`, `resolve_type`,
+  `concrete_type_for_impl_target`, and the `resolve.rs` source-annotation
+  resolvers `resolve_named`/`resolve_applied` so a product type in TYPE position
+  — `:Box`, `(Box Int)` — answers). Do NOT re-pattern `TypeDef` directly when a
+  product type must also answer.
+- **Product ctors do NOT auto-curry.** A product ctor's `Def.scheme` is
+  curry-shaped (`Fn([Int,Int], Point)`), so an under-applied `(Point 1)` would
+  otherwise fall into `infer.rs::try_auto_curry` and silently return a closure
+  instead of an arity error. The guard at the top of `try_auto_curry` returns a
+  `TypeError` ("constructor X expects N arguments but got M", spec §5.2.7) when
+  the callee resolves to a `DefKind::Constructor` Def. Sum ctors hit the same
+  guard.
+- **Ctor → parent-type** lookups and **pattern-ctor resolution** read the `Def {
+  kind: Constructor }.type_name` arm for products too — no product special-case.
+
+**Retired smuggling**: the pre-S79 approach extracted the ctor scheme into a
+`ModuleEntry::TypeDef.constructor_scheme` field, with `lookup_constructor_scheme`
+and ~six bespoke fallback legs keyed on it. That field and its fallback legs are
+**gone** — the scheme lives on the ctor's own `Def.scheme`, so type and ctor no
+longer smuggle each other's data through a shared entry.
 
 **Rejected alternative**: Renaming the constructor (e.g., `Mk` prefix). This would break the user-facing syntax where `(Point 1 2)` creates a `Point` value. The same-name convention is idiomatic for product types.
 
@@ -106,11 +138,10 @@ check_constructor_pattern(ctor_name, bindings, scrutinee_type, span)
 
 ### Constructor Scheme Lookup
 
-`lookup_constructor_scheme` searches three sources:
+`lookup_constructor_scheme` searches these sources:
 
 1. `type_defs.constructor_type(name)` → `type_defs.get(type_name)` → find constructor in `TypeDefInfo`
-2. Symbol table: `ModuleEntry::Constructor { scheme, .. }`
-3. Symbol table: `ModuleEntry::TypeDef { constructor_scheme: Some(scheme), .. }` (product types)
+2. Symbol table: `ModuleEntry::Constructor { scheme, .. }` — this arm now serves **product ctors too**, since a product ctor is a got-slotted `Constructor` `Def` carrying its scheme on `Def.scheme` (see §"Product Type Handling"). The retired product-specific fallback leg keyed on `ModuleEntry::TypeDef.constructor_scheme` (S79, FIXME 0319) is deleted.
 
 ### Type Instantiation and Unification
 

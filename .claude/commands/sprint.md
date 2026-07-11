@@ -52,7 +52,7 @@ Specifically MUST NOT edit:
 
 - **Authority**: `/spec` (scribe — normative questions go to the USER, framed as prose; never dispatch a skill to "rule"), `/arch`, `/qa` (strategy, risk, coverage process, defect attribution/triage), `/audit` (rolling whole-context assessment, METHOD §2.6). Route technical questions here.
 - **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives` + `cranelisp-intrinsics` (the **backend-emitted runtime library** — S73 D43 split of the former `cranelisp-runtime`; paired with backend, NOT the int surface, which is only a host-client — see BC §4b/§6 + FIXME 0486), `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
-- **Test production**: `/testing` — authors the integration/e2e suite and repro reductions to `/qa`'s plan, sprint-wide.
+- **Test production**: `/testing` — authors the e2e suite and repro reductions to `/qa`'s plan, sprint-wide.
 - **User-proxy**: `/stdlib`, `/examples`, `/docs`, `/repl`, `/port`. Operate in Phase 6 — exercise the language outside-in.
 
 The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at `sprints/artefacts.md` increment A (2026-07-11); see git history. The integration-bottleneck rule (sprint sized to one skill's capacity) was retired with them.
@@ -91,7 +91,7 @@ Phase definitions are normative in `METHOD §2`. Below: what `/sprint` specifica
 
 Two stages.
 
-**Stage 1 — QA-first sprint-wide.** One `/testing` invocation, scope = whole sprint. `/testing` writes failing integration AND e2e tests covering the full spec surface in scope, to the plan `/qa` produced in Phase 3. Tests fail because implementation does not yet exist — intended state. Failing-not-ignored.
+**Stage 1 — QA-first sprint-wide.** One `/testing` invocation, scope = whole sprint. `/testing` writes failing e2e tests covering the full spec surface in scope, to the plan `/qa` produced in Phase 3. Tests fail because implementation does not yet exist — intended state. Failing-not-ignored.
 
 **Stage 2 — Per-crate D/D/R cycle, parallel across crates.** For each crate touched: spawn `/design` (narrow — refines design doc against the implementation problem), then `/dev` (narrow — implements + unit tests), then `/review` (narrow — change-set review against design intent + accumulated state). Iterate within each crate as needed.
 

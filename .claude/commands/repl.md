@@ -135,8 +135,8 @@ Demos are sentinels — they catch real bugs by exercising the language end-to-e
 
 ## Git discipline
 
-Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly.
 
 ## Testing ownership
 
-Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`. See `memory/feedback_unit_tests_with_dev.md`.
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` plans and `/testing` authors integration tests in `tests/`.

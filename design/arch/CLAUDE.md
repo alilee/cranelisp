@@ -2,7 +2,7 @@
 
 Architecture deliverables for the Cranelisp reimplementation. Owned by `/arch`.
 
-Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local content only — local conventions, the in-progress Decisions-drain backlog, and pointers to canonical documents. Methodology rules live in `METHOD_PROPOSED.md`; architectural principles live in `principles.md`; skill workflows live in `.claude/commands/arch.md`. **Architectural commitments manifest at their natural home in the permanent set** (facades / BC / principles / sequences); no separate Decision log is authored — see `.claude/commands/arch.md` §"The manifestation-site question".
+Per `sprints/METHOD.md` §1.4 (three-way content split), this `CLAUDE.md` carries domain-local content only — local conventions, the in-progress Decisions-drain backlog, and pointers to canonical documents. Methodology rules live in `sprints/METHOD.md`; architectural principles live in `principles.md`; skill workflows live in `.claude/commands/arch.md`. **Architectural commitments manifest at their natural home in the permanent set** (facades / BC / principles / sequences); no separate Decision log is authored — see `.claude/commands/arch.md` §"The manifestation-site question".
 
 ## Canonical documents (the target documentation set)
 
@@ -84,14 +84,12 @@ Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/d
 
 - `principles.md` — architectural principles (index; per-Principle bodies in `principles/NN-*.md`; auto-imported by `.claude/commands/arch.md`)
 - `bounded-contexts.md` — per-surface full statements
-- `facades/{crate}.md` — per-surface facade specs (as-designed)
+- `facades/` — **all facade specs retired** (S69–S81); the directory holds only S69/S70 facade-audit records. The as-designed public surface now lives in per-item source rustdoc; cross-surface narrative lives in `bounded-contexts.md`.
 - `overview.md` — newcomer entry point bridging spec ↔ tests ↔ design ↔ code
-- `sprints/METHOD_PROPOSED.md` — methodology
+- `sprints/METHOD.md` — methodology
 - `.claude/commands/arch.md` — `/arch` skill definition (the workflow layer)
-- `sprints/reimplementation.md` — full reimplementation strategy (historical; M11 considers archive)
+- `sprints/reimplementation.md` — full reimplementation strategy (historical)
 - `src/CLAUDE.md` — cross-cutting source conventions (error handling, code structure, naming)
-- `sketch/audits/*.md` — structural debts to avoid (59 findings: 15 HIGH, 23 MEDIUM, 21 LOW)
-- `sketch/src/` — prototype source as reference oracle (solutions to language-level problems, NOT pipeline structure — the sketch has the same dual-pipeline debt)
 - `archive/pipeline-convergence-review.md` — dual-pipeline defect analysis (origin of principles 11–13)
 
 ## Architectural Principles
@@ -129,9 +127,9 @@ All newtypes are generated via `string_newtype!()` which derives the standard tr
 The S67 edge-settlement sprint established `cargo-public-api` baselines (`crates/cranelisp-{crate}/public-api.txt`) as the frozen contract at every crate edge. Future edge changes — anything that touches a crate's `public-api.txt` baseline — must, in the SAME change-set:
 
 1. **Regenerate** the affected crate's `public-api.txt` via the canonical command `cargo public-api --omit blanket-impls,auto-derived-impls -p <crate> > crates/<crate>/public-api.txt` — mechanical and reproducible. The `--omit blanket-impls,auto-derived-impls` flags strip auto-generated noise (`::into`/`::borrow`/`::from`/`::clone`/`::Owned = T`/Debug etc.) that carries no semver signal; auto-trait impls (`impl Send/Sync/Freeze/Unpin/RefUnwindSafe for ...`) are deliberately KEPT because they are a real semver signal (e.g. a `Mutex` field flipping a type to `!Freeze`/`!Sync` is exactly the regression the baseline diff must catch).
-2. **Update** the corresponding `facades/{crate}.md` to name + disposition each added/changed/removed item. For retired-facade crates, the canonical surface is the source rustdoc instead: per-item `///` + crate-root `//!` name the boundary, and the cross-surface narrative + invariants live in `bounded-contexts.md` (the cache submodule's surface lives in `crates/cranelisp-backend/src/cache/` rustdoc — it has no facade and no BC entry, being an implementation detail of backend). The only crate still carrying a `facades/{crate}.md` is `int`.
+2. **Update** the canonical surface record for each added/changed/removed item. All `facades/{crate}.md` specs are retired (S69–S81, `int` last per line 15); the canonical surface is now the source rustdoc: per-item `///` + crate-root `//!` name the boundary, and the cross-surface narrative + invariants live in `bounded-contexts.md` (the cache submodule's surface lives in `crates/cranelisp-backend/src/cache/` rustdoc — it has no facade and no BC entry, being an implementation detail of backend).
 3. **Include the diff** in the commit, side-by-side with the source change that produced it. Reviewers (`/review`, the user) read the baseline diff alongside the facade diff to assess whether the change is a legitimate edge evolution or accidental surface leakage.
 
 The facade compliance test scaffolded in S67 Wave 0 (`/qa`) asserts that every pub-api line in the baseline is named in the corresponding facade (or marked internal-but-exposed with rationale). Skipping the facade update breaks the test; skipping the baseline regeneration breaks the next baseline-diff check at PR time. The two-update discipline is the durable enforcement mechanism — no edge change is "done" until both files have caught up.
 
-Skill responsibility split: `/dev` (per crate) regenerates the baseline as part of the implementing change-set; `/design` (per crate) updates the facade to match; `/review` confirms both are present in the same diff at PR time.
+Skill responsibility split: `/dev` (per crate) regenerates the baseline as part of the implementing change-set; `/design` (per crate) updates the canonical surface record (source rustdoc + `bounded-contexts.md`) to match; `/review` confirms both are present in the same diff at PR time.

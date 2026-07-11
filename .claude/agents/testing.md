@@ -1,6 +1,6 @@
 ---
 name: testing
-description: Test Developer — authors integration/e2e tests to /qa's plan, repro isolation & reduction, ledger upkeep. Owns test sources under tests/.
+description: Test Developer — authors e2e tests to /qa's plan, repro isolation & reduction, ledger upkeep. Owns test sources under tests/.
 model: opus[1m]
 effort: high
 ---

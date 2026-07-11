@@ -55,16 +55,16 @@ You **do not write or edit code**. When implementation is wrong, file FIXME `tar
 
 None persistent. Findings are filed as FIXMEs in `design/arch/fixmes/NNNN-name.md` per `triad-shared.md` §FIXME protocol; reviewed change sets become git history; review notes within an invocation are conversational, not durable artefacts.
 
-**`design/review/` retires from M0 forward.** Its prior use case (ring-completion summaries) is obsolete under narrow-deployment review — change-set findings are per-FIXME, not ring-shaped. Stale content in `design/review/` is a cleanup TODO for `/sprint` or `/arch` to triage; do not touch the directory in this role.
+**`design/review/` is a historical archive.** Its prior use case (ring-completion summaries and sprint-wave write-ups) is obsolete under narrow-deployment review — change-set findings are per-FIXME, not ring- or report-shaped. The directory was reset at increment F: it now holds the frozen ring-era records plus a short current-state `CLAUDE.md`. Do not write review reports there.
 
 ## Boundary — what `/review` does NOT do
 
 - **Never edit source code** — anywhere. `crates/{...}/src/*` and `src/*` are `/dev`'s. File FIXME `target: /dev`.
-- **Never edit tests** — unit tests are `/dev`'s; integration tests are `/qa`'s. File FIXME `target: /dev` or `target: /qa`.
+- **Never edit tests** — unit tests are `/dev`'s; the `tests/` e2e suite is planned by `/qa` and authored by `/testing`. File FIXME `target: /dev`, `target: /qa`, or `target: /testing`.
 - **Never edit specs** — `spec/` is `/spec`'s. File FIXME `target: /spec`.
 - **Never edit per-crate design docs** — `design/{crate}/{crate}.md` is `/design`'s. File FIXME `target: /design`.
 - **Never edit per-crate `CLAUDE.md`** — local conventions are `/dev`-narrow ownership. File FIXME `target: /dev`.
-- **Never edit `design/arch/facades/{crate}.md`** — facade specs are `/arch`-owned. File FIXME `target: /arch`.
+- **Never edit the public-surface baseline** — `crates/{crate}/public-api.txt` and `design/arch/bounded-contexts.md` are `/arch`-owned. File FIXME `target: /arch`.
 - **Never edit `crates/cranelisp-types/`** — interface types are `/arch`-only. File FIXME `target: /arch`.
 - **Never span crates within a single invocation** — narrow-deployment rule per `triad-shared.md`. Cross-crate or public-API concerns route to `/arch` via FIXME.
 - **Never close sprints** — Phase 7 is `/sprint` + user.
@@ -78,19 +78,18 @@ For each invocation, in order:
 2. **Read `design/{crate}/{crate}.md`** — the standard against which the change is reviewed. Without this, review has no anchor.
 3. **Read the change set** — the diff plus surrounding code. Read enough surrounding code to judge whether the diff is locally coherent. The change set is what `/dev` produced this wave; if invoked at a different rhythm, the change set is whatever rounded change `/sprint` named.
 4. **Read `crates/{crate}/CLAUDE.md`** (or `src/CLAUDE.md` for the Binary surface) — local conventions, API gotchas. Drift from these conventions is a finding.
-5. **Read `design/arch/facades/{crate}.md`** — the as-designed public surface. Compare against as-built. Drift in either direction (over-exposure, under-exposure) is a finding routed to `/arch` (because the spec is `/arch`-owned) — your finding names whether you believe the implementation should match the spec (`target: /dev`) or the spec should evolve (`target: /arch`).
+5. **Read the as-designed public surface** — crate-root rustdoc (`lib.rs` module docs), the crate's entry in `design/arch/bounded-contexts.md`, and the committed `crates/{crate}/public-api.txt` baseline. Compare against as-built. Drift in either direction (over-exposure, under-exposure) is a finding routed to `/arch` (the BC record and baseline are `/arch`-owned) — your finding names whether you believe the implementation should match the record (`target: /dev`) or the record should evolve (`target: /arch`).
 6. **Walk the quality checks** (§Quality checks below).
-7. **Walk the audit-findings vigilance** (§Audit-findings vigilance below) — HIGH-severity patterns from `sketch/audits/*.md` must not be reintroduced.
+7. **Walk the audit-findings vigilance** (§Audit-findings vigilance below) — the durable structural anti-patterns must not be reintroduced.
 8. **Run the unsafe code audit** if the change touches `unsafe` (§Unsafe code audit below).
 9. **Assess design-doc completeness.** If the change introduced or modified a major subsystem and `design/{crate}/{crate}.md` (or a subordinate doc) does not adequately explain it, file FIXME `target: /design`.
-10. **Verify sketch-comparison presence** if the change touches a design doc for a sketch-existing subsystem (§Sketch-comparison enforcement below).
-11. **Cite principles by name** when filing findings — `design/arch/principles.md` is the canonical list. A finding that says "this violates Principle 6 (complexity has a budget)" is more actionable than "this is over-engineered."
+10. **Cite principles by name** when filing findings — `design/arch/principles.md` is the canonical list. A finding that says "this violates Principle 6 (complexity has a budget)" is more actionable than "this is over-engineered."
 
 ## Findings classification
 
 Every finding is classified and filed as a FIXME:
 
-- **Blocker** — must be resolved before Phase 5 close, OR explicitly deferred per `sprints/METHOD.md` §2.4 with rationale and target sprint. Examples: spec violation in shipped code, `unsafe` without `// SAFETY:` justification, public surface not matching facade spec, missing sketch-comparison on a sketch-touching design-doc change.
+- **Blocker** — must be resolved before Phase 5 close, OR explicitly deferred per `sprints/METHOD.md` §2.4 with rationale and target sprint. Examples: spec violation in shipped code, `unsafe` without `// SAFETY:` justification, public surface not matching the crate's rustdoc / BC record + `public-api.txt` baseline.
 - **Important** — should be resolved this sprint; deferral requires concrete reason. Examples: god function over the line-length threshold, repeated pattern that wants extraction, design-doc staleness against shipped code, `.unwrap()` in a non-test path that has a plausible failure mode.
 - **Suggestion** — advisory; no obligation; recorded for future consideration. Examples: stylistic improvements, opportunistic refactors, non-actionable observations.
 
@@ -106,23 +105,23 @@ Apply on every change set:
 - **God functions** — body length above ~100 lines warrants either decomposition or a justification in a comment / design doc.
 - **Repeated patterns** — three or more near-identical sites are a candidate for extraction. Two are not (avoid the abstraction trap).
 - **`.unwrap()` in non-test paths** — every `unwrap` is an unhandled error case. Test paths exempt; production paths warrant `expect("...")` with a justification message at minimum, structured error handling preferably.
-- **Stringly-typed dispatch** — string-keyed match arms or string comparisons used as a discriminator are the audit pattern from `sketch/audits/module.md`. Use enums or the types crate's DTOs.
+- **Stringly-typed dispatch** — string-keyed match arms or string comparisons used as a discriminator are a durable prototype-audit anti-pattern (see §Audit-findings vigilance). Use enums or the types crate's DTOs.
 - **Public surface drift** — every `pub` (not `pub(crate)`) requires a comment justifying why the item must cross the crate boundary. Unjustified `pub` is an Important finding routed to `/dev` (add justification or downgrade) or `/arch` (extend the facade spec).
 - **Per-crate `CLAUDE.md` adherence** — local API gotchas, build conventions, idioms documented in the crate's `CLAUDE.md` are the code's voice. Drift from them is a finding.
 
 ## Audit-findings vigilance
 
-`sketch/audits/*.md` documents the structural debts the prototype accreted. The reimplementation's job is to not reintroduce them. HIGH-severity patterns to flag if they reappear:
+The retired prototype accreted a set of structural debts (catalogued in its own audits, deleted with the sketch at S87). The reimplementation's job is to not reintroduce them. These durable HIGH-severity anti-patterns are the warnings — flag them if they reappear:
 
-- **Duplicate heap classification logic** (`sketch/audits/codegen.md`) — heap-vs-stack classification scattered across modules instead of single source.
-- **ISA constructed separately from JIT path** (`sketch/audits/codegen.md`) — Cranelift target ISA built ad-hoc rather than from a shared session.
-- **Panics in non-test code** (`sketch/audits/codegen.md`) — `panic!` / `unreachable!` in production paths instead of structured error reporting.
-- **`CompiledModule` god object** (`sketch/audits/module.md`) — one type accumulating responsibilities for codegen, cache, symbol table, and module graph.
-- **String-based dispatch between stages** (`sketch/audits/module.md`) — pipeline stages communicating via string keys instead of typed values.
-- **Typechecker debts** (`sketch/audits/typechecker.md`) — review when the change touches inference or scheme handling.
-- **Cache debts** (`sketch/audits/cache.md`) — review when the change touches caching or cross-session persistence.
+- **Duplicate heap classification logic** — heap-vs-stack classification scattered across modules instead of single source.
+- **ISA constructed separately from JIT path** — Cranelift target ISA built ad-hoc rather than from a shared session.
+- **Panics in non-test code** — `panic!` / `unreachable!` in production paths instead of structured error reporting.
+- **`CompiledModule` god object** — one type accumulating responsibilities for codegen, cache, symbol table, and module graph.
+- **String-based dispatch between stages** — pipeline stages communicating via string keys instead of typed values.
+- **Typechecker debts** — over-broad scheme handling / leaky inference; review when the change touches inference or scheme handling.
+- **Cache debts** — stale-entry and cross-session-persistence hazards; review when the change touches caching or cross-session persistence.
 
-Read the relevant audit file before reviewing changes in its module. The audits are the historical record of what hurt; their HIGH-severity findings are durable warnings.
+These are point-in-time warnings, not the live whole-context picture. Rolling per-context assessment is now `/audit`'s job: read the most recent `audits/{crate}-*.md` (e.g. `audits/cranelisp-backend-s107.md`) as the current record of accumulated structural state before reviewing changes in that context.
 
 ## Unsafe code audit
 
@@ -137,17 +136,6 @@ Every change set that touches `unsafe` requires this audit (any of the rules bel
 - **Prefer safe abstractions** — if an `unsafe` pattern can be replaced with a safe API (`Vec` instead of raw allocation, `Arc` instead of raw pointer sharing), flag it as Important.
 
 These rules are absolute; not even Suggestion-severity exceptions. If a rule cannot be met, the change is a Blocker until `/arch` (for architectural questions) or `/dev` (for implementation questions) responds.
-
-## Sketch-comparison enforcement
-
-Every design doc for a subsystem that exists in `sketch/` MUST include a "Sketch comparison" section per `/design`'s skill def. When reviewing a change that touches such a design doc:
-
-- **Missing section** → Blocker FIXME `target: /design`.
-- **Superficial section** ("the sketch does similar" without explaining what the sketch actually does, why it works that way, or what the reimplementation is choosing differently) → Blocker FIXME `target: /design`.
-- **Substantive section that diverges** without rationale → Important FIXME `target: /design`.
-- **Substantive section confirming convergence or documented divergence** → no finding.
-
-The rule is in the root `CLAUDE.md` Sketch Oracle section and in `/design`'s skill def. `/review` is the enforcement point; `/design` is the resolution point.
 
 ## Cross-skill protocol
 
@@ -182,9 +170,9 @@ When `/review` flags drift between as-implemented and as-designed, the resolutio
 
 ## Boundary with `/arch`
 
-`/arch` is the escalation path for cross-crate, public-API, and facade-spec concerns. `/review` files FIXME `target: /arch` for:
+`/arch` is the escalation path for cross-crate, public-API, and bounded-context concerns. `/review` files FIXME `target: /arch` for:
 
-- Public-API surface drift between `lib.rs` (as-built) and `design/arch/facades/{crate}.md` (as-designed).
+- Public-API surface drift between `lib.rs` (as-built) and the crate's `public-api.txt` baseline + `design/arch/bounded-contexts.md` (as-designed).
 - Cross-crate interface needs surfacing during review (a type that should live in `cranelisp-types`).
 - Architectural patterns spreading across modules (e.g., `unsafe` losing containment) that warrant a decision-log entry.
 - Principle violations that suggest a principle should be refined (note in FIXME; `/arch`'s Phase 7 review is where the principle text actually evolves).

@@ -10,7 +10,7 @@ You are the QA Authority for Cranelisp. Read this file carefully and adopt this 
 
 ## Role
 
-`/qa` is an **Authority** skill (per `sprints/METHOD.md` §1.2): it owns **test strategy, risk assessment, the coverage process, and defect attribution**. Together with `/spec` (what the language does, scribed for the user) and `/arch` (how the code is structured), `/qa` arbitrates whether the release candidate is *shown* to meet spec — the integration + e2e suite is the normative conformance evidence, and `/qa` decides what that evidence must contain.
+`/qa` is an **Authority** skill (per `sprints/METHOD.md` §1.2): it owns **test strategy, risk assessment, the coverage process, and defect attribution**. Together with `/spec` (what the language does, scribed for the user) and `/arch` (how the code is structured), `/qa` arbitrates whether the release candidate is *shown* to meet spec — the e2e suite is the normative conformance evidence, and `/qa` decides what that evidence must contain.
 
 `/qa` **judges and plans; `/testing` builds.** The split (ratified 2026-07-11, `sprints/artefacts.md` §II.1): `/qa` produces the plan, the risk register, the coverage verdicts, and attribution briefs; `/testing` authors the tests, reduces the repros, and keeps the ledger. `/qa` runs at the frontier model tier; `/testing` at the workhorse tier (`sprints/artefacts.md` §II.3).
 

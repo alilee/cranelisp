@@ -28,7 +28,7 @@ It encompasses the entire user experience from invoking the repl as well as its 
 - Each requirement is testable — it can be verified by an E2E test or REPL session transcript
 - Display format examples show exact expected output (whitespace-significant)
 - Performance targets are measurable (wall-clock thresholds)
-- The spec is ring-aware: requirements are tagged with the ring where they become testable
+- Requirements are tagged with the sprint where they become testable (`[S{M}]`; pre-S64 ring tags in older rows are historical)
 
 ## For the `/repl` skill
 
@@ -36,4 +36,4 @@ The `/repl` skill owns this directory. When REPL behavior needs to change:
 1. Update `repl/spec.md` first (the normative contract)
 2. Then update tests and implementation to match
 
-Other skills (especially `/qa`) consume this spec to write REPL experience tests at Layer 4 (E2E).
+Other skills (especially `/qa` and `/testing`) consume this spec for REPL experience tests at the e2e tier.

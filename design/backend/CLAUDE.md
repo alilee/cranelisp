@@ -1,6 +1,6 @@
 # design/backend/
 
-Solution design documents for the Cranelisp backend (Cranelift codegen, JIT, RC, heap management). Owned by the `/backend` skill.
+Solution design documents for the Cranelisp backend (Cranelift codegen, JIT, RC, heap management). Owned by `/design`, narrow-deployed to this crate.
 
 ## Purpose
 
@@ -9,7 +9,6 @@ These documents describe *how* the backend solves problems — IR generation pat
 This is distinct from:
 - `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
 - `spec/12-runtime.md` — the *language definition* (what runtime behaviour is correct)
-- `sketch/docs/` — the *prototype rationale* (how the prototype did it, for reference)
 
 ## What to Document
 
@@ -19,7 +18,7 @@ This is distinct from:
 - **ADT codegen**: constructor allocation, field access, match compilation, tag discrimination
 - **Closure codegen**: environment capture, calling convention implementation, side-table drop
 - **GOT and JIT**: function registration, GOT layout, relocation, caching
-- **Per-ring evolution**: what changes at each ring, why, and what was considered but rejected
+- **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
 
 ## Conventions
 

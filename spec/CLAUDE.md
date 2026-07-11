@@ -1,94 +1,63 @@
 # spec/
 
-This directory contains the Cranelisp language specification — the authoritative record of what the language does. It is owned by the `/spec` skill.
+The Cranelisp language specification — the authoritative record of what the
+language does. Owned by the `/spec` skill.
+
+## Role of `/spec`
+
+`/spec` is a **scribe**, not an arbiter. It records semantics that are already
+settled and keeps the spec internally consistent. Every open normative question
+— what the language *should* do — is brought to the **user**, who arbitrates.
+`/spec` frames such questions as prose (problem / options / tradeoffs) and does
+not rule on them itself. This mirrors `.claude/commands/spec.md`.
 
 ## Authority
 
-The spec is the source of truth for the reimplementation. When implementation and spec disagree:
-- If the spec is correct: the implementation is wrong, fix it
-- If the prototype behavior differs from the spec: check the prototype, then update the spec to reflect actual (intended) behavior
+The spec is the source of truth for the reimplementation. When implementation
+and spec disagree:
 
-The spec only shows the language features and requirements of the compiler, and doesn't prescribe the standard library. There may be multiple standard 
-library candidates.
+- **Spec is correct** → the implementation is the defect; the owning compiler
+  skill fixes it.
+- **Spec is wrong or silent** → this is a normative question. `/spec` does not
+  quietly rewrite the spec to match whatever the compiler happens to do; it
+  brings the divergence to the user, records the ruling, then updates the spec.
 
-When a spec file and the prototype disagree, run the prototype to determine what baseline was, then update the spec after validating with designer. Eventually, 
-the sketch and the spec will diverge because the sketch is not being maintained.
+The sketch oracle is **retired** (deleted at Sprint 87; language semantics are
+frozen — see root `CLAUDE.md` §"Sketch Oracle"). Ambiguity is resolved with the
+user, not by running a prototype.
+
+## Scope boundary
+
+The spec defines the **language** and the requirements it places on a
+conforming compiler. It does **not** prescribe the standard library — there may
+be multiple stdlib candidates. Section 11 and Appendix A are non-normative
+reference documentation for the reference implementation's stdlib.
 
 ## Conventions
 
-- Sections 1–10 and 12 are **normative**: they define language requirements
-- Section 11 is **non-normative**: it describes the standard library
-- Keywords MUST, MUST NOT, SHOULD, SHOULD NOT, MAY follow RFC 2119 semantics
-- Examples in spec sections define expected behaviour — all examples must run correctly against the sketch oracle
-- EBNF grammar in each section is authoritative
-- Typing rules and evaluation judgments are authoritative
+- Sections 1–10, Section 12, and **Appendix C** (non-functional requirements)
+  are **normative**. Section 11 and Appendix A are **non-normative** reference.
+- Keywords MUST, MUST NOT, SHOULD, SHOULD NOT, MAY follow RFC 2119 semantics.
+- EBNF grammar, typing rules, and evaluation judgments in each section are
+  authoritative. Examples define expected behaviour.
+- **Traceability annotations** (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, the
+  test-side `// spec:` comment) are governed by root `CLAUDE.md`
+  §"Requirements/Test Traceability" — that is canonical; follow it, don't
+  restate it here. Tests are authored by `/testing` to `/qa`'s plan; `/qa`
+  audits the two-sided spec↔test match.
 
 ## Files
 
-| File | Coverage |
-|---|---|
-| `01-lexical.md` | Lexical structure, tokens, reader shortcuts |
-| `02-grammar.md` | EBNF grammar for all syntactic forms |
-| `03-types.md` | Type system, Hindley-Milner, type constructors |
-| `04-expressions.md` | Expression evaluation semantics |
-| `05-definitions.md` | Top-level forms: defn, deftype, deftrait, impl, defmacro |
-| `06-pattern-matching.md` | Match expressions, patterns, exhaustiveness |
-| `07-traits.md` | Trait declarations, implementations, method resolution, derive |
-| `08-modules.md` | Module system, imports, exports, qualified names |
-| `09-macros.md` | Macro system, quasiquote, expansion rules |
-| `10-io.md` | IO model, effect nodes, trampoline, automatic IO scheduling |
-| `11-stdlib.md` | Standard library reference (non-normative) |
-| `12-runtime.md` | Runtime model: RC layout, calling conventions, drop glue |
-| `appendix-a-builtins.md` | Builtin primitive reference |
-| `appendix-b-examples.md` | Extended examples |
-| `appendix-c-nfr.md` | Non-functional requirements: memory management, data structures, evaluation, concurrency, compilation, performance, target portability |
-| `index.md` | Spec index |
+Naming convention: `NN-topic.md` for the twelve numbered sections (01 lexical →
+12 runtime), `appendix-{a,b,c}-*.md` for the three appendices (a builtins,
+b examples, c NFRs). Two meta files sit alongside: `index.md` (front matter,
+version, design philosophy) and `ring0-readiness.md` (a dated Sprint-0
+acceptance record; historical, kept for provenance).
 
-## Phase A Review Status (first session complete)
+## Cross-skill changes
 
-All 16 spec files reviewed. Sections confirmed current (no changes needed):
-- `01-lexical.md` — tokens, reader shortcuts (quote, quasiquote, anon_fn, gensym, percent params)
-- `03-types.md` — HM inference, constrained polymorphism, HKT
-- `06-pattern-matching.md` — ADT patterns, exhaustiveness
-- `07-traits.md` — derive macro (§7.13), HKT traits
-- `08-modules.md` — modules, imports, super, inline submodules
-- `11-stdlib.md` — non-normative reference
-- `appendix-a-builtins.md`, `appendix-b-examples.md`
-
-Sections updated during Sprint 0 FIXME resolution:
-- `04-expressions.md` — removed §4.12 (par-let); lenient evaluation (§12.4.3) supersedes it
-- `10-io.md` — §10.12 upgraded: auto IO scheduling is now MUST (was descriptive)
-- `12-runtime.md` — §12.4.3 upgraded: lenient evaluation is now MUST (was MAY); renamed from "Lenient Evaluation (Implementation-Defined)" to "Lenient Evaluation"
-
-Inconsistencies fixed:
-- `09-macros.md §9.14` — removed stale item "multi-clause macros not supported" (contradicted §9.2.6)
-- `02-grammar.md §2.2.5` — added multi-clause `defmacro` grammar
-- `02-grammar.md §2.2.6` — corrected: `mod-` private variant exists
-- `05-definitions.md §5.5` — added multi-clause grammar + cross-ref to §9.2.6
-- `05-definitions.md §5.8` — corrected: `mod-` is the private submodule form
-- `05-definitions.md §5.11, §5.14` — added `mod`/`mod-` to visibility and summary tables
-
-## For the `/spec` skill
-
-**First session (Phase A Step 1)**: ✓ Complete. All 16 files reviewed; inconsistencies fixed.
-
-**Second session (FIXME resolution)**: Addressed all open FIXME comments across modified files:
-- `02-grammar.md §2.2.5` — replaced `when`/`unless` examples (dummy `0` branch) with `my-if` and `my-and`
-- `08-modules.md §8.1.1` — clarified module identity is file-path-based; sibling-file `mod` resolution loads a peer module, not a submodule
-- `08-modules.md §8.3.2` — clarified `[*]` is glob-all; importing `*` operator requires it alongside other names
-- `08-modules.md §8.3.9` — documented that multiple `import` forms accumulate (was §8.3.8 prior to Sprint 57 renumbering)
-- `08-modules.md §8.11` — updated lib search order: project config file takes priority; stdlib is not a special language feature
-- `09-macros.md §9.5` — resolved auto-lifting question: explicit Sexp constructors required; no auto-lifting
-- `09-macros.md §9.6` — removed FIXME; `begin` is a language-level macro expander protocol
-- `09-macros.md §9.10` — moved `const`/`def` to §9.10.1/2 (from §9.10.10/11); renumbered rest
-- `10-io.md §10.11` — moved complete examples to Appendix B; §10.11 now cross-references appendix
-- `11-stdlib.md` — complete rewrite: pared to bootstrapping support for stdlib writers; stdlib itself documented elsewhere
-- `appendix-a-builtins.md` — removed stdlib sections (A.3-A.7); builtins only (types, primitive functions, special forms)
-- `appendix-b-examples.md` — replaced FIXME with stdlib-assumption preface; added B.11-B.13 from §10.11
-
-**Third session (Sprint 2, Wave 3 — Task 9)**: Resolved two deferred items from Sprint 1:
-- `appendix-a-builtins.md` §A.3 — **M-6 resolved**: Added `not :: (Fn [Bool] Bool)` inline primitive under new "Boolean" subsection. Implementation has 19 inline primitives; spec now matches.
-- `06-pattern-matching.md` §6.5 — **F-1 resolved**: Restructured exhaustiveness section into §6.5.1 (ADT types), §6.5.2 (non-ADT types), §6.5.3 (runtime safety net). Non-ADT scrutinee types (Int, Bool, Float, String, function types, type variables) now MUST include a wildcard or variable pattern. Removed FIXME comment.
-- Reactive arbitration: scanned all files modified during Wave 2 (crates/, src/, tests/, design/) for FIXME(/spec) comments. No new FIXMEs found. The existing `spec/07-traits.md` §7.7 FIXME (Num/Eq/Ord trait placement) remains deferred to Ring 2+ (traits scope).
-
-**Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype (`cd sketch && cargo run -- --run <example>`), decide what is normative, update the relevant spec file after validating with developer.
+Another skill that needs a spec change files a numbered FIXME —
+`design/arch/fixmes/NNNN-short-name.md` (protocol: `sprints/METHOD.md` §3.3) —
+and `/spec` evaluates it, actions it here, and deletes the FIXME file. Inline
+`FIXME(/spec)` comments are the **old** protocol (superseded Sprint 63); do not
+author new ones.

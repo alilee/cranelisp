@@ -23,7 +23,7 @@ Before doing work in any directory, read all `CLAUDE.md` files in that directory
 | `examples/` | Learning-sequence examples — owned by `/examples` |
 | `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` |
 | `repl/` | REPL experience spec, demos, harness — owned by `/repl` |
-| `tests/` | Integration + e2e suite — strategy/plan owned by `/qa`, test sources by `/testing` |
+| `tests/` | E2e suite — strategy/plan owned by `/qa`, test sources by `/testing` |
 | `audits/` | Whole-context audit assessments — owned by `/audit` |
 | `sprints/` | Delivery coordination — method, roadmap, current sprint, archive — owned by `/sprint` |
 
@@ -57,7 +57,7 @@ rm .claude-role               # clear it
 | `/spec` | Language Specification Scribe — owns `spec/`; records settled semantics; brings every open normative question to the user, never rules |
 | `/arch` | Compiler Architect — owns `design/arch/` + `crates/cranelisp-types/`; principles, bounded contexts, public-API approvals |
 | `/qa` | QA Authority — test strategy, risk assessment, coverage process & traceability audit, defect attribution & cross-crate triage; owns `tests/plan/` |
-| `/testing` | Test Developer — authors integration/e2e tests, repro isolation & reduction, ledger upkeep; owns test sources under `tests/` |
+| `/testing` | Test Developer — authors e2e tests, repro isolation & reduction, ledger upkeep; owns test sources under `tests/` |
 | `/audit` | Whole-Context Auditor — rolling per-sprint assessment of one bounded context's total state; owns `audits/` |
 | `/design` | Per-crate triad, design role — narrow-deployed one crate per invocation; owns `design/{crate}/` |
 | `/dev` | Per-crate triad, implementation role — narrow-deployed; code + unit tests |
@@ -121,7 +121,7 @@ Every skill plan ends with a **"Next skills"** section recommending what to invo
 - **Three-minute timeout expectation.** The full suite is ~60s post-build. If a run exceeds ~3 minutes including build, something is wrong — kill it and investigate.
 - **One agent, one test run.** When multiple agents are active, only the agent that owns source code changes should run tests. Other agents must not run tests concurrently.
 - **Single agent at a time for source-touching work.** Worktree isolation is broken on this project, so parallel agents share one working tree. Two agents editing concurrently race on the git index and on the editor/linter — a subagent `git stash` or a mid-edit linter pass will silently clobber another agent's changes (observed Sprint 81: a parallel `/dev` fan-out corrupted the tree; recovery cost a full reconciliation). Read-only fan-outs (search, survey, design-planning that only returns text) may run in parallel; any agent that *edits source* runs serially.
-- **Every fix lands with a unit test; assess the e2e need BEFORE writing the fix.** A **unit test is mandatory** for every fix — it pins the behaviour at the exact seam where the bug lived and is the fastest guard against a re-break. **Before** writing the fix, also assess whether an **integration/e2e test** is warranted (add one when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes — unit and e2e answer different questions). Write the failing test(s) **first**; the fix flips them green; test(s) and fix land in the **same change-set**. A fix guarded only by an e2e — or only by "the suite still passes" — is incomplete, and deferring the test to a follow-up FIXME (the "test owed" anti-pattern) inverts the discipline and routinely never gets done. (Binding statement: `sprints/METHOD.md` §2.2.)
+- **Every fix lands with a unit test; assess the e2e need BEFORE writing the fix.** A **unit test is mandatory** for every fix — it pins the behaviour at the exact seam where the bug lived and is the fastest guard against a re-break. **Before** writing the fix, also assess whether an **e2e test** is warranted (add one when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes — unit and e2e answer different questions). Write the failing test(s) **first**; the fix flips them green; test(s) and fix land in the **same change-set**. A fix guarded only by an e2e — or only by "the suite still passes" — is incomplete, and deferring the test to a follow-up FIXME (the "test owed" anti-pattern) inverts the discipline and routinely never gets done. (Binding statement: `sprints/METHOD.md` §2.2.)
 - **Failing-not-ignored defect repros**: the suite deliberately carries a small number of **known-defect guards** — failing, NOT `#[ignore]`'d — so each flips green when the owning skill fixes its defect. Hiding a spec violation behind `#[ignore]` is itself a defect. **Do not enumerate or count the guards here** — the set changes every sprint and is knowable from the live sources: run `cargo nextest run --no-fail-fast` to see the current REDs; each intentional guard traces to an open defect (FIXME or `// FIXME(/skill)` annotation) naming the owner. A **genuine regression** is any RED that does **not** trace to a known open defect that way. (Current baseline and per-defect owners: `tests/plan/ledger.md`.)
 
 ## Git & Remote

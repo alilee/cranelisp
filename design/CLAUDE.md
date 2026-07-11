@@ -1,57 +1,38 @@
 # design/
 
-Architecture and implementation design documents for the Cranelisp reimplementation.
+Architecture and per-crate implementation design for Cranelisp.
 
-## Structure
+## Ownership model
 
-Each compiler skill owns a subdirectory for its solution design:
+Two owners divide this tree:
+
+- **`design/arch/`** — owned by `/arch` (Compiler Architect): principles, bounded contexts, cross-crate interfaces, the newcomer overview, sequence diagrams. See `design/arch/CLAUDE.md`.
+- **`design/{crate}/`** — owned by `/design`, the per-crate triad design role. `/design` is **narrow-deployed to one crate-shaped surface per invocation**; each subdirectory holds that surface's interior design (algorithms, data structures, trade-offs) below the level of the arch overview.
+
+The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retired and collapsed into `/design` narrow-deployment; they are historical.
+
+## Subdirectories
 
 | Directory | Owner | Content |
 |---|---|---|
-| `arch/` | `/arch` | Architecture: crate DAG, boundary types, roadmap, design-space analysis |
-| `frontend/` | `/frontend` | Reader, macro expander, AST builder design |
-| `typecheck/` | `/typecheck` | Inference engine, traits, monomorphisation design |
-| `backend/` | `/backend` | Cranelift codegen, heap/RC, closure/ADT compilation design |
-| `platform/` | `/platform` | Allocator, RC primitives, string runtime, platform abstraction design |
-| `review/` | `/review` | Checklists, per-ring review reports |
+| `arch/` | `/arch` | Architecture: principles, bounded contexts, cross-crate interfaces, overview, sequence diagrams |
+| `frontend/` | `/design` (frontend) | Reader, parser, macro expansion design |
+| `typecheck/` | `/design` (typecheck) | HM inference, traits, monomorphisation design |
+| `backend/` | `/design` (backend) | Cranelift codegen, RC, JIT lifecycle, caching, linking design |
+| `primitives/` | `/design` (primitives) | Static primitive `SymbolTable` + GOT design (D43 split) |
+| `intrinsics/` | `/design` (intrinsics) | Drop glue, RC/alloc, IO reactor, intrinsic helpers design (D43 split) |
+| `platform/` | `/design` (platform) | DLL loading, IO trampoline, scheduling-class registry design |
+| `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
+| `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
+| `runtime/` | — historical | Pre-D43 `cranelisp-runtime` design; superseded by `primitives/` + `intrinsics/` |
+| `stdlib/` | `/stdlib` | Stdlib design records (e.g. examples `--run` path remediation) |
 
-Top-level files:
-- `reimplementation.md` — Full reimplementation strategy. **Start here.**
+## Design-doc expectations
 
-## Design Doc Expectations
+Per-crate design docs describe *how* a surface solves problems — algorithms, data structures, internal architecture, trade-offs. They are distinct from `design/arch/interfaces.md` (cross-crate boundary contracts) and `spec/` (correct behaviour). A design doc is created or updated as part of the design phase for each surface; see each subdirectory's `CLAUDE.md`.
 
-Every compiler skill MUST maintain design documents in its subdirectory. These describe *how* the skill solves problems — algorithms, data structures, internal architecture, and trade-offs. They are distinct from:
-- `design/arch/interfaces.md` — boundary contracts (what goes in and out)
-- `spec/` — language definition (what behaviour is correct)
-- `sketch/docs/` — prototype rationale (how the prototype did it)
+The content split (skill definition vs design doc vs `CLAUDE.md`) is normative in `sprints/METHOD.md` §1.4.
 
-Design docs evolve with the implementation: sketched before coding, refined during, updated when designs change. A design doc should be created or updated as part of every implementation task. See each subdirectory's `CLAUDE.md` for specific guidance.
+## Historical reference
 
-## design/arch/ (owned by /arch)
-
-- `arch/architecture.md` — Overall architecture: 7-crate DAG, single pipeline principle, CompiledModule decomposition, audit findings resolution
-- `arch/interfaces.md` — Boundary type definitions with Rust signatures (Sexp, Expr, Type, CheckResult, etc.)
-- `arch/roadmap.md` — Ring-by-ring phased progression roadmap with per-skill deliverables and acceptance criteria
-
-## Legacy Design Docs
-
-The sketch's 22 design documents live in `sketch/docs/`. Each compiler skill should consult the relevant sketch design doc for context and rationale, but the authoritative architecture for the reimplementation is in `design/arch/`.
-
-Key sketch design docs by skill:
-- `/frontend`: `sketch/docs/syntax.md`, `sketch/docs/macro.md`
-- `/typecheck`: `sketch/docs/type-system.md`, `sketch/docs/traits.md`, `sketch/docs/adt.md`, `sketch/docs/constrained-polymorphism.md`
-- `/backend`: `sketch/docs/codegen.md`, `sketch/docs/data-structures.md`, `sketch/docs/heap_layout.md`, `sketch/docs/closures.md`
-- `/qa`: `sketch/docs/testing.md`
-- `/stdlib`: `sketch/docs/modules.md`
-- `/platform`: `sketch/docs/platform.md`, `sketch/docs/io.md`
-
-## For the `/arch` skill
-
-**Phase B (completed)**:
-1. Created `design/arch/architecture.md` — crate DAG, pipeline design, audit resolution
-2. Created `design/arch/interfaces.md` — all boundary type definitions
-3. Created `design/arch/roadmap.md` — ring-by-ring progression plan
-4. Created root `Cargo.toml` workspace with 7 member crates
-5. Created `src/CLAUDE.md` with cross-cutting source conventions
-6. Updated `sprints/reimplementation.md` — replaced options analysis with ring model decision
-7. Updated `design/arch/CLAUDE.md` with cross-references and session decisions
+`sprints/reimplementation.md` records the original reimplementation strategy (historical). Delivery progress is tracked in `sprints/ROADMAP.md`, owned by `/sprint`.

@@ -2,9 +2,11 @@
 
 > **Owner**: `/sprint`.
 > **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
-> Increments A–E executed and verified 2026-07-11; increment F pending.
-> Open obligations: S108 Phase 1 disposes `audits/cranelisp-backend-s107.md`;
-> S108 audit slot = `cranelisp-typecheck`.
+> **All increments A–F executed and verified 2026-07-11 — the migration is
+> complete; this document is now steady-state normative reference.**
+> Open obligations: S108 Phase 1 disposes `audits/cranelisp-backend-s107.md`
+> (7 recommendations incl. R6, which absorbs the deferred `design/backend/`
+> currency pass); S108 audit slot = `cranelisp-typecheck`.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
 > protocol (§II.4), the `.claude/agents/` shim contract (§II.2), and the
 > `/audit` rolling cycle (§I.7, instantiated §II.1).
@@ -256,7 +258,7 @@ The 12 live skills of `METHOD.md` §1.1, with three changes:
   - **`/qa`** (Authority) — test strategy, risk assessment, coverage process
     & traceability audit, defect attribution & cross-crate triage. Owns
     `tests/plan/`.
-  - **`/testing`** (production) — authors integration/e2e tests, repro
+  - **`/testing`** (production) — authors e2e tests, repro
     isolation & reduction, ledger upkeep. Owns the test sources under
     `tests/`.
 - **`/spec` is confirmed as a scribe** (per the standing user ruling that the
@@ -488,24 +490,39 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   (directory now fully gone, matching the S87 deletion record);
   `tests/plan/baseline.md` deleted (renamed to `ledger.md` 2026-05-03; both
   had existed since).
-- **F — CLAUDE.md decay reset** (any time after A; serial dispatches, all
-  opus[1m] — the audit already did the judgment): execute the per-file
-  verdicts in `sprints/audits/decay-audit-2026-07-11.md`. REWRITE:
-  `tests/CLAUDE.md` (`/qa`+`/testing`), `spec/CLAUDE.md` (`/spec`),
-  `stdlib/CLAUDE.md` (`/stdlib`), `exemplar/CLAUDE.md` (`/port`),
-  `design/CLAUDE.md` (`/arch`), `design/review/CLAUDE.md` (`/review`). TRIM:
-  `src/CLAUDE.md` (`/dev`), `design/arch/CLAUDE.md` (`/arch`),
-  `crates/cranelisp-typecheck/CLAUDE.md` (`/dev`+`/design` — relocate design
-  prose to `design/typecheck/`), the four small
-  `design/{frontend,backend,typecheck,platform}/CLAUDE.md` (`/design`),
-  `repl/CLAUDE.md` (`/repl`, two phrases). Each dispatch consumes its audit
-  section as the work-list; the audit record is then archived state, not a
-  living document. **Also in F** (found during increment A, outside the
-  CLAUDE.md audit's scope): a command-file decay pass — `review.md` still
-  builds steps on `sketch/audits/` vigilance and `design/arch/facades/{crate}.md`
-  specs (both retired/absent), and `arch.md`/`qa-adjacent` files carry dead
-  `memory/*` citations and M-item-era framing; the increment-A pass fixed
-  only the METHOD_PROPOSED-as-current citations.
+- **F — CLAUDE.md decay reset** — **EXECUTED 2026-07-11**. All per-file
+  verdicts from `sprints/audits/decay-audit-2026-07-11.md` executed; the
+  audit record is now archived state. REWRITES (old→new lines):
+  `tests/CLAUDE.md` 633→345 (`/testing`; also corrected a stale helper-API
+  table and dead prelude-variant names found beyond the audit list),
+  `spec/CLAUDE.md` 95→63 (`/spec`), `stdlib/CLAUDE.md` 377→121 (`/stdlib`),
+  `exemplar/CLAUDE.md` 545→197 (`/port`), `design/CLAUDE.md` 57→38
+  (`/arch`), `design/review/CLAUDE.md` 82→39 (`/review`). TRIMS:
+  `src/CLAUDE.md` 305→178 (`/dev`), `design/arch/CLAUDE.md` cited-decay
+  fixes (`/arch`), `crates/cranelisp-typecheck/CLAUDE.md` 247→230 (`/dev` —
+  design narratives relocated to `design/typecheck/monomorphisation.md`
+  §3.7 + `adt.md` §Product Type Handling by a `/design` dispatch; lands
+  over the ~150 budget because the kept S101/S78 code-voice invariants
+  alone exceed it — accepted deviation, next typecheck audit judges), the
+  four `design/{frontend,backend,typecheck,platform}/CLAUDE.md` (`/design`),
+  `repl/CLAUDE.md` (inline). Command-file pass: `review.md` re-anchored
+  (sketch-audit anti-patterns kept as own content, facade steps → rustdoc +
+  BC + `public-api.txt`, `/audit` named as the rolling-vigilance input);
+  `arch.md` facade-spec framing reconciled to the retirement record;
+  `triad-shared.md` full pass (facade steps, METHOD_PROPOSED cites, M-era
+  framing, `/audit` in step 7, `/testing` FIXME target added); dead
+  `memory/*` citations stripped repo-wide; the "integration + e2e"
+  vocabulary corrected to the pinned two-tier reality (e2e + unit, no
+  middle) across METHOD/root/commands/shims. **Dispatch log**: testing×1,
+  spec×1, stdlib×1, port×1, design×1, dev×1 (opus[1m]/high, defaults);
+  arch×1 + review×1 **downgraded to opus per the §II.3 /arch mechanical-
+  sweep rule** (recorded); inline coordinator edits for `/sprint`-owned
+  shared files + two-phrase repl fix. **Residuals, deliberately deferred**:
+  `design/backend/` full currency pass = backend-audit R6 (S108 Phase 1
+  disposition); `arch.md` manifestation-site "facade section" phrasing +
+  two historical METHOD_PROPOSED §15 M-item provenance refs (R6-class
+  narrative pass); `design/typecheck/adt.md`'s own ring-era section (future
+  typecheck design-currency pass).
 
 ### II.8 Mechanics assumptions and fallbacks
 
