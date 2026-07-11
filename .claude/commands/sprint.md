@@ -118,6 +118,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 
 - Author the Outcome section in `SPRINT.md`: Delivered / Deferred (with rationale) / Findings.
 - Verify the `Audit:` dispatch happened and the assessment landed; check `/audit` calibration (recommendations that consistently die at Phase-1 acceptance are a finding about the audit — METHOD §2.6).
+- **Frontmatter-vs-table audit** (mechanical): `model:`/`effort:` in `.claude/commands/*.md` and `.claude/agents/*.md` match `sprints/artefacts.md` §II.3 — a 14-row grep, not judgment. Review the dispatch log: did escalations correlate with the sprint's hard spots? Feed mismatches into the outcome.
 - Present outcome to user. **Do not archive or update ROADMAP until user approves close explicitly.**
 - Prompt to consider whether arch's architectural principles are adequately serving the sprint.
 - On approval: `git mv sprints/SPRINT.md sprints/archive/sprint-{id}.md`; update `sprints/ROADMAP.md`; commit.
@@ -145,14 +146,17 @@ FIXMEs are files in `design/arch/fixmes/NNNN-name.md`. File format, frontmatter,
 
 ## Spawning subagents
 
+- **Dispatch by agent type.** Every role dispatch uses its `.claude/agents/{skill}.md` shim (Agent tool `subagent_type: "{skill}"`). The shim pins model + effort per the allocation table (`sprints/artefacts.md` §II.3) and points the agent at its command definition. **NEVER dispatch a role as a general-purpose agent with "read `.claude/commands/X.md` and act as X" prose** — that path bypasses the model pin and silently inherits the session model.
+- **Named fallback** (if agent-type dispatch is unavailable or misbehaves in this harness): general-purpose agent + an explicit per-dispatch `model` parameter copied from §II.3 + the command-file pointer in the prompt. Record every fallback use in the dispatch log.
+- **Escalation / downgrade**: a per-dispatch `model` override on a shim dispatch is permitted only per the triggers in `artefacts.md` §II.4; every non-default dispatch is recorded with its trigger number. All language-normative questions go to the USER, never to a model tier.
+- **Dispatch log**: record every agent dispatch in `SPRINT.md` §Dispatch log — `wave | agent | surface | model | effort | non-default reason`. Default-tier rows may be batched per wave ("W2: dev×frontend, dev×typecheck — defaults").
 - **One skill per agent.** Never combine roles in one prompt.
-- **No worktree isolation** — known broken on this project.
-- Every agent prompt must:
-  1. Name the skill role and point to its definition (`.claude/commands/{skill}.md`).
-  2. State the **crate in scope** when invoking `/design`, `/dev`, or `/review`.
-  3. Reference the specific design doc, test plan, or FIXME the agent should read first.
-  4. Require `cargo check` + warning cleanup if implementation work is involved.
-  5. Include the **forbidden-git list** verbatim (below).
+- **No worktree isolation** — known broken on this project. Source-touching agents run serially; read-only fan-outs (including `/audit`) may parallelise.
+- Every dispatch prompt must:
+  1. State the task and the **crate/context in scope** when invoking `/design`, `/dev`, `/review`, or `/audit`.
+  2. Reference the specific design doc, plan row, test, or FIXME the agent should read first.
+  3. Require `cargo check` + warning cleanup if implementation work is involved.
+  4. Include the **forbidden-git list** verbatim (below) — the shims also carry it, but prompts must not rely on that.
 
 **Forbidden in agent commands** (paste into every agent prompt):
 

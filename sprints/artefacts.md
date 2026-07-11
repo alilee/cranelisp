@@ -2,7 +2,8 @@
 
 > **Owner**: `/sprint`.
 > **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
-> Increments A and B executed 2026-07-11; increments C–F pending.
+> Increments A–C executed 2026-07-11 (C's shim-dispatch verification
+> completes at the next fresh session); increments D–F pending.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
 > protocol (§II.4), the `.claude/agents/` shim contract (§II.2), and the
 > `/audit` rolling cycle (§I.7, instantiated §II.1).
@@ -428,13 +429,17 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   **alias behavior verifies live on the next interactive skill invocation**
   (invoke any skill and check the status line/model indicator) — do this
   before building increment C on the same alias values.
-- **C — Agents + contract amendment** (the dispatch-behavior change): create
-  the 14 shims; rewrite sprint.md §Spawning subagents to agent-type dispatch;
-  add the Dispatch log to `SPRINT_TEMPLATE.md`; add the Phase-7
-  frontmatter-vs-table audit line. The next sprint's first wave is the live
-  test. **Named fallback** if agent-type dispatch misbehaves: per-dispatch
-  `model` param applied from §II.3 — the contract text names this fallback so
-  `/sprint` degrades gracefully.
+- **C — Agents + contract amendment** (the dispatch-behavior change) —
+  **EXECUTED 2026-07-11**: the 14 shims exist; sprint.md §Spawning subagents
+  rewritten to agent-type dispatch; Dispatch log added to
+  `SPRINT_TEMPLATE.md`; Phase-7 frontmatter-vs-table audit line added.
+  **Live-test result**: a same-session probe dispatch of the `docs` shim was
+  rejected ("agent type not found") — the harness loads its agent registry
+  at session start, so shims created mid-session are not yet dispatchable.
+  Verification completes at the **next fresh session** (probe any shim
+  before the first real wave). Until then the **named fallback is active**:
+  general-purpose agent + per-dispatch `model` param from §II.3 + command
+  pointer, recorded in the dispatch log.
 - **D — Escalation live + CLAUDE.md seeding + audit rotation starts**: §II.4
   triggers become binding (they need the dispatch log from C); seed the 7
   crate `CLAUDE.md` files via serial `/dev` dispatches (§II.5); the first
@@ -482,8 +487,10 @@ increment:
    command frontmatter is a first-turn backstop.
 3. **Per-invocation `effort` on the Agent tool** — unverified; effort is
    pinned in shim frontmatter only.
-4. **Agent-type dispatch availability** in the harness — increment C's live
-   test; fallback is the per-dispatch `model` param (§II.7 C).
+4. **Agent-type dispatch availability** in the harness — increment C's probe
+   (2026-07-11) showed shims are NOT registered mid-session (registry loads
+   at session start); a fresh-session probe completes the verification.
+   Fallback is the per-dispatch `model` param (§II.7 C), active meanwhile.
 5. **Memory-citation note** (revised by the 2026-07-11 audit): repo docs'
    `memory/*.md` citations resolve — when they resolve at all — to the
    per-machine harness store (`~/.claude/projects/<project>/memory/`), and

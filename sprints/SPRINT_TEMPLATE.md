@@ -43,6 +43,14 @@
 
 {Repeat per wave.}
 
+## Dispatch log
+
+{One row per agent dispatch (sprint.md §Spawning subagents). Batch default-tier rows per wave. Every non-default row cites its `sprints/artefacts.md` §II.4 trigger number. Fallback (non-shim) dispatches are flagged.}
+
+| Wave | Agent | Surface | Model | Effort | Non-default reason |
+|---|---|---|---|---|---|
+| W1 | /testing | sprint-wide | opus[1m] | high | — |
+
 ## Notes
 
 {Runtime log: blockers, scope changes, decisions, FIXME activity, gate events.}
