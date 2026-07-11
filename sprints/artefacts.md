@@ -2,7 +2,9 @@
 
 > **Owner**: `/sprint`.
 > **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
-> Increments A–C executed and verified 2026-07-11; increments D–F pending.
+> Increments A–D executed and verified 2026-07-11; increments E–F pending.
+> Open obligations: S108 Phase 1 disposes `audits/cranelisp-backend-s107.md`;
+> S108 audit slot = `cranelisp-typecheck`.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
 > protocol (§II.4), the `.claude/agents/` shim contract (§II.2), and the
 > `/audit` rolling cycle (§I.7, instantiated §II.1).
@@ -443,15 +445,22 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   the probe verifies dispatch + role adoption; the model *pin* itself rides
   the documented frontmatter mechanism and shows in harness telemetry, not
   in agent self-report.
-- **D — Escalation live + CLAUDE.md seeding + audit rotation starts**: §II.4
-  triggers become binding (they need the dispatch log from C); seed the 7
-  crate `CLAUDE.md` files via serial `/dev` dispatches (§II.5); the first
-  in-rotation `/audit` dispatch runs this sprint. Proposed rotation order
-  over the six crate-shaped surfaces, riskiest first: `cranelisp-backend`
-  (largest; the S101 test-shape exhibits), `cranelisp-typecheck`, `src/`
+- **D — Escalation live + CLAUDE.md seeding + audit rotation starts** —
+  **EXECUTED 2026-07-11**: §II.4 triggers are binding from this date. All 7
+  crate `CLAUDE.md` files seeded serially via shim dispatches (119–150
+  lines each, within budget). The inaugural in-rotation `/audit` ran on
+  `cranelisp-backend` → `audits/cranelisp-backend-s107.md` (7
+  recommendations: 4 small, 3 medium, 0 large; **disposition due at S108
+  Phase 1**). Rotation order confirmed, riskiest first:
+  `cranelisp-backend` ✓(s107), `cranelisp-typecheck` (next, S108), `src/`
   (int), `cranelisp-frontend`, `cranelisp-primitives`+`-intrinsics` (one
-  audit — one surface), `cranelisp-platform`. Rotation order is `/sprint`
-  coordination state thereafter (§II.6).
+  surface), `cranelisp-platform`. Rotation order is `/sprint` coordination
+  state thereafter (§II.6). **Increment-D dispatch log** (no active
+  SPRINT.md — recorded here): dev×6 (backend, frontend, primitives,
+  intrinsics, platform, exe-bundle seedings — opus[1m]/high, defaults);
+  arch×1 (types seeding — fable/xhigh, default pin; owner-of-source rule);
+  audit×1 (backend — fable/xhigh, default). No escalations, no fallback
+  dispatches; all eight ran by agent-type shim.
 - **E — Settings + residue hygiene**: purge the 13 stale macOS-path lines
   from `settings.local.json` + re-baseline permissions; delete the stale
   `.claude/projects/-Users-alilee-…` memory directory (all four files
