@@ -42,13 +42,14 @@ Specifically MUST NOT edit:
 
 ## Skills you orchestrate
 
-12 skills. Three categories matter to `/sprint`:
+14 skills (METHOD §1). Model/effort per dispatch: `sprints/artefacts.md` §II.3 (normative allocation table); escalation triggers §II.4.
 
-- **Authority**: `/spec`, `/arch`, `/qa`. Arbitrate correctness; route technical questions here.
-- **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives` + `cranelisp-intrinsics` (the **backend-emitted runtime library** — S73 D43 split of the former `cranelisp-runtime`; paired with backend, NOT `/int`; `/int` is only a host-client — see BC §4b/§6 + FIXME 0486), `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
+- **Authority**: `/spec` (scribe — normative questions go to the USER, framed as prose; never dispatch a skill to "rule"), `/arch`, `/qa` (strategy, risk, coverage process, defect attribution/triage), `/audit` (rolling whole-context assessment, METHOD §2.6). Route technical questions here.
+- **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives` + `cranelisp-intrinsics` (the **backend-emitted runtime library** — S73 D43 split of the former `cranelisp-runtime`; paired with backend, NOT the int surface, which is only a host-client — see BC §4b/§6 + FIXME 0486), `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
+- **Test production**: `/testing` — authors the integration/e2e suite and repro reductions to `/qa`'s plan, sprint-wide.
 - **User-proxy**: `/stdlib`, `/examples`, `/docs`, `/repl`, `/port`. Operate in Phase 6 — exercise the language outside-in.
 
-`/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` are RETIRED (collapsed into `/dev` narrow-deployment). Do not invoke. The integration-bottleneck rule (sprint sized to one skill's capacity) is also retired — it was a holdover from the per-skill-per-crate model.
+The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at `sprints/artefacts.md` increment A (2026-07-11); see git history. The integration-bottleneck rule (sprint sized to one skill's capacity) was retired with them.
 
 ## The seven phases
 
@@ -57,6 +58,7 @@ Phase definitions are normative in `METHOD §2`. Below: what `/sprint` specifica
 ### Phase 1 — Scope
 
 - Scan `design/arch/fixmes/` for open carries; check 2× escalation status of each (`METHOD §2.4` — items deferred twice ship this sprint or require explicit user sign-off for a third deferral).
+- **Dispose the prior sprint's audit assessment** (`audits/{context}-sNNN.md`, METHOD §2.6) with the user: each recommendation accepted (→ `/sprint` files the FIXME targeting the proposed owner, quoting the assessment) or declined (→ append rationale to the assessment).
 - Read recent `sprints/archive/` for unresolved findings.
 - Propose the next coherent increment in `SPRINT.md` as `Status: PHASE 1 SCOPE DRAFT`.
 - Present scope to user. Do not advance until user approves.
@@ -83,7 +85,7 @@ Phase definitions are normative in `METHOD §2`. Below: what `/sprint` specifica
 
 Two stages.
 
-**Stage 1 — QA-first sprint-wide.** One `/qa` invocation, scope = whole sprint. `/qa` writes failing integration AND e2e tests covering the full spec surface in scope. Tests fail because implementation does not yet exist — intended state. Failing-not-ignored.
+**Stage 1 — QA-first sprint-wide.** One `/testing` invocation, scope = whole sprint. `/testing` writes failing integration AND e2e tests covering the full spec surface in scope, to the plan `/qa` produced in Phase 3. Tests fail because implementation does not yet exist — intended state. Failing-not-ignored.
 
 **Stage 2 — Per-crate D/D/R cycle, parallel across crates.** For each crate touched: spawn `/design` (narrow — refines design doc against the implementation problem), then `/dev` (narrow — implements + unit tests), then `/review` (narrow — change-set review against design intent + accumulated state). Iterate within each crate as needed.
 
@@ -96,6 +98,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 ### Phase 6a — User-facing assessment
 
 - Issue `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` narrow to their surfaces.
+- Dispatch `/audit` on the sprint's rotation context (the `Audit:` field in `SPRINT.md`; METHOD §2.6). Read-only — runs parallel to anything; assessment lands in `audits/`, disposed next sprint Phase 1.
 - Each skill assesses what was *actually* delivered (not what was scoped) against spec; produces a 6b plan; files gap FIXMEs in `design/arch/fixmes/` for next sprint.
 - Exit gate: each user-proxy has produced a plan; gap FIXMEs filed.
 
@@ -108,6 +111,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 ### Phase 7 — Close
 
 - Author the Outcome section in `SPRINT.md`: Delivered / Deferred (with rationale) / Findings.
+- Verify the `Audit:` dispatch happened and the assessment landed; check `/audit` calibration (recommendations that consistently die at Phase-1 acceptance are a finding about the audit — METHOD §2.6).
 - Present outcome to user. **Do not archive or update ROADMAP until user approves close explicitly.**
 - Prompt to consider whether arch's architectural principles are adequately serving the sprint.
 - On approval: `git mv sprints/SPRINT.md sprints/archive/sprint-{id}.md`; update `sprints/ROADMAP.md`; commit.

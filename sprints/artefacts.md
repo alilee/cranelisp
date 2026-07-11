@@ -1,7 +1,8 @@
 # Agent Artefact Structure & Model Allocation
 
 > **Owner**: `/sprint`.
-> **Status**: PROPOSAL — pending user ratification (drafted 2026-07-11, pre-S108).
+> **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
+> Increment A executed 2026-07-11; increments B–F pending.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
 > protocol (§II.4), the `.claude/agents/` shim contract (§II.2), and the
 > `/audit` rolling cycle (§I.7, instantiated §II.1).
@@ -405,7 +406,7 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
 ### II.7 Migration increments (each safe alone)
 
 - **A — Proposal + hygiene** (docs/commands only, zero dispatch-behavior
-  change): this doc lands; METHOD §1 gains a §1.5 pointer here; delete the 5
+  change) — **EXECUTED 2026-07-11**: this doc lands; METHOD §1 gains a §1.5 pointer here; delete the 5
   retired commands; split `qa.md` → `qa.md` (strategy/risk/coverage/triage)
   + `testing.md` (authoring/repro/ledger) with METHOD §1 category update and
   `tests/CLAUDE.md` ownership note (`tests/plan/` → `/qa`, test sources →
@@ -457,7 +458,12 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   `design/{frontend,backend,typecheck,platform}/CLAUDE.md` (`/design`),
   `repl/CLAUDE.md` (`/repl`, two phrases). Each dispatch consumes its audit
   section as the work-list; the audit record is then archived state, not a
-  living document.
+  living document. **Also in F** (found during increment A, outside the
+  CLAUDE.md audit's scope): a command-file decay pass — `review.md` still
+  builds steps on `sketch/audits/` vigilance and `design/arch/facades/{crate}.md`
+  specs (both retired/absent), and `arch.md`/`qa-adjacent` files carry dead
+  `memory/*` citations and M-item-era framing; the increment-A pass fixed
+  only the METHOD_PROPOSED-as-current citations.
 
 ### II.8 Mechanics assumptions and fallbacks
 

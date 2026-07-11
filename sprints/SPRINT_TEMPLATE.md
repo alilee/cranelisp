@@ -4,13 +4,15 @@
 
 **Goal**: {one-sentence sprint goal}
 
+**Audit**: {bounded context — filled at Phase 4 from the rotation, METHOD §2.6; dispatched read-only in the Phase 6/7 window → `audits/{context}-s{ID}.md`; disposed next sprint Phase 1}
+
 ## Scope
 
 {What this increment delivers. Must be testable, not scaffolding. Out-of-scope deferrals listed explicitly with rationale and target sprint.}
 
 ## FIXME debt
 
-{Open FIXMEs from `sprints/fixmes/` carried into this sprint, plus any filed during the sprint. Reference by number; do not duplicate file content.}
+{Open FIXMEs from `design/arch/fixmes/` carried into this sprint, plus any filed during the sprint. Reference by number; do not duplicate file content.}
 
 | FIXME | Target skill | Status | Notes |
 |---|---|---|---|
@@ -25,7 +27,7 @@
 ### /skill-name
 
 - **Task**: {what this skill does in this sprint}
-- **Crate** (if narrow-deployed): {cranelisp-frontend | cranelisp-typecheck | cranelisp-backend | cranelisp-runtime | cranelisp-platform | src/}
+- **Crate** (if narrow-deployed): {cranelisp-frontend | cranelisp-typecheck | cranelisp-backend | cranelisp-primitives+intrinsics | cranelisp-platform | src/}
 - **Design refs**: {spec sections, design docs, FIXMEs to read}
 - **Acceptance**: {how to verify the task is done}
 

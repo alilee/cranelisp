@@ -12,136 +12,100 @@ Before doing work in any directory, read all `CLAUDE.md` files in that directory
 
 ## Project Layout
 
-This repository is organized for the Cranelisp reimplementation:
-
 | Directory | Purpose |
 |---|---|
-| `spec/` | Language specification (16 files) — owned by `/spec` skill |
-| `design/` | Architecture and implementation design — owned by `/arch` skill |
-| `user/` | User-facing documentation (tutorials, guide) — owned by `/docs` skill |
-| `src/` | New compiler source (to be created by `/arch`) |
+| `spec/` | Language specification — owned by `/spec` (scribe; the user arbitrates semantics) |
+| `design/` | Architecture and per-crate implementation design — `design/arch/` owned by `/arch`, `design/{crate}/` by `/design` |
+| `src/` | Compiler binary crate — pipeline, REPL, CLI, session |
+| `crates/` | Bounded-context library crates (types, frontend, typecheck, backend, primitives, intrinsics, platform, exe-bundle) |
+| `user/` | User-facing documentation — owned by `/docs` |
 | `stdlib/` | Standard library in Cranelisp — owned by `/stdlib` |
-| `examples/` | Learning-sequence examples — owned by `/examples` skill |
-| `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` skill |
-| `tests/` | Reimplementation test suite (to be created by `/qa`) |
-| `sprints/` | Delivery coordination — roadmap, current sprint, archive — owned by `/sprint` skill |
+| `examples/` | Learning-sequence examples — owned by `/examples` |
+| `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` |
+| `repl/` | REPL experience spec, demos, harness — owned by `/repl` |
+| `tests/` | Integration + e2e suite — strategy/plan owned by `/qa`, test sources by `/testing` |
+| `audits/` | Whole-context audit assessments — owned by `/audit` |
+| `sprints/` | Delivery coordination — method, roadmap, current sprint, archive — owned by `/sprint` |
 
 ## Sketch Oracle (retired)
 
-The prototype compiler that lived in `sketch/` was **deleted at the close of Sprint 87** (pre-Phase-H hygiene): Phases A–G are complete, language semantics are frozen, and the reimplementation has its own working references (`design/{crate}/`, `design/arch/facades/`, `audits/`, `spec/`) that long ago superseded it. If a spec ambiguity ever needs the original oracle's behaviour, recover the sketch from git history (it predates this deletion commit) rather than treating it as a live reference. Historical mentions of the sketch throughout `design/`, `sprints/`, and `audits/` are an accurate record of past consultations and are left intact.
+The prototype compiler that lived in `sketch/` was **deleted at the close of Sprint 87** (pre-Phase-H hygiene): language semantics are frozen, and the reimplementation's own references (`design/{crate}/`, `audits/`, `spec/`) long ago superseded it. If a spec ambiguity ever needs the original oracle's behaviour, recover the sketch from git history rather than treating it as a live reference. Historical mentions of the sketch throughout `design/`, `sprints/`, and `audits/` are an accurate record of past consultations.
 
 > **Do not copy the sketch's pipeline structure** (relevant only if recovering it from history). The sketch had a dual-pipeline defect (`TopLevel`/`ReplInput` duplication); the v4 pipeline was designed independently. See `design/arch/archive/pipeline-convergence-review.md` for the historical analysis.
 
 ## Pipeline
 
-The v4 scheduler-driven pipeline is the only pipeline. `CompilerSession` in `session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL. See `design/arch/pipeline-v4.md` for the target design and `design/arch/pipeline-v4-roadmap.md` for current status.
+The v4 scheduler-driven pipeline is the only pipeline. `CompilerSession` in `src/session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL — REPL/`--run`/`--link` divergence is always a defect. See `design/arch/overview.md` and `design/int/CLAUDE.md` for the binary/integration layer.
 
 ## Active Skill Indicator
 
-The Claude Code status bar shows the currently active skill. This is a **manual, single-session label** — useful when one terminal session is dedicated to a specific role. It does not track parallel subagents (which run concurrently and would race on the file).
+The Claude Code status bar shows the currently active skill. This is a **manual, single-session label** — useful when one terminal session is dedicated to a specific role. It does not track parallel subagents.
 
 ```bash
 echo "/spec" > .claude-role   # set active skill for this session
 rm .claude-role               # clear it
 ```
 
-For parallel subagent work, use terminal tabs or tmux panes — one per agent — rather than relying on this file. `.claude-role` is git-ignored and local only.
+`.claude-role` is git-ignored and local only.
 
 ## Skills
 
-15 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
+14 Claude Code skills are available as slash commands (`.claude/commands/`). Roles, categories, and phase participation are normative in `sprints/METHOD.md` §1; **model/effort allocation per skill is normative in `sprints/artefacts.md` §II.3**.
 
 | Command | Role |
 |---|---|
-| `/spec` | Language Specification Owner — owns `spec/`, arbitrates ambiguity |
-| `/arch` | Compiler Architect — owns `design/arch/`, interface types, crate structure |
-| `/frontend` | Frontend Developer — reader, macro expander, AST builder |
-| `/typecheck` | Typechecker Developer — Algorithm W, traits, monomorphisation |
-| `/backend` | Backend Developer — Cranelift IR, JIT, RC, caching, linking |
-| `/int` | Integration Developer — owns `src/`, pipeline orchestration, REPL session, slash commands, prelude loading, CLI |
-| `/qa` | Quality Assurance — test suite, spec conformance, coverage analysis |
-| `/review` | Code Reviewer — code quality, prevents structural debts |
-| `/sprint` | Sprint Manager — plans increments, coordinates skill execution, tracks delivery |
+| `/spec` | Language Specification Scribe — owns `spec/`; records settled semantics; brings every open normative question to the user, never rules |
+| `/arch` | Compiler Architect — owns `design/arch/` + `crates/cranelisp-types/`; principles, bounded contexts, public-API approvals |
+| `/qa` | QA Authority — test strategy, risk assessment, coverage process & traceability audit, defect attribution & cross-crate triage; owns `tests/plan/` |
+| `/testing` | Test Developer — authors integration/e2e tests, repro isolation & reduction, ledger upkeep; owns test sources under `tests/` |
+| `/audit` | Whole-Context Auditor — rolling per-sprint assessment of one bounded context's total state; owns `audits/` |
+| `/design` | Per-crate triad, design role — narrow-deployed one crate per invocation; owns `design/{crate}/` |
+| `/dev` | Per-crate triad, implementation role — narrow-deployed; code + unit tests |
+| `/review` | Per-crate triad, review role — change-set review against design intent |
+| `/sprint` | Sprint Manager — plans increments, waves, gates, dispatch; owns `sprints/` |
 | `/stdlib` | Standard Library Developer — owns `stdlib/` |
-| `/examples` | Example Developer — builds learning-sequence `examples/` |
-| `/platform` | Platform Developer — `cranelisp-platform/`, platform DLLs (the former `cranelisp-runtime` runtime library split at D43 → `cranelisp-primitives` + `cranelisp-intrinsics`, now **backend-emitted runtime, backend-paired — not `/platform`**) |
+| `/examples` | Example Developer — owns `examples/` |
 | `/docs` | Documentation Owner — owns `user/` |
-| `/repl` | REPL Experience Developer — owns REPL experience spec, test scripts, and harness |
-| `/port` | Exemplar Project Developer — ports a showcase project to validate the language at scale |
+| `/repl` | REPL Experience Developer — owns `repl/` |
+| `/port` | Exemplar Project Developer — owns `exemplar/` |
 
-## Reimplementation Strategy
+The former `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` skills were retired (collapsed into `/dev` narrow-deployment) and their command files deleted at increment A of `sprints/artefacts.md`; see git history.
 
-See `sprints/reimplementation.md` for the full strategy:
-- **Ring model**: 5 rings (core → heap → abstraction → meta → effects)
-- **Phase sequence**: A (extract) → B (scaffold) → C–G (rings 0–4) → H (release compiler)
-- **Parallel work**: compiler skills work in parallel within each ring
-- **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
-- **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `sprints/ROADMAP.md` tracks progress, `sprints/SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
-- **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
+## Delivery
+
+Reimplementation phases A–G are complete; the project is in **Phase H (release compiler)**. The ring model that structured phases C–G was retired as a scheduling axis in Sprint 64 — sprint is the sole axis; `[R{N}]` annotations in older documents are historical. Current state and trajectory:
+
+- `sprints/METHOD.md` — the delivery method (skills, seven sprint phases, FIXME protocol, artifacts)
+- `sprints/ROADMAP.md` — sprint-by-sprint progress
+- `sprints/SPRINT.md` — the active sprint plan (absent between sprints; archived to `sprints/archive/`)
+- `sprints/artefacts.md` — agent artefact structure, model allocation, escalation, audit cycle (ratified 2026-07-11)
+- `sprints/reimplementation.md` — the original strategy (historical reference)
+
+`/arch` is the final arbiter of design decisions that cross crate boundaries. `/sprint` orchestrates; the user approves scope, sprint close, and all language-normative questions.
 
 ## Usability Findings and Defects
 
-User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) routinely encounter problems while exercising the language. There are two distinct categories with different handling:
+User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`) routinely encounter problems while exercising the language. Two categories, different closure rules:
 
-**Usability findings** — corner cases, unhelpful errors, inference friction, missing APIs, ergonomic issues. These are filed as `FIXME(/skill-name)` comments on the relevant spec, design, or plan document — the cross-skill protocol described below. Documentation is sufficient closure.
+**Usability findings** — corner cases, unhelpful errors, inference friction, missing APIs, ergonomic issues. Filed as FIXME files in `design/arch/fixmes/` (see §Cross-Skill Changes). Documentation is sufficient closure.
 
-**Defects** — real compiler bugs, spec violations, runtime crashes, REPL/`--run` divergences, output that does not match the spec. **A user-proxy skill's work is not finished until `/qa` has authored a narrow integration test that reproduces the defect** — failing, un-ignored, with `// spec:` annotation and `FIXME(/owning-skill)` pointing to the resolver. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. User-proxy skills feed defects to `/qa` for narrow reproduction; `/qa` writes the test; the owning compiler skill resolves it (this sprint or a future one).
+**Defects** — real compiler bugs, spec violations, runtime crashes, REPL/`--run` divergences, output that does not match the spec. **A defect is not closed until `/testing` has committed a narrow test that reproduces it** — failing, un-ignored, with a `// spec:` annotation. The failing test is the durable record, the trigger for compiler-skill resolution, and the regression guard once fixed. A FIXME on a design doc captures intent but doesn't prove the issue exists, catch regression, or trigger CI; the failing test does all three. (A defect with a failing-not-ignored repro does NOT also need a numbered FIXME — the test is the record and the trigger.)
 
-**Cross-skill defect handoff also requires minimal repro.** The same rule applies when one compiler skill (e.g., `/int`, `/backend`, `/typecheck`) hands off a failing test to another compiler skill. Error signatures alone — "unresolved symbol X", "SIGSEGV in Y", "type error at Z" — routinely mask layered bugs: the visible error belongs to one skill; the underlying failure belongs to another, and fixing the visible one exposes the next. Before `/sprint` spawns a cross-compiler-skill triage, the skill that discovered the failure MUST produce a minimal repro following `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` — or request `/qa` to do so. The handoff brief names the repro, not just the symptom. Skipping this step trades one 30-minute reduction for multiple hours of misdirected fix work across skills.
+**Cross-skill defect handoff requires a minimal repro.** Error signatures alone — "unresolved symbol X", "SIGSEGV in Y" — routinely mask layered bugs: the visible error belongs to one skill, the underlying failure to another. Before `/sprint` spawns a cross-skill triage, the discovering skill MUST produce a minimal repro per `tests/CLAUDE.md` §"Isolating Cross-Crate Failures" — or request `/testing` to. Contested or repeatedly-wrong attribution escalates to `/qa` (fable-tier triage per `sprints/artefacts.md` §II.4). The handoff brief names the repro, not just the symptom.
 
-**Reproduced defects join the test suite permanently.** Every repro reduction — complete or partial — produces a committed test. Failing, un-ignored, per `memory/feedback_failing_not_ignored.md`. This applies equally whether the fix lands in the same sprint or the defect carries forward. Discarding narrowing work (the "these simpler shapes pass; this specific shape fails" reduction that was done in-session) forces the next sprint to redo it from scratch, and loses the regression guard once the bug is fixed. Partial reductions go in as much as was isolated, with `// FIXME(/skill)` naming what is still unknown.
-
-**Keep reductions as small as possible — small tests aid debugging.** A small repro has two payoffs beyond being a regression guard: the fix may become obvious during isolation (Sprint 59: the 4-line prelude parity bug was visible the moment the repro shrank to a single-function prelude), and when source-level reduction plateaus, a small test produces small CLIF output that can be inspected by eye. Use `/clif <name>` in the REPL or `CRANELISP_CODEGEN_TRACE=1` during test runs to see the compiled IR for the shrunk repro. Codegen-layer bugs (RC mis-count, missing load, incorrect relocation) often become visible in CLIF before they become visible in source reduction.
-
-The distinction matters because defects without failing tests get lost. A FIXME comment on a design doc captures intent but doesn't prove the issue exists, doesn't catch regression, and doesn't trigger CI. The failing test does all three.
+**Reproduced defects join the test suite permanently, and small is the goal.** Every reduction — complete or partial — lands as a committed test. Small repros pay twice: the fix often becomes obvious during isolation (Sprint 59's prelude-parity bug was visible the moment the repro shrank to a single function), and small tests produce small CLIF — `/clif <name>` in the REPL or `CRANELISP_CODEGEN_TRACE=1` makes codegen-layer bugs (RC mis-count, missing load, bad relocation) visible in IR before source reduction finds them. Partial reductions commit with `// FIXME(/skill)` naming what is still unknown.
 
 ## Cross-Skill Changes
 
-When a skill discovers that an upstream document (owned by another skill) needs updating, it MUST NOT silently edit that document. Instead, file a FIXME as a numbered file in `design/arch/fixmes/NNNN-name.md`. The owning skill picks up the FIXME on its next invocation, evaluates it, actions it by editing its own files, and **deletes the FIXME file** with a commit message naming what was resolved. Git history is the audit trail.
+A skill MUST NOT silently edit a document owned by another skill. It files a FIXME as a numbered file — `design/arch/fixmes/NNNN-short-name.md` — and the owning skill evaluates, actions it in its own files, and **deletes the FIXME file**; git history is the audit trail. File format, frontmatter, and lifecycle are normative in `sprints/METHOD.md` §3.3. Filing is the ONE exception to file ownership (any skill may file targeting any other).
 
-**File format** (per `sprints/METHOD.md` §3.3):
+**Inline `FIXME(/skill)` comments are the OLD protocol** (superseded Sprint 63). Do not author new ones; `/sprint` migrates stragglers opportunistically.
 
-```yaml
----
-number: NNNN              # unique sequential — scan design/arch/fixmes/ for max+1
-target: /skill-name       # the owning skill that resolves
-filed_by: /skill-name     # the skill that filed
-filed_at: YYYY-MM-DD
-sprint_filed: NN
-refers_to: path/to/file.md §section, path/to/other.md   # specific anchors
-status: open
----
-
-# Title — what needs to change
-
-## Issue
-...
-
-## Proposed resolution
-...
-
-## Operational implication / Context
-...
-```
-
-Naming: `design/arch/fixmes/NNNN-short-name.md`. Filing skill scans for `max + 1`; `/sprint` resolves rare collisions at wave gate.
-
-**Inline `FIXME(/skill)` HTML comments are the OLD protocol.** They were superseded in Sprint 63 (M7 — methodology pivot). Pre-S63 inline FIXMEs still scatter the project and are migrated by `/sprint` opportunistically. **Do not author new inline FIXMEs.** All new cross-skill change requests file as `design/arch/fixmes/NNNN-name.md`.
-
-This preserves ownership boundaries — each skill decides how to handle changes in its own files. Filing a FIXME is the ONE exception to file ownership (any skill may file targeting any other skill); editing in response remains the owning skill's prerogative.
-
-**Wave gate**: Before `/sprint` advances to the next wave, it scans `design/arch/fixmes/` for `target: /skill-in-wave` and `status: open`. Outstanding FIXMEs targeting a wave's skill block advancement — they must be resolved or explicitly deferred with rationale.
+**Wave gate**: before `/sprint` advances a wave, it scans `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`; any match blocks until resolved or explicitly deferred with rationale.
 
 ## Skill Handoff
 
-Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. When a sprint is active, consult `sprints/SPRINT.md` for the current task list and blocking dependencies. Otherwise consult `design/arch/roadmap.md` for dependencies. Example:
-
-```
-## Next skills
-
-- `/typecheck` — Ring 0 core inference can now begin against the types defined here
-- `/backend` — Ring 0 codegen can begin in parallel with typecheck
-```
+Every skill plan ends with a **"Next skills"** section recommending what to invoke next. When a sprint is active, consult `sprints/SPRINT.md` for the task list and blocking dependencies; otherwise `sprints/ROADMAP.md`.
 
 ## Design Principles
 
@@ -157,8 +121,8 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 - **Three-minute timeout expectation.** The full suite is ~60s post-build. If a run exceeds ~3 minutes including build, something is wrong — kill it and investigate.
 - **One agent, one test run.** When multiple agents are active, only the agent that owns source code changes should run tests. Other agents must not run tests concurrently.
 - **Single agent at a time for source-touching work.** Worktree isolation is broken on this project, so parallel agents share one working tree. Two agents editing concurrently race on the git index and on the editor/linter — a subagent `git stash` or a mid-edit linter pass will silently clobber another agent's changes (observed Sprint 81: a parallel `/dev` fan-out corrupted the tree; recovery cost a full reconciliation). Read-only fan-outs (search, survey, design-planning that only returns text) may run in parallel; any agent that *edits source* runs serially.
-- **Every fix lands with a unit test; assess the e2e need BEFORE writing the fix.** A **unit test is mandatory** for every fix — it pins the behaviour at the exact seam where the bug lived and is the fastest guard against a re-break. **Before** writing the fix, also assess whether an **integration/e2e test** is warranted (add one when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes — unit and e2e answer different questions). Write the failing test(s) **first**; the fix flips them green; test(s) and fix land in the **same change-set**. A fix guarded only by an e2e — or only by "the suite still passes" — is incomplete, and deferring the test to a follow-up FIXME (the "test owed" anti-pattern) inverts the discipline and routinely never gets done. See `memory/feedback_unit_test_per_fix.md`.
-- **Failing-not-ignored defect repros**: the suite deliberately carries a small number of **known-defect guards** — failing-not-ignored per `memory/feedback_failing_not_ignored.md` so each flips green when the owning skill fixes its defect. **Do not enumerate or count them here** — the set changes every sprint and is already knowable from the live sources: run `cargo nextest run --no-fail-fast` to see the current REDs; each intentional guard traces to an open defect FIXME (`design/arch/fixmes/`) and carries its own `// spec:` + `// FIXME(/skill)` annotation naming the owner. A **genuine regression** is any RED that does **not** trace to a known open defect that way. (The current baseline, per-defect owners, and any per-sprint ledger detail live in `tests/plan/ledger.md`, not in this file.)
+- **Every fix lands with a unit test; assess the e2e need BEFORE writing the fix.** A **unit test is mandatory** for every fix — it pins the behaviour at the exact seam where the bug lived and is the fastest guard against a re-break. **Before** writing the fix, also assess whether an **integration/e2e test** is warranted (add one when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes — unit and e2e answer different questions). Write the failing test(s) **first**; the fix flips them green; test(s) and fix land in the **same change-set**. A fix guarded only by an e2e — or only by "the suite still passes" — is incomplete, and deferring the test to a follow-up FIXME (the "test owed" anti-pattern) inverts the discipline and routinely never gets done. (Binding statement: `sprints/METHOD.md` §2.2.)
+- **Failing-not-ignored defect repros**: the suite deliberately carries a small number of **known-defect guards** — failing, NOT `#[ignore]`'d — so each flips green when the owning skill fixes its defect. Hiding a spec violation behind `#[ignore]` is itself a defect. **Do not enumerate or count the guards here** — the set changes every sprint and is knowable from the live sources: run `cargo nextest run --no-fail-fast` to see the current REDs; each intentional guard traces to an open defect (FIXME or `// FIXME(/skill)` annotation) naming the owner. A **genuine regression** is any RED that does **not** trace to a known open defect that way. (Current baseline and per-defect owners: `tests/plan/ledger.md`.)
 
 ## Git & Remote
 
@@ -184,13 +148,11 @@ Spec headings and table rows use inline annotations to show coverage status:
 | `[S{M}]` | Not yet tested; scheduled for sprint M |
 | `[S{M} — tests/file::test_name IGNORED]` | Test exists but is `#[ignore]`'d (known gap) |
 
-> The ring axis was retired as a project-wide planning/scheduling axis in Sprint 64 — sprint is the sole scheduling axis. Pre-S64 `[R{N} S{M}]` annotations in archived docs and older spec/test rows are historical; read `R{N}` as "the ring this targeted under the old model" and `S{M}` as the sprint. New annotations use sprint-only `[S{M}]`.
+> The ring axis was retired as a project-wide planning/scheduling axis in Sprint 64 — sprint is the sole scheduling axis. Pre-S64 `[R{N} S{M}]` annotations in archived docs and older spec/test rows are historical. New annotations use sprint-only `[S{M}]`.
 
-**Positive vs negative coverage.** `[Tested]` means the happy path works — the feature produces correct output for valid input. `[Tested+Neg]` means the test suite also verifies **what must NOT happen**: wrong items are absent, invalid input produces the right error, boundary violations are rejected. A spec section that says "MUST organize symbols into categories" needs positive tests (categories appear) AND negative tests (non-category items are absent, wrong-module items don't leak through). `[Tested]` without `+Neg` is a coverage gap — the feature works but nobody has verified it doesn't also do wrong things.
+**Positive vs negative coverage.** `[Tested]` means the happy path works — the feature produces correct output for valid input. `[Tested+Neg]` means the test suite also verifies **what must NOT happen**: wrong items are absent, invalid input produces the right error, boundary violations are rejected. `[Tested]` without `+Neg` is a coverage gap — the feature works but nobody has verified it doesn't also do wrong things.
 
-**Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[S{M}]` tag. This makes it possible to see at a glance which specific behaviors are covered and which are not.
-
-**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. A section heading says `[Tested+Neg]` only when ALL its sub-requirements have both positive and negative annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[S8]` if any child is scheduled for sprint 8).
+**Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[S{M}]` tag. **Section-level annotations** are summaries: a section heading carries the lowest coverage level of its children.
 
 **Test-side tracing**: Every test function has a `// spec:` comment naming the spec section it validates:
 ```rust
@@ -204,7 +166,7 @@ fn display_int_result() { ... }
 - `repl/spec.md` — REPL experience spec (owned by `/repl`)
 - `spec/*.md` — language spec files (owned by `/spec`)
 
-When `/qa` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, the spec-side `[Tested ...]` annotation is added. The two sides cross-reference each other.
+When `/testing` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, the spec-side `[Tested ...]` annotation is added. `/qa` audits the two-sided match as part of its coverage process.
 
 **`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[S{M}]` (if not).
 

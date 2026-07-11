@@ -66,7 +66,7 @@ You own no source code outside the crate in scope on this invocation. You own no
 
 ## Workflow
 
-`/dev` is invoked **only in Phase 5 Stage 2** — the per-crate D/D/R cycle. `/dev` is **not invoked in Phase 3** (design authoring belongs to `/design`, per METHOD_PROPOSED §4.4). `/dev` is **not invoked in Phase 6** (user-proxy work).
+`/dev` is invoked **only in Phase 5 Stage 2** — the per-crate D/D/R cycle. `/dev` is **not invoked in Phase 3** (design authoring belongs to `/design`, per `sprints/METHOD.md` §2.2 Phase 3). `/dev` is **not invoked in Phase 6** (user-proxy work).
 
 ### Phase 5 Stage 2 (D/D/R cycle, narrow per crate)
 
@@ -121,7 +121,7 @@ Past pivots that left orphan implementation drifting from design (Sprint 26, Spr
 
 You address Blocker and Important findings before Phase 5 close — either by revising the implementation, or by filing FIXME `target: /design` if the finding reveals design intent that should evolve. Nit findings may be addressed in-sprint or carried via FIXME.
 
-If a Blocker / Important finding cannot be resolved this sprint, file FIXME with explicit deferral rationale and target sprint per METHOD_PROPOSED §7.2 (2× escalation: items deferred twice ship in the current sprint or require explicit user sign-off for a third deferral). Do not silently leave Blockers unaddressed.
+If a Blocker / Important finding cannot be resolved this sprint, file FIXME with explicit deferral rationale and target sprint per `sprints/METHOD.md` §2.4 (2× escalation: items deferred twice ship in the current sprint or require explicit user sign-off for a third deferral). Do not silently leave Blockers unaddressed.
 
 ## Boundary with `/qa`
 

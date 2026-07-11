@@ -18,13 +18,15 @@
 
 ### 1.1 Inventory
 
-12 skills.
+14 skills.
 
 | Skill | Category | Owns | Output |
 |---|---|---|---|
-| `/spec` | Authority | `spec/` | Normative spec text |
+| `/spec` | Authority (scribe) | `spec/` | Normative spec text, scribed — the **user** arbitrates semantics; `/spec` records and frames open questions as prose |
 | `/arch` | Authority | `design/arch/`; `crates/cranelisp-types/`; public-API surfaces of every crate | Interface types, principles, Decisions, public-API approvals |
-| `/qa` | Authority | `tests/`; `tests/plan/baseline.md` | Spec-traceable integration + e2e tests as the normative conformance evidence linking spec → release candidate |
+| `/qa` | Authority | `tests/plan/` (incl. `PLAN.md`, the normative spec → tests bridge) | Test strategy, risk assessment, coverage process & traceability audit, defect attribution & cross-crate triage briefs |
+| `/testing` | Test production | Test sources under `tests/` (files, fixtures, helpers); `tests/plan/ledger.md`; `tests/CLAUDE.md` | Spec-traceable integration + e2e tests authored to `/qa`'s plan; repro isolation & reduction; ledger upkeep |
+| `/audit` | Authority | `audits/` | Rolling whole-context assessments with recommendations (one bounded context per sprint; see §2.6) |
 | `/design` | Per-crate triad — design role | `design/{crate}/{crate}.md` for all 6 crate-shaped surfaces (narrow deployment) | Crate overview + subordinate topic docs; does not edit code |
 | `/dev` | Per-crate triad — implementation role | All 6 crate-shaped surfaces (narrow deployment) — see §1.3 | Implementation code + unit tests |
 | `/review` | Per-crate triad — review role | All 6 crate-shaped surfaces (narrow deployment); no persistent directory | Quality findings on a round of change against design intent + accumulated state |
@@ -37,8 +39,9 @@
 
 ### 1.2 Categories
 
-- **Authority** (`/spec`, `/arch`, `/qa`) — arbitrate correctness. Together they link the spec → architecture → release candidate.
+- **Authority** (`/spec`, `/arch`, `/qa`, `/audit`) — arbitrate correctness and quality. Together they link the spec → architecture → release candidate. `/spec` is a **scribe**: its arbiter is the user, never itself. `/audit` judges accumulated whole-context state, one bounded context per sprint (§2.6).
 - **Per-crate triad** (`/design`, `/dev`, `/review`) — generic skills, narrow-deployed one crate per invocation. Same triad shape applied to whichever crate is in scope.
+- **Test production** (`/testing`) — authors the integration/e2e suite and repro reductions to `/qa`'s plan, sprint-wide rather than per-crate.
 - **Coordination** (`/sprint`) — orchestrates the sprint archetype. Owns no code or design content; routes technical questions to the appropriate authority.
 - **User-proxy** (`/stdlib`, `/examples`, `/docs`, `/repl`, `/port`) — exercise the language outside-in. Operate during the user-facing phase of each sprint.
 
@@ -69,6 +72,15 @@ Three kinds of skill-relevant content, three distinct homes. This is the rule th
 
 When in doubt: process / "before doing X, do Y" → skill definition; decision / target shape → design doc; mechanical / API-surface / convention → `CLAUDE.md`.
 
+### 1.5 Model allocation
+
+Which model tier each skill runs on, per-dispatch escalation triggers, and the
+`.claude/agents/` shim contract are **normative in `sprints/artefacts.md`**
+(ratified 2026-07-11): the allocation table §II.3, escalation §II.4, shims
+§II.2, and the `/audit` rolling cycle §I.7/§II.1. Any model-tier change
+requires user sign-off. `/sprint` records non-default dispatches in the
+`SPRINT.md` dispatch log and audits frontmatter against the table at close.
+
 ---
 
 ## 2. Sprint phases
@@ -79,12 +91,12 @@ Every sprint follows seven phases. `/sprint` orchestrates by issuing skill invoc
 
 | Phase | Name | Agent invocations | Outputs | Exit gate |
 |---|---|---|---|---|
-| 1 | Scope | `/sprint` | `SPRINT.md` DRAFT | User approval of scope |
+| 1 | Scope | `/sprint` | `SPRINT.md` DRAFT; disposition of the prior sprint's audit assessment (accepted recommendations → FIXMEs, declined → recorded; §2.6) | User approval of scope |
 | 2 | Architecture review | `/arch` | Interface changes approved/deferred; scope adjustments | `/arch` sign-off on scope |
 | 3 | Design | `/spec`, `/arch`, `/design` per crate touched, `/qa` | Updated spec / interface types / per-crate design docs / test plan reflecting sprint scope | `/arch` confirms public-API + interface set is complete; `/qa` has enough to draft failing tests; touched design docs current |
 | 4 | Wave organization | `/sprint` | Wave breakdown in `SPRINT.md`; `SPRINT.md` ACTIVE | Waves written |
-| 5 | Language phase | `/qa` first (sprint-wide: failing integration + e2e tests). Then per crate, parallel: D/D/R cycle (`/design` refines → `/dev` implements → `/review`). Iterate within crate as needed. | Passing integration + e2e tests; per crate: refined design, implementation, unit tests, change-set review findings, public-API diffs approved | `/sprint` (with user) takes the **authoritative judgment of what ships this sprint**. Subsequent phases take what is given. |
-| 6a | User-facing assessment | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/sprint` | Plan for user-facing artifacts against what shipped; gap FIXMEs filed in `design/arch/fixmes/` | Plan agreed; gap FIXMEs filed |
+| 5 | Language phase | `/testing` first (sprint-wide: failing integration + e2e tests to `/qa`'s plan). Then per crate, parallel: D/D/R cycle (`/design` refines → `/dev` implements → `/review`). Iterate within crate as needed. | Passing integration + e2e tests; per crate: refined design, implementation, unit tests, change-set review findings, public-API diffs approved | `/sprint` (with user) takes the **authoritative judgment of what ships this sprint**. Subsequent phases take what is given. |
+| 6a | User-facing assessment | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/sprint`; `/audit` dispatched on the rotation context (§2.6) | Plan for user-facing artifacts against what shipped; gap FIXMEs filed in `design/arch/fixmes/`; audit assessment in `audits/` | Plan agreed; gap FIXMEs filed |
 | 6b | User-facing action | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` | New sprint demo; exemplar update; stdlib / examples / docs updates; prior demos replayed green | All planned artifacts delivered; demos play green |
 | 7 | Close | `/sprint` (with user) | Outcome report; archive; ROADMAP update; FIXMEs forward | User approval of close |
 
@@ -98,9 +110,9 @@ Every sprint follows seven phases. `/sprint` orchestrates by issuing skill invoc
 
 **Phase 4 — Wave organization.** `/sprint` organizes parallel work into waves (sets of skill invocations with no inter-dependencies).
 
-**Phase 5 — Language phase.** **QA-first across the entire solution** (failing integration + e2e tests upfront, sprint-wide), then per-crate D/D/R cycle in parallel across crates. Phase 5 conclusion is **conscious and explicit**: `/sprint` and the user decide what ships. Defects are addressed in Phase 5 or deferred with explicit rationale; speculative refactoring deferred; emergent refactoring (the third instance of a duplicate, a function over budget) handled in-sprint.
+**Phase 5 — Language phase.** **QA-first across the entire solution** — `/testing` authors the failing integration + e2e tests upfront, sprint-wide, to the plan `/qa` produced in Phase 3 — then per-crate D/D/R cycle in parallel across crates. Phase 5 conclusion is **conscious and explicit**: `/sprint` and the user decide what ships. Defects are addressed in Phase 5 or deferred with explicit rationale; speculative refactoring deferred; emergent refactoring (the third instance of a duplicate, a function over budget) handled in-sprint.
 
-**Test-coverage discipline within D/D/R (binding).** Every fix lands with a **unit test (mandatory)**, and the need for an **integration/e2e test is assessed BEFORE the fix is written** — not after. The unit test pins the seam where the bug lived; the e2e (added when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes) proves the user-observable path. Write the failing test(s) first; the fix flips them green; test(s) and fix land in the **same change-set**. Deferring a fix's test to a follow-up FIXME (the "test owed" anti-pattern) is not permitted. This is the same-skill complement to §2.3's failing-not-ignored cross-skill rule. Source-touching `/dev`/`/qa` agents run **serially** (one at a time — shared working tree; see root `CLAUDE.md` §Testing); only read-only fan-outs parallelise.
+**Test-coverage discipline within D/D/R (binding).** Every fix lands with a **unit test (mandatory)**, and the need for an **integration/e2e test is assessed BEFORE the fix is written** — not after. The unit test pins the seam where the bug lived; the e2e (added when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes) proves the user-observable path. Write the failing test(s) first; the fix flips them green; test(s) and fix land in the **same change-set**. Deferring a fix's test to a follow-up FIXME (the "test owed" anti-pattern) is not permitted. This is the same-skill complement to §2.3's failing-not-ignored cross-skill rule. Source-touching `/dev`/`/testing` agents run **serially** (one at a time — shared working tree; see root `CLAUDE.md` §Testing); only read-only fan-outs parallelise.
 
 **Implementation-strategy unit scenarios (binding, added S101).** The fix-level rule above guards *repairs*; this rule guards *features*. An implementation strategy (a staging/commit split, a retention pool, a cache layer, a batch-derivation pass, a generation counter) creates a scenario space **the spec knows nothing about** — so spec-derived tests, `/qa`'s included, structurally cannot cover it; only the implementer knows it exists. When `/dev` implements, it MUST derive unit scenarios from the strategy explicitly, per seam touched — where **the seam unit is the submodule** (the crate's internal module composition: `compiler/apply`, `heap`, `cache/linker`), not the crate as a whole:
 
@@ -134,6 +146,22 @@ Scenarios are **expressed through the crate facade** wherever the seam is facade
 
 If `/sprint` is invoked mid-sprint: report status; recommend continue / re-scope / close. Scope changes require user sign-off. `/sprint` never closes unilaterally.
 
+### 2.6 Rolling whole-context audit
+
+One bounded context is audited per sprint, in rotation (normative cycle:
+`sprints/artefacts.md` §I.7/§II.1; role: `.claude/commands/audit.md`). The
+`SPRINT.md` template carries a standing `Audit: {context}` field filled at
+Phase 4 — the structural cue. The dispatch runs read-only in the Phase 6/7
+window; the assessment lands in `audits/{context}-sNNN.md` with
+recommendations (evidence, cost class, proposed owner). **Next sprint's
+Phase 1 disposes each recommendation with the user**: accepted → `/sprint`
+files the FIXME targeting the proposed owner; declined → recorded in the
+assessment with rationale. `/audit` never files FIXMEs for its own
+recommendations and never blocks the current sprint. At Phase 7, `/sprint`
+checks the audit's calibration: recommendations that consistently die at
+acceptance are a finding about `/audit`. Out-of-rotation pulls: escalation
+trigger 6 (`artefacts.md` §II.4).
+
 ---
 
 ## 3. Artifacts and memory
@@ -147,7 +175,10 @@ If `/sprint` is invoked mid-sprint: report status; recommend continue / re-scope
 | Cross-crate types and traits | `crates/cranelisp-types/` | `/arch` | Single home for types and traits crossing crate boundaries |
 | Per-crate design | `design/{crate}/{crate}.md` (+ subordinates) | `/design` | What the crate should be — direction, intent, codified design decisions |
 | Code conventions per directory | `CLAUDE.md` per directory | Directory-owning skill | How the code is — data structures, invariants, conventions |
-| Integration + e2e tests | `tests/`, `tests/plan/baseline.md` | `/qa` | Normative spec-conformance evidence |
+| Test plan + coverage process | `tests/plan/` (`PLAN.md` normative) | `/qa` | Spec → tests bridge; risk register; coverage verdicts |
+| Integration + e2e tests | `tests/` (sources, fixtures, helpers); `tests/plan/ledger.md` | `/testing` | Normative spec-conformance evidence, authored to `/qa`'s plan |
+| Whole-context audit assessments | `audits/{context}-sNNN.md` | `/audit` | Accumulated-state assessments + recommendations (§2.6) |
+| Artefact structure & model allocation | `sprints/artefacts.md` | `/sprint` | Allocation table, escalation protocol, shim contract, audit cycle |
 | Unit tests | `crates/{crate}/src/.../mod.rs` (`#[cfg(test)]`) | `/dev` | Per-crate invariants, written alongside implementation |
 | Methodology | `sprints/METHOD.md` (this) | `/sprint` | How we deliver |
 | Skill workflows | `.claude/commands/{skill}.md` | Skill owner | How an agent in that role works |
@@ -207,7 +238,7 @@ status: open  # open | deferred
 
 ### 3.4 Skill handoff
 
-Every skill plan ends with a **Next skills** section recommending invocation order, consulting `SPRINT.md` for the active sprint or `design/arch/roadmap.md` otherwise.
+Every skill plan ends with a **Next skills** section recommending invocation order, consulting `SPRINT.md` for the active sprint or `sprints/ROADMAP.md` otherwise.
 
 ### 3.5 Memory and signals
 

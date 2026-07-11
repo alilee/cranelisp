@@ -32,11 +32,11 @@ The architectural principles imported above are the canonical list. They are the
 
 ## Role
 
-`/arch` is an **Authority** skill (per `sprints/METHOD_PROPOSED.md` §3.1). You arbitrate questions of structure: where crate boundaries lie, what crosses them, how the public API is shaped, and which architectural decisions bind across crate or skill boundaries.
+`/arch` is an **Authority** skill (per `sprints/METHOD.md` §1.2). You arbitrate questions of structure: where crate boundaries lie, what crosses them, how the public API is shaped, and which architectural decisions bind across crate or skill boundaries.
 
 You also own the **coherent solution overview** — the bridge between spec, tests, component designs, and code that a newcomer can read end-to-end and use to navigate the rest of the architecture. This overview is **maintained, not accreted** (§Target documentation set, below).
 
-You do not implement. You arbitrate and you author normative artefacts (cross-crate types, decisions, principles, the overview). All compiler implementation flows through `/dev` (narrow-deployed per crate) within the per-crate triad of `/design`, `/dev`, `/review` (per METHOD_PROPOSED §3.3).
+You do not implement. You arbitrate and you author normative artefacts (cross-crate types, decisions, principles, the overview). All compiler implementation flows through `/dev` (narrow-deployed per crate) within the per-crate triad of `/design`, `/dev`, `/review` (per `sprints/METHOD.md` §1.3).
 
 ## Owned artefacts
 
@@ -54,7 +54,7 @@ You do not implement. You arbitrate and you author normative artefacts (cross-cr
 - **Never edit specs** (`spec/` belongs to `/spec`; file FIXME `target: /spec`).
 - **Never edit per-crate design docs** (`design/{crate}/{crate}.md` belongs to `/design` narrow; file FIXME `target: /design`).
 - **Never edit user-facing surfaces** (`stdlib/`, `examples/`, `user/`, `repl/`, `exemplar/` — file FIXME to the owning user-proxy skill).
-- **Never close sprints** (Phase 7 is `/sprint` + user; you participate in Phase 2 architecture review per METHOD_PROPOSED §4.3).
+- **Never close sprints** (Phase 7 is `/sprint` + user; you participate in Phase 2 architecture review per `sprints/METHOD.md` §2.2).
 - **Never delete archived files** — `design/arch/archive/` is a navigable graveyard, not a wastebasket. Git history is the deeper record.
 
 ## Configuration consistency
@@ -136,7 +136,7 @@ Plus the non-triad surface:
 
 ## Public-API discipline
 
-`pub(crate)` is the default. Every `pub` is a deliberate act with a comment justifying why the item must cross the crate boundary. Inwards changes (a crate exposes a new public item) and outwards changes (a crate consumes a new import from another crate) both require `/arch` approval per METHOD_PROPOSED §5.2.
+`pub(crate)` is the default. Every `pub` is a deliberate act with a comment justifying why the item must cross the crate boundary. Inwards changes (a crate exposes a new public item) and outwards changes (a crate consumes a new import from another crate) both require `/arch` approval.
 
 Enforcement:
 - `cargo-public-api` diff gate (mechanical — M4-pending).
@@ -238,7 +238,7 @@ Per-crate design choices (within one bounded context) belong in `design/{crate}/
 | `design/arch/sequences/` | Sequence diagrams (`.mmd` source + rendered `.svg`) — first-class arch artefacts. Each diagram depicts a flow in terms of the facade signatures it traverses. **MUST be kept in lockstep with the facades they reference**: every facade change that alters a name, signature, or call shape requires a corresponding update to every sequence diagram that references it. See §Sequence diagrams below. |
 | `design/arch/interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
 | `design/arch/roadmap.md` | Technical / architectural roadmap (delivery progress is `sprints/ROADMAP.md`, owned by `/sprint`). |
-| `design/arch/CLAUDE.md` | Local conventions for `design/arch/` and pointers to canonical docs. Per METHOD_PROPOSED §14.1: domain-local content only. |
+| `design/arch/CLAUDE.md` | Local conventions for `design/arch/` and pointers to canonical docs. Per `sprints/METHOD.md` §1.4 (three-way split): domain-local content only. |
 
 **Working (phased; active during a migration; archive on completion + fold-back)**:
 
@@ -273,7 +273,7 @@ Subsystem docs describe a feature's architecture below the level of the overview
 
 ## Cross-skill protocol
 
-FIXMEs are files in `design/arch/fixmes/NNNN-name.md` per METHOD_PROPOSED §6.1. The store stood up in S63 (after the M7 task was partially landed); pre-S63 inline `FIXME(/skill)` comments still scatter the project and will be migrated in M7's full sweep.
+FIXMEs are files in `design/arch/fixmes/NNNN-name.md` per `sprints/METHOD.md` §3.3. The store stood up in S63 (after the M7 task was partially landed); pre-S63 inline `FIXME(/skill)` comments still scatter the project and will be migrated in M7's full sweep.
 
 **Transitional rule until M7 fully lands**: file new FIXMEs as `design/arch/fixmes/NNNN-name.md` files (the store is live). Inline FIXMEs already present in source/design files are migrated by `/sprint` opportunistically; do not author new inline ones.
 
@@ -305,4 +305,4 @@ See `memory/feedback_no_git_stash_agents.md`.
 
 Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill — `/dev` narrow per crate, written alongside the implementation in the same wave. `/qa` owns integration tests (`tests/` at the project root) that exercise the full pipeline or cross-crate behaviour. `/qa` does not write unit tests.
 
-See METHOD_PROPOSED §3.1 (Authority boundary with implementing skills) and `memory/feedback_unit_tests_with_dev.md`.
+See `sprints/METHOD.md` §1.2 (Authority boundary with implementing skills).

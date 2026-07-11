@@ -1,6 +1,12 @@
 # tests/
 
-Test infrastructure for the Cranelisp reimplementation. Owned by `/qa`.
+Test infrastructure for the Cranelisp reimplementation. Ownership split at the
+`/qa` → `/qa` + `/testing` division (ratified 2026-07-11, `sprints/artefacts.md`
+§II.1): **`tests/plan/` is owned by `/qa`** (strategy, risk, coverage process;
+`plan/PLAN.md` is the normative spec → tests bridge), **test sources are owned
+by `/testing`** (`tests/*.rs`, fixtures, helpers, `plan/ledger.md` upkeep, and
+this file). References to `/qa` below that concern authoring/repro mechanics
+read as `/testing` pending this file's full decay reset (increment F).
 
 ## Plan documents
 

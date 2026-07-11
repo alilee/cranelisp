@@ -77,7 +77,7 @@ When invoked at Phase 3 against sprint scope:
 6. Note testability and coverage implications. Surface gaps as FIXME `target: /qa`.
 7. Cite each principle (from `design/arch/principles.md`) the design choice rests on, by name.
 
-Phase 3 exit gate (per METHOD_PROPOSED §4.4): `/arch` confirms the public-API and interface set is complete; `/qa` has enough to draft failing tests; the design doc is current with scope.
+Phase 3 exit gate (per `sprints/METHOD.md` §2.1): `/arch` confirms the public-API and interface set is complete; `/qa` has enough for `/testing` to draft failing tests; the design doc is current with scope.
 
 ### Phase 5 (D/D/R cycle, narrow per crate)
 
