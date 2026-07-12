@@ -18,11 +18,124 @@ guards. Increment 1 fixed two REPL introspection display bugs + the agent reques
 
 | # | Focus | Status |
 |---|---|---|
-| 1 | REPL introspection display (D1 §4.1.3, D2 §4.1.2) + agent `max_tokens` (D3) + coverage repair (C1) + ledger retirement (M1) | COMPLETE — suite 4260 pass / 0 S108 regressions; guards GREEN; uncommitted |
-| 2+ | Testing-driven — filled as the user surfaces defects | pending |
+| 1 | REPL introspection display (D1 §4.1.3, D2 §4.1.2) + agent `max_tokens` (D3) + coverage repair (C1) + ledger retirement (M1) | COMPLETE — committed f2bfd8a5; 0 regressions |
+| 2 | `/search` indexes seeded primitives (E1) + indexing lifecycle messages (E2) + 3 review-found conformance fixes + coverage-process lesson | COMPLETE — suite 4274 pass / 0 regressions; review CLEAR; fail-on-revert proven; committed 65a1f54a |
+| 3+ | Testing-driven — filled as the user surfaces issues | pending |
 
 The detailed record below (Scope, Arch review, Waves, Outcome) is **Increment 1**.
 Increment 2+ append their own Scope/Waves subsections as they open.
+
+## Increment 2 — `/search` indexes seeded primitives + indexing lifecycle messages
+
+**Surfaced by:** user testing — `/search vec-len` returned "no importable symbols
+matched 'vec-len'" although `primitives/vec-len` is a real, importable primitive
+(`(primitives/vec-len [1 2 3])` → `3`). (Also confirmed live: Increment-1 D3 agent
+`max_tokens` fix works — the embedded agent responded fully in the same session.)
+
+**Root cause (confirmed):** `src/session_v4/index_worker.rs` (the Pillar-3
+importable-symbol indexer, S91) enumerates the reachable set as **every `.cl`
+module on the lib search path ∪ project root** (`resolve_module_file`, ~L288-292).
+The built-in `primitives` module is **bootstrap-seeded — no `.cl` file** — so it is
+never enumerated → every primitive (`vec-len`, `str-len`, `add-i64`, `vec-get`, …)
+is invisible to `/search`.
+
+**User ruling (2026-07-11):** `/search` scope SHALL include the built-in seeded
+modules (`primitives`, `macros`) — not just `.cl` files. (Spec §17.19 R10 defined
+scope by file-resolution and never addressed seeded modules; the intent — "is
+there already a function that does this?" — clearly wants primitives discoverable.)
+
+### E1 — `/search` indexes the seeded modules
+- `/repl` scribes the `repl/spec.md` §17.19 R10 clarification: reachable scope =
+  lib-path ∪ project-root `.cl` modules **∪ the built-in seeded modules**
+  (`primitives`, `macros`). The seeded tables are live in the symbol table already,
+  so they need no typecheck-to-index-then-discard dance — index them directly.
+- `/dev` (src/) extends `index_worker` to also record the seeded modules' public
+  symbols into the index.
+- `/testing` repro: `/search vec-len` finds `primitives/vec-len` and offers
+  `(import [primitives [vec-len]])`; an already-in-scope exact match is
+  marked-but-shown (R13). Owner: `/dev` (src/, int).
+
+### E2 — indexing lifecycle messages
+User-directed: make the indexing lifecycle visible. Two messages must exist and
+fire:
+- **"indexing N modules…"** — the not-ready / partial-results note (already
+  required by spec §17.19.3): a `/search` issued before the burn-down completes
+  MUST say so, not return a silent empty result. Confirm it is implemented and
+  fires.
+- **"search index complete."** — a completion message when the background
+  burn-down finishes. NEW — `/repl` defines the exact wording + WHEN it fires
+  (always, or only after a prior not-ready note was shown?) in `repl/spec.md`
+  §17.19.3, bringing that timing sub-question to the user if genuinely open.
+- `/dev` (src/) implements/verifies both; `/testing` pins them.
+
+**Design/ownership:** REPL-experience contract → `/repl` owns `repl/spec.md`
+§17.19; mechanism (indexing seeded tables, completion signal from the nice-worker
+burn-down to the REPL) → int/`src/`, `/dev`. `/arch` light sanity on the mechanism
+(no `cranelisp-types` change expected).
+
+### Design outcome (Phase 2/3, 2026-07-11)
+
+**/arch (mechanism, read-only) — APPROVED, no `cranelisp-types`/schema/public-API
+change, no Principle-8 risk:**
+- E1: index seeded modules by DIRECT read of the live symbol table (bypass the
+  typecheck-to-index-then-discard file dance — seeded modules are already
+  typechecked-and-mounted). Add `record_preindexed` that counts seeded modules in
+  BOTH `enumerated_total` and `indexed` atomically at arm time (else `pending_count`
+  undercounts → the not-ready note AND completion fire early). Source the seeded
+  list from a new `bootstrap::seeded_importable_modules()` (`primitives` + `macros`;
+  exclude root `""` = special-forms-only, and `prelude` = already skipped) — NOT a
+  name-literal in `index_worker` (Principle 19). No `.meta` write for seeded rows.
+- E2 completion: int-local one-shot latch on `IndicesInner` (`announced` +
+  `take_completion_notice()`, check-and-set under the existing mutex), POLLED by the
+  `main.rs` read loop at the prompt boundary (single-writer; no worker-side stdout,
+  no `ExternalPrinter` TTY-fork). Fire only after a not-ready note was shown this
+  session (a `note_shown` latch) — protects the `non_tty` byte-identical goldens AND
+  is the semantically right default.
+
+**/repl (contract) — `repl/spec.md` §17.19 scribed:** R10 scope = `.cl` modules ∪
+seeded modules; §17.19.3 "indexing N modules…" tightened (N = pending count; MUST
+serve the note even on empty partial results; distinct from "no match"); "search
+index complete." added (lower-case, trailing period, no count) with async
+constraints (no mid-line interleave; global colour gate; non-TTY byte-identical).
+
+**OPEN DECISION FOR THE USER — completion-message timing.** When does
+`search index complete.` fire? (a) always/every session; (b) only after a prior
+"indexing N modules…" note was shown this session; (c) on-demand (next `/search`).
+**BOTH /repl and /arch independently recommend (b)** — least noise, closes only a
+loop the user actually saw open, and keeps every existing non-TTY golden untouched
+(an unconditional notice lands at a nondeterministic prompt → flakes goldens).
+Scribed as (b), PROVISIONAL. `/dev` held on the completion-message timing until the
+user confirms. (E1 + the "indexing N…" note don't depend on this.)
+
+**Minor spec reconciliation (→ /repl, same touch):** §17.19.3 opening still says the
+index is "armed on first `/search` / first agent activation," but the impl arms
+eagerly at REPL startup (main.rs R17). Align in the finalize pass.
+
+**USER DECISION (2026-07-11): completion-message timing = (b)** — `search index
+complete.` fires only after a "indexing N modules…" not-ready note was shown this
+session. `/repl`'s provisional (b) is now final; `/dev` proceeds.
+
+### Increment 2 waves
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /testing | tests/ | QA-first repros | done — E1 primary RED-for-right-reason + R13 guard GREEN; E2 deferred to /dev unit tests (async, not e2e-deterministic — burn-down beats first /search even @30 modules; documented, no racy test). Flagged: `class=prelude-scope-miss` imprecise → /qa vocab note |
+| /dev | src/ | E1 + E2 implementation | done — `seeded_importable_modules()`+`record_preindexed`+direct-read; latch (`note_shown`+`announced`+`take_completion_notice()`) polled in main.rs; E1 repros GREEN, 5 unit tests GREEN, non_tty golden GREEN; suite 4268 pass / 0 regressions |
+| /review | src/ | Review E1+E2 | done — E1 solid; E2 NEEDS REWORK (small): I-1 seeded-name collision double-count wedges pending; I-2 empty-partial conflates "no match"+note (§17.19.3); I-3 completion not suppressed on non-TTY (byte-identical violation); I-4 agent.md §25 stale; M-1 wording/SGR. No Blockers. |
+| /dev | src/ | REWORK: I-1/I-2/I-3/S-1 | done — I-1 disjoint-feed filter (+test); I-2 not-ready note replaces "no match" (repl.rs); I-3 `is_interactive()` gate (+test); S-1 private `pending()` helper. Suite 4270 pass / 0 regressions |
+| /dev | src/ | GUARD-CLOSURE (process finding) | done — I-2 selection extracted to pure fns + 3 non-conflation tests; **fail-on-revert CONFIRMED for I-1/I-2/I-3** (each goes RED when its fix is reverted). 35/35 affected + 16/16 index_worker GREEN |
+| /review | src/ | Re-check | done — **CLEAR, Increment 2 code done.** 3 findings genuinely closed, no new mirror, fail-on-revert credible. Suggestion #1: retain-filter (I-1 prod path) untested but DETERMINISTIC → guard it (lesson). Suggestion #2: dim-vs-italic + main.rs comment nit → M-1. |
+
+**Increment 2 — remaining FINALIZE items (code done; these are traceability/doc/conformance closure):**
+
+| Skill | Surface | Task | Status |
+|---|---|---|---|
+| /testing | tests/ | Suggestion #1 (lesson): deterministic retain-filter guard | done — `search_seeded_file_name_collision_does_not_wedge_pending_note` GREEN (deterministic via SUT `wait_for_index_settled`, not a race); fail-on-revert reasoned (wedge → 5s timeout + note). 0 regressions |
+| /repl | repl/spec.md | M-1 wording | done — canonical: `; search index complete.` (impl correct), `indexing N module(s)… (results may be incomplete)`, italic classification-comment role, armed-at-startup; de-provisionalized timing (b). Surfaced broader §10.3 dim-vs-italic divergence → FIXME 0561. |
+| /dev | src/ | main.rs L408 comment `Dim`→`Italic` | SUBSUMED into FIXME 0561 (same dim/italic issue; fixed when §10.3 reconciled) |
+| /design | design/int | I-4: agent.md §25 | done — §25.9 (seeded direct-read feed) + §25.10 (lifecycle latch) added + currency pointer. Noted §25 header still says "DESIGN-ONLY S90" (larger status-prose carry, not blocking) |
+| /qa | tests/plan/ + repl/spec.md + tests/CLAUDE.md | Finalize | done — annotations `[Tested]` (honest: unit-pinned cited as unit, completion-wording left pending); PLAN rows + E2 unit-deferral table; `class=enumeration-miss` defined; process-lesson note in tests/CLAUDE.md §"QA-first targeting and deferral discipline". Reconcile clean 646/0 |
+| /testing | tests/ | Micro-pass: `class=` → `enumeration-miss` + drop resolved FIXME(/qa) blocks | done — both repros relabelled; 0 remaining `prelude-scope-miss`/`FIXME(/qa)` in search.rs; 30/30 green |
 
 ## Stdlib request backlog
 
@@ -309,6 +422,18 @@ S108 regressions.
   S108-caused).
 
 ### Findings
+- **PROCESS (user, Increment 2): a `/review`-caught correctness defect is a
+  QA-first + unit-test MISS, not a review win.** `/review` found I-1/I-2/I-3 as
+  correctness defects, but all three were knowable before review — `/arch`
+  pre-flagged I-1's collision; §17.19.3 stated I-2's non-conflation as a MUST;
+  I-3's byte-identical piped contract is a standing invariant. Root cause: the
+  QA-first deferral ("E2 latch will be `/dev` unit-pinned") never ENUMERATED the
+  boundaries, so `/dev` pinned the happy path and the negatives/spec-MUSTs fell
+  through. Correction: guard-closure wave (deterministic I-2 guard + fail-on-revert
+  check on all three); durable lesson saved to memory + a coverage-process note
+  (spec-MUSTs + arch-pre-flagged boundaries are the highest-signal QA-first
+  targets; deferred-e2e must enumerate the unit cases). This is the first real
+  exercise of the ledger-retirement bet: review is the LAST line, tests the first.
 - The wrong-scope display-lookup is a recurring CLASS (D1 type display, D2 routing,
   0558 trait display) — `/arch` noted a candidate "resolve home, then enumerate"
   single helper to back all introspection section-lookups so it cannot recur a

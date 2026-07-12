@@ -264,6 +264,17 @@ impl ReplInput {
         }
     }
 
+    /// True on the interactive-TTY branch (a rustyline editor). The async
+    /// `search index complete.` notice (§17.19.3, S108) is emitted ONLY here:
+    /// a non-TTY (piped/redirected) session has no interactive line editor and
+    /// no user watching a burn-down, and MUST stay byte-identical (§10.8) — an
+    /// async completion line landing at a timing-dependent prompt boundary would
+    /// perturb the scripted/piped-output contract. The `main.rs` poll site gates
+    /// on this so the completion path is unreachable on the non-TTY branch.
+    pub fn is_interactive(&self) -> bool {
+        matches!(self, ReplInput::Tty(_))
+    }
+
     /// Persist history on session end (TTY only; non-fatal on failure). Covers
     /// both `/quit` and Ctrl-D since both exit the read loop.
     pub fn save_history(&mut self, stdout: &mut impl Write) {
@@ -281,6 +292,21 @@ mod tests {
         let mut fds = [0i32; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe() failed");
         (fds[0], fds[1])
+    }
+
+    // spec: repl/spec.md §17.19.3 (S108, I-3) — the async `search index
+    // complete.` notice is gated on `is_interactive()` at the `main.rs` poll
+    // site so the completion path is UNREACHABLE on the non-TTY branch (the
+    // byte-identical scripted/piped contract, §10.8, must not be perturbed by a
+    // timing-dependent async line). This pins the gate deterministically: the
+    // non-TTY (`Piped`) branch is never interactive, so the poll short-circuits
+    // before `take_search_index_completion_notice` can print.
+    #[test]
+    fn piped_input_is_not_interactive_so_completion_notice_is_gated_off() {
+        assert!(
+            !ReplInput::Piped.is_interactive(),
+            "non-TTY session must never emit the async completion notice (§10.8)"
+        );
     }
 
     // FIXME 0551 (B), host half: a would-block / EINTR read is a RETRY, not EOF.

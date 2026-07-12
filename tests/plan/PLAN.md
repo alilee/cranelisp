@@ -1440,3 +1440,38 @@ primitive names (`add-i64`); `PreludeVariant::TestStandard` ONLY where ADTs /
 operators / `map` are required (E1). **Zero dependency on `stdlib/`** — the
 `stdlib/defs.cl` instance is named in M3's rationale as the real-world case, but
 the test reproduces the shape inline, it does not load stdlib.
+
+## Sprint 108 Increment 2 — `/search` seeded-module scope + indexing lifecycle (2026-07-12)
+
+Increment 2 extended `/search`'s reachable set to the bootstrap-seeded modules
+(`primitives`, seeded `macros`) per the S108 user ruling (repl/spec.md §17.19
+R10) and added the indexing-lifecycle messages (§17.19.3). Three e2e guards
+landed in `tests/search.rs`; the two async lifecycle messages are unit-pinned
+at the `IndicesInner`/`ReplInput` seams (deferral enumerated below).
+
+| Spec citation | Test | Status | Polarity / provenance |
+|---|---|---|---|
+| repl/spec.md §17.19 R10 — reachable scope includes the built-in seeded modules; `(import [primitives [vec-len]])` is the actionable payoff | `tests/search::search_finds_seeded_primitive_offers_import` | [Tested] — GREEN; repro of the S108 E1 defect (`// defect: class=enumeration-miss`, locus `src/session_v4/index_worker.rs::resolve_module_file`) | positive; regression guard (Section 2) |
+| repl/spec.md §17.19 R13 — a seeded exact match already bare-in-scope is shown-but-MARKED `already in scope — no import needed` and MUST NOT offer an import form | `tests/search::search_seeded_primitive_already_in_scope_marked_no_import` | [Tested+Neg] — GREEN | negative (asserts absence of the import form); R13 companion for the seeded feed |
+| repl/spec.md §17.19.3 (+ §17.19 R10) — a user file whose module name collides with a seeded module (`primitives.cl`) MUST NOT wedge `pending_count`: seeded feed wins, no stuck `indexing N module(s)…` note, completion latch reachable | `tests/search::search_seeded_file_name_collision_does_not_wedge_pending_note` | [Tested+Neg] — GREEN; repro of the S108 I-1 review finding (`// defect: class=enumeration-miss`, locus `src/session_v4/index_worker.rs::arm_burndown`); deterministic via the SUT's own `wait_for_index_settled`, not a race | negative (asserts absence of the wedge note); arch-pre-flagged boundary |
+
+**E2 lifecycle-message deferral — enumerated unit obligations (all landed, /dev,
+same change-set; each confirmed fail-on-revert in the guard-closure wave):**
+
+| Case | Unit guard |
+|---|---|
+| `record_preindexed` counts seeded modules in BOTH `enumerated_total` and `indexed` (no early note/completion) | `src/session_v4/index_worker.rs::record_preindexed_counts_seeded_in_both_tallies` (+ `record_preindexed_is_idempotent`) |
+| completion latch is one-shot and gated on `note_shown` (timing (b)) | `src/session_v4/index_worker.rs::take_completion_notice_one_shot_gated_on_note_shown` |
+| completion requires `pending_count == 0` | `src/session_v4/index_worker.rs::take_completion_notice_requires_pending_zero` |
+| seeded-vs-file collision counts once and completes (I-1 seam) | `src/session_v4/index_worker.rs::seeded_name_file_collision_counts_once_and_completes` |
+| seeded public symbols land in the index (R10 direct-read feed) | `src/session_v4/index_worker.rs::seeded_public_symbols_land_in_index` |
+| empty-partial serves the note, NOT `no match` (I-2, §17.19.3 non-conflation MUST) | `src/repl.rs::empty_result_still_indexing_serves_only_the_note_not_no_match` |
+| empty-complete serves `no match`, NOT the note (I-2 converse) | `src/repl.rs::empty_result_complete_index_serves_only_no_match_not_the_note` |
+| note text present iff pending > 0 | `src/repl.rs::indexing_note_text_present_iff_pending` |
+| non-TTY never emits the async completion notice (I-3, §10.8 byte-identical) | `src/repl_input.rs::piped_input_is_not_interactive_so_completion_notice_is_gated_off` |
+
+Why no e2e for the messages themselves: the burn-down empirically beats the
+first piped `/search` even at 30 reachable modules, so whether the note fires
+is exactly the arm-vs-serve race — a racy e2e is forbidden. Full rationale in
+`tests/search.rs` (the E2 deferral block) and SPRINT.md §Increment 2. If the
+harness gains a burn-down hold (injectable delay/barrier), revisit.

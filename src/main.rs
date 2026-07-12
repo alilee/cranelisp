@@ -387,6 +387,36 @@ fn run(
             let mut eval_ms: u64 = 0;
 
             loop {
+                // S108 (spec §17.19.3): the one-shot `search index complete.`
+                // completion notice. Polled at the clean prompt boundary — BEFORE
+                // the prompt is written — so it is emitted only between a completed
+                // prompt cycle and the next prompt (no mid-line interleave), by the
+                // sole writer (this thread; no worker-side stdout). It fires at most
+                // once, and only after a "indexing N modules…" not-ready note was
+                // shown this session (timing (b), USER-CONFIRMED) — so a session
+                // that never saw the index building sees NEITHER message.
+                //
+                // INTERACTIVE (TTY) ONLY (I-3): the async-delivery constraint
+                // §17.19.3 (2) forbids perturbing the byte-identical scripted/piped
+                // contract (§10.8). A non-TTY session CAN latch `note_shown` — the
+                // inline `indexing N…` note is synchronous `/search` output and is
+                // served on the non-TTY branch too — so gating on `note_shown`
+                // alone is not enough; a piped run catching the burn-down mid-flight
+                // would emit this async line at a timing-dependent boundary and
+                // break determinism. Gate on the TTY branch so the completion path
+                // is unreachable on non-TTY. Dim classification-comment role when
+                // colour is on; plain under `--no-color` via the global gate.
+                if input.is_interactive() && s.take_search_index_completion_notice() {
+                    let _ = writeln!(
+                        stdout,
+                        "{}",
+                        cranelisp::style::styled(
+                            "; search index complete.",
+                            cranelisp::style::Style::Italic,
+                        )
+                    );
+                }
+
                 // Fresh-form prompt when the buffer is empty, continuation prompt
                 // while an unbalanced form is being accumulated. On the non-TTY
                 // branch `read_line` writes this to stdout verbatim (byte-identical

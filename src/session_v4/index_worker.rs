@@ -62,11 +62,36 @@ struct IndicesInner {
     /// armed-but-drained. `armed` records whether enumeration has happened so a
     /// `--run`/`--link` session that never arms is observably distinct.
     worklist: VecDeque<ModuleFullPath>,
-    /// Total module count enumerated onto the worklist (for the
-    /// "indexing N modules…" partial-results note, §25.5 / spec §17.19.3).
+    /// Total module count accounted onto the reachable set (for the
+    /// "indexing N modules…" partial-results note, §25.5 / spec §17.19.3). This
+    /// counts BOTH the file-resolved worklist modules AND the directly-read
+    /// seeded modules (`record_preindexed`), so `pending_count =
+    /// enumerated_total − indexed.len()` stays correct: a seeded module is in
+    /// both `enumerated_total` and `indexed`, so it is never "pending".
     enumerated_total: usize,
     /// Whether the burn-down has been armed (REPL-startup enumeration ran).
     armed: bool,
+    /// Timing (b) gate (spec §17.19.3, S108): set once a "indexing N modules…"
+    /// not-ready note has been served to the user this session. The completion
+    /// notice (`take_completion_notice`) fires ONLY after a note was shown, so a
+    /// session that never saw the index building is never told it finished
+    /// (and every non-TTY golden — which never triggers a note — is untouched).
+    note_shown: bool,
+    /// One-shot completion-notice latch (spec §17.19.3, S108): set the first
+    /// time `take_completion_notice` reports completion, so `search index
+    /// complete.` is emitted at most once per session.
+    announced: bool,
+}
+
+impl IndicesInner {
+    /// The SINGLE pending-count formula (spec §17.19.3): reachable modules
+    /// enumerated onto the reachable set but not yet indexed. Both
+    /// `pending_count` (the "indexing N modules…" note) and
+    /// `take_completion_notice` (the completion latch) read it, so the two
+    /// accounting sites share ONE source of truth and cannot drift (S-1).
+    fn pending(&self) -> usize {
+        self.enumerated_total.saturating_sub(self.indexed.len())
+    }
 }
 
 /// One indexed importable symbol — the three matchable axes plus its origin.
@@ -122,8 +147,36 @@ impl ImportableIndices {
     /// Number of reachable modules NOT yet indexed — the "indexing N modules…"
     /// partial-results count (0 ⇒ burn-down complete).
     pub(crate) fn pending_count(&self) -> usize {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.enumerated_total.saturating_sub(g.indexed.len())
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).pending()
+    }
+
+    /// Latch that a "indexing N modules…" not-ready note was served this
+    /// session (spec §17.19.3, timing (b)) — the gate for the completion
+    /// notice. Called by `/search` (`repl.rs::handle_search`) whenever it
+    /// appends the not-ready note (`pending_count > 0`).
+    pub(crate) fn mark_note_shown(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).note_shown = true;
+    }
+
+    /// The one-shot `search index complete.` completion latch (spec §17.19.3,
+    /// timing (b), S108). Under the single mutex, a check-and-set that returns
+    /// `true` EXACTLY ONCE — when ALL of:
+    ///   - the burn-down is `armed` and complete (`pending_count == 0`),
+    ///   - a not-ready note was shown this session (`note_shown`, timing (b)),
+    ///   - it has not already been announced (`!announced`).
+    ///
+    /// On the firing call it sets `announced`, so every later call returns
+    /// `false`. Polled by the `main.rs` REPL read loop at the clean prompt
+    /// boundary (single-writer — no worker-side stdout).
+    pub(crate) fn take_completion_notice(&self) -> bool {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let complete = g.armed && g.pending() == 0;
+        if complete && g.note_shown && !g.announced {
+            g.announced = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Enumerate the reachable set onto the `IndexModule` worklist (R17 — armed
@@ -136,12 +189,19 @@ impl ImportableIndices {
             return;
         }
         g.armed = true;
+        let before = g.worklist.len();
         for m in modules {
             if !g.indexed.contains(&m) {
                 g.worklist.push_back(m);
             }
         }
-        g.enumerated_total = g.worklist.len();
+        // ACCUMULATE (not assign): a seeded module already accounted by
+        // `record_preindexed` before `arm` must not be wiped by an assignment,
+        // and its file duplicate is already dropped by the `!indexed.contains`
+        // guard above — so the arm-vs-preindex call order no longer matters
+        // (S-1 order-independence). `arm` runs at most once (the `armed` guard),
+        // so this adds the freshly-enumerated file modules exactly once.
+        g.enumerated_total += g.worklist.len() - before;
     }
 
     /// Pop the next `IndexModule` task, if any. `None` ⇒ worklist drained (the
@@ -172,6 +232,37 @@ impl ImportableIndices {
             });
         }
         g.indexed.insert(module.clone());
+    }
+
+    /// Record a **built-in seeded** module's public symbols (spec §17.19 R10,
+    /// S108) read DIRECTLY from the live symbol table, accounting for it in BOTH
+    /// `enumerated_total` AND `indexed` atomically under the one mutex. This is
+    /// the sibling of `record_entries` for the seeded feed: seeded modules are
+    /// already typechecked-and-mounted, so they are indexed SYNCHRONOUSLY at arm
+    /// time — never staged, never a `.meta`, never on the worklist, and never
+    /// "pending". Counting the module in `enumerated_total` as well as `indexed`
+    /// is load-bearing: if it landed only in `indexed`, `pending_count =
+    /// enumerated_total − indexed.len()` would UNDERCOUNT N (and the not-ready
+    /// note + completion notice would fire early). Idempotent: a re-add of an
+    /// already-indexed module is a no-op (no double count, no duplicate rows).
+    fn record_preindexed(
+        &self,
+        module: &ModuleFullPath,
+        entries: Vec<(Symbol, Type, Option<String>)>,
+    ) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.indexed.insert(module.clone()) {
+            return; // already indexed — do not double-count or double-push.
+        }
+        g.enumerated_total += 1;
+        for (name, scheme, docstring) in entries {
+            g.entries.push(IndexedEntry {
+                name,
+                module: module.clone(),
+                scheme,
+                docstring,
+            });
+        }
     }
 
     /// `record_entries` variant taking the `.meta`-write triple
@@ -329,7 +420,37 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
         enumerate_cl_modules(dir, dir, &mut modules, &mut seen);
     }
 
+    // The built-in SEEDED modules (spec §17.19 R10, S108) are indexed below by a
+    // DIRECT read, NOT via the file worklist. Filter their names OUT of the
+    // enumerated `.cl` set FIRST so the two feeds are DISJOINT by construction
+    // (Principle 18 — enforce invariants structurally): a user file named
+    // `primitives.cl`/`macros.cl` on the project root or a lib-dir must not enter
+    // the worklist AND be counted a second time by `record_preindexed`. That
+    // double-count (I-1) left `pending_count ≥ 1` forever — `search index
+    // complete.` never fired and every `/search` showed a perpetual
+    // `indexing 1 module(s)…` note. The seeded module WINS: it is already
+    // typechecked-and-mounted, so a same-named file is dropped from the file set.
+    let seeded_modules = crate::bootstrap::seeded_importable_modules();
+    modules.retain(|m| !seeded_modules.contains(m));
+
     shared.importable_indices.arm(modules);
+
+    // Index the built-in SEEDED modules by a DIRECT read of their public symbols
+    // straight from the live session symbol table. These modules (`primitives`,
+    // seeded `macros`) have NO `.cl` file and are already typechecked-and-mounted,
+    // so they BYPASS the typecheck-to-index-then-discard file dance entirely
+    // (branches a/b/c) — nothing to stage, nothing to discard, no `.meta`.
+    // `record_preindexed` counts each in BOTH `enumerated_total` and `indexed`
+    // (see its doc) so seeded modules are never "pending". The seeded list is
+    // sourced from `bootstrap::seeded_importable_modules()` — the single source of
+    // what bootstrap mounts (Principle 19), not a name-literal here.
+    for module in &seeded_modules {
+        if let Some(table) = shared.symbol_tables.get(module) {
+            let entries = public_entries_from_table(table.value());
+            shared.importable_indices.record_preindexed(module, entries);
+        }
+    }
+
     // Wake the nice workers parked on the object-codegen condvar so they begin
     // draining the index worklist (the arm-wake, §25.5).
     shared.scheduler.wake_object_workers();
@@ -952,5 +1073,177 @@ mod tests {
         assert_eq!(idx.take_index_task().as_ref().map(|m| m.to_string()), Some("a".to_string()));
         assert_eq!(idx.take_index_task().as_ref().map(|m| m.to_string()), Some("b".to_string()));
         assert!(idx.take_index_task().is_none(), "drained → None");
+    }
+
+    // =======================================================================
+    // S108 (Increment 2) — seeded-module direct-read accounting (E1) +
+    // indexing-lifecycle latches (E2). The e2e harness cannot deterministically
+    // hold the burn-down open (tests/search.rs FIXME(/testing)), so E2 is pinned
+    // HERE at the `IndicesInner` seam, where it IS deterministic.
+    // =======================================================================
+    use cranelisp_types::{DefKind, Scheme, Visibility};
+
+    /// A live symbol table for `module` carrying one PUBLIC `Def` named `name`
+    /// with scheme `ty` — the seeded-module shape `arm_burndown` direct-reads.
+    fn public_def_table(module: &str, name: &str, ty: Type) -> crate::code::SessionSymbolTable {
+        let mut table = crate::code::SessionSymbolTable::new_with_params(m(module));
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty,
+        };
+        table.insert(
+            sym(name),
+            ModuleEntry::def(scheme, DefKind::PrimitiveExtern)
+                .visibility(Visibility::Public)
+                .build(),
+        );
+        table
+    }
+
+    // spec: repl/spec.md §17.19.3 — `record_preindexed` accounting: a seeded
+    // module recorded at arm time is counted in BOTH `enumerated_total` AND
+    // `indexed`, so it is NEVER "pending". After arming with K file modules plus
+    // the seeded modules, `pending_count == K`; after the K file modules burn
+    // down, `pending_count == 0`. (If a seeded module landed only in `indexed`,
+    // N would undercount and completion would fire early.)
+    #[test]
+    fn record_preindexed_counts_seeded_in_both_tallies() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("a"), m("b"), m("c")]); // K = 3 file modules
+        // Seeded modules recorded synchronously at arm time (direct read).
+        idx.record_preindexed(&m("primitives"), vec![row("vec-len", int_arrow_int())]);
+        idx.record_preindexed(&m("macros"), vec![row("sconcat", int_arrow_int())]);
+        assert_eq!(
+            idx.pending_count(),
+            3,
+            "seeded modules are indexed synchronously — only the 3 file modules pend"
+        );
+        // Burn down the three file modules (skip / record).
+        idx.mark_skipped(&m("a"));
+        idx.record_entries(&m("b"), vec![row("f", int_arrow_int())]);
+        idx.record_entries(&m("c"), vec![row("g", int_arrow_int())]);
+        assert_eq!(idx.pending_count(), 0, "after burn-down nothing is pending");
+    }
+
+    // spec: repl/spec.md §17.19.3 — `record_preindexed` is idempotent: a re-add
+    // of an already-indexed seeded module neither double-counts `enumerated_total`
+    // nor double-pushes its rows.
+    #[test]
+    fn record_preindexed_is_idempotent() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![]); // 0 file modules
+        idx.record_preindexed(&m("primitives"), vec![row("vec-len", int_arrow_int())]);
+        idx.record_preindexed(&m("primitives"), vec![row("vec-len", int_arrow_int())]);
+        assert_eq!(idx.pending_count(), 0, "still complete, no double count");
+        assert_eq!(
+            idx.search_by_name("vec-len").len(),
+            1,
+            "the seeded symbol is indexed exactly once, not duplicated"
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 (timing (b), S108) — `take_completion_notice`
+    // is a one-shot check-and-set gated on `note_shown`: it fires `true` exactly
+    // once when `armed && pending==0 && note_shown`, returns `false` when no
+    // not-ready note was shown (timing (b)), and `false` on every later call.
+    #[test]
+    fn take_completion_notice_one_shot_gated_on_note_shown() {
+        let idx = ImportableIndices::default();
+        // Unarmed → never fires (nothing to complete).
+        assert!(!idx.take_completion_notice(), "unarmed → no completion notice");
+        idx.arm(vec![]); // armed, 0 file modules
+        idx.record_preindexed(&m("primitives"), vec![row("vec-len", int_arrow_int())]);
+        // Armed + complete, but NO not-ready note shown → timing (b) suppresses.
+        assert!(
+            !idx.take_completion_notice(),
+            "no `indexing N…` note shown this session → completion suppressed (timing b)"
+        );
+        idx.mark_note_shown();
+        assert!(
+            idx.take_completion_notice(),
+            "armed + complete + note shown → fires"
+        );
+        assert!(
+            !idx.take_completion_notice(),
+            "one-shot: the second call is false"
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 — the completion notice requires the burn-down
+    // to be COMPLETE: with a not-ready note already shown but modules still
+    // pending, `take_completion_notice` is `false`; it fires only once the last
+    // module drains to zero.
+    #[test]
+    fn take_completion_notice_requires_pending_zero() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("a")]); // one pending file module
+        idx.mark_note_shown();
+        assert!(
+            !idx.take_completion_notice(),
+            "still pending → not complete → no completion notice"
+        );
+        idx.mark_skipped(&m("a")); // drain the last module
+        assert!(
+            idx.take_completion_notice(),
+            "now complete + note shown → fires once"
+        );
+        assert!(!idx.take_completion_notice(), "one-shot");
+    }
+
+    // spec: repl/spec.md §17.19.3 (S108, I-1) — a seeded-named file collision
+    // must NOT double-count. `arm_burndown` filters the seeded names out of the
+    // file worklist so the two feeds are disjoint; the `IndicesInner` accounting
+    // is ALSO order-independent (S-1), so even if a seeded module is recorded
+    // BEFORE `arm` enumerates a same-named file, the `!indexed.contains` guard
+    // drops the file duplicate and the seeded module is counted EXACTLY ONCE.
+    // Without both, `pending_count` sticks ≥ 1 forever (completion never fires,
+    // every `/search` shows a perpetual `indexing 1 module(s)…` note).
+    #[test]
+    fn seeded_name_file_collision_counts_once_and_completes() {
+        let idx = ImportableIndices::default();
+        // Seeded module recorded FIRST (direct read), so `macros` is in `indexed`
+        // before `arm` sees a same-named file — the order-independent path.
+        idx.record_preindexed(&m("macros"), vec![row("sconcat", int_arrow_int())]);
+        // `arm` enumerates a file worklist that COLLIDES on `macros` (a user
+        // `macros.cl`) plus one genuine file module `a`. The `!indexed.contains`
+        // guard drops the `macros` duplicate; only `a` is added to the worklist.
+        idx.arm(vec![m("macros"), m("a")]);
+        assert_eq!(
+            idx.pending_count(),
+            1,
+            "seeded `macros` counted once (not twice) — only the file module `a` pends"
+        );
+        idx.mark_note_shown(); // a `/search` served the not-ready note this session
+        // Burn down the one genuine file module.
+        idx.record_entries(&m("a"), vec![row("f", int_arrow_int())]);
+        assert_eq!(idx.pending_count(), 0, "no perpetual pending — burn-down completes");
+        assert!(
+            idx.take_completion_notice(),
+            "completion fires once the file module drains (the collision no longer wedges it)"
+        );
+        assert_eq!(
+            idx.search_by_name("sconcat").len(),
+            1,
+            "the seeded symbol is indexed exactly once, not duplicated"
+        );
+    }
+
+    // spec: repl/spec.md §17.19 R10 (S108) — a seeded module's PUBLIC symbols,
+    // read directly from the live symbol table (as `arm_burndown` does) via
+    // `public_entries_from_table` + `record_preindexed`, land in the index: a
+    // `vec-len`-shaped lookup hits `primitives` at the ExactName tier.
+    #[test]
+    fn seeded_public_symbols_land_in_index() {
+        let table = public_def_table("primitives", "vec-len", int_arrow_int());
+        let entries = public_entries_from_table(&table);
+        assert_eq!(entries.len(), 1, "the public Def is extracted");
+        let idx = ImportableIndices::default();
+        idx.record_preindexed(&m("primitives"), entries);
+        let hits = idx.search_by_name("vec-len");
+        assert_eq!(hits.len(), 1, "the seeded primitive is searchable");
+        assert_eq!(hits[0].name.as_ref(), "vec-len");
+        assert_eq!(hits[0].module.as_ref(), "primitives");
+        assert_eq!(hits[0].tier, MatchTier::ExactName);
     }
 }

@@ -287,7 +287,8 @@ evidenced classes):
 | `uaf` | Use-after-free / dangling pointer (TCO tail-arg alias; S97–98 grid Vec double-free) |
 | `marshal-overrun` | Byte-level over/under-write at the host↔platform marshalling boundary (S86 DEF-6 base-vs-payload pointer) |
 | `mode-divergence` | REPL / `--run` / `--link` behaviour divergence — always a defect (S98 0499; S102 0484) |
-| `prelude-scope-miss` | Prelude-provided symbol unreachable or mis-resolved via the implicit outer-scope fallback (S59 prelude-parity; FIXME 0558 sibling) |
+| `prelude-scope-miss` | Prelude-provided symbol unreachable or mis-resolved via the implicit outer-scope fallback (S59 prelude-parity; FIXME 0558 sibling). Resolution-time mechanism — an enumeration/census error is `enumeration-miss`, not this |
+| `enumeration-miss` | A reachable-set enumeration omits, double-counts, or otherwise mis-counts a symbol source — e.g. the bootstrap-seeded modules absent from the `/search` index (S108 E1), or a seeded-vs-file module-name collision double-counted into a permanently-wedged `pending_count` (S108 I-1) |
 | `silent-accept` | Invalid input accepted without error (S107 deftype trailing-form-after-field-bracket class) |
 | `null-got-slot` | Call through an unpopulated/NULL GOT slot → SIGSEGV (S100–101 vec-query value-use family) |
 
@@ -437,3 +438,26 @@ Every fix lands with a unit test, and the e2e need is assessed
 **before** the fix is written; failing test(s) first, fix flips them green, both
 in the same change-set. This is stated canonically in root `CLAUDE.md`
 §Testing and `sprints/METHOD.md` §2.2 — follow those; not restated here.
+
+## QA-first targeting and deferral discipline (S108 Inc2 lesson)
+
+A `/review`-caught **correctness** defect is a QA-first + unit-test **miss**,
+not a review win — review is the LAST line of defence, tests the first. All
+three S108-Inc2 review findings (I-1/I-2/I-3) were knowable before review:
+one was `/arch`-pre-flagged, one was a stated spec MUST, one was a standing
+invariant. Two operational rules:
+
+- **Spec MUSTs and arch-pre-flagged boundaries are the highest-signal
+  QA-first targets.** Author guards for them FIRST — before the happy path.
+  A design outcome that says "watch this collision/accounting/gate" is a
+  test row, not a footnote.
+- **A deferral to unit tests MUST enumerate its cases.** When an e2e-hard
+  case (async, timing-coupled) is deferred to `/dev` unit tests, the
+  deferral names the specific boundaries/negatives/spec-MUSTs to pin, and
+  `/dev` + `/review` confirm each enumerated case has a guard that FAILS on
+  revert of its fix. A bare "unit-pinned" with no enumeration is a hole —
+  `/dev` pins the happy path and the negatives fall through.
+
+Provenance: S108 Increment 2 (user finding, `sprints/SPRINT.md` §Findings);
+the enumerated-deferral pattern in `plan/PLAN.md` §"Sprint 108 Increment 2"
+is the worked example.

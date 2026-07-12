@@ -2122,6 +2122,15 @@ containment catch, and the command wiring** so the implementation has a fixed ta
 contract is `repl/spec.md §17.19`; the match algorithm is `/typecheck`'s
 (`design/typecheck/signature-match.md §6`).
 
+> **IMPLEMENTED — S91 (core indexer §25.1–§25.8) + S108 (two additions below).** §25.1–§25.8 are the
+> as-built target the S91 implementation turned green. **S108 (Increment 2)** added two mechanisms
+> recorded in the new subsections: **§25.9 — the seeded direct-read feed** (`/search` now indexes the
+> built-in `primitives`/`macros` modules by a direct symbol-table read, a SECOND feed disjoint from
+> the `.cl` worklist) and **§25.10 — the lifecycle-message latch** (the "indexing N module(s)…"
+> not-ready note + the async "; search index complete." completion notice). Both carry their own
+> `Status: LANDED S108` note; the "design-only, nothing added to the default build" phrasing in the
+> §25.8 close is historical S90 framing.
+
 > **RETRACTION (what the first redesign removes).** The original §25 placed the indexer on the
 > **eval thread** as a sibling of `validate_forms_dry_run`, built **lazily** one module per query,
 > cached **one shared `ImportableSymbol` DTO** on `AgentState` fed by both Pillar 2 and Pillar 3,
@@ -2538,6 +2547,109 @@ distinct claim, never entangled with `take_object_codegen` / the `.o` lifecycle)
 never delays object codegen of loaded/prelude modules). (This sprint the invariant is **trivially
 satisfied** — Pillar 3 is design-only, nothing is added to the default build; it becomes load-bearing
 at implementation time.)
+
+### 25.9 The seeded direct-read feed — a SECOND feed alongside the `.cl` worklist (E1, S108, `repl/spec.md §17.19`/§17.19.3)
+
+**Status: LANDED S108 (Increment 2).** User testing surfaced that `/search vec-len` returned "no
+importable symbols matched" although `primitives/vec-len` is a real importable primitive: the
+built-in **seeded** modules (`primitives`, the synthetic `macros`) have **no `.cl` file**, so the
+§25.1 file-enumeration worklist (`resolve_module_file` over lib-path ∪ project-root) never reached
+them. The user ruled (2026-07-11) that `/search` scope SHALL include the seeded modules; `/arch`
+approved the mechanism with **no `cranelisp-types` / cache-schema / public-API change**.
+
+**Seeded modules are indexed by a DIRECT read of the live symbol table — NOT the three-branch file
+dance (§25.1).** They are already typechecked-and-mounted by `mount_synthetic_modules`
+(`bootstrap.rs`), so there is **nothing to stage, nothing to discard, and no `.meta` to write**: the
+whole read-or-produce-`.meta` step (branches a/b/c, §25.1) is bypassed. `arm_burndown`
+(`session_v4/index_worker.rs`) reads each seeded module's `SessionSymbolTable` straight out of
+`SharedState.symbol_tables`, extracts its public entries (`public_entries_from_table`), and records
+them via `record_preindexed`. This makes the indexer a **two-feed** producer over the ONE pair of
+indices (§25.3): the `.cl` file worklist (typecheck-to-index, branches a/b/c) and the seeded
+direct-read (no typecheck). Both land `{symbol, scheme, modulepath}` rows in Index A / Index B
+identically — a seeded row and a file-derived row are indistinguishable at `/search` time.
+
+**Single-source the seeded list — no name-literal in the indexer (Principle 19).** The list of which
+modules are seeded-importable is `bootstrap::seeded_importable_modules()` — `primitives` + the
+seeded `macros`, sourced from the module bootstrap actually mounts, NOT a `["primitives","macros"]`
+literal inside `index_worker`. It deliberately **excludes** the root `""` module (special-forms-only
+— `if`/`let`/… are always available and are not importable targets) and `prelude` (the implicit
+outer scope — its symbols are re-exports, not an importable home, and the file enumerator already
+skips it). This keeps "what bootstrap mounts" and "what `/search` treats as seeded-importable" from
+drifting: bootstrap owns the fact, the indexer reads it (Principle 7 single-source-of-truth, Principle
+19 no-module-privileged-by-name).
+
+**`record_preindexed` counts a seeded module in BOTH tallies, atomically (the accounting invariant).**
+`pending_count` — the signal that drives BOTH the "indexing N module(s)…" not-ready note (§25.10) and
+the completion latch — is defined as `enumerated_total − indexed.len()` (the private `pending()`
+helper on `IndicesInner`, the ONE place the subtraction lives). A seeded module is already fully
+indexed the instant it is read, so `record_preindexed` increments **`enumerated_total` AND inserts
+into `indexed`** under the one mutex. Counting it in `enumerated_total` as well is load-bearing: were
+it added to `indexed` only, `pending_count` would **undercount** N and the not-ready note / completion
+notice would fire early; were it added to `enumerated_total` only, it would be **perpetually
+pending**. Because it lands in both, a seeded module is **never "pending"** — it never wedges the
+burn-down and never inflates the note's N. `record_preindexed` is also idempotent (a re-add of an
+already-`indexed` module neither double-counts `enumerated_total` nor re-inserts).
+
+**The DISJOINT-FEEDS invariant — the seeded feed and the file feed must not overlap (Principle 18).**
+A user file literally named `primitives.cl` / `macros.cl` on the project root or a lib-dir would
+otherwise be enumerated onto the `.cl` worklist AND be counted a second time by the seeded
+`record_preindexed` for the same `ModuleFullPath` — a double-count that (before the fix, review
+finding I-1) left `pending_count ≥ 1` **forever**: `; search index complete.` never fired and every
+`/search` showed a perpetual `indexing 1 module(s)…` note. `arm_burndown` closes this structurally:
+it retains the seeded names **out** of the enumerated file `modules` list
+(`modules.retain(|m| !seeded_modules.contains(m))`) **before** arming the worklist and **before** the
+seeded direct-read — so the two feeds are disjoint by construction. **The seeded module WINS** on a
+name collision: it is already typechecked-and-mounted, so the same-named user file is simply dropped
+from the file set rather than the reverse. (Guarded deterministically —
+`search_seeded_file_name_collision_does_not_wedge_pending_note` — not by a race.)
+
+### 25.10 The lifecycle-message latch — not-ready note + completion notice (E2, S108, `repl/spec.md §17.19.3`)
+
+**Status: LANDED S108 (Increment 2).** Two lifecycle messages make the background burn-down visible;
+§17.19.3 defines them as **exclusive** states that MUST NOT be conflated. Both are driven off
+`pending_count` and coordinated by a one-shot latch on `IndicesInner` (under the existing index
+mutex), so no worker-side stdout and no `ExternalPrinter` TTY-fork is involved.
+
+**The not-ready note — served inline by `handle_search`.** A `/search` issued before the burn-down
+completes MUST say so rather than return a silent (or misleading "no match") result. `handle_search`
+(`src/repl.rs`) reads `pending_count()`; when `> 0` it appends the note
+`; indexing N module(s)… (results may be incomplete)` (N = the pending count) to whatever partial
+results the indices-so-far hold, and — on the **empty** partial-result path — serves the note
+**instead of** the `; no importable symbols matched '<q>'` note. This is the §17.19.3
+non-conflation MUST (review finding I-2): "nothing matched yet, still building" (retry) and "nothing
+matched a complete index" (rephrase) call for **opposite reader actions**, so while `pending > 0` the
+empty path serves ONLY the not-ready note, and the no-match note is served ONLY at `pending == 0`.
+The message selection is single-sourced in the **pure** free fns `indexing_note_text(pending)` and
+`empty_result_message(query, pending)` (no `&self`, no side effects) so the two states are exclusive
+by construction and unit-testable at the seam without driving a session; the not-ready-note text has
+ONE source of truth that both the empty-result and the partial-result-append paths derive from.
+
+**The completion notice — async, at the prompt boundary.** `; search index complete.` (lower-case,
+trailing period, no count) announces the burn-down finished. It is emitted by the **`main.rs` read
+loop** at the clean prompt boundary — polled BEFORE the prompt is written, so it lands only between a
+completed prompt cycle and the next prompt (no mid-line interleave), written by the **sole writer**
+(the read-loop thread; there is deliberately no worker-side stdout).
+
+**The one-shot latch (`IndicesInner`).** Three booleans coordinate the pair: `note_shown` is set by
+`mark_note_shown()` the first time `handle_search` serves a not-ready note; `announced` guards the
+completion notice to fire at most once; and `take_completion_notice()` is a **check-and-set** that
+returns `true` exactly once — when `armed && pending() == 0 && note_shown && !announced` — setting
+`announced` on that firing call so every later call returns `false`. The `note_shown` gate is the
+**timing-(b)** decision (USER-CONFIRMED 2026-07-11): the completion notice fires **only after** a
+not-ready note was actually shown this session, so a session that never saw the index building sees
+**neither** message — least noise, closes only a loop the user watched open, and (critically) keeps
+every existing non-TTY golden untouched, since an unconditional notice would land at a
+nondeterministic prompt and flake goldens.
+
+**The `is_interactive()` gate — non-TTY sessions never emit it (the byte-identical contract).**
+Gating on `note_shown` alone is **not sufficient** for determinism: a piped/non-TTY session CAN latch
+`note_shown` (the inline not-ready note is synchronous `/search` output served on the non-TTY branch
+too), so a piped run catching the burn-down mid-flight could emit the async completion line at a
+timing-dependent boundary and break the §10.8 byte-identical scripted/piped contract (review finding
+I-3). The `main.rs` poll therefore ALSO gates on `input.is_interactive()` (`src/repl_input.rs` —
+`false` for `ReplInput::Piped`), making the completion path structurally unreachable on non-TTY. So
+the notice requires BOTH a not-ready note shown this session AND an interactive TTY; every e2e golden
+(all non-TTY) is guaranteed to never see it.
 
 ---
 

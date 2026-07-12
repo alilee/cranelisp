@@ -734,3 +734,155 @@ fn search_exact_ranked_above_partial() {
         out.stdout
     );
 }
+
+// ===========================================================================
+// S108 (Increment 2) — `/search` indexes the BUILT-IN SEEDED modules (E1)
+//
+// The importable-symbol indexer enumerates the reachable set as the `.cl`
+// modules on the lib-path ∪ project root (`resolve_module_file`). The built-in
+// `primitives` module is bootstrap-seeded — it has NO `.cl` file — so it is
+// never enumerated, and every primitive (`vec-len`, `str-len`, …) is invisible
+// to `/search` even though `(primitives/vec-len [1 2 3])` evaluates. The S108
+// user ruling (repl/spec.md §17.19 R10) brings seeded modules into scope: the
+// reachable set = lib-path ∪ project-root `.cl` modules ∪ the built-in seeded
+// modules (`primitives`, seeded `macros`).
+// ===========================================================================
+
+// spec: repl/spec.md §17.19 — R10 reachable scope INCLUDES the built-in seeded
+// modules: `/search vec-len`, with `vec-len` NOT bare-in-scope (no prelude), MUST
+// surface `primitives/vec-len` and offer the `(import [primitives [vec-len]])`
+// payoff. RED on HEAD: the indexer omits seeded modules, so the query returns the
+// "no importable symbols matched 'vec-len'" note. Owner: /dev (src/, int).
+//
+// The import form is the load-bearing, spec-exact assertion — §17.19 R10 names
+// `(import [primitives [vec-len]])` verbatim and §17.19.2 facet 4 makes it the
+// actionable payoff; it also carries the symbol-name (facet 1) and module (facet
+// 3) facets, so a substring test on it proves the whole row surfaced. Rendering
+// is /dev-owned, so we substring-match the payoff rather than a full row layout.
+//
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::resolve_module_file found=S108 owner=/dev
+#[test]
+fn search_finds_seeded_primitive_offers_import() {
+    // No prelude — `vec-len` is NOT bare-in-scope, but `primitives/vec-len` is
+    // bootstrap-seeded (primitives are seeded regardless of prelude).
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin("/search vec-len\n")
+        .output();
+    // The seeded primitive MUST surface with its actionable import-form payoff.
+    out.assert_stdout_contains_all(&[
+        "vec-len",                         // (1) symbol-name facet
+        "(import [primitives [vec-len]])", // (4) the actionable payoff (§17.19 R10, §17.19.2)
+    ]);
+}
+
+// spec: repl/spec.md §17.19 — R13 companion for a SEEDED symbol: when `vec-len`
+// IS bare-in-scope (here via the primitives-glob prelude re-export), its exact
+// row is shown-but-MARKED `already in scope — no import needed` and MUST NOT
+// offer the `(import [primitives [vec-len]])` form. This is GREEN on HEAD (the
+// exact-in-scope R13 path reaches the live symbol table directly, independent of
+// the importable index) — it is a REGRESSION GUARD: after E1 adds seeded modules
+// to the importable index, the in-scope exact match MUST stay MARKED and MUST NOT
+// start offering an import form for a symbol the user can already reference bare.
+#[test]
+fn search_seeded_primitive_already_in_scope_marked_no_import() {
+    // `(export [primitives [*]])` re-exports the primitives as bare names through
+    // the user module's implicit prelude glob, so `vec-len` is bare-in-scope.
+    let out = Cranelisp::new()
+        .prelude("(export [primitives [*]])\n")
+        .repl()
+        .stdin("/search vec-len\n")
+        .output();
+    assert!(
+        out.stdout.to_lowercase().contains("already in scope"),
+        "an EXACT in-scope seeded match (`vec-len`) MUST be surfaced MARKED \
+         `already in scope — no import needed`, not dropped (§17.19 R13); \
+         stdout:\n{}",
+        out.stdout
+    );
+    out.assert_stdout_does_not_contain("(import [primitives [vec-len]])");
+}
+
+// spec: repl/spec.md §17.19.3 — the not-ready note (`indexing N module(s)…`)
+// lifecycle under a SEEDED-vs-FILE module-name COLLISION. A user file named
+// `primitives.cl` (or `macros.cl`) enumerates to the SAME module name as a
+// bootstrap-seeded module. The I-1 fix (`arm_burndown`'s `modules.retain(|m|
+// !seeded_modules.contains(m))`) keeps the two feeds DISJOINT: the colliding
+// file is dropped from the file worklist BEFORE arming, so the already-
+// typechecked-and-mounted seeded module wins and `pending_count` settles to 0.
+// WITHOUT that retain filter the colliding file is counted in `enumerated_total`
+// (via `arm`) AND the seeded module is `record_preindexed`'d (+1 both
+// `enumerated_total` and `indexed`) — a permanent double-count that wedges
+// `pending_count` at ≥1 FOREVER, so EVERY `/search` serves a stuck
+// `; indexing 1 module(s)… (results may be incomplete)` not-ready note and
+// `; search index complete.` never fires.
+//
+// The wedge is DETERMINISTIC (permanent, not a race), so — unlike the timing-
+// coupled E2 lifecycle messages deferred below — it IS e2e-testable: `/search`'s
+// handler (`src/repl.rs::handle_search`) calls `wait_for_index_settled` (a
+// bounded 5s poll to `pending_count()==0`) BEFORE serving. On HEAD the tiny
+// burn-down settles in ms → the wait returns with pending==0 → NO note. A wedged
+// index instead spins the full timeout and still serves the note. The note's
+// presence AFTER the SUT's own settle-wait is therefore a reliable wedge signal,
+// not the arm-vs-serve race. This test relies on the SUT-side settle mechanism,
+// so it needs no harness-side settle hook.
+//
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::arm_burndown found=S108 owner=/dev
+#[test]
+fn search_seeded_file_name_collision_does_not_wedge_pending_note() {
+    // A user file at the PROJECT ROOT named `primitives.cl` — its enumerated
+    // module name (`primitives`) COLLIDES with the bootstrap-seeded `primitives`
+    // module. Innocuous body: an identity `defn` (no imports needed). No prelude,
+    // so `vec-len` is not bare-in-scope and the importable-index path is exercised.
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .file("primitives.cl", "(defn shadow-me [x] x)\n")
+        .stdin("/search vec-len\n")
+        .output();
+    out
+        // (1) seeded-wins: the REAL seeded primitive `vec-len` surfaces with its
+        //     actionable import payoff — the colliding file must NOT shadow or
+        //     replace the seeded `primitives` module in results (§17.19 R10). The
+        //     file defines no `vec-len`, so the payoff proves the seeded feed
+        //     survived the collision, not the file.
+        .assert_stdout_contains_all(&["vec-len", "(import [primitives [vec-len]])"])
+        // (2) not-wedged: after the SUT's bounded settle-wait, `/search` output
+        //     MUST NOT carry a stuck not-ready note. Its presence after settle =
+        //     the collision wedged `pending_count` (the retain filter defeated).
+        .assert_stdout_does_not_contain("results may be incomplete")
+        .assert_stdout_does_not_contain("indexing");
+}
+
+// ===========================================================================
+// S108 (Increment 2) — indexing-lifecycle messages (E2): DEFERRED to /dev unit
+// tests. NOT authored here — the two messages are timing-coupled and cannot be
+// pinned deterministically in the subprocess harness.
+//
+// FIXME(/testing): E2's two lifecycle messages resist a deterministic e2e repro
+// and were DELIBERATELY not committed here (a racy e2e test is forbidden — root
+// CLAUDE.md §Testing / tests/CLAUDE.md "no `timing-sensitive` tests"):
+//
+//   * "indexing N modules…" (the not-ready note, spec §17.19.3) fires only when a
+//     `/search` lands while file modules are still burning down. Empirically the
+//     burn-down BEATS the first `/search` even with 30 reachable `.cl` modules on
+//     the lib-path (measured 2026-07-11: no note across repeated trials) — there
+//     is no way to hold pending_count > 0 at search-serve time deterministically,
+//     because seeded modules index synchronously and file modules index faster
+//     than the first piped line is served. Whether the note fires is exactly the
+//     arm-vs-serve race, which is non-deterministic by construction.
+//
+//   * "search index complete." (spec §17.19.3, timing (b)) fires only AFTER a
+//     not-ready note was shown this session — so it inherits the same
+//     non-determinism (no note ⇒ no completion latch armed). Neither message
+//     appears on HEAD across repeated trials.
+//
+// Per /arch's mechanism ruling (SPRINT.md §"Design outcome"), the not-ready-note
+// + completion-latch logic is pinned by /dev UNIT tests at the `IndicesInner`
+// seam — deterministic there: `take_completion_notice()` check-and-set, the
+// `note_shown` gate, and `pending_count` accounting (incl. the `record_preindexed`
+// arm-time count in BOTH enumerated_total and indexed). If the harness ever gains
+// a way to hold the burn-down open (e.g. an injectable per-module index delay or
+// a barrier env var), revisit for a deterministic e2e repro.
+// ===========================================================================

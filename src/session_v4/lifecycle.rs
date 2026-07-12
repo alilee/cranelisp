@@ -165,6 +165,17 @@ impl CompilerSession {
         crate::session_v4::index_worker::arm_burndown(&self.shared);
     }
 
+    /// One-shot poll for the `search index complete.` completion notice
+    /// (spec §17.19.3, timing (b), S108). Returns `true` EXACTLY ONCE — when the
+    /// Pillar-3 burn-down has completed AND a "indexing N modules…" not-ready
+    /// note was shown this session (timing (b)). The `main.rs` REPL read loop
+    /// polls this at the clean prompt boundary and, on `true`, prints the
+    /// notice; the single-writer discipline (only the main/eval thread prints)
+    /// and the note-shown gate keep every non-TTY golden byte-identical.
+    pub fn take_search_index_completion_notice(&self) -> bool {
+        self.shared.importable_indices.take_completion_notice()
+    }
+
     /// `new` phase (S87 §3.2): build the on-disk `ObjectCache` facade.
     ///
     /// Sprint 67 Cluster B sub-fire 3: cache directory + state are folded into

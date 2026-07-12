@@ -318,6 +318,25 @@ pub(crate) fn mount_synthetic_modules(
     register_test_infrastructure(symbol_tables, next_id); // step 8
 }
 
+/// The built-in **seeded** modules `/search` treats as importable (spec
+/// §17.19 R10, S108). This is the SINGLE source of the seeded-importable list:
+/// the Pillar-3 index worker reads it rather than hardcoding module-name
+/// literals inside `index_worker` (Principle 19 — bootstrap owns what it
+/// mounts). The list is `primitives` + the seeded `macros` module — the two
+/// modules `mount_synthetic_modules` seeds with public, importable symbols.
+///
+/// Deliberately EXCLUDES:
+/// - the root `""` module (special-forms-only — `if`/`let`/… are always
+///   available and are not importable, so nothing there is a `/search` target);
+/// - `prelude` (the implicit outer scope, already skipped by the file-module
+///   enumerator, and its symbols are re-exports rather than an importable home).
+pub(crate) fn seeded_importable_modules() -> Vec<ModuleFullPath> {
+    vec![
+        ModuleFullPath::from("primitives"),
+        ModuleFullPath::from("macros"),
+    ]
+}
+
 /// Ensure a module exists in the session table.
 fn ensure_module(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,

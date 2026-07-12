@@ -1051,6 +1051,30 @@ impl CompilerSession {
     /// discretion (§25.6 / spec §17.19.1); both indices are searchable. A query
     /// landing before the burn-down completes serves partial results + an
     /// "indexing N modules…" note (§25.5 / spec §17.19.3).
+    /// The "still indexing" progress-note text (spec §17.19.3) — `Some` while the
+    /// burn-down is in flight (`pending > 0`), `None` once the index is complete.
+    /// PURE (no `&self`, no side effects) so the §17.19.3 message-selection is
+    /// unit-testable at the seam without driving a whole session, and so the
+    /// note text has ONE source of truth (both the empty-result and the
+    /// partial-result-append paths derive from it).
+    fn indexing_note_text(pending: usize) -> Option<String> {
+        (pending > 0).then(|| format!("; indexing {pending} module(s)… (results may be incomplete)"))
+    }
+
+    /// Message for an EMPTY `/search` result (spec §17.19.3, tightened S108).
+    /// "Nothing matched yet, still building" and "nothing matched a complete
+    /// index" are DISTINCT states that MUST NOT be conflated — they call for
+    /// opposite reader actions (retry vs. rephrase). While the burn-down is in
+    /// flight (`pending > 0`) this serves ONLY the not-ready note, never the `no
+    /// importable symbols matched` note; the no-match note is served ONLY once
+    /// the index is complete (`pending == 0`). PURE for unit-testability.
+    fn empty_result_message(query: &str, pending: usize) -> String {
+        match Self::indexing_note_text(pending) {
+            Some(note) => note,
+            None => format!("; no importable symbols matched '{query}'"),
+        }
+    }
+
     pub(crate) fn handle_search(&self, query: &str) -> String {
         let query = query.trim();
         if query.is_empty() {
@@ -1139,15 +1163,19 @@ impl CompilerSession {
         });
 
         // Progress note when the burn-down is still in flight (spec §17.19.3).
+        // Serving the note latches `note_shown` — the timing-(b) gate for the
+        // `search index complete.` completion notice (spec §17.19.3, S108): the
+        // completion notice fires only after a not-ready note was shown this
+        // session, so a session that never saw the index building is never told
+        // it finished.
         let pending = self.shared.importable_indices.pending_count();
-        let note = if pending > 0 {
-            format!("\n; indexing {pending} module(s)… (results may be incomplete)")
-        } else {
-            String::new()
-        };
+        let not_ready_note = Self::indexing_note_text(pending);
+        if not_ready_note.is_some() {
+            self.shared.importable_indices.mark_note_shown();
+        }
 
         if rows.is_empty() {
-            return format!("; no importable symbols matched '{query}'{note}");
+            return Self::empty_result_message(query, pending);
         }
 
         // Lead with a newline so the first result row starts on its own line
@@ -1158,7 +1186,12 @@ impl CompilerSession {
         for row in &rows {
             out.push_str(&self.render_search_row(row, query));
         }
-        out.push_str(note.trim_start_matches('\n'));
+        // A partial (still-indexing) result appends the not-ready note beneath
+        // the rows it DID find (§17.19.3 partial-results-plus-a-note); a complete
+        // result has no note.
+        if let Some(note) = &not_ready_note {
+            out.push_str(note);
+        }
         while out.ends_with('\n') {
             out.pop();
         }
@@ -3332,6 +3365,62 @@ mod repair_definition_turn_tests {
         assert!(!is_repair_definition_turn("(begin (defn a [] 1) (a))"));
         assert!(!is_repair_definition_turn(""));
         assert!(!is_repair_definition_turn("(defn broken ["));
+    }
+}
+
+#[cfg(test)]
+mod search_message_selection_tests {
+    use super::CompilerSession;
+
+    // spec: repl/spec.md §17.19.3 (S108, I-2) — an EMPTY `/search` result MUST
+    // NOT conflate the two distinct states. While the burn-down is in flight
+    // (pending > 0) the reader is served ONLY the "indexing N modules…" note
+    // (retry), never the "no importable symbols matched" note. This asserts the
+    // still-indexing branch of the pure message selector serves the note and
+    // does NOT emit the no-match text.
+    #[test]
+    fn empty_result_still_indexing_serves_only_the_note_not_no_match() {
+        let msg = CompilerSession::empty_result_message("foo", 3);
+        assert!(
+            msg.contains("indexing 3 module(s)…"),
+            "still-indexing empty result must serve the not-ready note, got: {msg:?}"
+        );
+        assert!(
+            !msg.contains("no importable symbols matched"),
+            "still-indexing empty result must NOT serve the no-match note (§17.19.3 \
+             non-conflation), got: {msg:?}"
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 (S108, I-2) — the COMPLETE-index empty result
+    // (pending == 0) is the OTHER state: it serves ONLY the "no importable
+    // symbols matched" note (rephrase) and NEVER the "indexing N…" note. The two
+    // asserts together pin the non-conflation from both sides.
+    #[test]
+    fn empty_result_complete_index_serves_only_no_match_not_the_note() {
+        let msg = CompilerSession::empty_result_message("foo", 0);
+        assert!(
+            msg.contains("no importable symbols matched 'foo'"),
+            "complete-index empty result must serve the no-match note, got: {msg:?}"
+        );
+        assert!(
+            !msg.contains("indexing"),
+            "complete-index empty result must NOT serve the not-ready note (§17.19.3 \
+             non-conflation), got: {msg:?}"
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 — the note text is `Some` only while pending,
+    // `None` at completion (the single source both the empty-result and the
+    // partial-append paths derive from).
+    #[test]
+    fn indexing_note_text_present_iff_pending() {
+        assert!(CompilerSession::indexing_note_text(0).is_none(), "complete → no note");
+        assert_eq!(
+            CompilerSession::indexing_note_text(2).as_deref(),
+            Some("; indexing 2 module(s)… (results may be incomplete)"),
+            "pending → the not-ready note text"
+        );
     }
 }
 

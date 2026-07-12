@@ -2873,7 +2873,7 @@ in-scope symbol's actual signature without first having to `/list`/`/exports`** 
 > (R10), matches by **name, scheme, OR docstring** (exact-or-partial on the name/scheme axes,
 > case-insensitive substring on the docstring axis — the docstring axis added S106, FIXME
 > 0540) (R6), and is served by
-> an **eager-but-triggered** background index built by the nice workers (R4/R9b). Per the
+> an **eager** background index built by the nice workers (R4/R9b). Per the
 > `/arch` Phase-2 ruling (R1; `repl-embedded-agent.md §11.5`), Pillar 3 still ships as
 > **design only** in S90 — implementation is gated on the FIXME-0432 typecheck root fix
 > **plus** the nice-worker indexer `catch_unwind` floor (CF.2, §11.3). This subsection pins
@@ -2888,11 +2888,26 @@ in scope** (harvest). Pillar 3 closes the last fluency gap: discovering symbols 
 signature**. This is the experience of *"is there already a function that does this?"*
 answered **before** writing the `(import …)`, for both the human and the agent. [S90 re-pin]
 
-**Reachable scope (R10).** `/search` searches symbols reachable on the **lib search path ∪
-the project root** — the same file-resolution rules `import` uses. Its **primary** job is to
-surface what is **importable but not yet in scope**: for these results, an `(import …)` form is
-the actionable payoff (§17.19.2). Already-imported, in-scope symbols are otherwise surfaced by
-Pillar 2 (harvest, §17.18) and the deterministic `/list` family. [S90 re-pin]
+**Reachable scope (R10).** The reachable set `/search` searches is the union of **two**
+sources: (a) the **`.cl` modules on the lib search path ∪ the project root** — the same
+file-resolution rules `import` uses; **and (b) the built-in seeded modules** — `primitives`
+(and the seeded `macros`) — which have **no `.cl` file** and are instead present in the session
+by bootstrap seeding. This second source is normative as of S108 (user ruling, 2026-07-11):
+the original R10 defined scope purely by file-resolution, so a real, importable primitive such
+as `primitives/vec-len` was invisible to `/search` even though `(primitives/vec-len [1 2 3])`
+evaluates. Because the intent of `/search` is *"is there already a function that does this?"*,
+the primitives and seeded macros MUST be discoverable: **the reachable set = lib-path ∪
+project-root `.cl` modules ∪ the built-in seeded modules (`primitives`, seeded `macros`).**
+[Tested tests/search::search_finds_seeded_primitive_offers_import]
+
+`/search`'s **primary** job is to surface what is **importable but not yet in scope**: for
+these results, an `(import …)` form is the actionable payoff (§17.19.2). Already-imported,
+in-scope symbols are otherwise surfaced by Pillar 2 (harvest, §17.18) and the deterministic
+`/list` family. Consistent with R13, a seeded symbol is treated exactly like any other
+reachable symbol: `/search vec-len`, where `vec-len` is **not** bare-in-scope, MUST surface
+`primitives/vec-len` **with** the `(import [primitives [vec-len]])` payoff; were `vec-len`
+already bare-in-scope, its exact-name row would instead be shown-but-marked *already in scope —
+no import needed* (R13, §17.19.2). [Tested+Neg tests/search::search_finds_seeded_primitive_offers_import, tests/search::search_seeded_primitive_already_in_scope_marked_no_import]
 
 **Exception — an EXACT-name match is always surfaced, even when already in scope (R13, S106,
 FIXME 0543).** The original contract *dropped* an in-scope symbol entirely, so `/search show`
@@ -2917,12 +2932,22 @@ that governs the agent-gated pillars (§17.1, §17.17) therefore does **not** ap
 `/search`: it is present and functional in the feature-OFF build. [S90 re-pin]
 
 The mechanism is **typecheck-to-index-then-discard** served from a background index
-(`§11.1–§11.2`): to know an importable symbol's signature, its defining module must be
-typechecked, but it must **not** be imported into the session — so the nice-worker indexer
-typechecks reachable modules into throwaway staging, reads out their public symbols into two
-derived lookup indices (name and scheme), and **discards** the typecheck state, serving
-searches from the indices. That seam is **int/typecheck-owned** (`§11.1–§11.4`); this section
-owns only the **user-visible** half. [S90 re-pin]
+(`§11.1–§11.2`): to know a **file-resolved** importable symbol's signature, its defining module
+must be typechecked, but it must **not** be imported into the session — so the nice-worker
+indexer typechecks reachable `.cl` modules into throwaway staging, reads out their public
+symbols into two derived lookup indices (name and scheme), and **discards** the typecheck
+state, serving searches from the indices. That seam is **int/typecheck-owned** (`§11.1–§11.4`);
+this section owns only the **user-visible** half. [S90 re-pin]
+
+**The typecheck-then-discard dance applies only to file-resolved modules.** The built-in
+seeded modules (`primitives`, seeded `macros`; R10) are **already typechecked and present** in
+the session's symbol table — bootstrap seeded them there. They therefore need **no** staging
+typecheck and **no** discard step: the indexer records them by a **direct read of their public
+symbols** straight from the live symbol table into the same name and scheme indices. This is
+strictly cheaper than the file path and cannot fail the way an arbitrary reachable module can
+(§17.19.5) — there is nothing to typecheck. The index the reader searches is the union of the
+two feeds (typechecked-and-discarded file modules + directly-read seeded modules), and a result
+row (§17.19.2) is indistinguishable in shape regardless of which feed produced it. [Tested tests/search::search_finds_seeded_primitive_offers_import, tests/search::search_seeded_file_name_collision_does_not_wedge_pending_note]
 
 #### 17.19.1 The Command Shape — `/search <query>` [S90 re-pin]
 
@@ -3035,26 +3060,80 @@ The first example shows scheme matches; the second shows the exact-name match `s
 **marked** as already in scope (R13), ranked above the partial `trace-show` (§17.19.1a); the
 third shows a docstring-only hit (`gcd`'s name and signature contain neither word) carrying its
 excerpt facet. Results use the **existing §10.3 palette roles** (the `/list` family) — the
-docstring excerpt line uses the **dim `; ` comment role** (like a classification comment, §10.3)
+docstring excerpt line uses the **italic `; ` comment role** (like a classification comment, §10.3)
 — and **degrade under `--no-color`/non-TTY** (§10.1) to clean plain text, same rule as `/syntax`
 (§17.17.2) and every other deterministic command. [S90 re-pin] [S106]
 
-#### 17.19.3 Eager-But-Triggered Index — Partial Results While Indexing [S90 re-pin]
+#### 17.19.3 Eager Background Index — Partial Results While Indexing [S90 re-pin]
 
-The background index is **eager-but-triggered** (R4/R9b): it is **not** built unconditionally
-at session start (a session that never searches and never starts the agent should not pay the
-cost of typechecking the whole lib-path ∪ project-root). The nice workers **arm** the index on
-the **first `/search`** (human or agent pull) **or first agent activation**; once armed they
-**race ahead** — burning down the reachable-module worklist eagerly, not one module per query.
+The background index is **eager** (R4/R9b): the nice workers **arm** it at **REPL startup** — as
+soon as the session begins, before any `/search` is issued or the agent is activated — and once
+armed they **race ahead**, burning down the reachable-module worklist eagerly, not one module per
+query. (Startup arming is normative as of S108, reconciling the spec with the implementation in
+`main.rs`; it supersedes the earlier **eager-but-triggered** model in which arming waited for the
+first `/search` or first agent activation. The reachable-module burn-down now begins with the
+session so the index is warm as early as possible.) [Tested tests/search::search_burndown_arms_at_repl_startup_neg_not_on_first_search]
 
 Because the burn-down may still be in progress when a `/search` lands, the experience contract
 is **partial-results-plus-a-note**: a `/search` issued before indexing completes MUST serve
-the matches found **so far** and append a short progress note — `indexing N modules…` (or
-equivalent) — telling the reader the result set is incomplete and more may appear if the
-search is repeated. This is the same self-documenting, never-opaque posture as every other
-deterministic command: a not-yet-complete index is a transient state surfaced plainly, not an
-error and not a silent empty result. A subsequent `/search`, once the burn-down has advanced,
-returns the fuller set. [S90 re-pin]
+the matches found **so far** and append a short progress note — **`indexing N module(s)… (results
+may be incomplete)`** — telling the reader the result set is incomplete and more may appear if the
+search is repeated. The `module(s)` form carries the singular/plural agreement (one pending module
+reads `indexing 1 module…`), and the trailing **`(results may be incomplete)`** clause makes the
+partial-results contract explicit in the note itself.
+**`N` is the count of reachable modules still pending** (armed-but-not-yet-burned-down) at the
+moment the search is served — the size of the remaining worklist, not the total or the
+already-done count — so the reader sees how much index is still outstanding and it counts down
+to zero as the burn-down advances. The note MUST be served whenever the index is not yet
+complete, **even when the partial result set is empty**: an empty-but-still-indexing search
+serves the `indexing N module(s)…` note and **not** the `no importable symbols matched` note
+(§17.19.1) — the two are distinct states and MUST NOT be conflated, because "nothing matched a
+complete index" and "nothing matched yet because the index is still building" call for opposite
+reader actions (rephrase vs. simply retry). This is the same self-documenting, never-opaque
+posture as every other deterministic command: a not-yet-complete index is a transient state
+surfaced plainly, never an error and never a silent empty result. A subsequent `/search`, once
+the burn-down has advanced, returns the fuller set. [S90 re-pin] [Tested tests/search::search_seeded_file_name_collision_does_not_wedge_pending_note — e2e pins the no-wedge/absence-after-settle path; the note-fires and empty-partial non-conflation MUSTs are unit-pinned (src/repl.rs::indexing_note_text_present_iff_pending, src/repl.rs::empty_result_still_indexing_serves_only_the_note_not_no_match, src/repl.rs::empty_result_complete_index_serves_only_no_match_not_the_note) — the fire path is timing-coupled, not e2e-deterministic (S108)]
+
+**Completion message — `; search index complete.` (S108).** When the background burn-down
+finishes — every reachable module (file-resolved + seeded) indexed, the pending worklist drained
+to zero — the REPL emits a single one-line notice: **`; search index complete.`** This closes the
+lifecycle the `indexing N module(s)…` note (above) opened: a reader who was told the index was
+still building learns, without having to re-issue `/search` and inspect whether the count reached
+zero, that a repeat search now sees the full set. The wording is fixed: the literal lower-case
+sentence `search index complete.` prefixed with the REPL comment marker `; ` — rendered as
+`; search index complete.`, a classification-comment line (§10.3) consistent with every other
+`;`-prefixed REPL meta-line — with a trailing period and no count (the count belongs to the
+*in-progress* note; completion is a binary state). [S108 — latch unit-pinned (src/session_v4/index_worker.rs::take_completion_notice_requires_pending_zero, src/session_v4/index_worker.rs::take_completion_notice_one_shot_gated_on_note_shown); the literal line is emitted at the main.rs prompt-boundary poll and, being async, has no deterministic e2e]
+
+**When it fires (settled — user ruling 2026-07-11 via `/sprint`).** The completion notice fires
+**only when a prior `indexing N module(s)…` not-ready note was shown to the user in this session**
+(**option (b)**) — i.e. completion speaks only to close a loop the user actually saw open. If no
+`/search` ever ran before the burn-down finished (or every `/search` happened to land after
+completion), the session was never told the index was building, so a "complete" notice would
+announce the end of a process the user never observed beginning — noise. Option (b) is quieter than
+**(a) always announce completion on every session** (which pays a line of noise even for sessions
+that never search) and more immediate than **(c) surface completion only on demand, echoed by a
+subsequent `/search`** (which never proactively closes the loop and forces a re-issue to learn the
+index is ready). The user settled on (b); the **wording** above (`; search index complete.`) and
+the async-delivery constraints (below) stand. [Tested src/session_v4/index_worker.rs::take_completion_notice_one_shot_gated_on_note_shown — unit; the timing-(b) `note_shown` gate is deterministic at the `IndicesInner` seam, async at the REPL surface so no e2e (S108)]
+
+**Async-delivery constraints (both messages).** `indexing N module(s)…` is emitted **inline** as
+part of the `/search` result the reader requested, so it carries no special async concern. The
+`; search index complete.` notice is different: it is emitted **asynchronously** from the
+background nice-worker burn-down, not in direct response to a keystroke, so it MUST obey the
+same two invariants every other async surface honours. **(1) No mid-line interleave.** The
+notice MUST NOT be written while the user is mid-line composing input — it MUST be emitted only
+at a clean line boundary (between a completed prompt cycle and the next prompt), never splicing
+bytes into a line the user is typing; the async writer coordinates with the line editor exactly
+as §10.8's interactive line-editor contract requires, so the input buffer is never corrupted.
+**(2) Colour gate + non-TTY byte-identical.** The notice honours the **global** colour gate
+(§10.1, §10.7) — italic styling (the classification-comment role, §10.3) when colour is enabled,
+and under `--no-color`/`NO_COLOR`/non-TTY it degrades to clean plain text with **no** SGR codes,
+via the same single global gate every styled line uses, never a separate one. On a **non-TTY**
+session there is no interactive line editor and no armed-then-watched burn-down the user waits
+on; the notice MUST NOT perturb the byte-identical scripted/piped-output contract (§10.8) — a
+non-interactive `/search` invocation's captured bytes stay exactly as they are without the async
+notice. [Tested src/repl_input.rs::piped_input_is_not_interactive_so_completion_notice_is_gated_off — unit; the non-TTY byte-identical gate (I-3). The no-mid-line-interleave invariant is structural (the notice is polled only at the main.rs prompt boundary), no separate e2e (S108)]
 
 #### 17.19.4 Dual Use — Human Command and Agent Pull-Tool [S90 re-pin]
 
