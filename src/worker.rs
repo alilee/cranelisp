@@ -1685,6 +1685,10 @@ pub(crate) fn handle_cached_codegen(
         }
         Err(e) => {
             scheduler.notify_module_failed(module, e);
+            // E3 failure-edge hook (FIXME 0562): complete the `/search` burn-down
+            // for a module that fails at cache-hit `.o` loading after the index
+            // was armed (armed-gated no-op otherwise).
+            crate::session_v4::index_worker::on_module_failed(shared, module);
             Ok(false)
         }
     }
@@ -1754,7 +1758,15 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 }));
                 match result {
                     Ok(Ok(())) => {}
-                    Ok(Err(e)) => shared.scheduler.notify_module_failed(&module, e),
+                    Ok(Err(e)) => {
+                        shared.scheduler.notify_module_failed(&module, e);
+                        // E3 failure-edge hook (FIXME 0562): the symmetric peer of
+                        // the `on_module_published` Done-arm call — a module popped
+                        // in-flight and left pending by index branch (a) that then
+                        // FAILS typecheck is marked skipped so the `/search`
+                        // burn-down completes (armed-gated no-op otherwise).
+                        crate::session_v4::index_worker::on_module_failed(shared, &module);
+                    }
                     Err(panic) => {
                         let msg = panic_message(&panic);
                         shared.scheduler.notify_module_failed(
@@ -1770,6 +1782,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                                 ),
                             },
                         );
+                        crate::session_v4::index_worker::on_module_failed(shared, &module);
                     }
                 }
             }
@@ -1793,6 +1806,8 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                             location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                         },
                     );
+                    // E3 failure-edge hook (FIXME 0562) — armed-gated no-op in batch.
+                    crate::session_v4::index_worker::on_module_failed(shared, &module);
                 }
             }
             None => break, // Shutdown or all work done.
@@ -2007,6 +2022,14 @@ fn handle_typecheck_work_shared(
             // `symbol_tables[module].defined_symbols()` directly. The
             // `program` is consumed only by the inline JIT codegen above.
             shared.scheduler.notify_typecheck_done(module);
+
+            // E3 publication-edge hook (`resolve-home-enumeration.md` §4): the
+            // terminal typecheck transition is the signature-publication edge, so
+            // a module that reaches terminal AFTER the importable index was armed
+            // (late `/import`, watcher reload, or an in-flight-at-arm dep) feeds
+            // its live-table public symbols into the `/search` index now. No-op
+            // when the index is not armed (batch modes / pre-arm startup).
+            crate::session_v4::index_worker::on_module_published(shared, module);
         }
         crate::cluster::ClusterOutcome::Gap { dep } => {
             // The dependency was registered + blocked on inside the cluster

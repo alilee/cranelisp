@@ -20,9 +20,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
-        // Look up the trait declaration via SymbolTables
+        // Look up the trait declaration via SymbolTables. The `impl` form's
+        // `trait_name` is a REFERENCE to resolve, so it routes through the ONE
+        // scope resolve (`resolve_trait_decl` → `resolve_terminal_entry_scoped`),
+        // with the prelude fallback intrinsic (S108 Wave-G). A PRELUDE-GLOBBED
+        // trait (reachable at `user` only via the implicit prelude glob, no
+        // `Import` edge) therefore resolves here, exactly as a bare `Display`
+        // resolves in a lookup position.
         let decl = self
-            .lookup_trait_decl_with_state(state, &impl_.trait_name.name)
+            .resolve_trait_decl(state, &impl_.trait_name.name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
                 location: ErrorLocation::from_span(impl_.span),
@@ -55,8 +61,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                 _ => {}
                             }
                         }
-                        // Check arity of known ADT types
-                        if let Some(td) = self.lookup_type_def_with_state(state, impl_target_name_or_panic(&impl_.target))
+                        // Check arity of known ADT types. Resolve the impl
+                        // target THROUGH THE SCOPE (S108 Wave-G, R1): a
+                        // prelude-provided target's arity was silently
+                        // unvalidated by the former current-module-only
+                        // `lookup_type_def_with_state`. The scope resolve +
+                        // `type_def_view_of` reaches a prelude-globbed ADT and
+                        // reads its `type_params` (resolve once, Principle 7).
+                        if let Some(td) = self
+                            .scope_resolve(state, impl_target_name_or_panic(&impl_.target).as_ref(), impl_.span)
+                            .ok()
+                            .as_ref()
+                            .and_then(|r| crate::checker::type_def_view_of(&r.entry))
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
@@ -117,8 +133,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (trait imported into the writer's module), the chain follows the
         // per-symbol `ModuleEntry::Import` binding back to the trait's home,
         // and the write lands there — not in the writer's table.
-        // Trait reachability was just validated by `lookup_trait_decl_with_state`
-        // above; the chain-follow must succeed. Treat absence as a typecheck
+        // Trait reachability was just validated by `resolve_trait_decl`
+        // above (prelude-fallback aware; `resolve_trait` below hops the
+        // same way to find `trait_home`); the chain-follow must succeed. Treat
+        // absence as a typecheck
         // invariant violation (post-FIXME 0192 method 6 deletion: no
         // `defining_module_for` fallback).
         // (`trait_home` / `fq_trait_name` / `fq_impl_type` resolved above — the

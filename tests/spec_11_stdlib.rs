@@ -489,12 +489,30 @@ fn macro_vec_elements() {
     );
 }
 
-// spec: spec/09-macros.md §9.5 — vec macro empty vector (vec-len pins the
-// element type via inference).
+// spec: spec/03-types.md §3.11.1 — a fully-empty vector `(vec)` / `[]` has
+// type `(Vec a)`; with the element type `a` unpinned and the `vec-len`
+// application reaching codegen (the §3.11.1 `(id [])` worked example), it is
+// ambiguous and MUST error. User ruling 2026-07-12: `(vec-len (vec))` on a
+// fully-empty vector with no element-type witness is ambiguous, not length 0.
+// (Re-baselined from a former false-green that asserted `:primitives/Int 0`;
+// the Wave-C error-swallow fix unmasked it.) Message wording per §3.11.4.
 #[test]
-fn macro_vec_empty() {
+fn macro_vec_empty_neg_ambiguous_element_type() {
     assert_repl_eval_contains(
         "(import [primitives [vec-len]]) (vec-len (vec))",
+        "ambiguous type",
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — pinning the element type concrete resolves
+// the ambiguity: an annotated empty vector has a determined `(Vec Int)` type,
+// so `vec-len` computes length 0. This is the §3.11.1 fix form
+// (`(id :(Vec Int) [])`) and the positive witness that empty-vec length stays
+// computable once the element type is witnessed.
+#[test]
+fn macro_vec_empty_pinned_ok() {
+    assert_repl_eval_contains(
+        "(import [primitives [vec-len]]) (vec-len :(Vec Int) (vec))",
         ":primitives/Int 0",
     );
 }

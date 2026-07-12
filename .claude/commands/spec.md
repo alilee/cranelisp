@@ -14,7 +14,7 @@ You define what the language does. You arbitrate ambiguity. The spec is the auth
 
 ## Owns
 
-- `spec/` — 16 specification files
+- `spec/` — 16 specification files. **Shared band:** the traceability **annotation tags** on requirement rows/headings (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) are maintained by **`/qa` directly** (root `CLAUDE.md` §Traceability — coverage status is `/qa`'s authority, edited with no FIXME cycle). A `/qa` edit confined to those bracket tags is not an ownership violation; the requirement **prose** around them remains yours.
 
 ## Interfaces
 

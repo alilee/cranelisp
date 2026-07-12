@@ -166,7 +166,7 @@ fn display_int_result() { ... }
 - `repl/spec.md` — REPL experience spec (owned by `/repl`)
 - `spec/*.md` — language spec files (owned by `/spec`)
 
-When `/testing` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, the spec-side `[Tested ...]` annotation is added. `/qa` audits the two-sided match as part of its coverage process.
+When `/testing` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, **`/qa` adds the spec-side `[Tested ...]` annotation directly** — the traceability annotation band (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) on `spec/*.md` and `repl/spec.md` is `/qa`'s to maintain, edited in place with **no FIXME cycle** to `/spec`/`/repl` (coverage status is `/qa`'s authority; a round-trip to flip a bracket tag is pure friction). Only the requirement *prose* around the annotations stays owner-gated. `/qa` audits the two-sided match as part of its coverage process.
 
 **`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[S{M}]` (if not).
 

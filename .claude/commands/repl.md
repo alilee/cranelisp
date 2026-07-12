@@ -29,7 +29,7 @@ The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` 
 ## Owns
 
 - `repl/` — REPL experience specification, demo scripts, and showcase player
-  - `repl/spec.md` — normative REPL experience specification
+  - `repl/spec.md` — normative REPL experience specification. **Shared band:** the traceability **annotation tags** on requirement rows/headings (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) are maintained by **`/qa` directly** (root `CLAUDE.md` §Traceability — no FIXME cycle); a `/qa` edit confined to those bracket tags is not a violation. The experience-requirement **prose** remains yours.
   - `repl/demos/` — `.demo` scripts and demo player (`demo-player.py`)
   - `repl/showcase` — top-level showcase script (builds binary, plays demos)
 - `tests/repl/` — REPL experience test scripts and harness

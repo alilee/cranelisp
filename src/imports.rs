@@ -547,16 +547,23 @@ fn insert_detecting_ambiguity(
         };
 
         // Import-over-def (§8.6.4 symmetric companion; FIXME 0516 #8). The
-        // existing entry is a module-LOCAL definition (`Def`/`TypeDef`) and
-        // `new_entry` is an incoming import/export edge. This is the ONLY place
-        // this direction can be caught: no def registers in THIS import's
-        // cluster, so the typecheck def-event seam never fires (the REPL
-        // separate-turn hole). Reject via the SAME shared predicate the
-        // def-event uses (`check_binding_addition`) — one rule, both events,
-        // all modes. It fires ONLY across clusters: within a single cluster
-        // Pass-0 install precedes Pass-1 def-register, so no local def exists at
-        // install time (that case is caught by the def-event) — no double-fire.
-        if matches!(existing, ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. }) {
+        // existing entry is a module-LOCAL definition (`Def` — incl. a
+        // `DefKind::Macro` binding — / `TypeDef` / `TraitDecl`) and `new_entry`
+        // is an incoming import/export edge. This is the ONLY place this
+        // direction can be caught: no def registers in THIS import's cluster, so
+        // the typecheck def-event seam never fires (the REPL separate-turn hole).
+        // Reject via the SAME shared predicate the def-event uses
+        // (`check_binding_addition`) — one rule, both events, all modes. It fires
+        // ONLY across clusters: within a single cluster Pass-0 install precedes
+        // Pass-1 def-register, so no local def exists at install time (that case
+        // is caught by the def-event) — no double-fire. `TraitDecl` is in the set
+        // (S108 Wave-G CS2): a local `deftrait` bound as `TraitDecl` was
+        // previously invisible to this predicate, so a later import over it
+        // escaped the symmetric §8.6.4 rejection.
+        if matches!(
+            existing,
+            ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }
+        ) {
             let incoming = if new_entry.is_public() {
                 cranelisp_types::BindingProvenance::Export
             } else {

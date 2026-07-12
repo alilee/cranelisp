@@ -71,6 +71,164 @@ use crate::span::Span;
 use crate::view::View;
 use crate::ast::Visibility;
 
+/// The reference-resolution scope — a name lookup with the implicit-prelude
+/// **fallback intrinsic to the scope**, decided ONCE at construction, never at
+/// a call site (S108 Wave-G convergence, `design/arch/prelude-import-convergence.md`
+/// §3). Per Principles 18/20 the forgettable per-call fallback flag is made
+/// unrepresentable: there is no public resolution entry that takes a per-call
+/// fallback bool and no public fallback-less entry point at all. A caller that
+/// genuinely must not fall back constructs a scope with `prelude: None` — an
+/// explicit, single, reviewable decision at construction.
+///
+/// The scope carries the caller-supplied first-hop [`View`] over the *current*
+/// module (`View::single(live)` for committed search, `View::union(staging,
+/// live)` for staging-aware search) plus the two types-owned collections
+/// (`symbol_tables`, `module_aliases`), the calling module, and the prelude
+/// path to fall back to (`Some` iff the module's fallback bit is ON **and**
+/// `current_module != prelude`). Consumed by typecheck (the `TypeCheckEnv`
+/// scope constructor) and int (macro recognition, the defmacro gate) with zero
+/// cross-crate dependency, exactly like the resolution walk it wraps.
+pub struct ResolutionScope<'a, C: CodeStore = (), L: LinkerStore = ()> {
+    symbol_tables: &'a SymbolTables<C, L>,
+    module_aliases: &'a ModuleAliases,
+    first_hop: &'a View<'a, C, L>,
+    current_module: &'a ModuleFullPath,
+    prelude: Option<&'a ModuleFullPath>,
+}
+
+impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
+    /// Construct a resolution scope. `prelude` is `Some(prelude_path)` iff the
+    /// module's fallback bit is ON **and** `current_module != prelude` (the
+    /// caller-side role datum, resolved ONCE here); `None` ⇒ no fallback for
+    /// this scope (a suppressed-prelude module, the prelude itself, platform
+    /// sig checks). A `prelude == current_module` is defensively collapsed to
+    /// `None` — a module never falls back onto itself.
+    pub fn new(
+        symbol_tables: &'a SymbolTables<C, L>,
+        module_aliases: &'a ModuleAliases,
+        first_hop: &'a View<'a, C, L>,
+        current_module: &'a ModuleFullPath,
+        prelude: Option<&'a ModuleFullPath>,
+    ) -> Self {
+        let prelude = match prelude {
+            Some(p) if p == current_module => None,
+            other => other,
+        };
+        ResolutionScope { symbol_tables, module_aliases, first_hop, current_module, prelude }
+    }
+
+    /// THE reference lookup. Inner (first-hop view) walk; on a
+    /// not-found-class miss of an UNQUALIFIED name, prelude retry (public-only
+    /// I-1 terminal filter); chain-follow; §8.7.3 visibility; §8.6.6 alias
+    /// substitution for qualified names. A qualified `mod/sym` NEVER takes the
+    /// prelude retry (it names its module — made explicit inside the walk).
+    pub fn resolve(&self, name: &str, span: Span) -> Result<Resolved<C>, ResolveError> {
+        resolve_with_prelude(
+            self.symbol_tables,
+            self.module_aliases,
+            self.first_hop,
+            self.current_module,
+            name,
+            self.prelude,
+            span,
+        )
+    }
+
+    /// Typed projection retained on the scope (macro-head recognition). Resolve
+    /// `name`, succeed with `Some(fq)` only if the canonical entry is a macro
+    /// (`DefKind::Macro`); a resolved non-macro entry or a not-found-class miss
+    /// yields `Ok(None)` (a bare forward reference is not yet known to be a
+    /// macro); a hard failure (private, unknown qualified module) surfaces as
+    /// `Err`. The prelude fallback is intrinsic (same as [`Self::resolve`]),
+    /// replacing int's hand-rolled `recognize_macro_head` retry.
+    pub fn resolve_macro_head(&self, name: &str, span: Span)
+        -> Result<Option<FQSymbol>, ResolveError>
+    {
+        match self.resolve(name, span) {
+            Ok(resolved) => match &resolved.entry {
+                ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), crate::DefKind::Macro { .. }) =>
+                {
+                    Ok(Some(resolved.fq))
+                }
+                _ => Ok(None),
+            },
+            Err(ResolveError::TraitNotFound { .. })
+            | Err(ResolveError::TypeNotFound { .. })
+            | Err(ResolveError::ConstructorNotFound { .. }) => Ok(None),
+            Err(e @ ResolveError::PrivateInaccessible { .. })
+            | Err(e @ ResolveError::QualifiedModuleUnknown { .. }) => Err(e),
+        }
+    }
+
+    /// The inner-table (first-hop) head for `name`, WITHOUT chain-follow or the
+    /// prelude fallback — the raw entry as it sits in the current module's view.
+    /// Used by [`reject_def_over_binding`] to classify provenance (an inner
+    /// `Import` head is an explicit import/export; its absence with a resolving
+    /// terminal means the binding came from the prelude fallback).
+    fn first_hop_head(&self, name: &str) -> Option<ModuleEntry<C>> {
+        self.first_hop.lookup(&Symbol::from(name)).cloned()
+    }
+}
+
+/// The §8.6.4 definition seam — "may this bare `name` be defined in this
+/// scope?" — derived from the SAME [`ResolutionScope::resolve`] walk as
+/// reference resolution (S108 Wave-G convergence §4.1). Every definition form
+/// (`defn`/`deftype` on the typecheck side, `deftrait` name + method names,
+/// `defmacro` in int) routes through this ONE seam, which consults the prelude
+/// — to **REJECT**, per §8.6.4 (a name provided by the prelude is in scope on
+/// identical terms to an explicit import; a definition over it is a conflict,
+/// never a shadow).
+///
+/// Grounds: the rule already has ONE predicate ([`check_binding_addition`],
+/// FIXME 0516); what was still per-surface was the resolve+classify glue, now
+/// single-sourced here so int's defmacro path calls the identical seam without
+/// a typecheck dependency (the same multi-consumer argument that placed the
+/// resolution primitive in this crate).
+///
+/// Decision, read off the resolved terminal's `home`:
+/// - resolve MISS ⇒ not in scope ⇒ **free to define** (§8.8.3 "not-loading");
+/// - `home == current_module` ⇒ the module's OWN prior definition ⇒ ordinary
+///   **redefinition, ALLOWED** (the REPL redefine path);
+/// - `home != current_module` ⇒ the in-scope binding is an explicit
+///   `import`/`export` inner head, or (inner head absent) a prelude PUBLIC
+///   terminal ⇒ classify provenance and delegate to [`check_binding_addition`].
+///
+/// Synthetic / mangled names (`$`-containing or `__`-prefixed) are never
+/// user-facing bare definitions contesting an in-scope binding; they skip the
+/// seam so it only ever fires on an authored bare name.
+pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
+    scope: &ResolutionScope<'_, C, L>,
+    name: &Symbol,
+    span: Span,
+) -> Result<(), CranelispError> {
+    let n = name.as_ref();
+    if n.contains('$') || n.starts_with("__") {
+        return Ok(());
+    }
+    let resolved = match scope.resolve(n, span) {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // not in scope — free to define (§8.8.3)
+    };
+    let existing = if &resolved.home == scope.current_module {
+        // The module's OWN prior def/typedef — ordinary redefinition.
+        BindingProvenance::Definition
+    } else {
+        // Name the source kind from the inner (first-hop) head, no chain-follow,
+        // no fallback: an inner `Import` head is an explicit import (Private) or
+        // export (Public); absence means the binding came from the implicit
+        // prelude outer scope.
+        match scope.first_hop_head(n) {
+            Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => {
+                BindingProvenance::Export
+            }
+            Some(ModuleEntry::Import { .. }) => BindingProvenance::Import,
+            _ => BindingProvenance::Prelude,
+        }
+    };
+    check_binding_addition(name, BindingProvenance::Definition, existing, &resolved.fq, span)
+}
+
 /// Error returned by the resolution primitive and its typed wrappers.
 ///
 /// Each variant carries enough context to produce a user-facing message
@@ -253,13 +411,18 @@ pub struct Resolved<C: CodeStore = ()> {
 ///    accessible only from within the defining module's subtree; otherwise
 ///    [`ResolveError::PrivateInaccessible`].
 ///
-/// Returns the [`Resolved`] triple on success. The typed wrappers below
-/// ([`resolve_macro_head`], `resolve_trait`-shaped, etc.) layer kind-specific
+/// Returns the [`Resolved`] triple on success. The typed projections on
+/// [`ResolutionScope`] ([`ResolutionScope::resolve_macro_head`], the checker's
+/// `resolve_trait`-shaped kind projections, etc.) layer kind-specific
 /// success/error projection on top of this one walk (Principle 6 — one
 /// general primitive + thin typed wrappers, not many bespoke walkers).
 ///
 /// `span` is carried only for error attribution; it does not affect the walk.
-pub fn resolve<C, L>(
+///
+/// **Private (S108 Wave-G).** The former `pub fn resolve` walk; the sole public
+/// entry point is now [`ResolutionScope::resolve`] (fallback intrinsic) — there
+/// is no bare fallback-less resolve on the public surface.
+fn resolve_one<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
     first_hop: &View<'_, C, L>,
@@ -297,48 +460,21 @@ where
     })
 }
 
-/// Resolve `name` from `current_module`, falling back to the implicit-prelude
-/// **outer scope** on an inner-scope miss when `fallback_on` is true (S78 §2.7.5).
-///
-/// This is the one general realisation of the 3-step shape duplicated 5× across
-/// the codebase (S78 fragmentation, the proximate cause of the recurring
-/// "fallback wired for path X not Y" defect): (1) [`resolve`] rooted at the
-/// current module; (2) on a not-found miss with `fallback_on`, retry [`resolve`]
-/// rooted at `prelude_path`; (3) **public-only filter** on the prelude-retry
-/// terminal (the I-1 leak fix — reachability is judged from the original user
-/// `current_module`, never in prelude's subtree, so only a PUBLIC prelude
-/// terminal is reachable as a bare name; a private one is treated as not-found
-/// and does NOT shadow).
-///
-/// **Data-only by construction (no reverse dependency on typecheck).** The
-/// caller does its own `prelude_fallback.get(module)` lookup and passes the
-/// resulting `bool` (`fallback_on`) plus the prelude `ModuleFullPath`
-/// (`prelude_path`, a types-owned type). The crate never names typecheck's
-/// `PreludeFallback` companion-map — it receives the already-resolved decision.
-/// This keeps `cranelisp-types` data-only (Principle 7) and is the same
-/// general-primitive-plus-thin-wrapper pattern [`resolve`] already follows.
-///
-/// `fallback_on == false`, or `current_module == prelude_path` (never
-/// self-fallback), reduces to a bare [`resolve`] against the first hop.
-///
-/// **Filter applies to the prelude retry only.** The first-hop (current-module)
-/// result is returned unfiltered — a module's own bindings are always reachable
-/// from itself. The public-only post-filter reads the prelude terminal's
-/// [`ModuleEntry::is_public`]; the I-1 rule reduces to `is_public()` because the
-/// original `current_module` is never in prelude's subtree (the `in_subtree`
-/// visibility leg never fires for a prelude hit). A private prelude terminal is
-/// reported as the original current-module not-found, not as `PrivateInaccessible`.
-///
-/// See `design/arch/interfaces.md` §"`resolve_with_fallback`" and the typecheck
-/// chokepoint family in `crates/cranelisp-typecheck/CLAUDE.md`.
-pub fn resolve_with_fallback<C, L>(
+/// The shared reference-lookup body with the prelude fallback intrinsic to the
+/// `prelude: Option` scope datum — the single realisation behind
+/// [`ResolutionScope::resolve`] (the sole public reference-resolution entry
+/// point since the CS2 removal of the free fallback shim,
+/// `prelude-import-convergence.md` §6). (1) resolve in the current-module first hop; (2) on a not-found miss
+/// of an unqualified name with `prelude = Some`, retry rooted at the prelude;
+/// (3) **public-only I-1 filter** on the prelude-retry terminal (a private
+/// prelude binding does NOT leak as a bare name).
+fn resolve_with_prelude<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
     first_hop: &View<'_, C, L>,
     current_module: &ModuleFullPath,
     name: &str,
-    fallback_on: bool,
-    prelude_path: &ModuleFullPath,
+    prelude: Option<&ModuleFullPath>,
     span: Span,
 ) -> Result<Resolved<C>, ResolveError>
 where
@@ -346,18 +482,24 @@ where
     L: LinkerStore,
 {
     // Step 1: resolve in the caller-chosen current-module view.
-    let first = resolve(symbol_tables, module_aliases, first_hop, current_module, name, span);
+    let first = resolve_one(symbol_tables, module_aliases, first_hop, current_module, name, span);
 
-    // Self-fallback is never taken: a module does not fall back onto itself.
-    if !fallback_on || current_module == prelude_path {
-        return first;
-    }
+    // No fallback for this scope (suppressed prelude, the prelude itself, or a
+    // never-self-fallback collapse) ⇒ a bare first-hop resolve.
+    let prelude_path = match prelude {
+        Some(p) if p != current_module => p,
+        _ => return first,
+    };
 
     match first {
         Ok(resolved) => Ok(resolved),
         // Only an inner-scope MISS triggers the prelude retry. Hard failures
         // (private, unknown qualified module) are returned as-is — they are
-        // not "the name is absent here", so the outer scope does not apply.
+        // not "the name is absent here", so the outer scope does not apply. A
+        // qualified `mod/sym` names its module directly and never reaches here
+        // as a not-found miss subject to retry (the qualified branch inside
+        // `resolve_one` returns `QualifiedModuleUnknown`/`PrivateInaccessible`,
+        // not the bare not-found class).
         Err(ResolveError::TraitNotFound { .. })
         | Err(ResolveError::TypeNotFound { .. })
         | Err(ResolveError::ConstructorNotFound { .. }) => {
@@ -369,7 +511,7 @@ where
                 // Prelude not loaded → the inner miss stands.
                 None => return Err(inner_miss()),
             };
-            let retry = resolve(
+            let retry = resolve_one(
                 symbol_tables,
                 module_aliases,
                 &View::single(&prelude_view),
@@ -522,54 +664,6 @@ where
         entry,
         home,
     })
-}
-
-// --- Typed wrappers (Principle 6 — thin projections over the one primitive) ---
-
-/// Resolve a **macro head**: resolve `name`, succeed only if the canonical
-/// entry is a macro (`DefKind::Macro`), and return its `FQSymbol` identity for
-/// the orchestrator's expand loop to dispatch on.
-///
-/// Returns `Ok(None)` when the name resolves to a non-macro entry — the caller
-/// (int's Pass-1 walk) treats the head as an ordinary call in that case, not
-/// an error. `Err` is reserved for genuine resolution failures (private,
-/// unknown qualified module). A name absent from the view also yields
-/// `Ok(None)` (a bare forward reference is not yet known to be a macro — it
-/// flows to the AST builder as an ordinary reference per the locked
-/// defmacro-before-use rule, §0.2 of `macro-availability-model.md`).
-///
-/// This replaces int's `SymbolTableMacroResolver::resolve_macro` chain-walk
-/// (`src/worker.rs`) — int constructs the committed first-hop view
-/// (`View::single` over the live current module) and calls this; recognition
-/// is thereby a `cranelisp-types` query with **zero int→typecheck dependency**.
-pub fn resolve_macro_head<C, L>(
-    symbol_tables: &SymbolTables<C, L>,
-    module_aliases: &ModuleAliases,
-    first_hop: &View<'_, C, L>,
-    current_module: &ModuleFullPath,
-    name: &str,
-    span: Span,
-) -> Result<Option<FQSymbol>, ResolveError>
-where
-    C: CodeStore,
-    L: LinkerStore,
-{
-    match resolve(symbol_tables, module_aliases, first_hop, current_module, name, span) {
-        Ok(resolved) => match &resolved.entry {
-            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), crate::DefKind::Macro { .. }) => {
-                Ok(Some(resolved.fq))
-            }
-            _ => Ok(None),
-        },
-        // A name not reachable from the current view is not a macro head —
-        // it is a forward / ordinary reference. Only hard failures (private,
-        // unknown qualified module) surface as `Err`.
-        Err(ResolveError::TraitNotFound { .. })
-        | Err(ResolveError::TypeNotFound { .. })
-        | Err(ResolveError::ConstructorNotFound { .. }) => Ok(None),
-        Err(e @ ResolveError::PrivateInaccessible { .. })
-        | Err(e @ ResolveError::QualifiedModuleUnknown { .. }) => Err(e),
-    }
 }
 
 // --- Internal helpers ---

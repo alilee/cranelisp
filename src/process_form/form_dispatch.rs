@@ -10,11 +10,11 @@
 
 use cranelisp_types::{
     CranelispError, DefKind, Defn, ErrorLocation, ExportSpec, FQSymbol,
-    ImportSpec, MacroClauseInfo, ModuleEntry, ModuleFullPath, PlatformSpec,
-    Sexp, Span, Symbol, TopLevel, Visibility,
+    ImportSpec, MacroClauseInfo, ModuleAliases, ModuleEntry, ModuleFullPath, PlatformSpec,
+    ResolutionScope, Sexp, Span, Symbol, TopLevel, View, Visibility,
 };
 
-use cranelisp_typecheck::CheckState;
+use cranelisp_typecheck::{CheckState, PreludeFallback};
 
 use crate::worker::{ModuleCompiler, ModuleCheckAccumulator};
 
@@ -201,6 +201,49 @@ pub(super) fn separate_macros(
     Ok((regular_sexps, macro_infos))
 }
 
+/// The implicit-prelude module (§8.8.1) that a module with its `prelude_fallback`
+/// bit ON resolves bare-name misses against.
+const PRELUDE_MODULE: &str = "prelude";
+
+/// The §8.6.4 defmacro definition gate (S108 Wave-G CS2,
+/// `design/arch/prelude-import-convergence.md` §4.2): construct the int
+/// resolution scope over `module`'s committed view — the prelude fallback
+/// decided ONCE here from the session-side `prelude_fallback` bit — and delegate
+/// to the ONE types-owned `reject_def_over_binding` seam. Rejects a `defmacro`
+/// of `name` over an in-scope explicit import/export or a prelude-provided name;
+/// the module's OWN prior definition (home == current — a REPL macro redefine)
+/// and a miss (name free to define) both pass. Behaviourally the int-side twin
+/// of typecheck's `reject_def_over_binding` adapter (checker.rs) — same seam,
+/// same diagnostic — reached without a typecheck dependency because the seam and
+/// the scope both live in `cranelisp-types`.
+fn reject_defmacro_over_binding(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
+    module: &ModuleFullPath,
+    name: &Symbol,
+    span: Span,
+) -> Result<(), CranelispError> {
+    // No table yet for this module ⇒ nothing is in scope to conflict with.
+    let Some(table_ref) = symbol_tables.get(module) else {
+        return Ok(());
+    };
+    let view: View<'_, crate::code::Code, ()> = View::single(&table_ref);
+    // Fallback ON iff the module's bit is set and it is not prelude itself
+    // (absence-is-OFF; never self-fallback — `ResolutionScope::new` also collapses
+    // a self-fallback defensively).
+    let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
+    let prelude = if module.as_ref() != PRELUDE_MODULE
+        && prelude_fallback.get(module).map(|b| *b).unwrap_or(false)
+    {
+        Some(&prelude_module)
+    } else {
+        None
+    };
+    let scope = ResolutionScope::new(symbol_tables, module_aliases, &view, module, prelude);
+    cranelisp_types::reject_def_over_binding(&scope, name, span)
+}
+
 /// Register a defmacro in the module table (Pass 1).
 ///
 /// Parses clause info and stores it as `ModuleEntry::Macro` with the
@@ -229,7 +272,21 @@ pub(super) fn register_macro_in_module(
     sexp: &Sexp,
     authored: &Sexp,
     authored_source: Option<String>,
+    module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
 ) -> Result<(), CranelispError> {
+    // §8.6.4 definition seam (S108 Wave-G CS2): a `defmacro` over a name already
+    // in scope — an explicit import/export head OR a prelude-provided name — is
+    // a compile-time conflict, never a shadow (spec §8.6.4/§8.8.1). Route the
+    // defmacro binding through the SAME types-owned seam every other definition
+    // form uses (`defn`/`deftype` at the typecheck arm, `deftrait` at its arm),
+    // so int's macro path rejects on identical terms with no typecheck
+    // dependency. A rejected form has NO effect: this gate runs BEFORE any
+    // introspection or symbol-table write, so the error propagates through the
+    // normal form-error path with nothing registered.
+    reject_defmacro_over_binding(
+        symbol_tables, module_aliases, prelude_fallback, module, name, sexp.span(),
+    )?;
     let clause_infos: Vec<MacroClauseInfo> = info
         .clauses
         .iter()
@@ -286,7 +343,7 @@ pub(super) fn register_macro_in_module(
             // consistency-gated `source_text` span slice — preserves reader
             // shorthand like `` `(… ~e) ``); fall back to the pretty render.
             entry.source =
-                Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print(authored)));
+                Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)));
         }
     }
     if let Some(mut table) = symbol_tables.get_mut(module) {

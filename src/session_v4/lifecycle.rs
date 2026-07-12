@@ -1761,7 +1761,7 @@ impl CompilerSession {
                     let text = source
                         .get(span.start as usize..span.end as usize)
                         .map(str::to_string)
-                        .unwrap_or_else(|| crate::pretty::pretty_print(sexp));
+                        .unwrap_or_else(|| crate::pretty::pretty_print_plain(sexp));
                     failed.push(FailedForm {
                         symbol: defined_symbol_of_form(sexp),
                         error: first_line(&e.to_string()),

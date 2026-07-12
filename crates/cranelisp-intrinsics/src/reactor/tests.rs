@@ -222,6 +222,14 @@ unsafe extern "C" fn rec_timer_pollfn(
 // with delays d1, d2 complete in ≈max(d1,d2), NOT d1+d2, on ONE reactor thread
 // (assert no thread-per-read). The feeds are driven by the host reactor's timer
 // wheel, so the whole demo is single-reactor with no per-read OS thread.
+//
+// The "≈max, NOT sum" overlap property is pinned STRUCTURALLY — via the strand
+// event stream (both reads simultaneously suspended on the reactor: high-water
+// mark 2), NOT via a measured wall-clock ratio. A wall-clock assertion is
+// load-sensitive (a starved parallel test pool collapses the overlap window and
+// the assertion false-fails); the structural fact is derived from event ORDER on
+// the single reactor thread, which contention can slow but cannot reorder
+// (FIXME 0560 — the load-sensitivity fix).
 #[test]
 fn two_async_reads_overlap_max_not_sum_one_thread() {
     *POLL_THREADS.lock().unwrap() = Some(HashSet::new());
@@ -239,7 +247,6 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
     let dl1 = now + d1_ms * 1_000_000;
     let dl2 = now + d2_ms * 1_000_000;
 
-    let start = Instant::now();
     let results = block_on_reactor(async |env| {
         let host = env.host;
         let mut r1 = AsyncReadState { result: 0, fd: p1.read_end, registered: false };
@@ -263,23 +270,10 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
         join_io_leaves(vec![read1, read2, feed1, feed2]).await
     })
     .expect("reactor");
-    let elapsed_ms = start.elapsed().as_millis() as u64;
 
     // Both reads got their byte.
     assert_eq!(results[0], 1, "read1 received its byte");
     assert_eq!(results[1], 1, "read2 received its byte");
-
-    // OVERLAP: completed in ≈max(d1,d2)=200ms, strictly under the d1+d2=300ms a
-    // sequential (thread-per-read serialized, or non-overlapping) run would take.
-    assert!(
-        elapsed_ms >= d2_ms - 40,
-        "must wait for the slower read (~{d2_ms}ms), got {elapsed_ms}ms"
-    );
-    assert!(
-        elapsed_ms < d1_ms + d2_ms - 40,
-        "two reads must OVERLAP (≈max {d2_ms}ms, NOT sum {}ms): got {elapsed_ms}ms",
-        d1_ms + d2_ms
-    );
 
     // NO thread-per-read: every poll-fn ran on exactly one thread (the reactor's).
     let threads = POLL_THREADS.lock().unwrap().take().unwrap();
@@ -315,6 +309,40 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
     assert!(
         read2_dispatch < read1_resume,
         "the two read strands must be interleaved (concurrent), not sequential"
+    );
+
+    // OVERLAP, pinned STRUCTURALLY (not by wall-clock): replay the ordered strand
+    // stream and count how many of the two reads are simultaneously SUSPENDED
+    // (parked on the reactor, not yet resumed) — the high-water mark. Both reads
+    // register their fd interest and suspend in `join_io_leaves`'s first poll pass,
+    // BEFORE the reactor ever blocks on the feed timers, so the peak is 2: both are
+    // in flight on the single reactor thread at once. That is exactly "≈max(d1,d2),
+    // NOT sum" — the reactor waits for both concurrently, not one-then-the-other.
+    //
+    // A serialized / thread-per-read run (read1 dispatch→suspend→resume→complete,
+    // THEN read2) never parks both at once → peak 1 → this assertion FAILS. The
+    // count is derived from event ORDER on the single reactor thread, which test-
+    // pool contention can slow but cannot reorder — so it is fully decoupled from
+    // wall-clock (the load-sensitivity FIXME 0560 fixed).
+    let reads = [s_read1, s_read2];
+    let mut parked_reads = 0i32;
+    let mut max_parked_reads = 0i32;
+    for e in &events {
+        match *e {
+            StrandEvent::EffectSuspended { strand } if reads.contains(&strand) => {
+                parked_reads += 1;
+                max_parked_reads = max_parked_reads.max(parked_reads);
+            }
+            StrandEvent::EffectResumed { strand } if reads.contains(&strand) => {
+                parked_reads -= 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        max_parked_reads >= 2,
+        "both reads must be SUSPENDED on the reactor CONCURRENTLY (overlap ≈max, NOT \
+         sum): a serialized / thread-per-read run peaks at 1 parked read, saw {max_parked_reads}"
     );
 }
 

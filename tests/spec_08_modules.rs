@@ -2278,3 +2278,39 @@ fn import_shadowed_by_defn_before_first_call_is_rejected_error() {
         .assert_stdout_does_not_contain(":primitives/Int 99") // no silent shadow
         .assert_stdout_contains(":primitives/Int 3"); // the import stays the binding
 }
+
+// =============================================================================
+// §8.5.2 Dotted Names — constructor in value position
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.2 — dotted constructor access `Type.Ctor` is a
+// first-class value reference: "Like dotted constructor/method access, the
+// canonical accessor is a derived consequence of `Type` being in bare scope
+// ... first-class — `Box.v` MAY be passed as an argument or bound to a
+// variable." Whenever the parent type is in bare scope (here: same-module
+// `deftype`), `Type.Ctor` MUST resolve — as a value, not only in call/pattern
+// position. The bare constructor `Red` resolves in value position AND the
+// language even DISPLAYS the value using the canonical dotted form
+// (`:user/Color Color.Red`), yet writing that same `Color.Red` as input in
+// value position fails `undefined variable`. Contrast: the dotted FIELD
+// accessor `Box.v` DOES resolve as a value — so the dotted-member resolver
+// enumerates field accessors but omits constructors. Mode-independent
+// (`--run` and REPL both fail); nullary and applied (`Opt.Some`) ctors alike.
+//
+// This test asserts the spec-correct behaviour (exit 7 via a bare-pattern
+// match on a value bound through the dotted constructor ref) and is therefore
+// RED until the dotted value-position constructor path is fixed.
+// defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev
+#[test]
+fn dotted_constructor_in_value_position_resolves() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (deftype Color Red Green)\n\
+             (defn main [] (Pure (match (let [c Color.Red] c) [Red 7 Green 0])))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}

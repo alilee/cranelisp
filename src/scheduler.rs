@@ -45,6 +45,24 @@ pub enum ModulePool {
     Complete,
 }
 
+impl ModulePool {
+    /// Whether this pool is a TERMINAL typecheck state — the module's
+    /// signatures are wholly published (`TypecheckDone` or `Complete`). The
+    /// SINGLE definition of the terminal-typecheck predicate: the signature
+    /// barrier (`signatures_ready_locked`, `is_typechecked`), the object-stale
+    /// gate (`mark_object_stale`), the importable-index arm-time sweep
+    /// (`terminal_typecheck_modules`), and the per-worklist branch-(a) check
+    /// (`index_worker::is_terminal`) all route through here so the predicate
+    /// cannot drift (Principle 7; a drifting terminal predicate reproduces the
+    /// `enumeration-miss` class `resolve-home-enumeration.md` closes).
+    /// **`Failed` is deliberately excluded** — a failed module's signatures are
+    /// NOT published (correct for the barrier/object questions); burn-down
+    /// completion handles `Failed` separately via a zero-row skip.
+    pub(crate) fn is_terminal_typecheck(self) -> bool {
+        matches!(self, ModulePool::TypecheckDone | ModulePool::Complete)
+    }
+}
+
 /// Per-module coordination state tracked by the scheduler.
 /// The scheduler does NOT own compilation data (ASTs, CheckResults, code
 /// pointers) — only coordination metadata.
@@ -1206,7 +1224,7 @@ impl CompileScheduler {
         let Some(ms) = state.modules.get_mut(module) else {
             return;
         };
-        if !matches!(ms.pool, ModulePool::TypecheckDone | ModulePool::Complete) {
+        if !ms.pool.is_terminal_typecheck() {
             return;
         }
         ms.object_gen += 1;
@@ -1428,13 +1446,7 @@ impl CompileScheduler {
     pub fn is_typechecked(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
         let result = match state.modules.get(module) {
-            Some(ms) => (
-                matches!(
-                    ms.pool,
-                    ModulePool::TypecheckDone | ModulePool::Complete,
-                ),
-                Some(ms.pool),
-            ),
+            Some(ms) => (ms.pool.is_terminal_typecheck(), Some(ms.pool)),
             // Not in scheduler — compiler-seeded synthetic module or a module
             // that was registered and then removed (Failed reset). Treat as
             // typechecked; the symbol table is the source of truth.
@@ -1484,6 +1496,24 @@ impl CompileScheduler {
         state.modules.contains_key(module)
     }
 
+    /// Every registered module whose signatures are published — i.e. in a
+    /// TERMINAL typecheck pool (`TypecheckDone`/`Complete`). Used by the
+    /// importable-index arm-time sweep (E3, `resolve-home-enumeration.md` §4): a
+    /// module already loaded/registered at REPL-startup arm has its public
+    /// symbols read straight from the live table into the `/search` index (the
+    /// loaded-module feed). Snapshot under the state lock; the caller reads the
+    /// live tables (whose publication happens-before the terminal transition per
+    /// Invariant PP).
+    pub(crate) fn terminal_typecheck_modules(&self) -> Vec<ModuleFullPath> {
+        let state = self.lock();
+        state
+            .modules
+            .iter()
+            .filter(|(_, ms)| ms.pool.is_terminal_typecheck())
+            .map(|(m, _)| m.clone())
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Signature pre-pass barrier (S93, `signature-body-prepass.md` §3.1)
     // -----------------------------------------------------------------------
@@ -1506,7 +1536,7 @@ impl CompileScheduler {
     /// option i).
     fn signatures_ready_locked(state: &SchedulerState, m: &ModuleFullPath) -> bool {
         match state.modules.get(m) {
-            Some(ms) => matches!(ms.pool, ModulePool::TypecheckDone | ModulePool::Complete),
+            Some(ms) => ms.pool.is_terminal_typecheck(),
             None => true,
         }
     }

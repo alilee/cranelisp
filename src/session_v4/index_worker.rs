@@ -34,6 +34,7 @@ use std::sync::Mutex;
 use cranelisp_types::{ModuleEntry, ModuleFullPath, Symbol, Type};
 
 use super::SharedState;
+use crate::scheduler::ModulePool;
 
 /// The two purpose-built lookup indices (R3, R16) — int-private, derived
 /// read-caches over the `.meta` cache. NOT a symbol table, NOT serialized, NO
@@ -69,6 +70,15 @@ struct IndicesInner {
     /// enumerated_total − indexed.len()` stays correct: a seeded module is in
     /// both `enumerated_total` and `indexed`, so it is never "pending".
     enumerated_total: usize,
+    /// The modules `arm` counted onto `enumerated_total` via the FILE worklist
+    /// (E3 loaded-module feed, `resolve-home-enumeration.md` §4). A loaded module
+    /// recorded through `record_loaded_replace` uses this to decide its tally
+    /// shape: a file-enumerated module was already counted by `arm` (single-tally
+    /// — no bump), a module OUTSIDE the file set (a late `/import` of a
+    /// non-lib-path module) takes the `record_preindexed` dual-tally shape. Held
+    /// so `pending_count = enumerated_total − indexed.len()` stays exact once the
+    /// loaded feed lands rows for a module the file worklist also enumerated.
+    file_enumerated: HashSet<ModuleFullPath>,
     /// Whether the burn-down has been armed (REPL-startup enumeration ran).
     armed: bool,
     /// Timing (b) gate (spec §17.19.3, S108): set once a "indexing N modules…"
@@ -192,6 +202,9 @@ impl ImportableIndices {
         let before = g.worklist.len();
         for m in modules {
             if !g.indexed.contains(&m) {
+                // Record the file-enumerated set so the E3 loaded-module feed
+                // single-tallies a module the file worklist also enumerated.
+                g.file_enumerated.insert(m.clone());
                 g.worklist.push_back(m);
             }
         }
@@ -262,6 +275,53 @@ impl ImportableIndices {
                 scheme,
                 docstring,
             });
+        }
+    }
+
+    /// Record — or REPLACE — a mounted/loaded module's public symbols read
+    /// DIRECTLY from the live symbol table (E3, spec §17.19 R10;
+    /// `resolve-home-enumeration.md` §4). The loaded-module feed, used by three
+    /// call sites uniformly: the arm-time sweep (already-terminal registered
+    /// modules), the per-worklist branch (a) (a registered module popped in a
+    /// terminal state), and the publication-edge hook (`on_module_published` — a
+    /// module reaching terminal AFTER arm: late `/import`, watcher reload).
+    ///
+    /// REPLACE-rows refresh semantics: existing `IndexedEntry` rows for `module`
+    /// are dropped before the new set is inserted, so a watcher reload or REPL
+    /// redefinition neither duplicates nor stale-serves rows.
+    ///
+    /// Accounting (the §4 dual-tally invariant, guarded by unit scenarios per
+    /// Principle 23): `module` is counted in `enumerated_total` at MOST once,
+    /// atomically under the one mutex. A module already on the file worklist
+    /// (`file_enumerated`) was counted by `arm` — the single-tally path, no bump.
+    /// A module OUTSIDE the file-enumerated set (a late import of a non-lib-path
+    /// module) takes the `record_preindexed` dual-tally shape: its first record
+    /// bumps `enumerated_total` so `pending_count = enumerated_total −
+    /// indexed.len()` stays ≥ 0 and reaches 0. Idempotent on both tallies across
+    /// re-records (a re-record neither double-counts nor double-pushes).
+    fn record_loaded_replace(
+        &self,
+        module: &ModuleFullPath,
+        entries: Vec<(Symbol, Type, Option<String>)>,
+    ) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // REPLACE: drop any existing rows for this module first (refresh).
+        g.entries.retain(|e| &e.module != module);
+        for (name, scheme, docstring) in entries {
+            g.entries.push(IndexedEntry {
+                name,
+                module: module.clone(),
+                scheme,
+                docstring,
+            });
+        }
+        // Tally the module EXACTLY once. A first-time record of a module outside
+        // the file-enumerated set is dual-tallied (enumerated_total + indexed); a
+        // file-enumerated module was already counted by `arm` (single-tally). A
+        // re-record (already indexed) touches neither tally.
+        let newly_indexed = g.indexed.insert(module.clone());
+        if newly_indexed && !g.file_enumerated.contains(module) {
+            g.enumerated_total += 1;
         }
     }
 
@@ -451,9 +511,100 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
         }
     }
 
+    // E3 (spec §17.19 R10, `resolve-home-enumeration.md` §4): sweep the scheduler
+    // registry for modules ALREADY in a terminal typecheck state at arm time and
+    // index their public symbols DIRECTLY from the live table — the loaded-module
+    // feed (i). A registered/loaded module absent from `/search` is the E3 defect
+    // (branch (a) recorded ZERO rows via `mark_skipped`); the classic sighting is
+    // a module brought in by the prelude's own imports (e.g. `(import [foo
+    // [other]])` loads `foo`, whose sibling `count` is importable-but-not-in-scope
+    // yet was invisible). Modules reaching terminal LATER (late `/import`,
+    // watcher reload) are caught by the publication-edge hook
+    // (`on_module_published`). `prelude` is the implicit outer scope, not an
+    // importable module (mirrors `enumerate_cl_modules`'s prelude skip); seeded
+    // modules were indexed above.
+    let prelude_path = ModuleFullPath::from("prelude");
+    for module in shared.scheduler.terminal_typecheck_modules() {
+        if module == prelude_path || seeded_modules.contains(&module) {
+            continue;
+        }
+        feed_loaded_module(shared, &module);
+    }
+
     // Wake the nice workers parked on the object-codegen condvar so they begin
     // draining the index worklist (the arm-wake, §25.5).
     shared.scheduler.wake_object_workers();
+}
+
+/// Read `module`'s PUBLIC symbols from the live symbol table and record them into
+/// the importable index with REPLACE-rows semantics (E3 loaded-module feed,
+/// `resolve-home-enumeration.md` §4). No-op when the module has no live table.
+/// The single projection both the arm-time sweep and the publication-edge hook
+/// share (Principle 7 — one table→rows reader, `public_entries_from_table`).
+fn feed_loaded_module(shared: &SharedState, module: &ModuleFullPath) {
+    if let Some(table) = shared.symbol_tables.get(module) {
+        let entries = public_entries_from_table(table.value());
+        shared.importable_indices.record_loaded_replace(module, entries);
+    }
+}
+
+/// The publication-edge hook (E3, `resolve-home-enumeration.md` §4): fed by the
+/// immediate caller of `notify_typecheck_done` (`worker::handle_typecheck_work_shared`)
+/// when a module reaches a TERMINAL typecheck state. When the importable index is
+/// ARMED, records the just-terminal module's public symbols from the live table
+/// (REPLACE-rows) — covering the in-flight-at-arm, late-`/import`, and
+/// watcher-reload cases uniformly, with no polling and no worker respin. A no-op
+/// when the index is not armed (`--run`/`--link`/`--release`, or pre-arm during
+/// startup), so batch modes stay index-inert (R9). `prelude`/seeded modules are
+/// skipped (the sweep's exclusions; they are handled at arm time / are the outer
+/// scope).
+pub(crate) fn on_module_published(shared: &SharedState, module: &ModuleFullPath) {
+    if !shared.importable_indices.is_armed() {
+        return;
+    }
+    if module.as_ref() == "prelude"
+        || crate::bootstrap::seeded_importable_modules().contains(module)
+    {
+        return;
+    }
+    feed_loaded_module(shared, module);
+}
+
+/// The failure-edge hook (E3 / FIXME 0562, `resolve-home-enumeration.md` §4):
+/// the symmetric peer of [`on_module_published`], fed at every `notify_module_failed`
+/// site (`worker.rs`) — i.e. wherever a module transitions to `ModulePool::Failed`.
+/// When the importable index is ARMED, marks the just-failed module SKIPPED so the
+/// `/search` burn-down completes: a failed module publishes no valid public
+/// symbols, so zero rows is the truthful outcome (§4 rule 2). This covers a module
+/// that fails AFTER its worklist pop (popped in-flight, left pending, then fails) —
+/// without it that module would wedge `pending_count ≥ 1` forever, the I-1 wedge
+/// shape. Branch (a) handles the pre-pop case (registered + already `Failed` when
+/// the worklist pops it). A no-op when the index is not armed
+/// (`--run`/`--link`/`--release`, or pre-arm during startup), so batch modes stay
+/// index-inert (R9). Idempotent — `mark_skipped` is a set insert, so a redundant
+/// call (pop-time skip + failure-hook skip for the same module) does not double
+/// count. `prelude`/seeded modules are skipped (they are never on the worklist and
+/// are handled at arm time / are the outer scope).
+pub(crate) fn on_module_failed(shared: &SharedState, module: &ModuleFullPath) {
+    if !shared.importable_indices.is_armed() {
+        return;
+    }
+    if module.as_ref() == "prelude"
+        || crate::bootstrap::seeded_importable_modules().contains(module)
+    {
+        return;
+    }
+    shared.importable_indices.mark_skipped(module);
+}
+
+/// Whether `module` has reached a terminal typecheck state (its signatures are
+/// published) per the scheduler pool — the gate for branch (a) recording a
+/// registered module's rows now vs leaving it pending for the publication hook.
+fn is_terminal(shared: &SharedState, module: &ModuleFullPath) -> bool {
+    shared
+        .scheduler
+        .module_pool(module)
+        .is_some_and(|p| p.is_terminal_typecheck())
 }
 
 /// Recursively enumerate `.cl` files under `dir` as dotted module paths relative
@@ -542,11 +693,41 @@ pub(crate) fn run_one_index_task(shared: &SharedState) -> bool {
 
 /// The three-branch per-module step (§25.1). Takes EXACTLY one branch.
 fn index_one_module(shared: &SharedState, module: &ModuleFullPath) {
-    // Branch (a): the real path owns any module in the scheduler registry (any
-    // pool state). SKIP — its `.meta` is read later (a real-typechecked module
-    // always has a `.meta` from the Phase-1 writer). No typecheck, no write.
+    // Branch (a): a module registered with the scheduler is LOADED into the live
+    // session — its public symbols come from the live symbol table, NOT a
+    // never-read `.meta` (E3, spec §17.19 R10; `resolve-home-enumeration.md` §4).
+    // The prior `mark_skipped` recorded ZERO rows for a loaded module, so its
+    // importable-but-not-in-scope symbols were invisible to `/search` — the E3
+    // defect. Now: if the module has reached a terminal typecheck state, record
+    // its rows from the live table now (REPLACE-rows); if still in-flight, leave
+    // it pending — the publication-edge hook (`on_module_published`) records it
+    // when it reaches terminal, so no source is marked complete with zero rows.
     if shared.scheduler.is_registered(module) {
-        shared.importable_indices.mark_skipped(module);
+        if is_terminal(shared, module) {
+            if shared.symbol_tables.contains_key(module) {
+                feed_loaded_module(shared, module);
+            } else {
+                // Registered + terminal but no live table (should not happen) —
+                // genuinely row-less, so a zero-row skip is legal (§4 rule 2).
+                shared.importable_indices.mark_skipped(module);
+            }
+        } else if matches!(shared.scheduler.module_pool(module), Some(ModulePool::Failed)) {
+            // Registered but FAILED typecheck (e.g. a broken lib module the
+            // prelude imports, registered + `Failed` before this worklist pop):
+            // a failed module publishes NO valid public symbols, so it is
+            // genuinely row-less — mark it skipped so the burn-down completes
+            // (§4 rule 2; the terminal-pool set deliberately excludes `Failed`,
+            // so without this the module would wedge `pending_count ≥ 1`
+            // forever — the I-1 wedge shape). A later watcher-reload fix flows
+            // through the real typecheck → `notify_typecheck_done` → the
+            // publication hook feeds rows with REPLACE semantics, so recovery is
+            // already correct (FIXME 0562).
+            shared.importable_indices.mark_skipped(module);
+        }
+        // In-flight (not terminal, not failed): do nothing — leave pending; the
+        // publication hook (`on_module_published`) records it at its terminal
+        // transition, or the failure hook (`on_module_failed`) skips it if it
+        // fails AFTER this pop.
         return;
     }
 
@@ -1245,5 +1426,334 @@ mod tests {
         assert_eq!(hits[0].name.as_ref(), "vec-len");
         assert_eq!(hits[0].module.as_ref(), "primitives");
         assert_eq!(hits[0].tier, MatchTier::ExactName);
+    }
+
+    // =======================================================================
+    // S108 (Increment 3) — E3 loaded-module feed (`resolve-home-enumeration.md`
+    // §4). The arm-time sweep + branch (a) + the publication-edge hook all land
+    // rows through `record_loaded_replace`; the SharedState-level wiring (the
+    // scheduler pool read, the live-table projection) is e2e-covered by
+    // `tests/search.rs`, while the accounting/replace/dual-tally invariants — the
+    // arm-vs-load timing cases the racy e2e cannot pin (the Inc2 rationale) — are
+    // pinned HERE at the `IndicesInner` seam, deterministically.
+    // =======================================================================
+
+    // spec: repl/spec.md §17.19 R10 — obligation 1 (arm-time sweep): an already-
+    // terminal registered module recorded from the live table
+    // (`public_entries_from_table` → `record_loaded_replace`) lands searchable
+    // rows and is SINGLE-tallied (it was already counted by `arm` as a file
+    // module — no `enumerated_total` bump). This is the classic E3 sighting: a
+    // module loaded by the prelude's own imports whose sibling symbol is
+    // importable-but-not-in-scope.
+    #[test]
+    fn loaded_feed_records_file_enumerated_module_single_tally() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("foo"), m("a")]); // 2 file modules; enum=2, pending=2
+        let table = public_def_table("foo", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
+        assert_eq!(
+            idx.pending_count(),
+            1,
+            "foo single-tallied (already counted by arm) — only `a` pends"
+        );
+        let hits = idx.search_by_name("count");
+        assert_eq!(hits.len(), 1, "the loaded module's importable symbol is searchable");
+        assert_eq!(hits[0].module.as_ref(), "foo");
+        assert_eq!(hits[0].tier, MatchTier::ExactName);
+    }
+
+    // spec: repl/spec.md §17.19 R10 — obligation 2 (publication-edge hook): a
+    // file-enumerated module that is still in-flight at arm is LEFT PENDING by
+    // branch (a); when it reaches terminal AFTER arm, the publication hook records
+    // it (modelled here by the deferred `record_loaded_replace`) and the burn-down
+    // completes — no polling, no worker respin.
+    #[test]
+    fn loaded_feed_publication_hook_records_inflight_module_after_arm() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("foo")]); // enum=1, pending=1
+        // In-flight at arm: branch (a) records nothing → foo stays pending.
+        assert_eq!(idx.pending_count(), 1, "an in-flight registered module is left pending");
+        // foo reaches terminal later → the publication hook feeds it.
+        let table = public_def_table("foo", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
+        assert_eq!(idx.pending_count(), 0, "the publication hook completes the burn-down");
+        assert_eq!(idx.search_by_name("count").len(), 1);
+    }
+
+    // spec: repl/spec.md §17.19 R10 + §17.19.3 — obligation 3 (late `/import`): a
+    // module OUTSIDE the file-enumerated set recorded via the hook takes the
+    // dual-tally shape (enumerated_total + indexed), so it stays searchable and
+    // the accounting stays complete; it does NOT fire a SECOND completion notice
+    // (the latch is one-shot).
+    #[test]
+    fn loaded_feed_late_import_dual_tallies_no_second_completion_note() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("a")]); // one file module; enum=1
+        idx.mark_note_shown(); // a /search served the not-ready note this session
+        idx.record_entries(&m("a"), vec![row("f", int_arrow_int())]);
+        assert_eq!(idx.pending_count(), 0);
+        assert!(
+            idx.take_completion_notice(),
+            "burn-down complete + note shown → the completion notice fires once"
+        );
+        // A late `/import` of `bar` (not on the file worklist) → dual tally.
+        let table = public_def_table("bar", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("bar"), public_entries_from_table(&table));
+        assert_eq!(
+            idx.pending_count(),
+            0,
+            "the late load dual-tallies (enum + indexed) — pending stays 0"
+        );
+        assert_eq!(idx.search_by_name("count").len(), 1, "the late-loaded symbol is searchable");
+        assert!(
+            !idx.take_completion_notice(),
+            "a late load fires NO second completion notice (one-shot latch)"
+        );
+    }
+
+    // spec: repl/spec.md §17.19 R10 — obligation 4 (REPLACE-rows refresh): a
+    // re-record (watcher reload / REPL redefinition) REPLACES a module's rows —
+    // no duplicates, no stale rows — and perturbs neither tally.
+    #[test]
+    fn loaded_feed_rerecord_replaces_rows_no_duplicates_or_stale() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("foo")]);
+        let t1 = public_def_table("foo", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&t1));
+        assert_eq!(idx.search_by_name("count").iter().filter(|h| h.name.as_ref() == "count").count(), 1);
+        // Watcher reload: `foo` redefined — `count` renamed to `counter`.
+        let t2 = public_def_table("foo", "counter", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&t2));
+        assert_eq!(
+            idx.search_by_name("counter").len(),
+            1,
+            "the new `counter` row is present after re-record"
+        );
+        assert!(
+            !idx.search_by_name("count").iter().any(|h| h.name.as_ref() == "count"),
+            "the stale exact `count` row is REPLACED, not duplicated or retained"
+        );
+        assert_eq!(idx.pending_count(), 0, "a re-record does not perturb the tallies");
+    }
+
+    // spec: repl/spec.md §17.19.3 — obligation 5 (accounting): `pending_count =
+    // enumerated_total − indexed.len()` stays ≥ 0, reaches 0, and is
+    // ORDER-INDEPENDENT across the loaded feed vs `arm` (the S-1 property extended
+    // to loaded modules) — the feed may record `foo` BEFORE `arm` enumerates a
+    // same-named `foo.cl`; the `!indexed.contains` guard drops the file duplicate
+    // and foo is counted exactly once.
+    #[test]
+    fn loaded_feed_accounting_order_independent_and_reaches_zero() {
+        let idx = ImportableIndices::default();
+        // Loaded feed records `foo` FIRST (outside any file set yet → dual tally).
+        let table = public_def_table("foo", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
+        assert_eq!(idx.pending_count(), 0, "pending never negative — foo dual-tallied once");
+        // arm enumerates a file worklist COLLIDING on `foo` (a `foo.cl`) plus `a`.
+        idx.arm(vec![m("foo"), m("a")]);
+        assert_eq!(idx.pending_count(), 1, "foo counted once (dup dropped); only `a` pends");
+        idx.mark_skipped(&m("a"));
+        assert_eq!(idx.pending_count(), 0, "the burn-down reaches zero");
+        assert_eq!(idx.search_by_name("count").len(), 1, "foo's row survives the collision");
+    }
+
+    // spec: repl/spec.md §17.19 R10 — obligation 6 (no zero-row skip for a
+    // registered module): the E3 fix records a loaded module's rows via the
+    // loaded feed; `mark_skipped`-with-zero-rows is legal ONLY for a genuinely
+    // row-less outcome (empty module / no source file), NEVER for "registered".
+    #[test]
+    fn loaded_feed_registered_module_contributes_rows_not_mark_skipped() {
+        let idx = ImportableIndices::default();
+        idx.arm(vec![m("foo")]);
+        let table = public_def_table("foo", "count", int_arrow_int());
+        idx.record_loaded_replace(&m("foo"), public_entries_from_table(&table));
+        assert!(
+            !idx.search_by_name("count").is_empty(),
+            "a registered/loaded module MUST contribute its importable rows (E3), \
+             not be `mark_skipped` with zero rows"
+        );
+        // Contrast: a genuinely row-less outcome legitimately marks zero rows and
+        // still completes the burn-down.
+        let idx2 = ImportableIndices::default();
+        idx2.arm(vec![m("empty")]);
+        idx2.mark_skipped(&m("empty"));
+        assert!(idx2.search_by_name("count").is_empty(), "a row-less skip adds no rows");
+        assert_eq!(idx2.pending_count(), 0, "a row-less skip still completes the burn-down");
+    }
+
+    // =======================================================================
+    // S108 (Increment 3) — FIXME 0562: the E3 failure-path regression. Branch
+    // (a)'s "leave in-flight modules pending for the publication hook" missed
+    // the FAILURE exit from in-flight — a registered module that FAILS typecheck
+    // is never fed and never skipped, wedging `pending_count ≥ 1` forever. These
+    // two pins drive the REAL `SharedState`-level dispatch (the scheduler-pool
+    // read + the failure-edge hook), so a revert of either half wedges them RED.
+    // =======================================================================
+
+    /// A minimal `SharedState` for the FIXME-0562 branch-(a)/hook pins. Mirrors
+    /// `worker/tests.rs::test_shared_state`; no workers spawned, no codegen runs.
+    /// The only fields the index-worker branch reads are `scheduler`,
+    /// `symbol_tables`, and `importable_indices`.
+    fn test_shared_state() -> SharedState {
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::Mutex;
+        SharedState {
+            scheduler: crate::scheduler::CompileScheduler::new(),
+            project_root: std::path::PathBuf::new(),
+            lib_dirs: Mutex::new(Vec::new()),
+            platform_dirs: Mutex::new(Vec::new()),
+            module_aliases: cranelisp_types::ModuleAliases::default(),
+            prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
+            cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
+            promote_nice_workers: AtomicBool::new(false),
+            file_to_module: Mutex::new(HashMap::new()),
+            symbol_tables: dashmap::DashMap::new(),
+            next_type_id: AtomicU32::new(0),
+            typecheck_products: dashmap::DashMap::new(),
+            kept_dlls: Mutex::new(Vec::new()),
+            introspection: Some(dashmap::DashMap::new()),
+            importable_indices: ImportableIndices::default(),
+            broken: dashmap::DashMap::new(),
+            retained_code: Mutex::new(Vec::new()),
+            run_mode: crate::session_v4::RunMode::Repl,
+            test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
+        }
+    }
+
+    /// Register `module` with the scheduler and drive it to `ModulePool::Failed`.
+    fn register_and_fail(shared: &SharedState, module: &ModuleFullPath) {
+        shared
+            .scheduler
+            .register_module(module.clone(), std::sync::Arc::from(Vec::new()), false);
+        shared.scheduler.notify_module_failed(
+            module,
+            cranelisp_types::CranelispError::ModuleError {
+                message: "type error in broken lib module".to_string(),
+                location: cranelisp_types::ErrorLocation::from_span_file(
+                    cranelisp_types::Span::SYNTHETIC,
+                    None,
+                ),
+            },
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 + resolve-home-enumeration.md §4 rule 2 (FIXME
+    // 0562) — a file-enumerated module registered AND `Failed` at pop time: branch
+    // (a) sees `is_registered → not terminal → pool == Failed` and `mark_skipped`s
+    // it (a failed module publishes no importable rows), so the burn-down reaches
+    // `pending_count == 0` instead of wedging `≥ 1` forever, and the completion
+    // notice can fire. Fail-on-revert: delete the branch-(a) `Some(Failed)` arm and
+    // the module is left pending → this wedges RED (`indexing 1 module(s)…`
+    // perpetual, the I-1 shape).
+    #[test]
+    fn index_branch_a_registered_failed_module_completes_burndown() {
+        let shared = test_shared_state();
+        let broken = m("brokenlib");
+        // Registered + Failed BEFORE the worklist pops it (startup load precedes
+        // arm) — the deterministic wedge trigger from the FIXME.
+        register_and_fail(&shared, &broken);
+        assert_eq!(
+            shared.scheduler.module_pool(&broken),
+            Some(ModulePool::Failed),
+            "precondition: registered + Failed"
+        );
+        // Arm the burn-down with the broken module on the file worklist (enum=1).
+        shared.importable_indices.arm(vec![broken.clone()]);
+        shared.importable_indices.mark_note_shown(); // a /search served the note
+        assert_eq!(shared.importable_indices.pending_count(), 1, "one pending at arm");
+
+        // Pop + dispatch the real branch (a) — the failure arm marks it skipped.
+        assert!(run_one_index_task(&shared), "a task was popped and processed");
+
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            0,
+            "a registered+Failed module completes the burn-down (no I-1 wedge)"
+        );
+        assert!(
+            shared.importable_indices.take_completion_notice(),
+            "burn-down complete + note shown → the completion notice fires"
+        );
+        assert!(
+            shared.importable_indices.search_by_name("anything").is_empty(),
+            "a Failed module contributes no importable rows"
+        );
+    }
+
+    // spec: repl/spec.md §17.19.3 + resolve-home-enumeration.md §4 (FIXME 0562) —
+    // the POST-POP failure: a registered module popped while still in-flight is
+    // left pending by branch (a); when it fails typecheck AFTER the pop, the
+    // failure-edge hook `on_module_failed` marks it skipped so the burn-down
+    // completes — symmetric with `on_module_published` for the success exit.
+    // Fail-on-revert: neuter `on_module_failed` (make it a no-op) and the post-pop
+    // module stays pending → this wedges RED.
+    #[test]
+    fn on_module_failed_hook_completes_burndown_for_postpop_failure() {
+        let shared = test_shared_state();
+        let foo = m("foo");
+        // Register + arm with foo IN-FLIGHT (TypecheckNext, not terminal/failed).
+        shared
+            .scheduler
+            .register_module(foo.clone(), std::sync::Arc::from(Vec::new()), false);
+        shared.importable_indices.arm(vec![foo.clone()]);
+        shared.importable_indices.mark_note_shown();
+
+        // Pop + dispatch branch (a): in-flight → LEFT PENDING (the hook owns it).
+        assert!(run_one_index_task(&shared), "the in-flight module is popped");
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            1,
+            "an in-flight registered module is left pending after its pop"
+        );
+
+        // foo now FAILS typecheck AFTER the pop → the failure-edge hook fires.
+        shared.scheduler.notify_module_failed(
+            &foo,
+            cranelisp_types::CranelispError::ModuleError {
+                message: "post-pop type error".to_string(),
+                location: cranelisp_types::ErrorLocation::from_span_file(
+                    cranelisp_types::Span::SYNTHETIC,
+                    None,
+                ),
+            },
+        );
+        on_module_failed(&shared, &foo);
+
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            0,
+            "the failure-edge hook completes the burn-down for a post-pop failure"
+        );
+        assert!(
+            shared.importable_indices.take_completion_notice(),
+            "complete + note shown → completion notice fires"
+        );
+        // Idempotent: a redundant hook call (e.g. a cascaded failure) does not
+        // perturb the accounting or re-fire the one-shot latch.
+        on_module_failed(&shared, &foo);
+        assert_eq!(shared.importable_indices.pending_count(), 0, "hook is idempotent");
+        assert!(
+            !shared.importable_indices.take_completion_notice(),
+            "one-shot latch: no second completion notice"
+        );
+    }
+
+    // spec: resolve-home-enumeration.md §4 — `on_module_failed` is armed-gated: an
+    // UNARMED index (batch `--run`/`--link`, or pre-arm startup) is index-inert, so
+    // the hook is a no-op and records nothing (R9 batch-inertness).
+    #[test]
+    fn on_module_failed_is_armed_gated_noop_when_unarmed() {
+        let shared = test_shared_state();
+        let foo = m("foo");
+        assert!(!shared.importable_indices.is_armed(), "unarmed by default (batch)");
+        on_module_failed(&shared, &foo); // no-op: not armed
+        // Arming afterwards enumerates foo fresh — the pre-arm hook left no trace
+        // in `indexed` (which would have wrongly pre-satisfied the burn-down).
+        shared.importable_indices.arm(vec![foo.clone()]);
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            1,
+            "the pre-arm hook was inert — foo is genuinely pending after arm"
+        );
     }
 }

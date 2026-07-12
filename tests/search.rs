@@ -691,6 +691,77 @@ fn search_exact_in_scope_not_offered_import_form_neg() {
     );
 }
 
+/// A search session whose custom prelude carries a PRIVATE binding `secret`
+/// (`defn-`). The prelude provides only its PUBLIC names (§8.8.1), so `secret`
+/// is NOT in scope in `user` — no reference can resolve it, and `/search` must
+/// not claim it is "already in scope".
+fn search_session_private_prelude(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(defn- secret [x] (add-i64 x 1))\n")
+        .repl()
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19 (R13) / spec/08-modules.md §8.8.1 — the prelude
+// provides only its PUBLIC names, so a PRIVATE prelude binding (`secret`, a
+// `defn-`) is NOT in scope: no reference resolves it. `/search secret` (exact
+// name) MUST therefore return NO result row for `secret` — not a row that is
+// merely unmarked, but an EMPTY result set (the self-documenting no-match note).
+// The leak was the `exact_in_scope_hit` synthesis path (repl.rs ~1304): it
+// SYNTHESIZED a row via the prelude-fallback for an exact query that resolved
+// in-scope but was absent from the public index (a prelude symbol). Without the
+// public-only gate on that fallback, the PRIVATE `secret` synthesized a row
+// marked "already in scope". Before the gate landed this was RED: `secret`
+// appeared as a marked result row; the gate made `exact_in_scope_hit` return
+// None → empty result. This test guards BOTH the synthesis
+// (`exact_in_scope_hit`) and mark (`is_already_in_scope`) paths — they share
+// the `lookup_with_prelude_fallback` seam.
+//
+// defect: class=enumeration-miss locus=src/repl.rs::exact_in_scope_hit found=S108 owner=/dev
+#[test]
+fn search_private_prelude_binding_returns_no_result_row_neg() {
+    let out = search_session_private_prelude("/search secret\n");
+    let lc = out.stdout.to_lowercase();
+    // (a) The result SET is empty — the no-match note, not a (marked) row. On a
+    //     revert of the gate, `secret` synthesizes a marked row and this note is
+    //     replaced by that row → the assertion fails (pins the result-set intent).
+    assert!(
+        lc.contains("no importable") || lc.contains("no match") || lc.contains("nothing"),
+        "a PRIVATE prelude binding is NOT in scope — `/search secret` MUST return \
+         NO result row (the empty-set no-match note), not synthesize a marked \
+         in-scope row (§8.8.1, §17.19.1); stdout:\n{}",
+        out.stdout
+    );
+    // (b) The mark path too — no "already in scope" claim for the private name.
+    assert!(
+        !lc.contains("already in scope"),
+        "`/search secret` MUST NOT mark the PRIVATE prelude binding `already in \
+         scope — no import needed` (§8.8.1); stdout:\n{}",
+        out.stdout
+    );
+    // (c) A private name is not importable either (§5.9) — no import offer.
+    out.assert_stdout_does_not_contain("(import [prelude [secret]])");
+}
+
+// spec: repl/spec.md §4.1.10 / spec/08-modules.md §8.8.1 — a bare reference to a
+// PRIVATE prelude binding takes the UNBOUND path: the prelude provides only its
+// public names, so `secret` is not in scope and MUST display as unbound, NOT as
+// an in-scope symbol. (Resolution already filtered the private prelude head; this
+// test guards that the display/enumeration seam was brought into agreement by the
+// same public-only gate.)
+#[test]
+fn bare_private_prelude_reference_is_unbound() {
+    let out = search_session_private_prelude("secret\n");
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        lc.contains("unbound") || lc.contains("undefined"),
+        "a bare reference to a PRIVATE prelude binding MUST take the unbound path \
+         (§4.1.10), never display as an in-scope symbol; stdout:\n{}",
+        out.stdout
+    );
+}
+
 /// A search session with an exact OUT-OF-SCOPE match `beta` and partial matches
 /// `alpha-beta` (interior substring) and `beta-gamma` (prefix). Alphabetically
 /// `alpha-beta` sorts first — so alphabetic order buries the exact match.
@@ -853,6 +924,125 @@ fn search_seeded_file_name_collision_does_not_wedge_pending_note() {
         //     the collision wedged `pending_count` (the retain filter defeated).
         .assert_stdout_does_not_contain("results may be incomplete")
         .assert_stdout_does_not_contain("indexing");
+}
+
+// ===========================================================================
+// S108 (Increment 3) — E3: `/search` drops an already-LOADED module's
+// importable-but-not-in-scope symbols.
+//
+// `/search`'s reachable set is (per §17.19 R10) the union of file-resolved lib/
+// project-root `.cl` modules, the built-in seeded modules (Inc2), AND the
+// live/registered modules already loaded into the session. Branch (a) of the
+// indexer (`is_registered(module) → mark_skipped`) records ZERO importable rows
+// for a loaded module, so a symbol that is importable-but-not-bare-in-scope
+// (defined in a module some OTHER symbol of which was imported) is invisible to
+// `/search`. This is the THIRD sighting of the `enumeration-miss` class in the
+// `/search` indexer (Inc2 seeded modules = first/second; E3 loaded modules).
+//
+// Deterministic fixture (SPRINT.md §E3): `foo.cl` defines `count` + `other`; the
+// prelude `(export [foo [other]])` LOADS/registers `foo` AND publicly re-exports
+// `other`, so the implicit-prelude glob (§8.8.1 — provides the prelude's PUBLIC
+// names) puts `other` in the user module's scope; `count` is neither exported nor
+// imported by the prelude, so it stays importable-but-not-in-scope. `/search count`
+// MUST surface `foo/count` with the `(import [foo [count]])` payoff. Serve
+// determinism via the SUT's own settle-wait (`handle_search` →
+// `wait_for_index_settled`), the Inc2 pattern — no new harness infra.
+//
+// NB: the prelude line MUST be `export`, not `import`. A private `(import [foo
+// [other]])` binds `other` PRIVATE in the prelude (§8.4.0), so it is NOT a public
+// name of the prelude and the implicit-prelude glob does NOT provide it to the
+// user (verified S108: bare `other` is `undefined variable` under a private import,
+// and `/search other` offers an import form rather than marking it in-scope). The
+// R13 in-scope control below requires `other` to be LEGITIMATELY in scope, which
+// only a public re-export (`export`) achieves.
+// ===========================================================================
+
+/// An E3 session: a project whose prelude `(export [foo [other]])` LOADS `foo`
+/// (defining `count` + `other`) into the session AND publicly re-exports `other`,
+/// so `other` is in the user module's scope while `count` stays importable-but-
+/// not-in-scope, plus an UNLOADED reachable sibling `unloaded.cl` (defining
+/// `unloaded-count`) on the same lib-dir. Pipes `cmds` and captures. Both feeds
+/// (loaded-module live table + unloaded-module file resolution) must contribute rows.
+fn e3_search_session(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        // Prelude PUBLICLY re-exports ONE symbol of `foo` — loads/registers the
+        // module and makes `other` a public prelude name (→ in the user's scope via
+        // the implicit-prelude glob, §8.8.1), while `count` stays importable-but-
+        // not-in-scope. MUST be `export`, not `import`: a private import binds
+        // `other` private in the prelude (§8.4.0) → not provided to the user.
+        .prelude("(export [primitives [*]])\n(export [foo [other]])\n")
+        .repl()
+        // The LOADED module: `count` (not in scope) + `other` (re-exported via prelude).
+        .file(
+            "lib/foo.cl",
+            "(export [primitives [*]])\n(defn count [x] x)\n(defn other [x] x)\n",
+        )
+        // An UNLOADED reachable sibling — indexed via the file feed (branches b/c),
+        // NOT the live-table feed. Its `unloaded-count` shares the `count` substring.
+        .file(
+            "lib/unloaded.cl",
+            "(export [primitives [*]])\n(defn unloaded-count [x] x)\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19 — R10 reachable scope INCLUDES already-LOADED
+// (registered) modules: a symbol that is importable-but-not-bare-in-scope in a
+// loaded module MUST surface with its `(import …)` payoff. `foo` is loaded by the
+// prelude's `(import [foo [other]])`, so `count` (also defined in `foo`, NOT
+// imported) is importable-but-not-in-scope → `/search count` MUST surface
+// `foo/count` and offer `(import [foo [count]])`.
+//
+// RED on HEAD (the E3 defect): branch (a) `mark_skipped`s the loaded module
+// `foo`, recording ZERO importable rows for it, so the query surfaces only the
+// UNLOADED file-feed hit `unloaded-count` and NOT `foo/count`. The import-form
+// payoff is the load-bearing, spec-exact assertion (§17.19 R10 / §17.19.2 facet 4).
+//
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::index_one_module (branch (a) mark_skipped) found=S108 owner=/dev
+#[test]
+fn search_finds_loaded_module_not_in_scope_symbol_offers_import() {
+    let out = e3_search_session("/search count\n");
+    out.assert_stdout_contains_all(&[
+        "count",                      // (1) symbol-name facet
+        "(import [foo [count]])",     // (4) the actionable payoff for the LOADED module
+    ]);
+}
+
+// spec: repl/spec.md §17.19 — R13 control for the LOADED feed: the in-scope exact
+// match `other` is shown-but-MARKED `already in scope — no import needed` and MUST
+// NOT offer an `(import …)` form. `other` is legitimately in scope because the
+// prelude PUBLICLY re-exports it (`(export [foo [other]])`), so it is a public
+// prelude name provided to the user via the implicit-prelude glob (§8.8.1); a
+// private `(import [foo [other]])` would bind it private in the prelude (§8.4.0)
+// and it would NOT be in scope — see the fixture note above. GREEN control — guards
+// R13 against the Wave-B fix of branch (a): after loaded-module rows enter the
+// index, an already-in-scope symbol must NOT start being offered as importable.
+#[test]
+fn search_loaded_module_in_scope_exact_match_still_marked_not_imported_neg() {
+    let out = e3_search_session("/search other\n");
+    assert!(
+        out.stdout.to_lowercase().contains("already in scope"),
+        "an EXACT in-scope match (`other`, imported by the prelude) MUST be surfaced \
+         MARKED `already in scope — no import needed`, not dropped (§17.19 R13); \
+         stdout:\n{}",
+        out.stdout
+    );
+    // The marked in-scope row MUST NOT offer an import form (it is usable bare).
+    out.assert_stdout_does_not_contain("(import [foo [other]])");
+}
+
+// spec: repl/spec.md §17.19 — R10 control: an UNLOADED reachable module still
+// indexes via the file feed (branches b/c) ALONGSIDE the new live-table feed for
+// loaded modules. `unloaded.cl` is reachable but never imported; its
+// `unloaded-count` (a `count` substring hit) MUST still surface. GREEN control —
+// guards the file path against the Wave-B rewrite of branch (a) (feed-union
+// completeness: loaded ∪ file ∪ seeded, no source dropped).
+#[test]
+fn search_unloaded_module_still_indexes_alongside_loaded_feed_neg() {
+    let out = e3_search_session("/search count\n");
+    out.assert_stdout_contains("unloaded-count");
 }
 
 // ===========================================================================

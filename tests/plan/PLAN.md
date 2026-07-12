@@ -1475,3 +1475,530 @@ first piped `/search` even at 30 reachable modules, so whether the note fires
 is exactly the arm-vs-serve race — a racy e2e is forbidden. Full rationale in
 `tests/search.rs` (the E2 deferral block) and SPRINT.md §Increment 2. If the
 harness gains a burn-down hold (injectable delay/barrier), revisit.
+
+## Sprint 108 Increment 3 — E3–E7 + candidate B + 0558 repros; the E4 styling byte-identity strategy (2026-07-12)
+
+Whole-increment plan for `sprints/SPRINT.md` §Increment 3, authored at Phase 3
+for `/testing`'s QA-first Stage 1. Design inputs: `design/arch/repl-styling-seam.md`
+(E4), `design/arch/resolve-home-enumeration.md` (E3 + 0558), the locked
+`repl/spec.md` §10.3 (styling roles R1–R15), §17.1 (classifier ruling), §17.19
+(search R10/R13), §4.1.4 (trait sections), `design/int/agent.md` §5.5 (E5 harvest).
+
+### Risk read (shapes the depth below)
+
+- **E3/0558 — third and fourth sightings of one class.** The
+  `enumeration-miss`/`wrong-scope-lookup` family has now recurred four times
+  (Inc1 D1, Inc2 E1/E2, E3, 0558 — register in `resolve-home-enumeration.md` §1).
+  Highest-depth coverage: every negative the arch doc §4 names gets a row or an
+  enumerated unit obligation, because each prior fix was per-instance and missed
+  the sibling. The class rule ("no source marked complete without contributing
+  rows"; "formatters take `(entry, home)`") is what the negatives pin.
+- **E4 — the largest surface, but mostly *equivalence* risk, not new-behaviour
+  risk.** Wave D rewrites every token-styled render path. The load-bearing guard
+  is colour-OFF byte-identity per output kind (the standing golden corpus — most
+  kinds already have goldens); the *new* §10.3 colour-ON behaviour needs fresh
+  per-kind byte-exact pins. The silent-failure mode is a producer that perturbs
+  plain-text bytes while adding roles (§10.3 req 2) — that is what the golden
+  corpus catches for free, so the corpus must be verified COMPLETE per kind
+  before Wave D starts, not after.
+- **E6/E7 — routing/eval seams with a deterministic unit surface.** No model in
+  the loop anywhere: the classifier is a pure function, and E7 reproduces in the
+  default build. Cheap, exact pins; the risk is under-enumerating the classifier
+  input space (the reader-macro-in-prose trap has FOUR trigger chars: `'`,
+  `` ` ``, `~`, `:`).
+- **E5 — agent-lane only**; the testable seam is `harvest_context` (unit) plus
+  an optional deterministic e2e through the `/context` dump (§17.11).
+
+### A. Deterministic defect repros — Stage 1, RED-first
+
+Proposed test names are canonical targets for `/testing`; adjust mechanics, keep
+the polarity split (negatives get their own fns, `_neg_`/`_not_` naming). Every
+repro carries `// spec:` + `// defect:` per `tests/CLAUDE.md`.
+
+#### E3 — `/search` drops already-loaded modules' not-in-scope symbols
+
+Fixture recipe (deterministic; from SPRINT.md §E3): `foo.cl` defines `count` +
+`other`; the prelude variant imports `[foo [other]]` — so `foo` is
+loaded/registered but `count` is NOT in scope. Serve determinism via the SUT's
+own `wait_for_index_settled` (the Inc2 pattern; no new infra).
+
+| Spec citation | Test (tests/search.rs) | Status | Polarity / provenance |
+|---|---|---|---|
+| repl/spec.md §17.19 R10 — importable-but-not-in-scope symbols of an already-LOADED module MUST surface with the `(import [foo [count]])` payoff | `search_finds_loaded_module_not_in_scope_symbol_offers_import` | [S108] — RED at authoring (the E3 defect); `// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::index_one_module (branch (a) mark_skipped) found=S108 owner=/dev` | positive; third `enumeration-miss` sighting |
+| repl/spec.md §17.19 R13 — the in-scope exact match (`other`) is still shown-but-MARKED `already in scope — no import needed`, no import form offered | `search_loaded_module_in_scope_exact_match_still_marked_not_imported_neg` | [S108] — expected GREEN (control; guards R13 against the Wave-B fix) | negative (asserts absence of an import form for `other`) |
+| repl/spec.md §17.19 R10 — an UNloaded reachable module still indexes via the file feed (branches b/c) alongside the new live-table feed | `search_unloaded_module_still_indexes_alongside_loaded_feed_neg` | [S108] — expected GREEN (control; guards the file path against the Wave-B rewrite of branch (a)) | negative (feed-union completeness) |
+
+**E3 unit obligations (enumerated for `/dev` Wave B, same change-set,
+fail-on-revert verified — the Inc2 E2 precedent; e2e is the wrong tier for the
+arm-vs-load timing cases, per the Inc2 racy-e2e rationale):**
+
+| Case (resolve-home-enumeration.md §4) | Unit guard (proposed seam) |
+|---|---|
+| arm-time sweep records already-terminal registered modules from the live table (`public_entries_from_table`) | `src/session_v4/index_worker.rs` |
+| publication-edge hook records a module that reaches terminal typecheck AFTER arm (in-flight-at-arm case) — no polling, no respin | `src/session_v4/index_worker.rs` |
+| late `/import`-loaded module's rows appear via the hook; no second completion note | `src/session_v4/index_worker.rs` |
+| re-record REPLACES a module's rows (watcher reload / redefinition — no duplicates, no stale rows; idempotent tallies) | `src/session_v4/index_worker.rs` |
+| accounting: `pending_count = enumerated_total − indexed.len()` ≥ 0, reaches 0, order-independent (arm-vs-hook — the S-1 property extended to the loaded feed) | `src/session_v4/index_worker.rs` |
+| `mark_skipped`-with-zero-rows only for genuinely row-less outcomes (no file / empty / CF.2), never for "registered" | `src/session_v4/index_worker.rs` |
+
+#### I-1 — private-prelude `/search`/display gate (fix+test co-landing ACCEPTED, /qa 2026-07-12)
+
+The I-1 divergence ruling (`prelude-import-convergence.md` §3.5.2: a PRIVATE
+prelude binding must not classify "in scope" for display/`/search`) was fixed
+by `/dev` with two e2e authored INSIDE the same change-set (METHOD §2.2
+fix+test-together). `/qa` reviewed them 2026-07-12 and **accepts them in place**
+in `tests/search.rs` — a legitimate co-landing, no rehome needed: correct
+`// spec:` anchors (repl/spec.md §17.19/§4.1.10 + spec/08-modules.md §8.8.1
+importable=public), correct `// defect:` on the repro
+(`class=enumeration-miss locus=src/repl.rs::exact_in_scope_hit`), placed in the
+§17.19 in-scope/marked family sharing the `search_session_private_prelude`
+fixture, no duplication with existing search or prelude-scope tests (verified
+by sweep). Both verified GREEN by targeted run 2026-07-12.
+
+| Spec citation | Test (tests/search.rs) | Status | Polarity / provenance |
+|---|---|---|---|
+| repl/spec.md §17.19 (R13) + spec/08-modules.md §8.8.1 — the prelude provides only its PUBLIC names: `/search` of a PRIVATE prelude binding MUST return the empty-set no-match note — no synthesized row, no `already in scope` mark, no import offer | `search_private_prelude_binding_returns_no_result_row_neg` | [Tested+Neg] — GREEN (repro; covers both the `exact_in_scope_hit` synthesis and `is_already_in_scope` mark paths at the shared `lookup_with_prelude_fallback` seam) | negative ×3 (empty set / no mark / no offer) |
+| repl/spec.md §4.1.10 + §8.8.1 — a bare reference to a PRIVATE prelude binding takes the UNBOUND display path (display/enumeration seam agrees with resolution) | `bare_private_prelude_reference_is_unbound` | [Tested] — GREEN (companion pin, deliberately no `// defect:` — the repro above carries it) | negative (never displays as in-scope) |
+
+One correction routed to `/testing` (comment-only, not blocking acceptance):
+the repro's prose carries present-tense "RED on HEAD: `secret` appears as a
+marked result row" — the gate landed and the test is GREEN, so per
+`tests/CLAUDE.md` §"Defect-repro notation" convert to past tense (a GREEN repro
+with present-tense open-defect framing lets a future regression pose as a known
+guard). Fold into the §V stale-framing sweep above.
+
+#### E6 + candidate B — classifier misroute (the §17.1 one-form rule)
+
+Primary tier: **unit — `classify_for_agent` is a pure deterministic function,
+no model** (`src/agent/mod.rs` `#[cfg(test)]`, the existing
+request-content-test precedent; agent lane
+`cargo nextest run --features agent --lib 'agent::'`). `/testing` drafts these
+Stage 1 (they live beside the existing `"how do I define a function"` → Agent
+pin); `/dev` Wave A owns keeping them green. Classifier input space to pin —
+each its own test fn:
+
+| §17.1 rule | Input | Expected | Status |
+|---|---|---|---|
+| ≥2 forms → Agent (the E6 repro — `'` contraction makes `doesn't` compound) | `why doesn't that typecheck?` | `Agent` | [S108] RED; `// defect: class=routing-misclassify locus=src/agent/mod.rs::classify_for_agent (any_compound arm) found=S108 owner=/dev` |
+| ≥2 forms → Agent (the second transcript trap: `:` + `'` both) | prose containing `was:` and a contraction | `Agent` | [S108] RED |
+| one FQ symbol → Repl, independent of `symbol_is_known` (candidate B) | `primitives/vec-len` | `Repl` (introspect) | [S108] RED (currently routes to agent per candidate B transcripts) |
+| one bare unknown → Repl (§4.1.10 preserved) | `frobnicate` | `Repl` | [S108] expected GREEN control |
+| one compound → Repl | `(+ 1 2)` | `Repl` | [S108] expected GREEN control |
+| multi-form code → Agent when active | `foo bar` | `Agent` | [S108] RED (currently Repl via any_compound absence — verify at authoring) |
+
+E2e companion (lane A, `tests/agent.rs`, stub provider — deterministic): ONE
+routing pair, not the whole matrix: (a) NL sentence with active stub agent →
+stub reply rendered in the `▌` frame, and NOT `:primitives/Int 0` (negative
+assertion in the same fn); (b) single FQ symbol with active stub agent → §4
+introspection line, and the stub's scripted reply ABSENT (the agent was not
+consulted). Trace §17.1. [S108]
+
+#### E7 — multi-form line swallows per-form errors (no-agent path)
+
+Default build, `tests/repl_negative.rs` (or a sibling file) — reproduces
+without the agent feature. Mechanism (per `/arch` P2): `src/eval.rs::eval`
+~L185–208 wraps the per-form error as a fake `Val{0}` warning, then L207
+clobbers the warning. `// defect: class=error-swallow
+locus=src/eval.rs::eval (multi-form arm fake-Val + warning-clobber) found=S108
+owner=/dev`.
+
+| Spec citation | Test | Status | Polarity |
+|---|---|---|---|
+| repl/spec.md §17.1 (sequential-eval-abandon, no-agent path) + Design Principle "self-documenting REPL" — `foo bar` MUST surface `undefined variable: foo`, never `:Int 0` | `multi_form_line_surfaces_first_error_not_silent_zero` | [S108] — RED at authoring (the E7 defect) | positive (of the fix) + inline negative: stdout does NOT contain `:primitives/Int 0` |
+| §17.1 abandon-on-FIRST: `2 foo` — the error surfaces even when a green form precedes it; no fake trailing value | `multi_form_error_after_green_form_still_surfaces_not_swallowed_neg` | [S108] — RED | negative (asserts absence of a fabricated result line) |
+| §17.1 first-error selection: `foo bar` reports `foo` (first), not `bar` | `multi_form_abandons_on_first_error_reports_first_undefined` | [S108] — RED (currently `:Int 0`; post-fix pins WHICH error) | positive |
+| §17.1 all-green multi-form control: `1 2 3` evaluates without error | `multi_form_all_green_line_evaluates_without_error` | [S108] — expected GREEN | control — see flag below |
+
+**Flag to `/repl` (spec gap, non-blocking):** §17.1 pins the ERROR path
+("abandons on the first error, surfacing it") but is silent on what an
+all-green multi-form no-agent line DISPLAYS (today: the last value, `:Int 3`).
+The control row asserts only "no error"; do not pin the display shape until
+`/repl` scribes it. Filed as a note, not a FIXME — Wave C should not change the
+green path, and the row will catch it if it does.
+
+#### 0558 — prelude-globbed trait drops `; defn:`/`; impl:` sections
+
+Same class family as E3 (resolve-home-then-enumerate; arch doc §1 register) but
+the display-side mechanism — a lookup rooted at the asking scope instead of the
+resolved home. **`class=wrong-scope-lookup`, NOT `enumeration-miss`** — the
+controlled vocabulary already names FIXME 0558 under `wrong-scope-lookup`
+(resolution-time mechanism), and the vocabulary note under `prelude-scope-miss`
+draws exactly this line: census errors are `enumeration-miss`, wrong-root
+resolution is not. One family, two classes; the `// defect:` lines keep them
+distinct so the class-frequency analysis keeps working.
+
+| Spec citation | Test (tests/repl_introspection.rs) | Status | Polarity |
+|---|---|---|---|
+| repl/spec.md §4.1.4 — a bare lookup of a prelude-globbed trait (reachable ONLY via the implicit outer-scope fallback bit, no `Import` edge) MUST show the primary line qualified to the trait's home PLUS the unconditional `; defn:` and `; impl:` sections | `bare_prelude_globbed_trait_lookup_shows_defn_and_impl_sections` | [S108] — **reproduce-or-record-close**: `/testing` authors the repro per the FIXME 0558 recipe (test-standard prelude's `Display`/`Num`, entered from `user`); if RED, it stands as the Wave-B guard (`// defect: class=wrong-scope-lookup locus=src/repl.rs::format_trait_display found=S108 owner=/dev`); if it does NOT reproduce, record that in the test comment as a GREEN pin and report to `/sprint` so 0558 closes on that finding | positive |
+| repl/spec.md §4.1.4 — `; impl:` ordering: locally-defined types first, then imported; method names under `; defn:` unqualified | fold into the same fixture's assertions | [S108] | positive (byte-order assertion) |
+| **Pattern-B sibling probe** (resolve-home-enumeration.md §5 note — the `/qa` repro decision): the TYPE-side `; impl:` view from a local type — does it include impls of a prelude-globbed trait on that type? | `local_type_impl_section_includes_prelude_globbed_trait_probe` | [S108] — probe: if it reproduces, it is a SEPARATE defect (the prelude hop missing from the VIEW walk, Decision-45 Pattern B) — do NOT fold into Wave B's home-rooting fix; report to `/sprint` for its own dispatch. If GREEN, keep as the Pattern-B regression pin | probe (either outcome commits) |
+
+### B. E4 — the §10.3 byte-identity guard strategy (two tiers, by construction)
+
+**Tier decision (load-bearing, from verified infra):** the e2e harness is
+piped/non-TTY, `repl/spec.md` §10.1 explicitly rejects a `--color=force` flag,
+and `src/style.rs::detect_color` has no env force-on — so **an e2e subprocess
+can never produce colour-ON output**. The §10.3 contract therefore splits:
+
+1. **Colour-OFF byte-identical goldens — e2e, `/testing`, Stage 1** (§10.3
+   requirement 2, the non-TTY contract). These are GREEN regression guards, not
+   REDs: their job is to hold every output kind's plain bytes fixed through the
+   Wave-D producer rewrite. Stage-1 job = **verify the per-kind golden set is
+   complete and add the missing kinds** (most exist — see matrix), plus one
+   suite-wide negative: no `\x1b[` byte anywhere in non-TTY output for each
+   kind's fixture (the `ESC_SGR` idiom from tests/agent.rs).
+2. **Colour-ON byte-exact fixtures — unit tier, enumerated `/dev` Wave-D
+   obligations** (§10.3 requirement 3 determinism, the §3.11 discipline extended
+   to styling), via the `#[cfg(test)]`-only `style::test_support::ColorGuard`
+   seam (nextest process isolation makes the process-global force safe). These
+   cannot be drafted RED at Stage 1 — the `Role`/`StyledDoc`/`render` seam does
+   not exist to compile against — so they land WITH Wave D, fail-on-revert
+   verified, audited against this enumeration at Phase 6/7 (the Inc2 E2
+   deferral precedent). Two layers:
+   - **Per-role SGR pins** (migration step 1, arch doc §6): one unit pin per
+     role R1–R14 on `role_style` asserting the exact SGR parameter string of
+     the §10.3 table (`1`, `33`, `32`, `36`, `3`, `2`, `2`, `1;31`, `31`,
+     `1;33`, `33`, `1`, `2`, `95`), plus the render invariants:
+     `render(colour-off) == the doc's concatenated span text` (the golden/agent-
+     membrane guarantee, §10.3 req 2) and every styled span terminated by
+     `\033[0m` before newline/transition (§10.2).
+   - **Per-output-kind colour-ON fixtures** (migration step 3): fixed input →
+     full expected byte string with SGR spans at exact offsets, one per kind in
+     the matrix below.
+
+**Output-kind × role matrix** (the enumeration `/testing` completes colour-OFF
+and `/dev` pins colour-ON; each kind lists the §10.3 roles it exercises — a
+kind is DONE only when every listed role is byte-pinned in both tiers):
+
+| # | Output kind | Fixture sketch | Roles pinned | Colour-OFF golden today |
+|---|---|---|---|---|
+| K1 | Result value — num/bool | `(+ 1 2)` → `:primitives/Int 3` | R4 (annotation cyan, single construct), R2 (literal yellow), R15 | exists (`display_exact.rs` §1 family) — verify per-kind |
+| K2 | Result value — string | `"hi"` → `:primitives/String "hi"` | R4, R3 (whole quoted literal one green span; §10.2 no SGR inside content) | exists — verify |
+| K3 | Introspection `/sig`/`/info`/bare symbol | defn with docstring → `:(Fn …) user/foo ; defn - doc` | R4, R7 (dim `user/` prefix on the FQ NAME — the NEW role), R15 (name part), R6 (dim `; defn - doc`) | exists (`repl_introspection.rs` §4.1 family) — verify. NOTE: §10.3 R1 does NOT apply here (Head is pretty-printed-code-only) — the sprint dispatch's "a `/sig` line pins R1" is corrected to R4/R7/R6/R15 per the locked table |
+| K4 | Introspection drawers | bare trait/type lookup → `; defn:`/`; impl:`/`; match:` sections | R4, R6 (headers AND name bodies beneath), R7, R15 | shares the 0558/§4.1.4 fixtures above |
+| K5 | Code — `/sexp`/`/source` | the §3.11 `rotate` fixture | R1 (head bold, incl. head-position delimiters), R2, R15 + §3.11 layout byte-exactness (colour-on adds SGR at the SAME columns — req 3 verbatim) | exists: `display_exact.rs::sexp_rotate_aligned_let_match_byte_exact` (colour-off byte-exact) |
+| K6 | Code — source comment | a `/source` of a defn whose recorded source carries a `;` comment (the `rotate` fixture has none — R5 needs its own fixture) | R5 (italic — the 0561 resolution's source half), R1, R2 | gap — add colour-off golden Stage 1 |
+| K7 | `/search` result row | Inc2 seeded fixture + a docstring-only hit | R4 (sig), R7 (module column), R6 (`; doc:` excerpt — §10.3 wins over §17.19.2's stale "italic" wording; R6 = dim), R15, import-snippet spans | exists (`search.rs`) — verify the docstring-excerpt row has a byte golden |
+| K8 | Error line | `foo` → `Error: undefined variable: foo`; a `runtime error:` line | R8 (bold red keyword), R9 (red body) | exists (`repl_negative.rs`) — verify byte grain |
+| K9 | Warning line | a warning-producing form → `; warning:` | R6 prefix + R10/R11 | verify; add if missing |
+| K10 | Prompt + banner | startup + `user>` | R13 (dim) | exists (`non_tty_repl_line_editor_off` golden) |
+| K11 | Category header | `/list` → `Fns:` etc. | R12 (bold; name bodies stay R15/layout — the scope boundary) | exists (`prelude_group_and_category_share_layout_body`) |
+| K12 | Lifecycle note | `; search index complete.` | R6 | unit-only (the Inc2 racy-e2e rationale) — colour-ON unit pin only |
+| K13 | Agent gutter + `agent>` composite | stub-agent prose; agent-typed line | R14; R13+R14 composite | exists (agent-lane goldens + the design-side §14.6 leaf guard) — re-baseline is NOT expected (gutter mechanism unchanged, arch doc §5 P9) |
+
+**NEW-behaviour flag (result-value colouring).** §10.3 R2/R3/R4 on RESULT
+VALUES is spec'd-but-unimplemented today (`format_result_value` emits zero SGR
+— arch doc §1b): Wave D makes values styled for the FIRST time. Colour-OFF
+goldens are unaffected by construction (req 2). But any existing test that
+asserts colour-ON output for a value/introspection surface — or asserts "no
+SGR" WITHOUT forcing colour off — encodes the old always-plain behaviour and
+must be re-verified at Wave D: the no-SGR assertions in the corpus are valid
+only because they run non-TTY/`--no-color`; none may be promoted to "values
+are never styled." `/testing` sweeps for such assumptions Stage 1 and flags
+any found (expected: none — the `ESC_SGR` checks all pin the colour-OFF mode
+or well-formedness, which both survive).
+
+**One-seam enforcement:** the "exactly one `styled()` call site" gate is
+`/review`'s grep watch (arch doc §4, Principle 18), not a test — noted here so
+the Phase-6 audit checks it happened.
+
+### C. E5 — harvest omits errored turns (agent-feature-gated)
+
+The harvest ring is `#[cfg(feature = "agent")]` end to end (design/int/agent.md
+§5.5 (4)); feature-off there is NO testable surface by design (byte-identical
+read loop). The plan therefore assigns:
+
+- **Unit obligations (`/dev` Wave A, `src/agent/`, enumerated —
+  fail-on-revert verified):** (1) `harvest_context` includes a recent errored
+  turn's exact `input` + diagnostic string; (2) the single most-recent errored
+  turn is PINNED to the budget floor (survives budget pressure that drops green
+  turns); (3) errored-first newest-first ordering; (4) ring cap N=8 with
+  errored-turn preference (an error survives 8 subsequent green turns is NOT
+  promised — pin what §5.5 (1)/(3) actually says: scan-for-errors, most-recent
+  error pinned); (5) `record_repl_turn` is a no-op when `agent == None`.
+- **Optional e2e (lane A, deterministic, no model — `/testing` if cheap):**
+  submit a failing `(defn …)` (type error), then `/ask …`, with `/context`
+  dumping the assembled request (§17.11, existing
+  `agent_on_context_dumps_request_to_file_dormant` precedent) → assert the
+  failed form's source text AND its diagnostic appear in the dump. Trace
+  design/int/agent.md §5.5 + repl/spec.md §17.11. [S108]
+
+### D. `class=` assignments + vocabulary additions (this increment's repros)
+
+| Finding | class | locus |
+|---|---|---|
+| E3 | `enumeration-miss` (third sighting) | `src/session_v4/index_worker.rs::index_one_module (branch (a))` |
+| 0558 | `wrong-scope-lookup` (per the standing vocabulary row naming 0558) | `src/repl.rs::format_trait_display` |
+| E6 + candidate B | `routing-misclassify` (NEW class — added to tests/CLAUDE.md) | `src/agent/mod.rs::classify_for_agent` |
+| E7 | `error-swallow` (NEW class — added to tests/CLAUDE.md) | `src/eval.rs::eval (multi-form arm)` |
+| E4 | no `// defect:` on the styling guards — they are spec-coverage/regression tests, not defect repros (the tagging rule: only defect-born tests carry the notation). The Inc1-D2-class drift E4 subsumes is already tagged on its D2 repro | — |
+| E5 | no repro test carries it at e2e; if the optional `/context` e2e lands as the repro, tag `class=enumeration-miss`? NO — E5 is a missing SOURCE in context assembly, same census shape: tag `class=enumeration-miss locus=src/agent/harvest.rs::harvest_context` on whichever test (unit or e2e) is the designated repro | `src/agent/harvest.rs::harvest_context` |
+
+### E. Test-infra notes for `/testing` (what exists / what does not)
+
+- **No new harness infra is required for Stage 1.** E3 rides the Inc2 pattern
+  (on-disk fixtures + prelude variants + `wait_for_index_settled`); E6 unit +
+  stub-e2e ride the existing agent lane; E7 is plain piped REPL; 0558 rides the
+  introspection fixtures.
+- **Colour-ON e2e is structurally impossible today** (§10.1 forbids a force
+  flag; harness is non-TTY) — hence the tier split in §B. If a future increment
+  wants colour-ON at e2e grain, the options are a PTY harness helper or a §10.1
+  spec change via `/repl` + user; NEITHER is requested for Inc3.
+- **The colour-ON unit fixtures need the producers callable with fabricated
+  session state** — `/dev` Wave D should keep `render`/`role_style` and the
+  producer span-builders unit-reachable (pure over their inputs), or the
+  per-kind pins degrade to render-layer-only. Flagged as a Wave-D design
+  obligation, not new `/qa` infra.
+
+## Prelude ≡ explicit import — resolution-site × polarity matrix (2026-07-12, /qa)
+
+**The invariant (spec-settled; user-confirmed).** A prelude-provided name is in
+a module's scope on EXACTLY the same terms as an explicit `import`, and is
+resolved by a SINGLE lookup that consults the symbol table and transparently
+falls back to the prelude. Materialised-vs-consulted-on-miss is an
+implementation detail with ZERO semantic weight; there is no "outer scope" as a
+language concept. Anchors: `spec/08-modules.md` §8.6.1 (peers, not precedence;
+no def-over-prelude tier), §8.6.2 (chain-follow to terminal), §8.6.3 (ONLY
+`let`/`fn`/`match` shadow), §8.6.4 (definition-over-name-in-scope is a
+compile-time error INCLUDING over the implicit prelude; same-terminal dedup;
+the S102/0484 pinning), §8.6.5 (distinct-terminal poison), §8.8.1 (implicit
+prelude = `(import [prelude [*]])`; outer-scope realisation is
+"a resolution-mechanism detail, not a normative exemption"), §8.8.3
+(not-loading ≠ shadowing).
+
+**Why a matrix.** The check path has grown SIX fallback-bolted resolver
+variants (`cranelisp-types::resolve_with_fallback`,
+`resolve_terminal_entry_or_prelude`, `resolve_terminal_fq_or_prelude`,
+`resolve_current_or_prelude`, `probe_current_or_prelude`,
+`lookup_trait_decl_or_prelude`) plus a `prelude_fallback` bit threaded through
+~93 sites. Because the fallback is per-variant, not intrinsic to lookup, every
+new resolution site can FORGET it — the mechanism behind the recurring
+`enumeration-miss`/`wrong-scope-lookup`/`prelude-scope-miss` class (E3, E8,
+0558, E9, and the live HKT-arity divergence below). This matrix enumerates
+every resolution site with BOTH polarities so that any site lacking the
+fallback — present or future — fails loudly. The RED set below is the driver
+AND acceptance spec for the forthcoming `/arch` one-function convergence.
+
+**Highest-signal test shape: the twin fixture.** One program, two provenances —
+leg A brings name `X` via explicit `(import [prelude [X]])` (or an
+explicit-module import), leg B relies on the implicit prelude — and the test
+asserts the SAME outcome (same exit code, same diagnostic, same rejection).
+Any site lacking the fallback diverges the twins. Author twins wherever the
+matrix says "twin"; the divergence message names the site.
+
+### I. Resolution-site enumeration (probed 2026-07-12 against HEAD)
+
+Status legend: **GREEN** = prelude parity holds (probed and/or pinned);
+**RED** = live divergence or missing enforcement, probe transcript in the /qa
+report of 2026-07-12.
+
+| # | Site | Seam | Parity status |
+|---|---|---|---|
+| S1 | Bare VALUE reference (call + value position) | `checker.rs::resolve_current_or_prelude` via `infer_var` | GREEN — pinned (`spec_08_prelude_outer_scope::bare_primitive_resolves_via_prelude_reexport`, `spec_08_modules::def1_prelude_provided_defn_called_bare_enters_codegen_batch` + explicit control) |
+| S2 | Bare TYPE reference in annotation position (`:Zed` param/return) | `resolve_type` → `resolve_current_or_prelude` | GREEN — probed; **no pin** → row G2 |
+| S3 | `deftype` FIELD type naming a prelude-provided type | same chokepoint at deftype registration | GREEN — probed; **no pin** → row G3 |
+| S4 | Ctor reference, VALUE position | `resolve_current_or_prelude` ctor arm | GREEN — probed (`(ZedC 7)` via prelude) → row G4 |
+| S5 | Ctor reference, PATTERN position (`match`) | `lookup_constructor_type_with_state` (0317 chokepoint) | GREEN — probed; unit-tier chokepoint pins exist → row G4 (e2e twin) |
+| S6 | Trait reference at `impl` form (`(impl Trait Type …)`) | `lookup_trait_decl_or_prelude` (E9 fix) | GREEN — pinned (`repl_introspection::impl_of_prelude_globbed_trait_resolves_trait_name`) |
+| S7 | `impl` TARGET-type resolution (`fq_impl_type`) | `resolve_type` at `impl_check.rs:113` | GREEN — probed (impl on prelude-provided `Zed` registers) |
+| S8 | **`impl` HKT-ARITY gate type-def lookup** | `lookup_type_def_with_state` at `impl_check.rs:70` — **NO fallback** | **RED** — twin diverges: explicit-import target correctly rejected (`Zed has 0 type parameters, but trait Functor expects a constructor with arity 1`); implicit-prelude target **silently accepted** (arity check skipped) |
+| S9 | Trait-method call dispatch / method→trait resolution | `resolve_terminal_entry_or_prelude` (checker.rs 2214/2259/2312) | GREEN — pinned (E9 test's `(show (Widget 5))` dispatch leg) |
+| S10 | Macro RECOGNITION at expansion | `src/expander.rs` → `resolve_with_fallback` | GREEN — probed (prelude-provided `defmacro` expands bare); coverage verify → row G5 |
+| S11 | Cross-module monomorphisation collection of a polymorphic callee | `resolve_terminal_fq_or_prelude` (program.rs 3629/3726/3785; 0488) | GREEN by code-read (fallback-aware); coverage verify → row G6 |
+| S12 | Conflict check: `defn` (and private `defn-`) over name-in-scope | `reject_def_over_binding` (checker.rs:1013; 0514/0516) | GREEN — pinned all 3 modes (`spec_08_name_shadowing` §1–§5, all pass 2026-07-12) + `defn-` probed |
+| S13 | Conflict check: `deftype` over name-in-scope | same seam (program.rs:911) | GREEN — probed (§8.6.4 diagnostic incl. prelude arm); **no pin** → row G7 |
+| S14 | **Conflict check: `deftrait` over name-in-scope** | `register_trait_decl` → `lookup_trait_decl_with_state` — **current-module-only, and `TopLevel::TraitDecl` skips `reject_def_over_binding`** (program.rs:917) | **RED (prelude arm)** — twin diverges: `deftrait Show` over explicitly-imported `Show` rejected (`trait Show already defined`); over prelude-provided `Show` **silently accepted**, registers `user/Show` |
+| S15 | **Conflict check: trait METHOD names** (a `deftrait` method contesting an in-scope name) | `register_trait_method` — no §8.6.4 seam | **RED (both arms)** — method `gulp` over prelude-provided AND over explicitly-imported `gulp` both silently accepted |
+| S16 | **Conflict check: `defmacro` over name-in-scope** | macro registration in `src/expander.rs` — no §8.6.4 seam | **RED (both arms)** — `defmacro gulp` over prelude-provided AND over explicitly-imported `gulp` both silently accepted, and the macro WINS (bare `(gulp 3)` → 3) |
+| S17 | Import-vs-prelude, DISTINCT terminals → poison | import installer + resolve | GREEN — pinned (`spec_08_prelude_outer_scope::explicit_{glob,specific}_import_over_prelude_distinct_terminal_poisons`) |
+| S18 | Import-vs-prelude, SAME terminal → dedup (no false collision) | terminal-source comparison §8.6.4 | GREEN — probed (`(import [primitives [add-i64]])` under a primitives-re-exporting prelude resolves, exit 42); **no pin** → row G1 |
+| S19 | Prelude refusal / selective import / FQ reach / lexical shadow | fallback-bit gate + §8.6.3/§8.6.6/§8.8.3 | GREEN — pinned (`spec_08_prelude_outer_scope` §3–4, `spec_08_name_shadowing` §6) |
+| S20 | Display: bare symbol / trait sections / type `; impl:` view | `src/repl.rs` describe + format paths (D1/D2, E8, 0558, Pattern-B) | GREEN — pinned (`repl_introspection::bare_prelude_globbed_trait_lookup_shows_defn_and_impl_sections`, `type_impl_section_includes_prelude_globbed_trait_impls_probe`, all pass 2026-07-12) |
+| S21 | Enumeration: `/imports` prelude group, `/search` index, `/list` boundaries | index worker + imports renderer (E1/E3) | GREEN — pinned (`repl_introspection` imports/prelude family, `search.rs` Inc2/Inc3 rows) |
+
+Out-of-invariant finding recorded here for routing (NOT part of this matrix's
+RED set — parity HOLDS): dotted constructor access `Type.Ctor` in value
+position (`Zed.ZedC`, `Wed.WedC`) fails `undefined variable` in EVERY
+provenance — same-module, explicit-import, and prelude alike — despite
+§8.5.2's "Whenever `Option` is bound in the current scope, `Option.Some` …
+accessible as dotted references". Field accessors (`Type.member`) are covered
+(`spec_field_accessor.rs`); dotted CTOR references have no coverage and appear
+unimplemented. **Triaged: attribution confirmed + row added — see §VI below**
+(repro committed by `/testing` 2026-07-12:
+`tests/spec_08_modules.rs::dotted_constructor_in_value_position_resolves`).
+
+### II. RED rows — the acceptance spec for the one-function convergence [S109]
+
+> **Status update (2026-07-12, /qa):** the convergence LANDED (both
+> `prelude-import-convergence.md` §7 `/dev` change-sets, S108 Inc3) and **ALL
+> R1–R8 tests are verified GREEN** by targeted `cargo nextest` run 2026-07-12 —
+> including the R2/R5/R7 explicit-arm controls
+> (`deftrait_over_explicitly_imported_trait_rejected_neg`,
+> `defmacro_over_explicit_import_rejected_neg`,
+> `deftrait_method_name_over_explicit_import_rejected_neg`) and both R8 fns.
+> The per-row `[S109] — RED at authoring` statuses below are the authoring-time
+> record; the rows now stand as `[Tested+Neg]` regression pins guarding the
+> convergence.
+
+QA-first: `/testing` authors these RED, failing-not-ignored; they flip GREEN
+when the convergence (or per-site fixes) lands. Negatives get their own fns
+per the `_neg_`/`_not_` convention. All conflict rows assert BOTH the §8.6.4
+diagnostic (substring `conflict`/`ambiguous`/`already`) AND no-effect (the
+shadow's exit/value never appears) — the `assert_batch_rejected` /
+`assert_repl_rejected` idioms from `spec_08_name_shadowing.rs`.
+
+| Row | Spec citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| R1 | spec/07-traits.md §7.2.3 (Kind Checking — "An implementation MUST validate that the impl target's type parameter count matches the expected constructor arity") + §7.3.4 (Higher-Kinded Implementation) + spec/08-modules.md §8.8.1 (prelude name in scope on identical terms) — an `(impl HktTrait Zed …)` whose target ADT is PRELUDE-provided MUST get the same arity validation as when `Zed` is explicitly imported; a wrong-arity target MUST be rejected, not silently accepted | `impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected` (twin: leg A explicit `(import [prelude [Zed]])` — GREEN control; leg B implicit prelude — RED today) | tests/spec_07_traits.rs | [S109] — RED at authoring; citation corrected §7.5→§7.2.3/§7.3.4 per FIXME 0566 (2026-07-12, matches the test-side `// spec:`). `// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl (HKT arity gate, lookup_type_def_with_state has no fallback) found=S108 owner=/dev` | negative (silent-accept) + twin positive parity |
+| R2 | spec/08-modules.md §8.6.4 (definition-over-name-in-scope, deftrait listed) + §8.8.1 — a `(deftrait Show …)` whose name a loaded prelude provides MUST be the same compile-time error as over an explicit import; the rejected decl has no effect (`Show` keeps resolving to the prelude trait; introspection still describes it) | `deftrait_over_prelude_provided_trait_rejected_neg` (twin: `deftrait_over_explicitly_imported_trait_rejected_neg` — GREEN control, behaviourally rejects today) | tests/spec_08_name_shadowing.rs | [S109] — RED at authoring (silently registers `user/Show` today, probed in REPL + `--run`). `// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl (lookup_trait_decl_with_state is current-module-only; TopLevel::TraitDecl skips reject_def_over_binding) found=S108 owner=/dev` | negative |
+| R3 | spec/08-modules.md §8.6.4 — mode parity for R2: the deftrait-over-prelude rejection MUST be identical in REPL, `--run`, `--link` (the §8.6.4 all-modes MUST) | `deftrait_over_prelude_mode_parity_all_modes` (one binding set, three legs — the `mode_parity_def_over_import_same_rejection_all_modes` shape) | tests/spec_08_name_shadowing.rs | [S109] — RED (all three legs accept today; the gap is mode-uniform, so this pins parity through the fix) | negative |
+| R4 | spec/08-modules.md §8.6.4 (defmacro listed as a definition form) + §8.8.1 — a `(defmacro gulp …)` over a PRELUDE-provided `gulp` MUST be rejected; today it is silently accepted and the macro WINS at expansion | `defmacro_over_prelude_provided_name_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — RED. `// defect: class=silent-accept locus=src/expander.rs (macro registration never consults the §8.6.4 reject_def_over_binding seam) found=S108 owner=/dev` | negative |
+| R5 | spec/08-modules.md §8.6.4 — same for the EXPLICIT-import arm: `(import [prelude [gulp]])` + `(defmacro gulp …)` MUST be rejected; today accepted (defmacro misses the seam on BOTH arms, not just the prelude one) | `defmacro_over_explicit_import_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — RED. same `// defect:` line as R4 | negative |
+| R6 | spec/08-modules.md §8.6.4 — a `deftrait` METHOD name contesting an in-scope name is a definition over a name in scope (a trait method is a fresh module-scope binding with a fresh terminal; it can never dedup): `(deftrait Zork (gulp …))` under a prelude providing `gulp` MUST be rejected | `deftrait_method_name_over_prelude_provided_name_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — RED. `// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_method (no §8.6.4 seam) found=S108 owner=/dev` | negative |
+| R7 | spec/08-modules.md §8.6.4 — the explicit-import arm of R6: `(import [prelude [gulp]])` + `(deftrait Zork (gulp …))` MUST be rejected; today accepted (both arms miss) | `deftrait_method_name_over_explicit_import_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — RED. same `// defect:` line as R6 | negative |
+| R8 | spec/08-modules.md §8.6.4 (order-independence, symmetric direction) — an `import`/`export` whose bare name is already bound by a local `deftrait` or `defmacro` MUST be rejected symmetrically (the later-arriving form is the rejected one) | `import_over_local_deftrait_rejected_neg`, `import_over_local_defmacro_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — probe at authoring; expected RED (the 0516 import-side predicate reads `Def` entries; trait/macro bindings likely invisible to it). If GREEN, keep as pins | negative |
+
+**Diagnostic note (SHOULD-level, ride-along, not a row):** the R2 explicit-arm
+control rejects with `trait Show already defined` — behaviourally correct but
+the wrong diagnostic class (§8.6.4 SHOULD name the conflict's provenance and
+remediations, as the landed `definition of 'gulp' conflicts with 'gulp' already
+in scope via the implicit prelude …` wording does). Fold the wording into the
+R2 fix; do not gate on it.
+
+### III. GREEN rows — parity pins to author (thin, twin-shaped) [S109]
+
+Expected GREEN at authoring (probed 2026-07-12); they exist to make the NEXT
+forgotten-fallback site fail loudly and to guard the convergence refactor
+(behaviour preservation). Cheapest shape: one twin fn per row.
+
+| Row | Spec citation | Test (proposed) | File | Status |
+|---|---|---|---|---|
+| G1 | spec/08-modules.md §8.6.4 (same-terminal dedup) + §8.8.1 — an explicit `(import [primitives [add-i64]])` while the implicit prelude re-exports the SAME terminal `primitives/add-i64` MUST dedup silently (no false collision, name resolves) | `prelude_and_explicit_import_same_terminal_dedup` | tests/spec_08_prelude_outer_scope.rs | [S109] — expected GREEN |
+| G2 | spec/08-modules.md §8.8.1 + §3 (annotations) — a `:Zed` param/return annotation naming a prelude-provided type typechecks identically to the explicit-import twin | `type_annotation_prelude_provided_type_twin` | tests/spec_08_prelude_outer_scope.rs | [S109] — expected GREEN |
+| G3 | spec/08-modules.md §8.8.1 + §5.2 (deftype fields) — a deftype field `[:Zed z]` naming a prelude-provided type registers identically to the explicit-import twin | `deftype_field_type_prelude_provided_twin` | tests/spec_08_prelude_outer_scope.rs | [S109] — expected GREEN |
+| G4 | spec/08-modules.md §8.8.1 + §6 (patterns) — a prelude-provided ctor works in VALUE and PATTERN position (`(match (ZedC 7) [(ZedC n) n])`) identically to the explicit-import twin | `ctor_value_and_pattern_position_prelude_provided_twin` | tests/spec_08_prelude_outer_scope.rs | [S109] — expected GREEN |
+| G5 | spec/09-macros.md + spec/08-modules.md §8.8.1 — a prelude-DEFINED macro expands bare in a consuming module identically to the explicit-import twin (`/testing`: verify `s76_macro_availability.rs` first; add the twin only if the implicit-prelude leg is missing there) | `prelude_provided_macro_expands_bare_twin` | tests/s76_macro_availability.rs | [S109] — expected GREEN (verify-first) |
+| G6 | spec/08-modules.md §8.8.1 + design/typecheck/monomorphisation.md — a POLYMORPHIC prelude-provided fn called at a concrete type from user code monomorphises through the fallback-aware mono-collection chokepoint (program.rs 0488 sites) identically to the explicit-import twin | `prelude_provided_polymorphic_fn_monomorphises_twin` | tests/generic_value_use_mono.rs | [S109] — expected GREEN (verify existing coverage first; the 0488 fix comment names an explicit-import control) |
+| G7 | spec/08-modules.md §8.6.4 — the `deftype` leg of def-over-prelude: `(deftype Zed …)` over a prelude-provided TYPE name is rejected with the §8.6.4 diagnostic (only the `defn` leg is pinned today) | `deftype_over_prelude_provided_type_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — expected GREEN (probed) |
+| G8 | spec/08-modules.md §8.6.4 + §8.7.2 — the PRIVATE variant: `(defn- gulp …)` over a prelude-provided name is the same rejection (visibility of the definition does not exempt it) | `private_defn_over_prelude_provided_name_rejected_neg` | tests/spec_08_name_shadowing.rs | [S109] — expected GREEN (probed; exact §8.6.4 diagnostic observed) |
+
+### IV. Structural acceptance criterion (for the `/arch` convergence ruling)
+
+The RED set (R1–R8) flipping GREEN is the *behavioural* acceptance. The
+*structural* acceptance is: **after the convergence, no `_or_prelude` variant
+should be NEEDED** — one resolution primitive in which the prelude fallback is
+intrinsic (applied inside the single lookup, not opted into per call site), so
+a new resolution site CANNOT forget it. Corollaries the ruling must cover:
+
+1. **Exactly two semantic operations exist**, and BOTH consult the prelude:
+   *resolve-a-reference* (fallback intrinsic), and *may-this-name-be-defined*
+   (the §8.6.4 seam — derived FROM the same resolution primitive, as
+   `reject_def_over_binding` already does, with home==current ⇒ redefinition
+   allowed). The rule of thumb currently recorded in
+   `crates/cranelisp-typecheck/CLAUDE.md` ("pick the fallback variant for a
+   *reference*, the non-fallback variant to decide whether a name is *free*" —
+   the rationale defending the deftrait shadow) is WRONG under the settled
+   spec and is exactly what produced S14: a name is NOT free merely because it
+   is prelude-provided. The idempotent-retry duplicate check (same-module
+   re-registration) is the only legitimate current-module-only probe, and it
+   is a different question from name-freedom.
+2. Every definition form — `defn`, `def`, `deftype`, `deftrait` (trait name
+   AND method names), `defmacro`, private `-` variants — routes through the
+   ONE §8.6.4 seam. S14/S15/S16 exist because three forms bypass it.
+3. The ~93-site `prelude_fallback` bit threading collapses to the gate inside
+   the primitive (`prelude_fallback_target` consulted once, in one place).
+4. The I-1 public-only head filter and the terminal-source dedup/poison
+   comparison live inside the primitive, not at call sites.
+5. `lookup_type_def_with_state`-shaped non-fallback lookups are deleted or
+   renamed so they cannot be mistaken for reference resolution (S8's cause).
+
+Mechanical check for `/review` at convergence time: `grep -rn "_or_prelude\|prelude_fallback" crates/ src/`
+should reduce to the primitive's own definition + the single gate + tests.
+
+### V. Existing-pin upkeep (route to `/testing`, same change-set as authoring)
+
+Stale framing found while verifying status (all named tests PASS on HEAD,
+2026-07-12): `tests/spec_08_name_shadowing.rs` and
+`tests/spec_08_prelude_outer_scope.rs` headers + per-test comments still carry
+present-tense "RED signal (FIXME 0514/0515/0516) … fails today against
+`e1fe4a8`" classifications and cite the retired `tests/plan/ledger.md` — the
+0514/0516 fixes have landed and all 33 tests are GREEN. Per the `// defect:`
+rules ("a GREEN repro carrying present-tense DEFECT framing lets a future
+regression pose as a known guard"), strip the stale RED/ledger framing to past
+tense and add the missing `// defect:` lines (class=`mode-divergence` for the
+0514 batch-arm rows, class=`prelude-scope-miss` for the prelude-arm rows,
+`owner=/dev found=S102`). Same cleanup for the three S108 introspection pins
+(`bare_prelude_globbed_trait_lookup_shows_defn_and_impl_sections`,
+`type_impl_section_includes_prelude_globbed_trait_impls_probe`,
+`impl_of_prelude_globbed_trait_resolves_trait_name` — all GREEN; keep the
+`// defect:` lines, convert prose to past tense). FIXME 0558 is dispositioned:
+repro + fix both landed (deleted by /qa 2026-07-12, this section is the
+durable record).
+
+### VI. Out-of-invariant: dotted constructor in value position (§8.5.2) — attribution confirmed (2026-07-12, /qa)
+
+| Spec citation | Test | File | Status | Polarity / provenance |
+|---|---|---|---|---|
+| spec/08-modules.md §8.5.2 (Dotted Names) — a dotted constructor reference `Type.Ctor` in VALUE position MUST resolve whenever the parent type is in bare scope, first-class like the dotted field accessor `Box.v` (which resolves; the bare ctor `Red` also resolves, and display already prints the canonical `Color.Red` form the resolver rejects as input) | `dotted_constructor_in_value_position_resolves` | tests/spec_08_modules.rs | [S109] — RED, failing-not-ignored known-defect guard (committed 2026-07-12). `// defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev` (locus corrected by /qa attribution — `/testing` to update the test-side line, which currently carries a free-text spaced locus that breaks the `grep -o "locus=[^ ]*"` recipe) | positive (mode-independent; nullary and applied ctors alike) |
+
+**Attribution (confirmed by code-read, 2026-07-12): TYPECHECK — the alternate
+frontend attribution is exonerated.** The reader
+(`crates/cranelisp-frontend/src/reader.rs::read_dotted_symbol`) delivers
+`Color.Red` and `Box.v` IDENTICALLY as a single dotted-symbol `Expr::Var` — no
+desugaring, no ctor/field distinction, so the divergence cannot be frontend.
+The split happens in `crates/cranelisp-typecheck/src/checker.rs::lookup` →
+`resolve_dotted_field_accessor` (checker.rs ~1404): it probes the type's home
+module for a **canonical `Type.member`-KEYED entry** and accepts it only when
+`adt::committed_accessor_kind` classifies it `Concrete(fqtn)`. Field accessors
+HAVE such an entry (adt.rs ~599 registers the canonical `Type.field`-keyed
+accessor `Def` beside the bare alias); constructors register under the BARE
+ctor name only (adt.rs ~382, `register_constructors`) — the probe misses, and
+the accessor-kind gate would reject a `DefKind::Constructor` anyway. So the
+dotted-member value resolver enumerates field accessors and OMITS constructors:
+`enumeration-miss`, member-set edition.
+
+**Fix shape (determined by the code-read; one crate, two seams):** (1) adt.rs
+registers a canonical `Type.Ctor`-keyed entry per constructor (mirroring the
+accessor canonical-key model; new entries are data, not a serde-shape change —
+no `CACHE_SCHEMA_VERSION` bump expected); (2) `resolve_dotted_field_accessor`
+(renamed to a dotted-MEMBER resolver) accepts a
+`DefKind::Constructor { type_name == fqtn }` arm. **The registration half is
+load-bearing, not optional**: backend GOT resolution
+(`crates/cranelisp-backend/src/compiler/resolution.rs::resolve_driven`) is
+entry-keyed by name — `Box.v` reaches codegen only because a `Box.v`-keyed Def
+exists in the home module; a resolver-only typecheck fix would typecheck the
+reference and then fail at codegen.
+
+**Fix-now-vs-carry verdict (to `/sprint`): CARRY.** This is NOT a small
+member-set enumeration extension — it is a registration-model extension (every
+constructor of every deftype gains a second symbol-table entry) plus the
+resolver arm, with enumeration/display ripple to sweep (`/list` boundaries,
+`/search` index, importable sets now see `Type.Ctor` keys — exactly the
+definition-variants lens). One narrow `/dev` (typecheck) dispatch, but wrong to
+squeeze into increment close; schedule early S109 beside the matrix follow-ups.
+The committed failing-not-ignored guard is the durable record meanwhile.
+Follow-ups for `/testing` at fix time: CALL-position (`(Opt.Some 3)`) and
+prelude/import-provenance twins for the dotted-ctor leg, per the
+definition-variants lens.
+
+### VII. Coverage-process lesson (S108 Inc3): "in-scope via prelude" controls derive from a PUBLIC re-export
+
+During the `/search` I-1 visibility fix, the Wave-B control
+`tests/search.rs::search_loaded_module_in_scope_exact_match_still_marked_not_imported_neg`
+was found to have derived its "in-scope" symbol from a PRIVATE prelude
+`(import [foo [other]])` — which per §8.8.1 does NOT put a name in downstream
+scope (only the prelude's PUBLIC/exported names are provided). The control
+passed only while the pre-fix private-prelude leak existed; the I-1 fix
+(correctly stopping the leakage) turned it RED, and it was re-baselined to
+`(export [foo [other]])`.
+
+**Standing rule for control construction:** an "in-scope via prelude" test
+control MUST derive its scope-membership from a PUBLIC prelude re-export
+(`export`), never a private prelude `import` — the two provenances differ by
+exactly the §8.4.0 visibility flag that governs downstream scope (§8.8.1), so
+a control that conflates them passes only while a visibility leak exists.
+This is a concrete cell in the standing "coverage by definition variants"
+lens (`tests/CLAUDE.md`): provenance axis — explicit-import vs
+implicit-prelude, × public vs private. The re-baselined test above is the
+worked example. (The E3 fixture recipe in §"Sprint 108 Increment 3" describing
+`(import [foo [other]])` is superseded by this re-baseline.)

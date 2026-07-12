@@ -318,3 +318,48 @@ fn fold_bodied_composition_with_pinning_annotation_control() {
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 5");
 }
+
+// =============================================================================
+// G6 — prelude ≡ explicit import: a PRELUDE-DEFINED polymorphic fn (PLAN §III G6)
+//
+// Verified against the coverage above (2026-07-12): this file pins generics
+// imported from LOCAL fixture modules through the 0488 mono-collection
+// chokepoints, but NOT a polymorphic fn provided by the implicit prelude. A
+// prelude-provided generic called at a concrete type MUST monomorphise through
+// the same fallback-aware chokepoint as an explicitly-imported one. Twin over
+// the generic's provenance.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.8.1 + design/typecheck/monomorphisation.md — a
+//   POLYMORPHIC prelude-provided fn called at a concrete type from user code
+//   monomorphises and runs identically whether it is explicitly imported (leg A)
+//   or reached via the implicit prelude glob (leg B).
+//
+// CLASSIFICATION: GREEN twin pin (G6). Both legs return 42 ((iden 42)).
+#[test]
+fn prelude_provided_polymorphic_fn_monomorphises_twin() {
+    const PRELUDE_POLY: &str = "\
+(export [primitives [*]])
+(defn iden [x] x)
+";
+    // Leg A — the prelude generic `iden` explicitly imported (primitives imported
+    // directly so `Pure` stays in scope after the prelude glob is suppressed).
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE_POLY)
+        .file(
+            "user.cl",
+            "(import [primitives [Pure]])\n\
+             (import [prelude [iden]])\n\
+             (defn main [] (Pure (iden 42)))",
+        )
+        .run("user.cl")
+        .output();
+    // Leg B — same program, `iden` reached via the implicit prelude.
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE_POLY)
+        .file("user.cl", "(defn main [] (Pure (iden 42)))")
+        .run("user.cl")
+        .output();
+    leg_a.assert_exit(42);
+    leg_b.assert_exit(42);
+}

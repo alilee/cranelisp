@@ -40,6 +40,8 @@
             &expanded,
             &original,
             Some("(mdef x 1)".to_string()),
+            &cranelisp_types::ModuleAliases::default(),
+            &cranelisp_typecheck::PreludeFallback::default(),
         )
         .unwrap();
 
@@ -99,6 +101,8 @@
             &direct,
             &direct,
             None,
+            &cranelisp_types::ModuleAliases::default(),
+            &cranelisp_typecheck::PreludeFallback::default(),
         )
         .unwrap();
 
@@ -761,4 +765,135 @@
             find_named_var_span_in_toplevel(&defn, "core/absent"),
             Some(Span::new(10, 21)),
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // §8.6.4 defmacro definition gate (S108 Wave-G CS2,
+    // prelude-import-convergence.md §4.2) — `register_macro_in_module` routes
+    // the defmacro binding through the ONE types-owned `reject_def_over_binding`
+    // seam BEFORE any table/introspection write, so a rejected form has no
+    // effect. Int-side twin of typecheck's `defn`/`deftype`/`deftrait` seam.
+    // -----------------------------------------------------------------------
+
+    /// A public placeholder Def, standing in for a prelude-provided name.
+    fn public_placeholder_def() -> cranelisp_types::ModuleEntry<crate::code::Code> {
+        cranelisp_types::ModuleEntry::def(
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: cranelisp_types::Type::Int,
+            },
+            cranelisp_types::DefKind::primitive(0),
+        )
+        .visibility(Visibility::Public)
+        .build()
+    }
+
+    fn tables_with_module(module: &str) -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+        let m = ModuleFullPath::from(module);
+        let tables = dashmap::DashMap::new();
+        tables.insert(m.clone(), crate::code::SessionSymbolTable::new_with_params(m));
+        tables
+    }
+
+    fn register_macro_named(
+        tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        module: &ModuleFullPath,
+        name: &str,
+        aliases: &cranelisp_types::ModuleAliases,
+        prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    ) -> Result<(), CranelispError> {
+        let src = format!("(defmacro {name} [x] x)");
+        let sexp = cranelisp_frontend::parse(&src).unwrap().remove(0);
+        let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
+        form_dispatch::register_macro_in_module(
+            tables, None, module, &info.name, &info, &sexp, &sexp, None,
+            aliases, prelude_fallback,
+        )
+    }
+
+    // spec: spec/08-modules.md §8.6.4 — a `defmacro` over an EXPLICIT import head
+    // in scope is a §8.6.4 conflict. The gate resolves the name, sees the inner
+    // `Import` head, and rejects. Fail-on-revert: removing the gate registers
+    // the macro and returns Ok, failing this expect_err.
+    #[test]
+    fn register_macro_over_explicit_import_binding_rejected() {
+        let tables = tables_with_module("user");
+        tables.insert(
+            ModuleFullPath::from("prelude"),
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("prelude")),
+        );
+        // prelude carries the terminal `gulp`; user holds an explicit import of it.
+        tables
+            .get_mut(&ModuleFullPath::from("prelude"))
+            .unwrap()
+            .insert(Symbol::from("gulp"), public_placeholder_def());
+        tables.get_mut(&ModuleFullPath::from("user")).unwrap().insert(
+            Symbol::from("gulp"),
+            cranelisp_types::ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("prelude"),
+                    symbol: Symbol::from("gulp"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        let err = register_macro_named(&tables, &ModuleFullPath::from("user"), "gulp", &aliases, &pf)
+            .expect_err("a defmacro over an explicit import MUST reject (§8.6.4)");
+        assert!(
+            matches!(&err, CranelispError::TypeError { message, .. } if message.to_lowercase().contains("conflict")),
+            "collision diagnostic: {err:?}"
+        );
+        // No effect: the macro was NOT registered — the import head stays.
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(matches!(user.get("gulp"), Some(cranelisp_types::ModuleEntry::Import { .. })));
+    }
+
+    // spec: spec/08-modules.md §8.6.4/§8.8.1 — a `defmacro` over a PRELUDE-provided
+    // name (reachable only via the fallback bit) is the same conflict. Fail-on-
+    // revert: without the gate the identity macro registers and wins.
+    #[test]
+    fn register_macro_over_prelude_provided_name_rejected() {
+        let tables = tables_with_module("user");
+        tables.insert(
+            ModuleFullPath::from("prelude"),
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("prelude")),
+        );
+        tables
+            .get_mut(&ModuleFullPath::from("prelude"))
+            .unwrap()
+            .insert(Symbol::from("gulp"), public_placeholder_def());
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        pf.insert(ModuleFullPath::from("user"), true); // fallback bit ON
+        let err = register_macro_named(&tables, &ModuleFullPath::from("user"), "gulp", &aliases, &pf)
+            .expect_err("a defmacro over a prelude-provided name MUST reject (§8.6.4/§8.8.1)");
+        assert!(
+            matches!(&err, CranelispError::TypeError { message, .. } if message.to_lowercase().contains("conflict")),
+            "collision diagnostic: {err:?}"
+        );
+        // No effect: `gulp` is not installed in user's own table.
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(user.get("gulp").is_none(), "the rejected macro left no user entry");
+    }
+
+    // spec: spec/08-modules.md §8.6.4 — the module's OWN prior macro definition
+    // is ordinary redefinition (home == current), NOT a conflict: re-registering
+    // the same macro name passes the gate. Pins that the gate does not break the
+    // REPL macro-redefine path, and that a free name (no in-scope binding) is
+    // installable.
+    #[test]
+    fn register_macro_redefine_own_and_free_name_allowed() {
+        let tables = tables_with_module("user");
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        let user = ModuleFullPath::from("user");
+        // Free name — no in-scope binding — installs.
+        register_macro_named(&tables, &user, "twice", &aliases, &pf)
+            .expect("a free macro name is installable");
+        // Redefining the module's OWN macro (home == current) is allowed.
+        register_macro_named(&tables, &user, "twice", &aliases, &pf)
+            .expect("redefining the module's own macro is ordinary redefinition");
     }

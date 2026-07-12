@@ -323,9 +323,19 @@ impl TestFixture {
         self.env().has_impl_with_state(&self.state, trait_name, impl_type)
     }
 
-    /// Lookup trait decl (test convenience). State-rooted.
+    /// Lookup trait decl (test convenience). Current-module-only (NON-fallback)
+    /// — the raw same-module probe the `deftrait` idempotency check now uses.
     pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDeclInfo> {
-        self.env().lookup_trait_decl_with_state(&self.state, trait_name)
+        self.env().lookup_trait_decl_in_module(&self.state.current_module, trait_name)
+    }
+
+    /// Resolve a trait decl through the ONE scope resolve, prelude fallback
+    /// intrinsic (test convenience); mirrors the `impl`-form trait-name lookup.
+    pub fn resolve_trait_decl(
+        &self,
+        trait_name: &TraitName,
+    ) -> Option<cranelisp_types::TraitDeclInfo> {
+        self.env().resolve_trait_decl(&self.state, trait_name)
     }
 
     /// Method to trait (test convenience). State-rooted.

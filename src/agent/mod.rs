@@ -7,7 +7,11 @@
 // byte-identical to today (`agent.md §1`, `repl/spec.md §17.1`).
 //
 // WAVE 3 SCOPE (Advisor MVP core). The §5.3 dispatch classifier
-// (`classify_for_agent`, this file) routes prose/unknowns to the agent; the real
+// (`classify_for_agent`, this file) routes ≥2-form input (prose) to the agent —
+// a SINGLE form stays in the REPL, resolved or not (the form-count ruling
+// 2026-07-12: `if forms.len() == 1 { Repl } else { Agent }`, NOT symbol
+// resolution — a lone unknown symbol is one form, so it does NOT route to the
+// agent); the real
 // `agent_turn` model↔tool loop (this file) drives an `AgentModel` (the membrane
 // over rig's `CompletionModel`, R3-amended — `types.rs`/`provider.rs`/`request.rs`),
 // assembling the request from the always-on language primer (`primer.rs`) + the
@@ -63,38 +67,41 @@ pub enum Classify {
 
 impl CompilerSession {
     /// Classify a *complete* REPL buffer for agent dispatch (`agent.md §2.2`,
-    /// `repl/spec.md §17.1` — refined classifier, user-directed 2026-06-22).
+    /// `repl/spec.md §17.1` — the FORM-COUNT rule, user ruling 2026-07-12).
     ///
-    /// Parseability alone is insufficient: this reader accepts a run of bare
-    /// words (`how do I define a function`) as `Ok(N Symbol forms)`, so prose
-    /// would otherwise route to the REPL. The refined rule resolves the bare
-    /// symbols before deciding — only a buffer whose every bare atom is *known*
-    /// (resolves, or is a literal) is the §4 self-documentation surface; any
-    /// unbound bare symbol (a typo, a bare word, multi-word prose) is for the
-    /// agent. Routing rules (first match wins):
+    /// **Form count is the discriminator, never symbol resolution.** The two
+    /// prior heuristics both misjudged real input: "any `Ok` routes to the REPL"
+    /// sent multi-word prose (`Ok(N bare Symbol forms)`) to eval, and the
+    /// "resolve every atom, route unknowns to the agent" refinement it replaced
+    /// still leaned on `symbol_is_known`. The corrected rule is purely
+    /// structural — how many forms the line parses to:
     ///
     /// - starts with `/` → `Repl` (slash command, incl. `/ask`/`/refs`/`/tests-for`)
     /// - blank / comment-only → `Repl` (silent re-prompt)
     /// - `parse(buffer)`:
     ///   - `Err(unclosed '(' / '[')` → `Continuation` (the `parens_balanced` gate)
-    ///   - `Err(other parse error)` → `Agent(text)` (not Cranelisp → prose)
+    ///   - `Err(other parse error)` → `Agent(text)` (unparseable prose)
     ///   - `Ok(forms)`:
-    ///     - ANY compound form (`List`/`Bracket`, e.g. `(+ 1 2)`, `[1 2 3]`)
-    ///       → `Repl` (it is code)
-    ///     - else (all forms are bare atoms — symbols / literals):
-    ///       - ALL known (every `Symbol` resolves via the same resolution path
-    ///         `/info`/bare-symbol introspection uses, plus intrinsic type names;
-    ///         literals always count) → `Repl` (the §4 describe surface)
-    ///       - ANY unbound / unknown symbol → `Agent(text)`
+    ///     - **exactly ONE form** (a single bare atom, a single fully-qualified
+    ///       symbol like `primitives/vec-len`, or a single compound `(+ 1 2)` /
+    ///       `[1 2 3]`) → `Repl` — evaluated/introspected exactly as §1/§4,
+    ///       INDEPENDENT of whether the symbol resolves. A single FQ symbol
+    ///       introspects, it never routes to the agent (the E6-candidate-B fix);
+    ///       a single bare unknown shows the §4.1.10 unbound display.
+    ///     - **anything else** (≥2 forms — the E6 fix: `why doesn't that
+    ///       typecheck?` parses to ≥2 forms because the `'` in `doesn't` is the
+    ///       quote reader-macro `'t` → `(quote t)`) → `Agent(text)`.
     ///
-    /// The symbol-lookup → `Agent` divergence lives ENTIRELY in this module,
-    /// which is `#[cfg(feature = "agent")]`-gated (`lib.rs`): feature-off this
-    /// method does not exist and the binary is byte-identical to today — a bare
-    /// unbound symbol reaches today's `eval.rs` "unbound" introspection message
-    /// via `process_commands`, not the agent.
+    /// The reader is unchanged: the `'`-in-contraction split is language-normative
+    /// and stays; the fix is entirely here — a ≥2-form line routes to the agent
+    /// rather than "contains a compound ⇒ code". `symbol_is_known` is NOT
+    /// consulted (candidate B: a single FQ symbol introspects regardless of
+    /// resolution). The whole module is `#[cfg(feature = "agent")]`-gated
+    /// (`lib.rs`); feature-off this method does not exist and the read loop is
+    /// byte-identical. The `Agent` arm at the `main.rs` classifier site fires
+    /// only when the agent is ACTIVE; with no agent a ≥2-form line evaluates
+    /// sequentially and abandons on the first error (§17.1, the E7 fix — Wave C).
     pub fn classify_for_agent(&self, buffer: &str) -> Classify {
-        use cranelisp_types::Sexp;
-
         let trimmed = buffer.trim();
 
         // Slash command — unchanged path. (`/ask <text>` is dispatched to the
@@ -118,8 +125,8 @@ impl CompilerSession {
                 // BEFORE reaching the classifier, so by the time we are here the
                 // buffer is "complete" by the paren-balance test. A residual
                 // parse error on a paren-balanced buffer is therefore NOT an
-                // unclosed bracket — it is prose. But guard defensively: if the
-                // buffer is somehow unbalanced, treat it as a continuation
+                // unclosed bracket — it is unparseable prose. Guard defensively:
+                // if the buffer is somehow unbalanced, treat it as a continuation
                 // rather than diverting to the agent.
                 return if !crate::session_v4::parens_balanced(buffer) {
                     Classify::Continuation
@@ -129,50 +136,16 @@ impl CompilerSession {
             }
         };
 
-        // `Ok(forms)`. Any compound form (a list/vector/application) is code —
-        // route to the deterministic REPL untouched.
-        let any_compound = forms
-            .iter()
-            .any(|f| matches!(f, Sexp::List(..) | Sexp::Bracket(..)));
-        if any_compound {
-            return Classify::Repl;
-        }
-
-        // Every form is a bare atom. Literals always count as known; a bare
-        // `Symbol` is known iff it resolves through the same path bare-symbol
-        // introspection / `/info` use (`lookup_with_prelude_fallback`: current
-        // module → prelude outer scope → root, covering bound defs, special
-        // forms, types, traits, operators, constructors), or it names an
-        // intrinsic type (`Int`/`Bool`/`Float`/`String`, the §4.1.3 surface that
-        // resolves outside the tables). ANY unbound symbol → the agent.
-        let all_known = forms.iter().all(|f| match f {
-            Sexp::Symbol(name, _) => self.symbol_is_known(name),
-            Sexp::Int(..) | Sexp::Float(..) | Sexp::Bool(..) | Sexp::Str(..) => true,
-            // No compound forms remain (handled above); a residual Comment is
-            // inert (the comment-only buffer already routed to Repl) — treat as
-            // known so it does not divert to the agent.
-            _ => true,
-        });
-
-        if all_known {
+        // §17.1 (user ruling 2026-07-12) — form count is the discriminator:
+        // EXACTLY ONE form routes to the deterministic REPL (a bare atom, a
+        // single FQ symbol, or a single compound), independent of symbol
+        // resolution; anything else (≥2 forms, or the degenerate 0-form case)
+        // routes to the agent.
+        if forms.len() == 1 {
             Classify::Repl
         } else {
             Classify::Agent(trimmed.to_string())
         }
-    }
-
-    /// Is a bare symbol *known* to the session — i.e. would the §4 bare-symbol
-    /// introspection / `/info` path describe it rather than report it unbound?
-    ///
-    /// Reuses the canonical resolution path (`lookup_with_prelude_fallback`,
-    /// the same `Some`/`None` gate `/sig`/`/info`/`describe_symbol` use to
-    /// distinguish a described symbol from `unknown symbol '…'`), plus the
-    /// intrinsic-type-name check those paths apply ahead of the table lookup
-    /// (`Int`/`Bool`/`Float`/`String` — §4.1.3 names that live outside the
-    /// symbol tables). No second resolver is hand-rolled (Principle 7).
-    fn symbol_is_known(&self, name: &str) -> bool {
-        crate::session_v4::intrinsic_type_from_name(name).is_some()
-            || self.lookup_with_prelude_fallback(name).is_some()
     }
 
     /// Is the embedded agent ACTIVE — configured AND with a reachable provider
@@ -186,6 +159,25 @@ impl CompilerSession {
     /// notice via `agent_turn`'s own dormant short-circuit.
     pub fn agent_is_active(&self) -> bool {
         self.agent.as_ref().is_some_and(|a| !a.is_dormant())
+    }
+
+    /// Record one REPL eval turn onto the agent's bounded recent-turn ring (E5,
+    /// `agent.md §5.5`). Called once at the single per-turn render seam in
+    /// `main.rs`'s read loop — the SAME site that emits the green result or the
+    /// verbatim `Error: {e}` diagnostic — with the identical strings the user
+    /// saw (Principle 7: this is NOT a second transcript store; it reuses the
+    /// display boundary's own output). A no-op when the agent is unconfigured
+    /// (`self.agent == None`) — feature-on-without-`--agent` records nothing
+    /// until the agent is enabled; feature-off this method does not exist and
+    /// the read-loop call site is absent, so the loop is byte-identical (§5.5(4)).
+    pub fn record_repl_turn(
+        &mut self,
+        input: &str,
+        outcome: crate::agent::types::ReplTurnOutcome,
+    ) {
+        if let Some(agent) = self.agent.as_mut() {
+            agent.record_turn(input, outcome);
+        }
     }
 
     /// Take one agent turn over the user's text (`agent.md §3.2`) — the real
@@ -508,38 +500,72 @@ mod tests {
         assert_eq!(s.classify_for_agent("\"hi\""), Classify::Repl);
     }
 
-    // spec: repl/spec.md §17.1 — a bare UNKNOWN symbol (a bare word, or a typo)
-    // routes to the agent: it does NOT resolve through the introspection path,
-    // so the refined classifier hands it to the agent rather than the §4
-    // "unbound" message. (Feature-off this divergence does not exist — see the
-    // Lane-B guard in tests/agent.rs.)
+    // spec: repl/spec.md §17.1 — CONTROL (E6/candidate-B form-count rule): a
+    // SINGLE bare UNKNOWN symbol parses to EXACTLY one form, so it routes to the
+    // deterministic REPL (the §4.1.10 unbound display), NOT the agent — the
+    // single-form decision does NOT consult `symbol_is_known`.
     #[test]
-    fn bare_unknown_symbol_routes_to_agent() {
+    fn bare_unknown_single_symbol_routes_to_repl() {
         let s = repl_session();
-        match s.classify_for_agent("yes") {
-            Classify::Agent(text) => assert_eq!(text, "yes"),
-            other => panic!("expected Agent for bare unknown 'yes', got {other:?}"),
-        }
-        match s.classify_for_agent("lenght") {
-            Classify::Agent(text) => assert_eq!(text, "lenght"),
-            other => panic!("expected Agent for typo 'lenght', got {other:?}"),
-        }
+        assert_eq!(s.classify_for_agent("frobnicate"), Classify::Repl);
+        assert_eq!(s.classify_for_agent("yes"), Classify::Repl);
+        assert_eq!(s.classify_for_agent("lenght"), Classify::Repl);
     }
 
-    // spec: repl/spec.md §17.1 — a compound form (list / vector) is code and
-    // routes to the REPL, regardless of whether its head resolves.
+    // spec: repl/spec.md §17.1 — candidate B: a single FULLY-QUALIFIED symbol
+    // (`primitives/vec-len`) parses to EXACTLY one form and routes to the
+    // deterministic REPL (it introspects, §4) — INDEPENDENT of whether it
+    // resolves. It must NOT route to the agent (the E6-candidate-B fix: the
+    // single-form Repl decision is not gated on `symbol_is_known`).
+    #[test]
+    fn single_fq_symbol_routes_to_repl_not_agent() {
+        let s = repl_session();
+        assert_eq!(s.classify_for_agent("primitives/vec-len"), Classify::Repl);
+    }
+
+    // spec: repl/spec.md §17.1 — a single compound form (list / vector) is
+    // exactly one form and routes to the REPL, regardless of whether its head
+    // resolves.
     #[test]
     fn compound_form_routes_to_repl() {
         let s = repl_session();
-        // `add-i64` is not bound in this bare session, but a list is code.
+        // `add-i64` is not bound in this bare session, but a single list is one
+        // form → code.
         assert_eq!(s.classify_for_agent("(add-i64 1 2)"), Classify::Repl);
+        assert_eq!(s.classify_for_agent("(+ 1 2)"), Classify::Repl);
         assert_eq!(s.classify_for_agent("[1 2 3]"), Classify::Repl);
     }
 
+    // spec: repl/spec.md §17.1 — E6: a natural-language sentence containing an
+    // apostrophe (`why doesn't that typecheck?`) parses to ≥2 forms because the
+    // `'` in `doesn't` is the quote reader-macro (`'t` → `(quote t)`), so under
+    // the form-count rule (>1 form → agent) it routes to the AGENT — NOT to eval
+    // as code (the pre-fix `any_compound → Repl` misroute).
+    #[test]
+    fn nl_prose_with_contraction_routes_to_agent() {
+        let s = repl_session();
+        match s.classify_for_agent("why doesn't that typecheck?") {
+            Classify::Agent(text) => assert_eq!(text, "why doesn't that typecheck?"),
+            other => panic!("expected Agent for contraction prose, got {other:?}"),
+        }
+    }
+
+    // spec: repl/spec.md §17.1 — the second transcript trap: prose carrying both
+    // `:` (annotation reader-macro) and a `'` contraction parses to ≥2 forms (or
+    // a genuine parse error), either of which routes to the AGENT under the
+    // form-count rule — never mis-routed to eval as code.
+    #[test]
+    fn nl_prose_with_colon_and_contraction_routes_to_agent() {
+        let s = repl_session();
+        match s.classify_for_agent("the type was: it doesn't match") {
+            Classify::Agent(_) => {}
+            other => panic!("expected Agent for `was:`+contraction prose, got {other:?}"),
+        }
+    }
+
     // spec: repl/spec.md §17.1 — multi-word prose parses as a run of bare
-    // symbols (`Ok`), but those symbols do not resolve, so the refined
-    // classifier routes it to the agent (the any-unbound rule). This is the U1
-    // gap the refinement closes: parseability is insufficient.
+    // symbols (`Ok(N forms)`); ≥2 forms routes to the agent under the form-count
+    // rule (resolution is not consulted).
     #[test]
     fn unsigiled_multiword_prose_routes_to_agent() {
         let s = repl_session();
@@ -549,15 +575,29 @@ mod tests {
         }
     }
 
-    // spec: repl/spec.md §17.1 — a buffer mixing a known bare symbol with an
-    // unknown one routes to the agent (any-unbound wins). `if` is known; `frob`
-    // is not.
+    // spec: repl/spec.md §17.1 — `foo bar` parses to TWO bare-symbol forms, so
+    // it routes to the agent under the form-count rule (the E6-unified >1-form
+    // arm; with no active agent the read loop instead evals sequentially and
+    // abandons on the first error — E7, Wave C — but the classifier's own
+    // decision is `Agent`).
     #[test]
-    fn mixed_known_and_unknown_routes_to_agent() {
+    fn two_bare_symbols_route_to_agent() {
+        let s = repl_session();
+        match s.classify_for_agent("foo bar") {
+            Classify::Agent(text) => assert_eq!(text, "foo bar"),
+            other => panic!("expected Agent for two bare symbols, got {other:?}"),
+        }
+    }
+
+    // spec: repl/spec.md §17.1 — a buffer mixing a known bare symbol with an
+    // unknown one is TWO forms → agent (form count, not resolution). `if` is a
+    // special form; `frob` is unbound; either way it is ≥2 forms.
+    #[test]
+    fn two_forms_known_and_unknown_route_to_agent() {
         let s = repl_session();
         match s.classify_for_agent("if frob") {
             Classify::Agent(text) => assert_eq!(text, "if frob"),
-            other => panic!("expected Agent for mixed known+unknown, got {other:?}"),
+            other => panic!("expected Agent for two forms, got {other:?}"),
         }
     }
 
@@ -615,6 +655,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         (s, capture)
     }
@@ -827,6 +868,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         drive(&mut s, "show me the source of f");
 
@@ -1019,6 +1061,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         s
     }

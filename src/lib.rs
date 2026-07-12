@@ -17,6 +17,7 @@ pub mod session_v4;
 pub mod got_trace;
 pub mod io_trace;
 pub mod style;
+pub(crate) mod styled;
 
 // Facade-cited but not yet reachable from external consumers — keep `pub`
 // so the dead_code lint accepts these as part of the published surface per

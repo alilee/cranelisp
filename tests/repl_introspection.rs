@@ -1859,6 +1859,189 @@ Sizeable
     );
 }
 
+// ===========================================================================
+// S108 (Increment 3) — FIXME 0558: a bare lookup of a PRELUDE-GLOBBED trait
+// (reachable ONLY via the implicit outer-scope fallback bit, no `Import` edge)
+// drops its `; defn:`/`; impl:` sections and mis-homes the primary line to the
+// asking scope. Same class family as E3 (resolve-home-then-enumerate), but the
+// DISPLAY-side mechanism: `format_trait_display` roots `lookup_trait_decl_chain`
+// (`; defn:`) and `get_implementing_types_chain` (`; impl:`) at
+// `current_module_path()` instead of the trait's resolved home. The
+// existing trait-lookup guards above define the trait IN-SESSION (user module),
+// so scope == home and they pass; the prelude-globbed case exposes the gap.
+//
+// `class=wrong-scope-lookup` — resolution-time wrong-root (per the standing
+// vocabulary row naming 0558), NOT `enumeration-miss` (a census error).
+// ===========================================================================
+
+// spec: repl/spec.md §4.1.4 — a bare lookup of a prelude-globbed trait MUST show
+// the primary line qualified to the trait's home PLUS the UNCONDITIONAL `; defn:`
+// (method names) and `; impl:` (implementing types) sections. `Display` is
+// provided by the test-standard prelude (deftrait + impls for Int/Float/Bool/
+// String, all in the prelude module) and is reachable at `user` only via the
+// implicit prelude glob — no `Import` edge.
+//
+// HISTORY (FIXME 0558 — FIXED). At authoring (2026-07-12) a bare `Display` from
+// `user` surfaced `:user/Display ; deftrait` (WRONG home — rooted at the asking
+// scope, not the prelude), with the `; defn:` section DROPPED entirely and the
+// `; impl:` section header present but EMPTY (no implementing types). The fix
+// rooted the trait chain at the trait's resolved home; GREEN on HEAD, it now
+// stands as the regression guard.
+//
+// defect: class=wrong-scope-lookup locus=src/repl.rs::format_trait_display found=S108 owner=/dev
+#[test]
+fn bare_prelude_globbed_trait_lookup_shows_defn_and_impl_sections() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("Display\n")
+        .output();
+    // The `; defn:` section MUST appear and list the trait's method `show`.
+    assert!(
+        out.stdout.contains("; defn:"),
+        "a bare prelude-globbed trait `Display` MUST surface its `; defn:` method \
+         section (§4.1.4, unconditional) — dropped today because the trait chain is \
+         rooted at the asking scope, not the trait's prelude home (FIXME 0558); \
+         got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("show"),
+        "the `; defn:` section MUST list the method `show`; got:\n{}",
+        out.stdout
+    );
+    // The `; impl:` section MUST appear and list an implementing type (Int).
+    assert!(
+        out.stdout.contains("; impl:"),
+        "a bare prelude-globbed trait `Display` MUST surface its `; impl:` section \
+         (§4.1.4, DELIBERATELY UNCONDITIONAL); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Int"),
+        "the `; impl:` section MUST list an implementing type (e.g. `Int`); got:\n{}",
+        out.stdout
+    );
+    // NEG: the primary line MUST NOT be mis-homed to the asking scope (`user/`) —
+    // it is qualified to the trait's prelude home.
+    assert!(
+        !out.stdout.contains(":user/Display"),
+        "the primary line MUST be qualified to the trait's resolved HOME, not the \
+         asking scope `user/` (the FIXME-0558 wrong-home symptom); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — Pattern-B sibling probe (resolve-home-enumeration.md
+// §5 note; the /qa repro decision). The TYPE-side `; impl:` VIEW asks "which traits
+// does this type implement, as visible from here" — a Decision-45 Pattern-B VIEW
+// question that stays scope-rooted by semantics, and so must include the prelude
+// OUTER scope. The test-standard prelude impls the prelude-globbed traits
+// Display/Eq/Num/Ord for `Int`; §4.1.3's canonical example shows `Int` →
+// `; impl:` / `;  Display Eq Num Ord`. A bare `Int` from `user` MUST list them.
+//
+// HISTORY (Pattern-B view-walk prelude hop — FIXED). At authoring (2026-07-12) a
+// bare `Int` surfaced `:primitives/Int ; type` with NO `; impl:` section — the
+// view walk did NOT hop to the prelude outer scope, so a prelude-globbed trait's
+// impls on the type were dropped. This was a SEPARATE defect from the trait-
+// display 0558 (the VIEW-walk prelude hop, not the home-rooting of the trait's
+// own sections). The view walk now hops to the prelude outer scope; GREEN on
+// HEAD, it stands as the Pattern-B regression pin.
+//
+// defect: class=prelude-scope-miss locus=src/repl.rs::format_builtin_type_display (; impl: view walk) found=S108 owner=/dev
+#[test]
+fn type_impl_section_includes_prelude_globbed_trait_impls_probe() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("Int\n")
+        .output();
+    // The `; impl:` section MUST appear and list the prelude-globbed trait impls.
+    assert!(
+        out.stdout.contains("; impl:"),
+        "the type-side `; impl:` VIEW of `Int` MUST include the prelude-globbed \
+         traits it implements (§4.1.3 canonical `Int` → `; impl:` Display Eq Num \
+         Ord) — the view walk must hop to the prelude outer scope; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Display") || out.stdout.contains("Num"),
+        "the `Int` `; impl:` section MUST list a prelude-globbed implementing trait \
+         (e.g. `Display`/`Num`); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — the `impl` form's `trait_name` is a bare name
+// resolved in module scope. Per spec/08-modules.md §8.6.2 (Import Resolution) a
+// bare name that misses the inner scope resolves against the implicit prelude's
+// public bindings as an OUTER-SCOPE fallback; §8.6.2 is emphatic that "a
+// prelude-provided name is in the module's scope" and the outer/inner layering
+// is a resolution-MECHANISM detail, NOT an exemption. §7.11 states impls
+// "participate in the module system." A PRELUDE-GLOBBED trait therefore MUST be
+// resolvable by a bare `(impl Trait LocalType ...)` — exactly as a bare
+// `Display` already resolves in a LOOKUP position (`:prelude/Display ; deftrait`,
+// the E8 sibling above). The spec is NOT silent here, so E9 is a compiler bug,
+// not a language-normative question.
+//
+// HISTORY (E9 CHECK-path prelude hop — FIXED). At authoring (2026-07-12), with
+// the test-standard prelude (which `deftrait Display` + impls it for
+// Int/Float/Bool/String, all reachable at `user` ONLY via the implicit prelude
+// glob — no `Import` edge), a local `(deftype Widget [:Int w])` followed by
+// `(impl Display Widget (defn show [x] "ok"))` failed at CHECK time with
+// `unknown trait: Display`, and the subsequent `(show (Widget 5))` then failed
+// `no impl of trait Display for type Widget`. CONTRAST that localised the defect
+// to the prelude hop (hand-verified in a fresh dir): the IDENTICAL impl shape
+// with a LOCALLY-DEFINED trait resolved and dispatched — `(deftrait D2 (show2
+// [self] String)) (impl D2 Widget (defn show2 [x] "ok"))` yielded `impl user/D2
+// for user/Widget` then `:primitives/String "ok"` (also covered by
+// spec_07_traits::user_trait_simple). Only the trait's provenance (prelude-
+// globbed vs local) differed.
+//
+// This was the CHECK-path face of the E3/E8/0558 prelude-outer-scope-hop class:
+// `register_trait_impl`'s trait lookup (`lookup_trait_decl_with_state`,
+// crates/cranelisp-typecheck/src/traits/impl_check.rs) did not consult the
+// prelude outer scope, unlike the S78 §2 bare-name chokepoints
+// (`resolve_terminal_entry_or_prelude` et al.) — a DISTINCT locus from E8/0558
+// (the `src/repl.rs` DISPLAY-path). The trait lookup now consults the prelude
+// outer scope; GREEN on HEAD, it stands as the E9 regression pin.
+//
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S108 owner=/dev
+#[test]
+fn impl_of_prelude_globbed_trait_resolves_trait_name() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin(
+            "(deftype Widget [:Int w])\n\
+             (impl Display Widget (defn show [x] \"ok\"))\n\
+             (show (Widget 5))\n",
+        )
+        .output();
+    // The `impl` form MUST resolve the prelude-globbed trait `Display`: its
+    // trait-name lookup must hop to the prelude outer scope (S78 §2), exactly as
+    // a bare `Display` lookup already does. Today it reports `unknown trait`.
+    assert!(
+        !out.stdout.contains("unknown trait"),
+        "an `(impl Display Widget ...)` of a PRELUDE-GLOBBED trait MUST resolve the \
+         trait name via the implicit-prelude outer-scope hop (spec/08-modules.md \
+         §8.6.2 — a prelude-provided name is IN scope; spec/07-traits.md §7.11 — \
+         impls participate in the module system); today `register_trait_impl`'s \
+         trait lookup misses that hop and reports `unknown trait: Display` (E9, \
+         the CHECK-path face of the E3/E8/0558 class); got:\n{}",
+        out.stdout
+    );
+    // Proof the impl actually registered: the bare `(show (Widget 5))` dispatches
+    // to the impl method and returns its String result.
+    assert!(
+        out.stdout.contains("\"ok\""),
+        "after `(impl Display Widget ...)` the bare `(show (Widget 5))` MUST \
+         dispatch to the impl and return `\"ok\"`; today the failed impl \
+         registration leaves `no impl of trait Display for type Widget`; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: repl/spec.md §4.1.5 — bare special form `if` shows `; special form`
 // classification token. Strictly stronger than the bare-`if`/`let` self-doc
 // tests (which only assert no-error + Fn/Bool); this enforces the universal-
@@ -2549,14 +2732,15 @@ fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
 //       MUST NOT silently dispatch to a similarly-named primitive
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_unknown_name_produces_undefined_error_neg)
 //
-// Passes in BOTH builds (arch ruling e3f7d57, §5.3/§7.4): under the default
-// `--features agent` posture the agent is DORMANT (no provider), so the U1
-// classifier's `Classify::Agent` route falls back to today's deterministic
-// "undefined name" display — byte-identical to the feature-OFF build. The agent
-// only intercepts a bare UNBOUND symbol when it is ACTIVE (a reachable provider);
-// that complement is `bare_primitive_unknown_name_routes_to_agent` below (an
-// ACTIVE stub). The Wave-2 `#[cfg(not(feature = "agent"))]` gate is removed: the
-// dormant fall-through restores this default-build guarantee in the agent build.
+// Passes in ALL postures under the §17.1 one-form ruling (user 2026-07-12): a REPL
+// buffer of EXACTLY ONE form is code for the deterministic REPL, so a single bare
+// UNBOUND symbol produces today's "undefined name" display whether the agent is
+// dormant (default `--features agent`, no provider) OR active (a reachable
+// provider). This reverses the retired U1 "active ⇒ intercept" route (arch ruling
+// e3f7d57, §5.3/§7.4). The Wave-2 `#[cfg(not(feature = "agent"))]` gate is removed:
+// the one-form rule makes this guarantee hold in the agent build. The active-agent
+// complement (same deterministic display, ACTIVE stub NOT consulted) is
+// `bare_primitive_unknown_name_stays_in_repl_not_routed_to_agent` below.
 #[test]
 fn bare_primitive_unknown_name_produces_undefined_error_neg() {
     let out = repl_prims("unknown-primitive-name-zzzz\n");
@@ -2584,20 +2768,22 @@ fn bare_primitive_unknown_name_produces_undefined_error_neg() {
     );
 }
 
-// spec: repl/spec.md §17.1 — under `--features agent` with an ACTIVE provider the
-//       U1 resolution-aware dispatch classifier routes a bare UNBOUND symbol to
-//       the agent (not the §4 "undefined name" display). Per arch ruling e3f7d57
-//       (§5.3/§7.4) the route fires only when the agent is ACTIVE — so this drives
-//       an ACTIVE stub (`CRANELISP_AGENT_PROVIDER=stub`). The unknown symbol
-//       reaches `agent_turn`, which renders the stub's framed prose (`▌`). The
-//       load-bearing assertion is the SAME negative guard the default build makes:
-//       the unknown symbol MUST NOT silently dispatch to a nearby primitive
-//       (`add-i64`). This is the active-agent complement of
-//       `bare_primitive_unknown_name_produces_undefined_error_neg` (the dormant
-//       fall-through, today's display).
+// spec: repl/spec.md §17.1 — under the one-form routing ruling (user 2026-07-12) a
+//       REPL buffer of EXACTLY ONE form is code for the deterministic REPL; only
+//       ≥2 forms or unparseable prose divert to an ACTIVE agent. A single bare
+//       UNBOUND symbol is ONE form, so even with an ACTIVE provider it MUST reach
+//       the deterministic §4 "undefined name" display, NOT the agent. This is the
+//       exact inverse of the retired U1 resolution-aware route (arch ruling
+//       e3f7d57, §5.3/§7.4: active ⇒ route), which the §17.1 ruling reverses. The
+//       stub is ACTIVE to prove it is NOT consulted for one form. This now agrees
+//       byte-for-byte with `bare_primitive_unknown_name_produces_undefined_error_neg`
+//       (the dormant build): one form displays deterministically in BOTH postures.
+//
+// context: §17.1-ruling reconciliation (Sprint 108 Inc3 Wave A) — was
+// `bare_primitive_unknown_name_routes_to_agent` asserting the `▌` frame.
 #[cfg(feature = "agent")]
 #[test]
-fn bare_primitive_unknown_name_routes_to_agent() {
+fn bare_primitive_unknown_name_stays_in_repl_not_routed_to_agent() {
     use helpers::e2e::PreludeVariant;
     let cl = Cranelisp::new()
         .repl()
@@ -2612,13 +2798,17 @@ fn bare_primitive_unknown_name_routes_to_agent() {
         .output();
     let combined = format!("{}\n{}", out.stdout, out.stderr);
 
-    // The bare unbound symbol reaches the ACTIVE agent (U1) — the agent prose
-    // frame (`▌`) is the observable signal the line was diverted, not described.
+    // The single bare unbound symbol reaches the deterministic REPL — its unbound
+    // display names the symbol; the ACTIVE stub is NOT consulted (no `▌` frame).
     assert!(
-        combined.contains('\u{258c}'),
-        "under --features agent + an ACTIVE provider a bare UNBOUND symbol MUST \
-         route to the agent (the `\u{258c}` prose frame) per repl/spec.md §17.1 \
-         + arch ruling e3f7d57; got:\n{combined}"
+        combined.contains("undefined variable: unknown-primitive-name-zzzz"),
+        "a single bare unbound symbol MUST reach the deterministic REPL and \
+         produce its unbound display (§17.1 one-form rule; §4); got:\n{combined}"
+    );
+    assert!(
+        !combined.contains('\u{258c}'),
+        "a single bare unbound symbol MUST NOT route to the agent frame under the \
+         §17.1 one-form ruling (reverses arch ruling e3f7d57); got:\n{combined}"
     );
     // The negative guard is preserved across both builds: the unknown symbol
     // MUST NOT silently dispatch to a nearby primitive (over-broad-fix guard).

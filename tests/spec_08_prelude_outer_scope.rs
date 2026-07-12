@@ -21,15 +21,12 @@
 //     qualified `primitives/...` always works.                        [§2.2 (4)]
 //
 // RED-by-design vs GREEN classification (the §2 tripwire — see the per-test
-// notes). Under the CURRENT flattened-table + `is_seeded` model:
-//   * Tests that exercise explicit-import-SHADOWS a prelude-provided name
-//     are RED: the flattened model poisons the colliding bare name instead
-//     of letting the explicit import win. These stay failing-not-ignored
-//     until /dev lands the outer-scope fallback (deletes `is_seeded`).
-//   * Refusal, selective-import, ambiguity, and primitives-via-prelude in
-//     `--run` mode already behave correctly under the current model and
-//     stand as GREEN behaviour-preservation guards (they must stay green
-//     after `is_seeded` deletes).
+// notes). The §1 def-over-prelude / explicit-over-prelude rows were the RED
+// guards of the S102 prelude-arm defect (the flattened `is_seeded` model let
+// the local/explicit binding silently win over the prelude); the outer-scope
+// fallback landed and all §1 rows are GREEN on HEAD (verified 2026-07-12).
+// Refusal, selective-import, ambiguity, and primitives-via-prelude in `--run`
+// mode were already correct and stand as GREEN behaviour-preservation guards.
 //
 // Test prelude shape: every test writes its own `prelude.cl` into the
 // per-test project root (which shadows stdlib per §8.8.2). The prelude does
@@ -49,14 +46,12 @@
 // "silently shadows" tests below are FLIPPED to expect REJECTION:
 //   * def-over-prelude   → §8.6.4 def-over-name-in-scope error
 //   * explicit-import-over-prelude (distinct terminal) → §8.6.5 ambiguity poison
-// They FAIL against the current impl (`e1fe4a8`, which rejects only inner-table
-// import/export on the REPL path — the prelude/outer-scope + batch arms are
-// unimplemented) — that failure IS the signal of FIXME 0514's prelude arm.
-// Failing-not-ignored; flip GREEN when 0514 lands. The §2 (ambiguity), §3
-// (refusal/selective = not-loading, legal), and §4 (primitives-via-prelude,
-// legal) tests are UNAFFECTED — they were already error-preserving or legal
-// under the rule and stay as-is. Ledger: `tests/plan/ledger.md` §"Sprint 102
-// name-shadowing matrix (FIXME 0514)".
+// They once FAILED (the impl rejected only inner-table import/export on the
+// REPL path — the prelude/outer-scope + batch arms were unimplemented); the
+// 0514 prelude-fallback arm landed and all five are GREEN on HEAD. The §2
+// (ambiguity), §3 (refusal/selective = not-loading, legal), and §4
+// (primitives-via-prelude, legal) tests were already error-preserving or legal
+// under the rule and are unchanged.
 // ─────────────────────────────────────────────────────────────────────────
 
 #[path = "helpers/mod.rs"]
@@ -66,7 +61,7 @@ use helpers::e2e::{Cranelisp, CrOutput};
 
 /// A §8.6.4/§8.6.5 shadow/collision rejection: a collision diagnostic is
 /// present AND the shadow did not run to its exit code (no effect). Used by
-/// the flipped §1 tests. RED against `e1fe4a8` (prelude arm unimplemented).
+/// the §1 tests (GREEN on HEAD since the prelude-arm fallback landed).
 fn assert_shadow_rejected(out: &CrOutput, shadow_exit: i32) {
     let c = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
     assert!(
@@ -101,9 +96,9 @@ const PRELUDE_WITH_GULP: &str = "\
 //   prelude also provides is a compile-time error (def-over-name-in-scope);
 //   the prelude carries no exemption. The rejected def has no effect.
 //
-// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514 prelude arm). Under
-// `e1fe4a8` the local def silently wins (exit 105); flips GREEN when 0514
-// adds the prelude/outer-scope arm at the shared typecheck seam.
+// Was a 0514 prelude-arm RED (the local def silently won, exit 105); GREEN on
+// HEAD since the prelude/outer-scope arm landed at the shared typecheck seam.
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
 #[test]
 fn local_defn_over_prelude_is_rejected() {
     // prelude `gulp` is (+1); local `gulp` is (+100) → would be 105 if it won.
@@ -122,8 +117,9 @@ fn local_defn_over_prelude_is_rejected() {
 //   collision (conflict/ambiguity), NOT a silent accept. Negative companion
 //   to the above: the diagnostic MUST be present.
 //
-// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514 prelude arm). Under
-// `e1fe4a8` NO diagnostic appears (silent accept); flips GREEN with 0514.
+// Was a 0514 prelude-arm RED (NO diagnostic appeared — silent accept); GREEN on
+// HEAD.
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
 #[test]
 fn local_defn_over_prelude_neg_emits_collision_diagnostic() {
     let out = Cranelisp::new()
@@ -156,9 +152,9 @@ fn local_defn_over_prelude_neg_emits_collision_diagnostic() {
 //   silently won by the explicit import. There is no "explicit shadows
 //   prelude" precedence tier.
 //
-// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514/0515). Under
-// `e1fe4a8` the explicit import silently wins (exit 105); flips GREEN when the
-// outer-scope reshape poisons distinct-terminal prelude overlaps.
+// Was a 0514/0515 RED (the explicit import silently won, exit 105); GREEN on
+// HEAD since the outer-scope reshape poisons distinct-terminal prelude overlaps.
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
 #[test]
 fn explicit_glob_import_over_prelude_distinct_terminal_poisons() {
     let out = Cranelisp::new()
@@ -176,8 +172,9 @@ fn explicit_glob_import_over_prelude_distinct_terminal_poisons() {
 // spec: spec/08-modules.md §8.6.4/§8.6.5 — an explicit SPECIFIC import of a
 //   name the prelude also provides (distinct terminal) is the same poison.
 //
-// CLASSIFICATION: RED signal (S102 re-anchor). Under `e1fe4a8` the explicit
-// specific import silently wins (105); flips GREEN with the reshape.
+// Was an S102 re-anchor RED (the explicit specific import silently won, 105);
+// GREEN on HEAD since the reshape poisons distinct-terminal overlaps.
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
 #[test]
 fn explicit_specific_import_over_prelude_distinct_terminal_poisons() {
     let out = Cranelisp::new()
@@ -196,8 +193,9 @@ fn explicit_specific_import_over_prelude_distinct_terminal_poisons() {
 //   overlap MUST poison the bare name (a collision diagnostic), NOT silently
 //   resolve to the explicit import's binding. Negative companion.
 //
-// CLASSIFICATION: RED signal (S102 re-anchor). Under `e1fe4a8` NO ambiguity
-// appears (silent win, 105); flips GREEN with the reshape.
+// Was an S102 re-anchor RED (NO ambiguity appeared — silent win, 105); GREEN on
+// HEAD since the reshape poisons distinct-terminal overlaps.
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/checker.rs::reject_def_over_binding found=S102 owner=/dev
 #[test]
 fn explicit_import_over_prelude_neg_emits_ambiguity() {
     let out = Cranelisp::new()
@@ -487,4 +485,147 @@ fn bare_primitive_and_prelude_defn_coexist() {
         .run("user.cl")
         .output()
         .assert_exit(42);
+}
+
+// =============================================================================
+// 5. PARITY PINS — prelude ≡ explicit import (PLAN.md §III G1–G4)
+//
+// Twin fixtures: one program, two provenances for the contested name (explicit
+// import vs implicit prelude), asserting the SAME outcome. These are GREEN
+// today — they exist to make the NEXT forgotten-fallback resolution site fail
+// loudly and to guard the resolution convergence refactor [S109]. The twin's
+// outcome-equality IS the signal: any site lacking the prelude fallback
+// diverges the two arms. (The RED counterparts — sites that DO diverge today —
+// live in `spec_08_name_shadowing.rs` §7 and `spec_07_traits.rs` R1.)
+// =============================================================================
+
+// A prelude that re-exports primitives and provides a sentinel TYPE `Zed`
+// (constructor `ZedC`), reached bare (leg B) or explicitly imported (leg A).
+const PRELUDE_WITH_ZED: &str = "\
+(export [primitives [*]])
+(deftype Zed (ZedC [:Int n]))
+";
+
+// spec: spec/08-modules.md §8.6.4 (same-terminal dedup) + §8.8.1 — an explicit
+//   `(import [primitives [add-i64]])` while the implicit prelude re-exports the
+//   SAME terminal `primitives/add-i64` MUST dedup silently: no false collision,
+//   the bare name resolves. (Importing from `primitives` does NOT suppress the
+//   implicit prelude glob — only referencing `prelude` does — so `Pure` still
+//   flows through the glob.)
+//
+// CLASSIFICATION: GREEN pin (G1). The terminal-source comparison sees one
+// terminal (`primitives/add-i64`) behind both entries and dedups.
+#[test]
+fn prelude_and_explicit_import_same_terminal_dedup() {
+    Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn main [] (Pure (add-i64 40 2)))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.8.1 + §3 (annotations) — a `:Zed` param/return
+//   annotation naming a prelude-provided type resolves through the annotation-
+//   position chokepoint (`resolve_type` -> `resolve_current_or_prelude`)
+//   identically whether `Zed` is explicitly imported (leg A) or implicit-
+//   prelude-provided (leg B).
+//
+// CLASSIFICATION: GREEN twin pin (G2). Both legs return 7; the outcome-equality
+// is the parity signal.
+#[test]
+fn type_annotation_prelude_provided_type_twin() {
+    // Leg A — `Zed`/`ZedC` explicitly imported (primitives imported directly so
+    // `Int`/`Pure` remain in scope, since the prelude import suppresses the glob).
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(import [primitives [Int Pure add-i64]])\n\
+             (import [prelude [Zed ZedC]])\n\
+             (defn takes [:Zed z] :Int (match z [(ZedC n) n]))\n\
+             (defn main [] (Pure (takes (ZedC 7))))",
+        )
+        .run("user.cl")
+        .output();
+    // Leg B — same program, `Zed`/`ZedC` reached via the implicit prelude.
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(defn takes [:Zed z] :Int (match z [(ZedC n) n]))\n\
+             (defn main [] (Pure (takes (ZedC 7))))",
+        )
+        .run("user.cl")
+        .output();
+    leg_a.assert_exit(7);
+    leg_b.assert_exit(7);
+}
+
+// spec: spec/08-modules.md §8.8.1 + §5.2 (deftype fields) — a deftype field
+//   `[:Zed z]` naming a prelude-provided type registers identically whether
+//   `Zed` is explicitly imported (leg A) or implicit-prelude-provided (leg B).
+//
+// CLASSIFICATION: GREEN twin pin (G3). Both legs return 9.
+#[test]
+fn deftype_field_type_prelude_provided_twin() {
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(import [primitives [Int Pure]])\n\
+             (import [prelude [Zed ZedC]])\n\
+             (deftype Wrap (WrapC [:Zed z]))\n\
+             (defn unwrap [:Wrap w] :Int (match w [(WrapC inner) (match inner [(ZedC n) n])]))\n\
+             (defn main [] (Pure (unwrap (WrapC (ZedC 9)))))",
+        )
+        .run("user.cl")
+        .output();
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(deftype Wrap (WrapC [:Zed z]))\n\
+             (defn unwrap [:Wrap w] :Int (match w [(WrapC inner) (match inner [(ZedC n) n])]))\n\
+             (defn main [] (Pure (unwrap (WrapC (ZedC 9)))))",
+        )
+        .run("user.cl")
+        .output();
+    leg_a.assert_exit(9);
+    leg_b.assert_exit(9);
+}
+
+// spec: spec/08-modules.md §8.8.1 + §6 (patterns) — a prelude-provided ctor
+//   works in VALUE position (`(ZedC 7)`) and PATTERN position (`[(ZedC n) n]`)
+//   identically whether `ZedC` is explicitly imported (leg A) or implicit-
+//   prelude-provided (leg B). Covers the value-position chokepoint and the
+//   `lookup_constructor_type_with_state` pattern chokepoint at once.
+//
+// CLASSIFICATION: GREEN twin pin (G4). Both legs return 7.
+#[test]
+fn ctor_value_and_pattern_position_prelude_provided_twin() {
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(import [primitives [Pure]])\n\
+             (import [prelude [ZedC]])\n\
+             (defn main [] (Pure (match (ZedC 7) [(ZedC n) n])))",
+        )
+        .run("user.cl")
+        .output();
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE_WITH_ZED)
+        .file(
+            "user.cl",
+            "(defn main [] (Pure (match (ZedC 7) [(ZedC n) n])))",
+        )
+        .run("user.cl")
+        .output();
+    leg_a.assert_exit(7);
+    leg_b.assert_exit(7);
 }

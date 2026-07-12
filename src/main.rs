@@ -407,13 +407,12 @@ fn run(
                 // is unreachable on non-TTY. Dim classification-comment role when
                 // colour is on; plain under `--no-color` via the global gate.
                 if input.is_interactive() && s.take_search_index_completion_notice() {
+                    // §10.3 R6 (ReplMetadata) — dim; FIXME 0561 resolves the
+                    // metadata role to dim (was italic). Plain under `--no-color`.
                     let _ = writeln!(
                         stdout,
                         "{}",
-                        cranelisp::style::styled(
-                            "; search index complete.",
-                            cranelisp::style::Style::Italic,
-                        )
+                        cranelisp::style::repl_metadata_line("; search index complete.")
                     );
                 }
 
@@ -491,7 +490,12 @@ fn run(
                         drop(consent);
                         s.sync_watcher();
                         for msg in s.poll_and_reload() {
-                            let _ = writeln!(stdout, "{msg}");
+                            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
+                            let _ = writeln!(
+                                stdout,
+                                "{}",
+                                cranelisp::style::repl_metadata_line(&msg)
+                            );
                         }
                         // Loop back: the top prints the next prompt.
                         continue;
@@ -520,6 +524,17 @@ fn run(
                                 compile_ms = (t1 - t0).as_millis() as u64;
                                 eval_ms = (t2 - t1).as_millis() as u64;
                                 s.pretty_print(&text, &mut stdout);
+                                // E5 (agent.md §5.5) — record this green eval turn
+                                // on the agent's recent-turn ring, with the IDENTICAL
+                                // string the user just saw (Principle 7: reuse the
+                                // display boundary's own output, not a re-render). A
+                                // no-op when the agent is unconfigured. Feature-off
+                                // this call is absent → the read loop is byte-identical.
+                                #[cfg(feature = "agent")]
+                                s.record_repl_turn(
+                                    &input_str,
+                                    cranelisp::agent::types::ReplTurnOutcome::Ok(text.clone()),
+                                );
                                 // Persist definitions to backing file (repl/spec.md §15).
                                 // Genuine definitions only (F6): a display-only
                                 // bare-lookup Def must not rewrite the file.
@@ -537,7 +552,21 @@ fn run(
                             Err(e) => {
                                 compile_ms = t0.elapsed().as_millis() as u64;
                                 eval_ms = 0;
-                                let _ = writeln!(stdout, "Error: {e}");
+                                let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
+                                // E5 (agent.md §5.5) — record this ERRORED eval turn
+                                // on the agent's recent-turn ring with the VERBATIM
+                                // diagnostic the user just saw. A failed form never
+                                // commits, so this ring is the only place the agent
+                                // can see it when the user asks "why doesn't that
+                                // typecheck?" No-op when the agent is unconfigured;
+                                // feature-off this call is absent (byte-identical).
+                                #[cfg(feature = "agent")]
+                                s.record_repl_turn(
+                                    &input_str,
+                                    cranelisp::agent::types::ReplTurnOutcome::Error(format!(
+                                        "Error: {e}"
+                                    )),
+                                );
                             }
                         }
                     }
@@ -548,7 +577,8 @@ fn run(
 
                 // Poll file watcher for changed source files (repl/spec.md §14).
                 for msg in s.poll_and_reload() {
-                    let _ = writeln!(stdout, "{msg}");
+                    // §10.3 R6: watcher/reload notes are REPL metadata (dim).
+                    let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
                 }
 
                 // Loop back: the top prints the next prompt.
@@ -573,7 +603,7 @@ fn run(
             {
                 match s.eval(&buffer) {
                     Err(e) => {
-                        let _ = writeln!(stdout, "Error: {e}");
+                        let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
                     }
                     // The parser should reject an unbalanced form; if it
                     // somehow parses, surface any result for symmetry with the

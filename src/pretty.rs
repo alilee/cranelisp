@@ -1,12 +1,25 @@
-// S-expression pretty-printer with syntax highlighting.
+// S-expression pretty-printer — the code half of the ONE styling seam.
 //
-// Layer 2 of the terminal styling system (design/int/terminal-styling.md).
-// Takes a Sexp tree and produces indented, syntax-highlighted text.
-// All structured REPL output flows through this single formatter.
+// The code printer is ONE role-assignment walk over the `Sexp` tree with two
+// emitters (design/arch/repl-styling-seam.md §4 P4/P5):
+//
+//   - `pp` — the COMPUTED-LAYOUT emitter: the §3.11 alignment algorithm
+//     (FLAT_THRESHOLD, pair forms, special-form indent) building a `StyledDoc`
+//     of role-tagged spans instead of calling `styled()` inline. Used for
+//     `/sexp`, single-line round-trippable `/source` code, agent code blocks.
+//   - `style_source_verbatim` — the SPANS-OVER-ORIGINAL-BYTES emitter: parses
+//     caller-supplied source and lays role spans over the ORIGINAL byte ranges
+//     (gaps are `Plain`), so the user's own whitespace/layout is preserved
+//     exactly; a parse failure emits the whole text as `Plain` (never a
+//     wrong-guess scan). This REPLACES the deleted `style_tokens` byte-scanner
+//     and its `consume_*` helpers.
+//
+// Both emitters assign roles by node KIND from the same vocabulary; `render`
+// (the seam) applies the §10.3 style table once. No `styled()` call lives here.
 
 use cranelisp_types::Sexp;
 
-use crate::style::{Style, styled};
+use crate::styled::{Role, StyledDoc, render};
 
 /// Flat-length threshold: forms shorter than this are kept on one line.
 const FLAT_THRESHOLD: usize = 40;
@@ -17,30 +30,65 @@ const SPECIAL_FORM_INDENT: &[&str] = &[
     "fn", "if", "do", "defmacro",
 ];
 
-/// Pretty-print and syntax-highlight a Sexp tree.
+/// Pretty-print and syntax-highlight a Sexp tree (`/sexp`, agent code blocks).
 ///
-/// Returns a styled, indented string. When colour is disabled,
-/// returns plain indented text (indentation always applies).
+/// Returns a rendered string. When colour is disabled, returns plain indented
+/// text — byte-identical to the role-free content (§10.3 requirement 2).
 pub fn pretty_print(sexp: &Sexp) -> String {
+    render(&pp(sexp, 0, false))
+}
+
+/// The `StyledDoc` for a Sexp tree — the composition point for callers that wrap
+/// the code in a larger doc (e.g. a `; source for NAME` header) before rendering.
+pub(crate) fn pretty_print_doc(sexp: &Sexp) -> StyledDoc {
     pp(sexp, 0, false)
 }
 
-/// Pretty-print a string by parsing it to Sexp first.
+/// Serialize a Sexp tree to PLAIN indented text — the role-free `.text()` of the
+/// pretty-print doc, forced regardless of the global colour gate.
 ///
-/// If parsing fails, returns the input string unstyled.
-/// Handles comment suffixes (e.g., `; defn - description`) by splitting
-/// them out before parsing and re-attaching with italic styling.
-pub fn pretty_print_str(source: &str) -> String {
-    // Split into lines and process each line group.
-    // Many REPL display strings are multi-line with comment lines
-    // (e.g., `:Type name ; class\n; match:\n;  Red Green Blue`).
-    let mut result_lines: Vec<String> = Vec::new();
+/// This is the **data-serialization** path (persisted `.cl` backing source, the
+/// `FailedForm.text`, the introspection `source` fallback), distinct from
+/// `pretty_print` whose output is colour-gated for **display**. Under colour-ON a
+/// TTY REPL session that serialized through `pretty_print` would embed SGR escape
+/// bytes into the persisted source, so the next load fails to re-parse it. This
+/// function is `render`-free — it never consults the colour gate — so the bytes
+/// it produces are always re-parseable (§10.2: no escape ever enters stored
+/// source).
+pub fn pretty_print_plain(sexp: &Sexp) -> String {
+    pp(sexp, 0, false).text()
+}
 
-    for line in source.lines() {
+/// Pretty-print caller-supplied source (`/source`, agent ```lisp blocks).
+///
+/// Renders `pretty_print_str_doc`. Colour-off is byte-identical to the source's
+/// role-free content (the verbatim-echo contract).
+pub fn pretty_print_str(source: &str) -> String {
+    render(&pretty_print_str_doc(source))
+}
+
+/// The `StyledDoc` for caller-supplied source — role spans over the ORIGINAL
+/// bytes so the user's own whitespace/layout is preserved exactly.
+///
+/// Line-by-line (REPL display strings are often multi-line):
+///   - a pure `;` comment line is a SOURCE comment (R5 italic);
+///   - a code line that round-trips through the reader is re-laid-out via `pp`
+///     (the computed-layout emitter — the §3.11 alignment `/sexp` shares);
+///   - any other code line is emitted verbatim, role spans over its original
+///     bytes (`style_source_verbatim`) so qualified names / multi-line user
+///     layout survive untouched.
+///
+/// An inline comment suffix is split off and re-attached as an R5 span.
+pub(crate) fn pretty_print_str_doc(source: &str) -> StyledDoc {
+    let mut doc = StyledDoc::new();
+    for (idx, line) in source.lines().enumerate() {
+        if idx > 0 {
+            doc.plain("\n");
+        }
         let trimmed = line.trim();
-        // Pure comment lines (start with ;).
+        // Pure comment lines (start with ;) — a user source comment (R5).
         if trimmed.starts_with(';') {
-            result_lines.push(pp_comment_text(trimmed));
+            doc.push(Role::SourceComment, trimmed);
             continue;
         }
 
@@ -48,34 +96,30 @@ pub fn pretty_print_str(source: &str) -> String {
         let (code_part, comment_part) = split_inline_comment(line);
 
         if code_part.trim().is_empty() {
-            // Nothing to parse, just the comment.
-            if let Some(comment) = comment_part {
-                result_lines.push(pp_comment_text(comment));
-            } else {
-                result_lines.push(line.to_string());
+            // Nothing to parse, just the comment (or the raw line verbatim).
+            match comment_part {
+                Some(comment) => doc.push(Role::SourceComment, comment),
+                None => doc.plain(line),
             }
             continue;
         }
 
-        // Parse the code portion. Verify that the round-trip produces
-        // equivalent content; fall back to token-level styling if not
-        // (e.g., qualified type names like `:primitives/Int` don't
-        // round-trip through the S-expression reader).
-        let mut line_result = match try_parse_and_format(code_part) {
-            Some(formatted) => formatted,
-            None => style_tokens(code_part),
-        };
-
-        // Re-attach comment suffix with italic styling.
-        if let Some(comment) = comment_part {
-            line_result.push(' ');
-            line_result.push_str(&pp_comment_text(comment));
+        // Parse the code portion. When the reader round-trips it (the flat form
+        // equals the input), re-lay-out via `pp`; otherwise lay role spans over
+        // the ORIGINAL bytes so qualified names / user layout survive (this is
+        // the emitter that replaces the deleted `style_tokens` byte-scanner).
+        match try_parse_and_format_doc(code_part) {
+            Some(code_doc) => doc.extend(code_doc),
+            None => doc.extend(style_source_verbatim(code_part)),
         }
 
-        result_lines.push(line_result);
+        // Re-attach comment suffix as a source comment (R5).
+        if let Some(comment) = comment_part {
+            doc.plain(" ");
+            doc.push(Role::SourceComment, comment);
+        }
     }
-
-    result_lines.join("\n")
+    doc
 }
 
 /// Split a line into (code, optional_comment) at the first unquoted `;`.
@@ -102,205 +146,158 @@ fn split_inline_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
-/// Try to parse code through the S-expression reader and pretty-print it.
+/// Try to parse code through the reader and re-lay-it-out via `pp`.
 ///
-/// Returns None if parsing fails or the round-trip changes the content
-/// (e.g., qualified names with `/` in colon-prefixed symbols).
-fn try_parse_and_format(code: &str) -> Option<String> {
+/// Returns `None` if parsing fails or the round-trip changes the content
+/// (e.g., qualified names with `/` in colon-prefixed symbols, reader
+/// shorthand, or non-canonical whitespace) — the caller then falls back to the
+/// verbatim byte-span emitter, which preserves the original bytes exactly.
+fn try_parse_and_format_doc(code: &str) -> Option<StyledDoc> {
     let sexps = cranelisp_frontend::parse(code).ok()?;
     if sexps.is_empty() {
         return None;
     }
-    // Verify round-trip: if the flat representation differs from input,
-    // the parser didn't preserve the content faithfully.
+    // Verify round-trip: if the flat representation differs from input, the
+    // parser didn't preserve the content faithfully.
     let flat_parts: Vec<String> = sexps.iter().map(|s| s.format_flat()).collect();
     let round_tripped = flat_parts.join(" ");
     if round_tripped.trim() != code.trim() {
         return None;
     }
-    let pp_parts: Vec<String> = sexps.iter().map(|s| pp(s, 0, false)).collect();
-    Some(pp_parts.join(" "))
+    let mut doc = StyledDoc::new();
+    for (i, s) in sexps.iter().enumerate() {
+        if i > 0 {
+            doc.plain(" ");
+        }
+        doc.extend(pp(s, 0, false));
+    }
+    Some(doc)
 }
 
-/// Apply token-level styling when full S-expression parsing doesn't round-trip.
+/// The verbatim-source emitter — role spans over the ORIGINAL byte ranges.
 ///
-/// Handles the common REPL display patterns:
-/// - `:TypeName` or `:module/Type` -> cyan
-/// - `:(Fn [...] ret)` compound types -> cyan
-/// - Integer/float literals -> yellow
-/// - `true`/`false` -> yellow
-/// - `"string"` -> green
-/// - Everything else -> default
-fn style_tokens(code: &str) -> String {
-    let mut result = String::new();
-    let mut chars = code.char_indices().peekable();
+/// Parses `code` and walks the tree, laying a role span over each atom's
+/// original byte range and leaving gaps (parens, brackets, whitespace) as
+/// `Plain`; the concatenation of the spans is therefore the original text,
+/// preserving the caller's layout exactly. On parse failure — or if the byte
+/// walk ever fails to reproduce `code` exactly (a defensive guard against a
+/// reader span that does not align to the source, e.g. desugared reader
+/// shorthand) — the whole text is emitted as one `Plain` span (never a
+/// wrong-guess scan). This replaces the deleted `style_tokens` byte-scanner.
+fn style_source_verbatim(code: &str) -> StyledDoc {
+    if let Ok(sexps) = cranelisp_frontend::parse(code)
+        && !sexps.is_empty()
+    {
+        let mut doc = StyledDoc::new();
+        let mut cursor = 0usize;
+        let walked = sexps
+            .iter()
+            .all(|s| emit_source_spans(code, s, false, &mut cursor, &mut doc));
+        if walked {
+            if cursor < code.len() && code.is_char_boundary(cursor) {
+                doc.plain(&code[cursor..]);
+            }
+            // Ultimate byte-identity guard: the verbatim echo MUST reproduce the
+            // input exactly (§10.3 requirement 2). If a reader span mis-aligned,
+            // fall back to whole-Plain rather than corrupt the bytes.
+            if doc.text() == code {
+                return doc;
+            }
+        }
+    }
+    StyledDoc::span(Role::Plain, code)
+}
 
-    while let Some(&(i, ch)) = chars.peek() {
-        if ch == ':' {
-            // Type annotation: consume the colon and everything that follows
-            // until whitespace (for simple types) or until matching paren
-            // (for compound types).
-            let type_span = consume_type_annotation(code, i);
-            result.push_str(&styled(&code[i..i + type_span], Style::Cyan));
-            // Advance past consumed chars.
-            for _ in 0..type_span {
-                chars.next();
-            }
-        } else if ch == '"' {
-            // String literal.
-            let str_span = consume_string_literal(code, i);
-            result.push_str(&styled(&code[i..i + str_span], Style::Green));
-            for _ in 0..str_span {
-                chars.next();
-            }
-        } else if ch.is_ascii_digit() || (ch == '-' && matches!(code.as_bytes().get(i + 1), Some(b) if b.is_ascii_digit())) {
-            // Number literal.
-            let num_span = consume_number(code, i);
-            result.push_str(&styled(&code[i..i + num_span], Style::Yellow));
-            for _ in 0..num_span {
-                chars.next();
-            }
-        } else if code[i..].starts_with("true") && !code.as_bytes().get(i + 4).is_some_and(|b| b.is_ascii_alphanumeric()) {
-            result.push_str(&styled("true", Style::Yellow));
-            for _ in 0..4 { chars.next(); }
-        } else if code[i..].starts_with("false") && !code.as_bytes().get(i + 5).is_some_and(|b| b.is_ascii_alphanumeric()) {
-            result.push_str(&styled("false", Style::Yellow));
-            for _ in 0..5 { chars.next(); }
-        } else if ch == '(' {
-            // Opening paren — peek ahead to see if the next token is a
-            // capitalized name (constructor/type in head position) and bold it.
-            result.push('(');
-            chars.next();
-            // Skip whitespace after '('.
-            while let Some(&(_, ws)) = chars.peek() {
-                if ws == ' ' || ws == '\t' {
-                    result.push(ws);
-                    chars.next();
-                } else {
-                    break;
+/// Emit role spans for `sexp` over `code`'s original bytes, advancing `cursor`.
+/// Returns `false` on any span that is out of bounds, non-monotonic, or off a
+/// char boundary — the caller then discards the partial walk and emits whole-
+/// Plain. Atoms carry their kind's role (head position ⇒ `Head`); parens/
+/// brackets/whitespace fall in the `Plain` gaps.
+fn emit_source_spans(
+    code: &str,
+    sexp: &Sexp,
+    in_head: bool,
+    cursor: &mut usize,
+    doc: &mut StyledDoc,
+) -> bool {
+    let sp = sexp.span();
+    let s = sp.start as usize;
+    let e = sp.end as usize;
+    if e > code.len()
+        || s > e
+        || s < *cursor
+        || !code.is_char_boundary(s)
+        || !code.is_char_boundary(e)
+        || !code.is_char_boundary(*cursor)
+    {
+        return false;
+    }
+    if s > *cursor {
+        doc.plain(&code[*cursor..s]);
+        *cursor = s;
+    }
+    match sexp {
+        Sexp::List(children, _) | Sexp::Bracket(children, _) => {
+            let is_list = matches!(sexp, Sexp::List(..));
+            for (i, ch) in children.iter().enumerate() {
+                if !emit_source_spans(code, ch, is_list && i == 0, cursor, doc) {
+                    return false;
                 }
             }
-            // Check if next token starts with uppercase (ADT constructor).
-            if let Some(&(head_start, head_ch)) = chars.peek()
-                && head_ch.is_ascii_uppercase()
-            {
-                // Consume the head symbol and bold it.
-                let head_span = consume_symbol(code, head_start);
-                result.push_str(&styled(&code[head_start..head_start + head_span], Style::Bold));
-                for _ in 0..head_span {
-                    chars.next();
-                }
+            // Trailing gap within this node — the closing `)`/`]` and any inner
+            // whitespace after the last child.
+            if e > *cursor {
+                doc.plain(&code[*cursor..e]);
+                *cursor = e;
             }
-        } else {
-            result.push(ch);
-            chars.next();
+        }
+        Sexp::Symbol(name, _) => {
+            let role = if in_head {
+                Role::Head
+            } else if name.starts_with(':') {
+                Role::TypeAnnotation
+            } else {
+                Role::Plain
+            };
+            doc.push(role, &code[s..e]);
+            *cursor = e;
+        }
+        Sexp::Int(_, _) | Sexp::Float(_, _) | Sexp::Bool(_, _) => {
+            doc.push(if in_head { Role::Head } else { Role::LitNumBool }, &code[s..e]);
+            *cursor = e;
+        }
+        Sexp::Str(_, _) => {
+            doc.push(if in_head { Role::Head } else { Role::LitStr }, &code[s..e]);
+            *cursor = e;
+        }
+        Sexp::Comment(_, _) => {
+            doc.push(Role::SourceComment, &code[s..e]);
+            *cursor = e;
         }
     }
-    result
+    true
 }
 
-/// Consume a type annotation starting at position `start` (which is a `:`).
-/// Returns the byte length of the annotation.
-fn consume_type_annotation(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut pos = start + 1; // skip ':'
-
-    if pos >= bytes.len() {
-        return 1;
-    }
-
-    // Check for compound type: `:(...)`.
-    if bytes[pos] == b'(' {
-        let mut depth = 1;
-        pos += 1;
-        while pos < bytes.len() && depth > 0 {
-            match bytes[pos] {
-                b'(' => depth += 1,
-                b')' => depth -= 1,
-                _ => {}
-            }
-            pos += 1;
-        }
-        return pos - start;
-    }
-
-    // Simple type: consume until whitespace or end.
-    while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() {
-        pos += 1;
-    }
-    pos - start
-}
-
-/// Consume a string literal starting at position `start` (which is a `"`).
-/// Returns the byte length including quotes.
-fn consume_string_literal(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut pos = start + 1; // skip opening quote
-    while pos < bytes.len() {
-        if bytes[pos] == b'\\' {
-            pos += 2; // skip escape
-        } else if bytes[pos] == b'"' {
-            pos += 1; // include closing quote
-            return pos - start;
-        } else {
-            pos += 1;
-        }
-    }
-    pos - start // unclosed string: consume everything
-}
-
-/// Consume a number literal starting at position `start`.
-/// Returns the byte length.
-fn consume_number(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut pos = start;
-    if pos < bytes.len() && bytes[pos] == b'-' {
-        pos += 1;
-    }
-    while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.') {
-        pos += 1;
-    }
-    pos - start
-}
-
-/// Consume a symbol token (alphanumeric, `.`, `/`, `-`, `_`, `?`, `!`).
-/// Returns the byte length of the symbol.
-fn consume_symbol(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut pos = start;
-    while pos < bytes.len() {
-        let b = bytes[pos];
-        if b.is_ascii_alphanumeric() || b == b'.' || b == b'/' || b == b'-' || b == b'_' || b == b'?' || b == b'!' {
-            pos += 1;
-        } else {
-            break;
-        }
-    }
-    pos - start
-}
-
-/// Style a comment string (including its `;` prefix) as italic.
-fn pp_comment_text(text: &str) -> String {
-    styled(text, Style::Italic)
-}
-
-/// Recursive pretty-printer core.
+/// Recursive computed-layout pretty-printer core (the §3.11 alignment emitter).
 ///
 /// - `sexp`: the node to format
 /// - `indent`: current indentation level (characters from left margin)
 /// - `in_head`: whether this node is in head position of a parent list
-fn pp(sexp: &Sexp, indent: usize, in_head: bool) -> String {
+///
+/// Builds a `StyledDoc` of role-tagged spans; `render` (the seam) is the sole
+/// site that turns roles into SGR.
+fn pp(sexp: &Sexp, indent: usize, in_head: bool) -> StyledDoc {
     match sexp {
         Sexp::Symbol(name, _) => pp_symbol(name, in_head),
-        Sexp::Int(v, _) => style_atom(&v.to_string(), in_head, Style::Yellow),
+        Sexp::Int(v, _) => style_atom(&v.to_string(), in_head, Role::LitNumBool),
         Sexp::Float(v, _) => {
             let s = format!("{v}");
             let s = if s.contains('.') { s } else { format!("{s}.0") };
-            style_atom(&s, in_head, Style::Yellow)
+            style_atom(&s, in_head, Role::LitNumBool)
         }
         Sexp::Bool(v, _) => {
             let s = if *v { "true" } else { "false" };
-            style_atom(s, in_head, Style::Yellow)
+            style_atom(s, in_head, Role::LitNumBool)
         }
         Sexp::Str(s, _) => {
             let escaped = s
@@ -309,45 +306,43 @@ fn pp(sexp: &Sexp, indent: usize, in_head: bool) -> String {
                 .replace('\n', "\\n")
                 .replace('\t', "\\t");
             let text = format!("\"{escaped}\"");
-            style_atom(&text, in_head, Style::Green)
+            style_atom(&text, in_head, Role::LitStr)
         }
         Sexp::List(children, _) => pp_list(children, indent, in_head),
         Sexp::Bracket(children, _) => pp_bracket(children, indent),
         Sexp::Comment(text, _) => {
-            if text.is_empty() {
+            let t = if text.is_empty() {
                 ";".to_string()
             } else {
                 format!("; {text}")
-            }
+            };
+            StyledDoc::span(Role::SourceComment, t)
         }
     }
 }
 
-/// Style an atom node. If in head position, bold overrides the default style.
-/// If the atom has a specific style (literal), that is used unless head overrides.
-fn style_atom(text: &str, in_head: bool, default_style: Style) -> String {
-    if in_head {
-        styled(text, Style::Bold)
-    } else {
-        styled(text, default_style)
-    }
+/// An atom span: bold in head position, else its literal role (R2/R3).
+fn style_atom(text: &str, in_head: bool, lit_role: Role) -> StyledDoc {
+    StyledDoc::span(if in_head { Role::Head } else { lit_role }, text)
 }
 
-/// Style a symbol node, applying head-position, type-annotation, or default rules.
-fn pp_symbol(name: &str, in_head: bool) -> String {
-    if in_head {
-        styled(name, Style::Bold)
+/// A symbol span: `Head` in head position, `TypeAnnotation` for a `:`-prefixed
+/// symbol, else `Plain` (R15 name).
+fn pp_symbol(name: &str, in_head: bool) -> StyledDoc {
+    let role = if in_head {
+        Role::Head
     } else if name.starts_with(':') {
-        styled(name, Style::Cyan)
+        Role::TypeAnnotation
     } else {
-        name.to_string()
-    }
+        Role::Plain
+    };
+    StyledDoc::span(role, name)
 }
 
 /// Pretty-print a parenthesized list.
-fn pp_list(children: &[Sexp], indent: usize, in_head: bool) -> String {
+fn pp_list(children: &[Sexp], indent: usize, in_head: bool) -> StyledDoc {
     if children.is_empty() {
-        return maybe_bold_brackets("(", ")", in_head, "");
+        return maybe_bold_brackets("(", ")", in_head, StyledDoc::new());
     }
 
     // Check if this is a type annotation list: first child is :symbol.
@@ -427,7 +422,7 @@ fn is_forced_pair_form(children: &[Sexp]) -> bool {
 /// flat/threshold layout — for any non-recognised head, a missing/wrong-shaped
 /// vector, fewer than 2 pairs (nothing to align), or an odd element count
 /// (P5 graceful fallback).
-fn try_pp_pair_form(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+fn try_pp_pair_form(children: &[Sexp], indent: usize, in_head: bool) -> Option<StyledDoc> {
     match head_symbol_name(children.first()?)?.as_str() {
         "let" => try_pp_let(children, indent, in_head),
         "match" => try_pp_match(children, indent, in_head),
@@ -439,7 +434,7 @@ fn try_pp_pair_form(children: &[Sexp], indent: usize, in_head: bool) -> Option<S
 /// (§3.11). The `[` sits at column `indent + len("(let ")` (= `indent + 5`), so
 /// the left column starts at `indent + 6`. Body forms follow at the special-form
 /// body indent (`indent + 2`), unchanged.
-fn try_pp_let(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+fn try_pp_let(children: &[Sexp], indent: usize, in_head: bool) -> Option<StyledDoc> {
     let binding = match children.get(1) {
         Some(Sexp::Bracket(items, _)) => items,
         _ => return None,
@@ -449,21 +444,22 @@ fn try_pp_let(children: &[Sexp], indent: usize, in_head: bool) -> Option<String>
         return None; // P0 — 0/1 pair has nothing to align.
     }
     let (open, close) = pair_form_brackets(in_head);
-    let head = styled("let", Style::Bold);
     // Prefix "(let " is 5 unstyled columns; the `[` lands at indent + 5, its
     // content (left column) at indent + 6.
     let left_col = indent + 6;
-    let mut result = format!("{open}{head} ");
-    result.push_str(&pair_vector_layout(&pairs, left_col));
+    let mut result = StyledDoc::new();
+    result.extend(open);
+    result.push(Role::Head, "let");
+    result.plain(" ");
+    result.extend(pair_vector_layout(&pairs, left_col));
 
     let body_indent = indent + 2;
     let pad = " ".repeat(body_indent);
     for body in &children[2..] {
-        result.push('\n');
-        result.push_str(&pad);
-        result.push_str(&pp(body, body_indent, false));
+        result.plain(format!("\n{pad}"));
+        result.extend(pp(body, body_indent, false));
     }
-    result.push_str(&close);
+    result.extend(close);
     Some(result)
 }
 
@@ -471,7 +467,7 @@ fn try_pp_let(children: &[Sexp], indent: usize, in_head: bool) -> Option<String>
 /// following the scrutinee (§3.11). The scrutinee stays flat on the head line;
 /// the `[` sits at `indent + len("(match ") + flatwidth(scrutinee) + 1`, so the
 /// left column starts one past that.
-fn try_pp_match(children: &[Sexp], indent: usize, in_head: bool) -> Option<String> {
+fn try_pp_match(children: &[Sexp], indent: usize, in_head: bool) -> Option<StyledDoc> {
     // Exactly `(match scrut [arms])` — arm vector must be the final element.
     if children.len() != 3 {
         return None;
@@ -486,24 +482,24 @@ fn try_pp_match(children: &[Sexp], indent: usize, in_head: bool) -> Option<Strin
         return None; // P0 — 0/1 pair has nothing to align.
     }
     let (open, close) = pair_form_brackets(in_head);
-    let head = styled("match", Style::Bold);
-    let scrut_styled = pp(scrutinee, 0, false);
     // Prefix "(match " (7) + scrutinee (flat) + " " (1); the `[` lands after it,
     // and the left column starts one past the `[`.
     let left_col = indent + 7 + scrutinee.format_flat().len() + 1 + 1;
-    let mut result = format!("{open}{head} {scrut_styled} ");
-    result.push_str(&pair_vector_layout(&pairs, left_col));
-    result.push_str(&close);
+    let mut result = StyledDoc::new();
+    result.extend(open);
+    result.push(Role::Head, "match");
+    result.plain(" ");
+    result.extend(pp(scrutinee, 0, false));
+    result.plain(" ");
+    result.extend(pair_vector_layout(&pairs, left_col));
+    result.extend(close);
     Some(result)
 }
 
-/// The `(` / `)` for a pair-layout form, bolded when in head position.
-fn pair_form_brackets(in_head: bool) -> (String, String) {
-    if in_head {
-        (styled("(", Style::Bold), styled(")", Style::Bold))
-    } else {
-        ("(".to_string(), ")".to_string())
-    }
+/// The `(` / `)` spans for a pair-layout form, bolded (Head) when in head position.
+fn pair_form_brackets(in_head: bool) -> (StyledDoc, StyledDoc) {
+    let role = if in_head { Role::Head } else { Role::Plain };
+    (StyledDoc::span(role, "("), StyledDoc::span(role, ")"))
 }
 
 /// Split a bracket's children into consecutive `(left, right)` pairs.
@@ -524,7 +520,7 @@ fn as_pairs(items: &[Sexp]) -> Option<Vec<(&Sexp, &Sexp)>> {
 /// right-column start (P4 — multi-line right terms indent under the right column
 /// via `pp`'s ordinary recursive rules). The closing `]` attaches to the last
 /// right term's final line.
-fn pair_vector_layout(pairs: &[(&Sexp, &Sexp)], left_col: usize) -> String {
+fn pair_vector_layout(pairs: &[(&Sexp, &Sexp)], left_col: usize) -> StyledDoc {
     let w = pairs
         .iter()
         .map(|(l, _)| l.format_flat().len())
@@ -532,18 +528,19 @@ fn pair_vector_layout(pairs: &[(&Sexp, &Sexp)], left_col: usize) -> String {
         .unwrap_or(0);
     let right_col = left_col + w + 1;
 
-    let mut out = String::from("[");
+    let mut out = StyledDoc::new();
+    out.plain("[");
     for (i, (left, right)) in pairs.iter().enumerate() {
         if i > 0 {
-            out.push('\n');
-            out.push_str(&" ".repeat(left_col)); // P1/P2 — one pair per line, left column.
+            // P1/P2 — one pair per line, left column.
+            out.plain(format!("\n{}", " ".repeat(left_col)));
         }
-        out.push_str(&pp(left, 0, false)); // left term rendered flat (styled)
+        out.extend(pp(left, 0, false)); // left term rendered flat (styled)
         let left_width = left.format_flat().len();
-        out.push_str(&" ".repeat(right_col - left_col - left_width)); // P3 pad to right column
-        out.push_str(&pp(right, right_col, false)); // P4 — right term opens at right_col
+        out.plain(" ".repeat(right_col - left_col - left_width)); // P3 pad to right column
+        out.extend(pp(right, right_col, false)); // P4 — right term opens at right_col
     }
-    out.push(']');
+    out.plain("]");
     out
 }
 
@@ -552,29 +549,21 @@ fn is_type_annotation_list(children: &[Sexp]) -> bool {
     matches!(children.first(), Some(Sexp::Symbol(name, _)) if name.starts_with(':'))
 }
 
-/// Render an entire type annotation list in cyan.
-/// Per spec 10.3.4: the entire type annotation is styled as a single cyan span.
-fn pp_type_annotation_list(children: &[Sexp], indent: usize, in_head: bool) -> String {
+/// Render an entire type annotation list as a single R4 span (cyan).
+/// Per §10.3 R4: the whole type annotation is one cyan construct (no internal
+/// `module/` decomposition). In head position it is bolded (R1) instead.
+fn pp_type_annotation_list(children: &[Sexp], indent: usize, in_head: bool) -> StyledDoc {
     // Compute the flat representation.
     let flat = flat_list(children);
 
+    let role = if in_head { Role::Head } else { Role::TypeAnnotation };
     if flat.len() <= FLAT_THRESHOLD {
-        // Single-line: wrap everything in cyan.
+        // Single-line: the whole annotation is one span.
         let inner = flat_content_unstyled(children);
-        let text = format!("({inner})");
-        if in_head {
-            styled(&text, Style::Bold)
-        } else {
-            styled(&text, Style::Cyan)
-        }
+        StyledDoc::span(role, format!("({inner})"))
     } else {
-        // Multi-line type annotations — still all cyan.
-        let inner = pp_type_multiline_unstyled(children, indent);
-        if in_head {
-            styled(&inner, Style::Bold)
-        } else {
-            styled(&inner, Style::Cyan)
-        }
+        // Multi-line type annotations — still one span (render splits per line).
+        StyledDoc::span(role, pp_type_multiline_unstyled(children, indent))
     }
 }
 
@@ -609,19 +598,21 @@ fn flat_list(children: &[Sexp]) -> String {
 }
 
 /// Render a short list on a single line with styling.
-fn pp_list_flat(children: &[Sexp], in_head: bool) -> String {
-    let mut parts = Vec::with_capacity(children.len());
+fn pp_list_flat(children: &[Sexp], in_head: bool) -> StyledDoc {
+    let mut inner = StyledDoc::new();
     for (i, child) in children.iter().enumerate() {
-        parts.push(pp(child, 0, i == 0));
+        if i > 0 {
+            inner.plain(" ");
+        }
+        inner.extend(pp(child, 0, i == 0));
     }
-    let inner = parts.join(" ");
-    maybe_bold_brackets("(", ")", in_head, &inner)
+    maybe_bold_brackets("(", ")", in_head, inner)
 }
 
 /// Render a long list across multiple lines.
-fn pp_list_multiline(children: &[Sexp], indent: usize, in_head: bool) -> String {
+fn pp_list_multiline(children: &[Sexp], indent: usize, in_head: bool) -> StyledDoc {
     let head = &children[0];
-    let head_str = pp(head, indent, true);
+    let head_doc = pp(head, indent, true);
     let head_name = head_symbol_name(head);
 
     let is_special = head_name
@@ -629,57 +620,37 @@ fn pp_list_multiline(children: &[Sexp], indent: usize, in_head: bool) -> String 
         .map(|n| SPECIAL_FORM_INDENT.contains(&n.as_str()))
         .unwrap_or(false);
 
-    let open = if in_head { styled("(", Style::Bold) } else { "(".to_string() };
-    let close = if in_head { styled(")", Style::Bold) } else { ")".to_string() };
+    let bracket_role = if in_head { Role::Head } else { Role::Plain };
+
+    let mut result = StyledDoc::new();
+    result.push(bracket_role, "(");
+    result.extend(head_doc);
 
     if children.len() == 1 {
-        return format!("{open}{head_str}{close}");
+        result.push(bracket_role, ")");
+        return result;
     }
 
-    if is_special {
-        // Special form: 2-space body indent.
-        let body_indent = indent + 2;
-        let pad = " ".repeat(body_indent);
-        let mut result = format!("{open}{head_str}");
-
-        // First argument on the same line as the head.
-        let first_arg = pp(&children[1], body_indent, false);
-        result.push(' ');
-        result.push_str(&first_arg);
-
-        // Remaining arguments on new lines.
-        for child in &children[2..] {
-            let child_str = pp(child, body_indent, false);
-            result.push('\n');
-            result.push_str(&pad);
-            result.push_str(&child_str);
-        }
-        result.push_str(&close);
-        result
+    // Body indent differs between special forms (2-space) and standard forms
+    // (align under the first argument).
+    let arg_indent = if is_special {
+        indent + 2
     } else {
-        // Standard alignment: subsequent args align with first argument.
-        // head_flat_len is the unstyled length of the head for alignment.
-        let head_flat_len = head.format_flat().len();
-        let arg_indent = indent + 1 + head_flat_len + 1; // '(' + head + ' '
-        let pad = " ".repeat(arg_indent);
+        indent + 1 + head.format_flat().len() + 1 // '(' + head + ' '
+    };
+    let pad = " ".repeat(arg_indent);
 
-        let mut result = format!("{open}{head_str}");
+    // First argument on the same line as the head.
+    result.plain(" ");
+    result.extend(pp(&children[1], arg_indent, false));
 
-        // First argument on the same line.
-        let first_arg = pp(&children[1], arg_indent, false);
-        result.push(' ');
-        result.push_str(&first_arg);
-
-        // Remaining arguments aligned with first argument.
-        for child in &children[2..] {
-            let child_str = pp(child, arg_indent, false);
-            result.push('\n');
-            result.push_str(&pad);
-            result.push_str(&child_str);
-        }
-        result.push_str(&close);
-        result
+    // Remaining arguments on new lines.
+    for child in &children[2..] {
+        result.plain(format!("\n{pad}"));
+        result.extend(pp(child, arg_indent, false));
     }
+    result.push(bracket_role, ")");
+    result
 }
 
 /// Extract the symbol name from a head node, if it is a plain symbol.
@@ -691,9 +662,9 @@ fn head_symbol_name(sexp: &Sexp) -> Option<String> {
 }
 
 /// Pretty-print a bracket form.
-fn pp_bracket(children: &[Sexp], indent: usize) -> String {
+fn pp_bracket(children: &[Sexp], indent: usize) -> StyledDoc {
     if children.is_empty() {
-        return "[]".to_string();
+        return StyledDoc::span(Role::Plain, "[]");
     }
 
     // Flat representation for length measurement.
@@ -703,19 +674,27 @@ fn pp_bracket(children: &[Sexp], indent: usize) -> String {
     // avoid it when a descendant is a forced multi-line pair-form (FIXME 0554).
     if flat.len() <= FLAT_THRESHOLD && !children.iter().any(subtree_contains_pair_form) {
         // Single line: no head-position bolding in brackets.
-        let styled_parts: Vec<String> = children.iter().map(|c| pp(c, 0, false)).collect();
-        return format!("[{}]", styled_parts.join(" "));
+        let mut result = StyledDoc::new();
+        result.plain("[");
+        for (i, child) in children.iter().enumerate() {
+            if i > 0 {
+                result.plain(" ");
+            }
+            result.extend(pp(child, 0, false));
+        }
+        result.plain("]");
+        return result;
     }
 
     // Multi-line bracket form.
     let child_indent = indent + 1;
     let pad = " ".repeat(child_indent);
-    let first = pp(&children[0], child_indent, false);
-    let mut result = format!("[{first}");
+    let mut result = StyledDoc::new();
+    result.plain("[");
+    result.extend(pp(&children[0], child_indent, false));
 
     let mut unstyled_line_len = children[0].format_flat().len() + 1; // '[' + first child
     for child in &children[1..] {
-        let child_str = pp(child, child_indent, false);
         // Try to fit on the current line.
         // Use unstyled length to avoid ANSI escape sequences inflating the count.
         // A forced multi-line pair-form child (FIXME 0554) never shares a line —
@@ -724,35 +703,100 @@ fn pp_bracket(children: &[Sexp], indent: usize) -> String {
         if !subtree_contains_pair_form(child)
             && unstyled_line_len + 1 + child_flat_len <= FLAT_THRESHOLD
         {
-            result.push(' ');
+            result.plain(" ");
             unstyled_line_len += 1 + child_flat_len;
-            result.push_str(&child_str);
+            result.extend(pp(child, child_indent, false));
         } else {
-            result.push('\n');
-            result.push_str(&pad);
-            result.push_str(&child_str);
+            result.plain(format!("\n{pad}"));
+            result.extend(pp(child, child_indent, false));
             unstyled_line_len = child_indent + child_flat_len;
         }
     }
-    result.push(']');
+    result.plain("]");
     result
 }
 
-/// Wrap inner content with brackets, bolding them if in head position.
-fn maybe_bold_brackets(open: &str, close: &str, in_head: bool, inner: &str) -> String {
-    if in_head {
-        format!("{}{}{}", styled(open, Style::Bold), inner, styled(close, Style::Bold))
-    } else {
-        format!("{}{}{}", open, inner, close)
-    }
+/// Wrap `inner` with brackets, bolding them (Head role) if in head position.
+fn maybe_bold_brackets(open: &str, close: &str, in_head: bool, inner: StyledDoc) -> StyledDoc {
+    let role = if in_head { Role::Head } else { Role::Plain };
+    let mut doc = StyledDoc::new();
+    doc.push(role, open);
+    doc.extend(inner);
+    doc.push(role, close);
+    doc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::test_support::ColorGuard;
 
     // In test context, colour is disabled (stdout is not a TTY),
     // so we test indentation behavior without escape sequences.
+
+    // === §10.3 colour-ON byte-exact code fixtures (Wave-D /dev obligation) ====
+
+    // K5 — code: the head of an apply form is R1 bold, int literals R2 yellow,
+    // parens/whitespace R15 (§10.3 R1/R2). The SGR spans wrap the SAME chars at
+    // the same columns the colour-off output produces (requirement 3).
+    // spec: repl/spec.md §10.3 R1/R2 — pretty-printed code.
+    #[test]
+    fn colour_on_k5_code_head_bold_literals_yellow() {
+        let _g = ColorGuard::force(true);
+        assert_eq!(
+            pretty_print_str("(+ 1 2)"),
+            "(\x1b[1m+\x1b[0m \x1b[33m1\x1b[0m \x1b[33m2\x1b[0m)"
+        );
+    }
+
+    // K6 — a `;` SOURCE comment is R5 italic (FIXME 0561: source = italic, NOT
+    // the dim R6 the REPL metadata `;` lines use). Colour-off it is plain.
+    // spec: repl/spec.md §10.3 R5 — source comment (0561 source half).
+    #[test]
+    fn colour_on_k6_source_comment_italic() {
+        let _g = ColorGuard::force(true);
+        assert_eq!(pretty_print_str("; double it"), "\x1b[3m; double it\x1b[0m");
+    }
+
+    // Colour-off, the same source comment is exactly its text (no SGR).
+    #[test]
+    fn colour_off_k6_source_comment_plain() {
+        let _g = ColorGuard::force(false);
+        assert_eq!(pretty_print_str("; double it"), "; double it");
+    }
+
+    // The DATA-serialization path (`pretty_print_plain`) NEVER embeds SGR, even
+    // when colour is forced ON — the persisted `.cl` backing source / failed-form
+    // text must always re-parse. This pins the I1 correctness fix: a TTY session
+    // (colour ON) serializing a definition through the DISPLAY path (`pretty_print`)
+    // would write escape bytes into stored source; the plain path must not.
+    // spec: repl/spec.md §10.2 — no SGR ever enters stored source (must re-parse).
+    #[test]
+    fn pretty_print_plain_never_embeds_sgr_and_round_trips() {
+        let _g = ColorGuard::force(true);
+        // A form with a string literal + head symbol + int literal — every element
+        // the display highlighter would wrap in SGR.
+        let src = "(defn greet [] \"hi\")";
+        let sexp = &cranelisp_frontend::parse(src).unwrap()[0];
+
+        // Confirm the DISPLAY path DOES embed SGR under colour-ON — this is exactly
+        // the byte that corrupts persisted source, so a revert of any of the four
+        // I1 sites back to `pretty_print` re-breaks re-parseability.
+        assert!(
+            crate::pretty::pretty_print(sexp).contains('\u{1b}'),
+            "display pretty_print embeds SGR under colour-ON (the bug pretty_print_plain avoids)"
+        );
+
+        // The data-serialization path must be SGR-free and re-parseable.
+        let plain = pretty_print_plain(sexp);
+        assert!(
+            !plain.contains('\u{1b}'),
+            "pretty_print_plain must never embed SGR: {plain:?}"
+        );
+        let reparsed = cranelisp_frontend::parse(&plain)
+            .unwrap_or_else(|e| panic!("stored source must re-parse: {e} ({plain:?})"));
+        assert_eq!(reparsed.len(), 1, "round-trips to one form: {plain:?}");
+    }
 
     #[test]
     fn short_form_single_line() {

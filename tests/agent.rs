@@ -582,23 +582,45 @@ fn agent_on_compound_vector_routes_to_repl() {
     );
 }
 
-// spec: repl/spec.md §17.1 — a bare UNKNOWN symbol (a typo / bare word) routes to
-// the agent (the refined classifier resolves the symbol and finds it unbound).
-// The route fires only when the agent is ACTIVE (arch ruling e3f7d57, §5.3/§7.4:
-// active ⇒ route; dormant ⇒ today's display) — so this drives an ACTIVE stub. The
-// dormant complement (today's undefined-name diagnostic, NO frame) is the now-
-// passing `repl_introspection::bare_primitive_unknown_name_produces_undefined_error_neg`.
+// spec: repl/spec.md §17.1 — a REPL buffer of EXACTLY ONE form (bare, FQ, or a
+// single compound) is code for the deterministic REPL; only ≥2 forms or
+// unparseable prose divert to an ACTIVE agent (user ruling 2026-07-12). A single
+// bare UNKNOWN symbol (`lenght`) is ONE form, so it MUST reach the deterministic
+// REPL and produce its unbound display (`undefined variable: lenght`, §4.1) — it
+// MUST NOT route to the agent, even when the agent is ACTIVE. This is the exact
+// inverse of the retired "refined classifier resolves the symbol and finds it
+// unbound ⇒ route" design (arch ruling e3f7d57), which the §17.1 one-form ruling
+// reverses. The stub is ACTIVE to prove it is NOT consulted for one form.
+//
+// context: §17.1-ruling reconciliation (Sprint 108 Inc3 Wave A) — was
+// `agent_on_bare_unknown_symbol_routes_to_agent` asserting the `▌` frame.
 #[cfg(feature = "agent")]
 #[test]
-fn agent_on_bare_unknown_symbol_routes_to_agent() {
+fn agent_on_bare_unknown_symbol_stays_in_repl_not_routed() {
     let out = stub_repl(
         "done: that is not a defined symbol\n",
         PreludeVariant::PrimitivesOnly,
         "lenght\n",
     );
+    // The deterministic REPL unbound display is produced …
     assert!(
-        out.stdout.contains("\u{258c}"),
-        "a bare unknown symbol must route to the ACTIVE agent frame, stdout={}",
+        out.stdout.contains("undefined variable: lenght"),
+        "a single bare unknown symbol MUST reach the deterministic REPL and \
+         produce its unbound display (§17.1 one-form rule; §4.1), stdout={}",
+        out.stdout
+    );
+    // … and the ACTIVE stub agent MUST NOT have been consulted (no frame) …
+    assert!(
+        !out.stdout.contains("\u{258c}"),
+        "a single bare unknown symbol MUST NOT route to the agent frame (§17.1 \
+         one-form rule reverses the retired refined-classifier route), stdout={}",
+        out.stdout
+    );
+    // … nor its scripted reply rendered.
+    assert!(
+        !out.stdout.contains("that is not a defined symbol"),
+        "the agent (stub) MUST NOT be consulted for a single bare unknown symbol, \
+         stdout={}",
         out.stdout
     );
 }
@@ -699,6 +721,90 @@ fn stub_repl(script: &str, prelude: PreludeVariant, stdin: &str) -> helpers::e2e
         .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
         .stdin(stdin)
         .output()
+}
+
+// ---------------------------------------------------------------------------
+// S108 (Increment 3) — E6 + candidate B: the §17.1 one-form routing rule.
+// The deterministic `classify_for_agent` unit pins are /dev's Wave A; these are
+// the two e2e ROUTING guards through the real binary with an ACTIVE stub agent —
+// ONE pair, not the whole matrix (SPRINT.md §E6 e2e companion).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.1 — E6: a natural-language sentence containing an
+// apostrophe (`why doesn't that typecheck?`) parses to ≥2 forms (the `'` in
+// `doesn't` is the quote reader-macro → `doesn` + `(quote t)`), so under the §17.1
+// user ruling (>1 form → the agent if active) it MUST route to the ACTIVE agent —
+// rendered in the `▌` prose frame — and MUST NOT be evaluated to a silent
+// `:primitives/Int 0`. RED on HEAD: the `any_compound → Repl` heuristic misroutes
+// the sentence to eval, printing `:primitives/Int 0`; the stub is never consulted.
+//
+// defect: class=routing-misclassify locus=src/agent/mod.rs::classify_for_agent (any_compound arm) found=S108 owner=/dev
+#[cfg(feature = "agent")]
+#[test]
+fn agent_on_nl_prose_with_contraction_routes_to_agent() {
+    let out = stub_repl(
+        "done: to fix that add a type annotation\n",
+        PreludeVariant::PrimitivesOnly,
+        "why doesn't that typecheck?\n",
+    );
+    // Routes to the ACTIVE agent — framed prose, and the stub WAS consulted.
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "a multi-form NL sentence (`'` splits `doesn't` into ≥2 forms) MUST route \
+         to the ACTIVE agent frame (§17.1 >1-form rule), stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("to fix that add a type annotation"),
+        "the agent (stub) MUST be consulted and its reply rendered, stdout={}",
+        out.stdout
+    );
+    // The load-bearing negative: NOT misrouted to eval as a silent `:Int 0`.
+    assert!(
+        !out.stdout.contains(":primitives/Int 0"),
+        "the sentence MUST NOT be evaluated to a silent `:primitives/Int 0` (the E6 \
+         misroute); stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.1 — candidate B: a single FULLY-QUALIFIED symbol
+// (`primitives/vec-len`) parses to EXACTLY one form, so it routes to the
+// deterministic REPL and INTROSPECTS (§4) — independent of `symbol_is_known` — and
+// MUST NOT route to the agent. The stub agent is ACTIVE but MUST NOT be consulted.
+// RED on HEAD: a single FQ symbol routes to the agent (its `symbol_is_known` bare
+// lookup misses the FQ name → the `all_known` gate diverts it), so the stub reply
+// renders in the `▌` frame instead of the introspection line.
+//
+// defect: class=routing-misclassify locus=src/agent/mod.rs::classify_for_agent (single-FQ-form arm) found=S108 owner=/dev
+#[cfg(feature = "agent")]
+#[test]
+fn agent_on_single_fq_symbol_introspects_not_routed_to_agent() {
+    let out = stub_repl(
+        "done: STUB-WAS-CONSULTED\n",
+        PreludeVariant::None,
+        "primitives/vec-len\n",
+    );
+    // The deterministic §4 introspection/value line is produced …
+    assert!(
+        out.stdout.contains(":(Fn") && out.stdout.contains("primitives/Int"),
+        "a single FQ symbol MUST route to the deterministic REPL and introspect \
+         (§17.1 one-form rule; §4), not the agent; stdout={}",
+        out.stdout
+    );
+    // … and the ACTIVE stub agent MUST NOT have been consulted.
+    assert!(
+        !out.stdout.contains("\u{258c}"),
+        "a single FQ symbol MUST NOT route to the agent frame (candidate B); \
+         stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("STUB-WAS-CONSULTED"),
+        "the agent (stub) MUST NOT be consulted for a single FQ symbol — it \
+         introspects deterministically; stdout={}",
+        out.stdout
+    );
 }
 
 // spec: repl/spec.md §17.2 — pull-as-visible-command: the stub asks for a read

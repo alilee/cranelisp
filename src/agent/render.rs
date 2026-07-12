@@ -42,15 +42,21 @@ use std::io::Write;
 
 use crate::style::{self, Style, styled};
 
-/// The agent-input prompt token (§14.2). A pulled command (and, S89, a Build
-/// submit) is echoed behind this prefix so the transcript reads honestly: who
-/// typed what. It is DISTINCT from the human prompt and from the `▌` prose
-/// gutter (commands are not prose — §17.2). When colour is on it is dim (it is a
-/// prompt marker, like the human prompt); under `--no-color` it degrades to the
-/// plain token via the `styled()` short-circuit. The trailing space separates it
-/// from the echoed command text.
+/// The agent-input prompt token (§14.2, §10.3 [S108] composite). A pulled command
+/// (and, S89, a Build submit) is echoed behind this prefix so the transcript reads
+/// honestly: who typed what. It is DISTINCT from the human prompt and from the `▌`
+/// prose gutter (commands are not prose — §17.2). Per the §10.3 `agent>` composite,
+/// the `agent` token is R14 bright-magenta (marking who issued the line) over the
+/// R13 dim prompt line (`>`); under `--no-color` it degrades to the plain token
+/// `agent>` (byte-identical to the pre-composite dim rendering's colour-off text).
+/// The trailing space separates it from the echoed command text.
 pub(crate) fn agent_input_prefix() -> String {
-    format!("{} ", styled("agent>", Style::Dim))
+    use crate::styled::{render, Role, StyledDoc};
+    let mut doc = StyledDoc::new();
+    doc.push(Role::AgentGutter, "agent"); // R14 bright-magenta — who issued the line
+    doc.push(Role::Prompt, ">"); // R13 dim prompt line
+    doc.plain(" ");
+    render(&doc)
 }
 
 /// The single-shot reference renderer (§14.1 / §14A.2). Renders a COMPLETE model
@@ -450,6 +456,17 @@ mod tests {
         assert!(p.contains("agent>"), "prefix carries the glyph: {p:?}");
         // Colour off in tests ⇒ no escape.
         assert!(!p.contains('\u{1b}'), "no escape colour-off: {p:?}");
+    }
+
+    // §10.3 [S108] composite (Wave-D2) — colour-ON the `agent` token is R14
+    // bright-magenta (who issued the line) and the `>` is R13 dim (prompt line);
+    // colour-OFF the composite degrades to the plain `agent> ` token. Fail-on-revert
+    // pin for the `agent_input_prefix` composite conversion.
+    // spec: repl/spec.md §10.3 composite — the `agent>` input prompt.
+    #[test]
+    fn agent_input_prefix_colour_on_is_r14_r13_composite() {
+        let _g = style::test_support::ColorGuard::force(true);
+        assert_eq!(agent_input_prefix(), "\x1b[95magent\x1b[0m\x1b[2m>\x1b[0m ");
     }
 
     // The whole-prose render frames the body and strips markdown — no literal

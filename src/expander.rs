@@ -30,7 +30,7 @@
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, FQSymbol, MacroExpander, MacroInvokeError, MacroParam,
-    ModuleAliases, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol, View,
+    ModuleAliases, ModuleEntry, ModuleFullPath, ResolutionScope, Sexp, Span, Symbol, View,
     DefKind, NULLARY_TAG_THRESHOLD,
 };
 
@@ -335,60 +335,37 @@ pub(crate) fn recognize_macro_head(
     if name.starts_with(':') {
         return Ok(None);
     }
-    // FIXME 0316(c): the resolve → prelude-outer-scope retry → public-only-filter
-    // wrapper is the shared `cranelisp_types::resolve_with_fallback` primitive —
-    // the same seam the four `checker.rs` chokepoints route through. int's job is
-    // only (1) build the committed first-hop view, (2) look up the session-side
-    // `prelude_fallback` bit (a plain `bool` to the data-only primitive), and
-    // (3) project the resolved entry to a macro-head identity. The bespoke 3-step
-    // wrapper that lived here (first-hop `resolve_macro_head` → manual prelude
-    // retry → `prelude_macro_public` filter) is collapsed into the call.
+    // S108 Wave-G CS2: the resolve → prelude-fallback → public-only-filter →
+    // macro-head projection all live intrinsic to `ResolutionScope` (the fallback
+    // is decided ONCE at scope construction, never re-decided per call).  int's
+    // job is only (1) build the committed first-hop view, (2) derive the scope's
+    // `prelude: Option` from the session-side `prelude_fallback` bit, and (3) call
+    // the scope's `resolve_macro_head` projection.  The former hand-rolled
+    // free-fn fallback call + kind-discriminator match are gone (the projection IS
+    // `ResolutionScope::resolve_macro_head`).
     let Some(table_ref) = committed_view(symbol_tables, current_module) else {
         return Ok(None);
     };
     let view: View<'_, Code, ()> = View::single(&table_ref);
 
     // Fallback ON iff the module's bit is set and it is not prelude itself
-    // (absence-is-OFF, §2.7.1; never self-fallback). When OFF,
-    // `resolve_with_fallback` reduces to a bare first-hop `resolve`.
-    let fallback_on = current_module.as_ref() != PRELUDE_MODULE
-        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false);
+    // (absence-is-OFF, §2.7.1; never self-fallback — `ResolutionScope::new` also
+    // collapses a self-fallback defensively). When OFF, the scope reduces to a
+    // bare first-hop resolve.
     let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
+    let prelude = if current_module.as_ref() != PRELUDE_MODULE
+        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+    {
+        Some(&prelude_module)
+    } else {
+        None
+    };
 
-    // The I-1 public-only filter on the prelude terminal is applied INSIDE
-    // `resolve_with_fallback` (its Step 3) — a private prelude binding reads as
-    // the original current-module miss, never leaking. So `prelude_macro_public`
-    // is no longer needed here.
-    let resolved = cranelisp_types::resolve_with_fallback(
-        symbol_tables,
-        module_aliases,
-        &view,
-        current_module,
-        name,
-        fallback_on,
-        &prelude_module,
-        span,
-    );
-    drop(table_ref);
-
-    match resolved {
-        // The macro-head projection (`resolve_macro_head`'s kind discriminator):
-        // a resolved name is a macro head only when its canonical entry is a
-        // `DefKind::Macro`. Any other kind is an ordinary call → `Ok(None)`.
-        Ok(r) => match &r.entry {
-            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
-                Ok(Some(r.fq))
-            }
-            _ => Ok(None),
-        },
-        // A bare-name not-found (incl. a filtered-out private prelude hit) is a
-        // forward / ordinary reference, not a macro head. Only hard failures
-        // (private, unknown qualified module) surface as `Err`.
-        Err(cranelisp_types::ResolveError::TraitNotFound { .. })
-        | Err(cranelisp_types::ResolveError::TypeNotFound { .. })
-        | Err(cranelisp_types::ResolveError::ConstructorNotFound { .. }) => Ok(None),
-        Err(e) => Err(CranelispError::from(e)),
-    }
+    // The I-1 public-only filter on the prelude terminal and the not-found-class
+    // → `Ok(None)` collapse are both intrinsic to `resolve_macro_head`; only a
+    // hard failure (private, unknown qualified module) surfaces as `Err`.
+    let scope = ResolutionScope::new(symbol_tables, module_aliases, &view, current_module, prelude);
+    scope.resolve_macro_head(name, span).map_err(CranelispError::from)
 }
 
 // ---------------------------------------------------------------------------

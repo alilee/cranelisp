@@ -139,8 +139,11 @@
 //! - **View** ([`View`]) — read-only newtype that wraps either two
 //!   `&SymbolTable` references (staging + live, cluster mode) or one
 //!   (committed mode) per Decision 44; typecheck reads through it.
-//! - **Resolution primitive** ([`resolve`], [`resolve_macro_head`],
-//!   [`resolve_with_fallback`], [`substitute_module_alias`], [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
+//! - **Resolution primitive** ([`ResolutionScope`] with its intrinsic prelude
+//!   fallback + [`ResolutionScope::resolve`]/[`ResolutionScope::resolve_macro_head`],
+//!   the §8.6.4 definition seam [`reject_def_over_binding`],
+//!   [`substitute_module_alias`],
+//!   [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
 //!   resolved symbol-table entry, following imports/reexports, §8.6.6
 //!   module-path aliases, visibility, and Principle-17 chain-following. Pure
 //!   over `SymbolTables` + `ModuleAliases`; generic over `<C, L>`; no
@@ -328,8 +331,8 @@ pub use pipeline::{
 };
 pub use view::View;
 pub use resolve::{
-    BindingProvenance, Resolved, ResolveError, check_binding_addition, resolve,
-    resolve_macro_head, resolve_with_fallback, substitute_module_alias,
+    BindingProvenance, ResolutionScope, Resolved, ResolveError, check_binding_addition,
+    reject_def_over_binding, substitute_module_alias,
 };
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{

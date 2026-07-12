@@ -81,6 +81,17 @@ impl CompilerSession {
         }
         self.push_module_full_source(&cur, &mut out);
 
+        // 1a. Recent-errored-turn feed (E5, §5.5) — the fourth harvest source.
+        //     A failed `(defn …)` never commits, so it is absent from every
+        //     symbol table and therefore from the committed-state harvest above;
+        //     this ring is the ONLY place that signal lives. Emitted right after
+        //     the current-module pin so it rides high on the §5.4 ladder: the
+        //     single most-recent errored turn is PINNED to the floor (never
+        //     dropped — the uniquely-unrecoverable signal), older errored turns
+        //     degrade next, and green turns (kept only for deixis — "that" / "the
+        //     last one") are the first to drop.
+        self.push_recent_turns_block(char_budget, &mut out);
+
         // 1b. == in scope == — Pillar 2 (§23): ambient awareness of every symbol
         //     in scope (current-module own defns + explicit imports + implicit
         //     prelude) at name + `:Type` signature + docstring grain, so the
@@ -323,6 +334,59 @@ impl CompilerSession {
         }
     }
 
+    /// Push the recent-errored-turn feed (E5, §5.5(3)) — the ring of recent REPL
+    /// eval turns, surfaced **errored-first, newest-first**. The single
+    /// most-recent errored turn is PINNED (emitted unconditionally, even past the
+    /// budget — the uniquely-unrecoverable signal committed state cannot
+    /// reconstruct); older errored turns and any green turns (kept for deixis)
+    /// are budget-gated, green turns dropping first. A no-op when the agent is
+    /// unconfigured or the ring is empty.
+    fn push_recent_turns_block(&self, char_budget: usize, out: &mut String) {
+        use crate::agent::types::ReplTurn;
+
+        let ring = match self.agent.as_ref() {
+            Some(agent) => &agent.turn_ring,
+            None => return,
+        };
+        if ring.is_empty() {
+            return;
+        }
+
+        // Partition newest-first (`push_back` newest ⇒ iterate reversed).
+        let mut errored: Vec<&ReplTurn> = Vec::new();
+        let mut green: Vec<&ReplTurn> = Vec::new();
+        for t in ring.iter().rev() {
+            if t.outcome.is_error() {
+                errored.push(t);
+            } else {
+                green.push(t);
+            }
+        }
+
+        out.push_str("== recent REPL turns ==\n");
+
+        // The single most-recent errored turn is PINNED (unconditional — like the
+        // current-module pin, it is the §5.4 floor and never dropped).
+        let mut iter_errored = errored.iter();
+        if let Some(first) = iter_errored.next() {
+            out.push_str(&render_recent_turn(first));
+        }
+        // Older errored turns, newest-first, budget-gated.
+        for t in iter_errored {
+            let rendered = render_recent_turn(t);
+            if out.len() + rendered.len() <= char_budget {
+                out.push_str(&rendered);
+            }
+        }
+        // Green turns (deixis only), newest-first, budget-gated — first to drop.
+        for t in &green {
+            let rendered = render_recent_turn(t);
+            if out.len() + rendered.len() <= char_budget {
+                out.push_str(&rendered);
+            }
+        }
+    }
+
     /// Is `name` a symbol worth harvesting (defined somewhere live)? Reuses the
     /// same liveness gate the reverse-query commands use — a name the user typed
     /// that resolves to a real def, not a typo.
@@ -363,6 +427,19 @@ fn strip_entry_docstring(
         _ => {}
     }
     entry
+}
+
+/// Render one recent REPL turn (E5, §5.5) as a labelled block: the exact source
+/// the user submitted followed by the string they saw (the verbatim diagnostic
+/// for an errored turn, the rendered result for a green one). No re-derivation —
+/// both strings are the ones the display boundary already produced (Principle 7).
+fn render_recent_turn(turn: &crate::agent::types::ReplTurn) -> String {
+    use crate::agent::types::ReplTurnOutcome;
+    let (label, saw) = match &turn.outcome {
+        ReplTurnOutcome::Error(diag) => ("errored", diag.as_str()),
+        ReplTurnOutcome::Ok(result) => ("ok", result.as_str()),
+    };
+    format!("-- recent turn ({label}) --\ninput: {}\n{saw}\n", turn.input)
 }
 
 /// Extract candidate symbol/module mentions from a turn's text (§5.3 "names in
@@ -494,5 +571,154 @@ mod in_scope_tests {
             rendered.full
         );
         assert_eq!(rendered.name, "inc-doc");
+    }
+}
+
+#[cfg(test)]
+mod recent_turns_tests {
+    //! E5 — the recent-errored-turn harvest feed (design/int/agent.md §5.5). The
+    //! ring is fed via `record_repl_turn` (the read-loop seam) and surfaced by
+    //! `harvest_context`'s fourth source. These pin the enumerated Wave-A unit
+    //! obligations (tests/plan/PLAN.md §C): (1) inclusion of a failed turn's form
+    //! + diagnostic; (2) the most-recent errored turn pinned to the floor;
+    //! (3) errored-first / newest-first ordering; (4) ring cap = `TURN_RING_CAP`;
+    //! (5) `record_repl_turn` no-op when the agent is unconfigured.
+
+    use super::*;
+    use crate::agent::test_support::repl_session;
+    use crate::agent::types::{ReplTurnOutcome, TURN_RING_CAP};
+
+    /// A session whose agent is enabled-but-dormant (no provider) — enough to
+    /// carry the ring; `record_repl_turn` records against it, `harvest_context`
+    /// reads it. The dormant path needs no API key (like `/context`).
+    fn session_with_agent() -> crate::session_v4::CompilerSession {
+        let mut s = repl_session();
+        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        s
+    }
+
+    // spec: repl/spec.md §17.11 / design/int/agent.md §5.5 — after a failed
+    // `(defn …)` turn is recorded, the harvest carries BOTH the exact failed form
+    // and its verbatim diagnostic (the signal committed state cannot reconstruct).
+    // defect: class=enumeration-miss locus=src/agent/harvest.rs::harvest_context found=S108 owner=/dev
+    #[test]
+    fn harvest_includes_recent_errored_turn_form_and_diagnostic() {
+        let mut s = session_with_agent();
+        let failed_form = "(defn rotations [g] (rem g mod))";
+        let diagnostic = "Error: type error at 34..35: ambiguous type; add an annotation";
+        s.record_repl_turn(failed_form, ReplTurnOutcome::Error(diagnostic.to_string()));
+
+        let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
+        assert!(
+            harvest.contains("recent REPL turns"),
+            "the recent-turns block header must be present: {harvest}"
+        );
+        assert!(
+            harvest.contains(failed_form),
+            "the failed form's exact source must be harvested: {harvest}"
+        );
+        assert!(
+            harvest.contains(diagnostic),
+            "the failed form's verbatim diagnostic must be harvested: {harvest}"
+        );
+    }
+
+    // spec: design/int/agent.md §5.4/§5.5 — the single most-recent errored turn
+    // is PINNED to the floor: under a budget so tight that green turns drop, the
+    // errored turn survives (+neg: the green turn's form is absent).
+    #[test]
+    fn most_recent_errored_turn_pinned_under_tight_budget_drops_green() {
+        let mut s = session_with_agent();
+        s.record_repl_turn(
+            "(defn broken [x] (frobnicate x))",
+            ReplTurnOutcome::Error("Error: undefined variable: frobnicate".to_string()),
+        );
+        // A later GREEN turn — newest, but a green turn is the first to drop.
+        s.record_repl_turn("(+ 1 2)", ReplTurnOutcome::Ok(":primitives/Int 3".to_string()));
+
+        // Tight budget: ~1 token (~4 chars). The pinned error survives; the green
+        // turn's rendering does not fit and is dropped.
+        let tight = s.harvest_context(&[], 1);
+        assert!(
+            tight.contains("frobnicate"),
+            "the pinned most-recent errored turn survives the tight budget: {tight}"
+        );
+        assert!(
+            !tight.contains(":primitives/Int 3"),
+            "the green turn's DETAIL is dropped under the tight budget (green drops \
+             first): {tight}"
+        );
+    }
+
+    // spec: design/int/agent.md §5.5(3) — the block is ordered errored-first,
+    // newest-first: with two errored turns and a green turn interleaved, the
+    // newer error precedes the older error, and both errors precede the green.
+    #[test]
+    fn recent_turns_ordered_errored_first_newest_first() {
+        let mut s = session_with_agent();
+        s.record_repl_turn("(older-err)", ReplTurnOutcome::Error("Error: OLDER-ERR".to_string()));
+        s.record_repl_turn("(a-green)", ReplTurnOutcome::Ok(":GREEN-RESULT".to_string()));
+        s.record_repl_turn("(newer-err)", ReplTurnOutcome::Error("Error: NEWER-ERR".to_string()));
+
+        let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
+        let pos_newer = harvest.find("NEWER-ERR").expect("newer error present");
+        let pos_older = harvest.find("OLDER-ERR").expect("older error present");
+        let pos_green = harvest.find("GREEN-RESULT").expect("green turn present");
+        assert!(
+            pos_newer < pos_older,
+            "newest error must precede the older error: {harvest}"
+        );
+        assert!(
+            pos_older < pos_green,
+            "both errored turns must precede the (deixis-only) green turn: {harvest}"
+        );
+    }
+
+    // spec: design/int/agent.md §5.5(1) — the ring is bounded at `TURN_RING_CAP`:
+    // recording more than the cap evicts the oldest, and the most-recent turns
+    // are retained.
+    #[test]
+    fn ring_is_bounded_at_cap_evicting_oldest() {
+        let mut s = session_with_agent();
+        // Record cap + 2 turns; the two oldest must be evicted.
+        for i in 0..(TURN_RING_CAP + 2) {
+            s.record_repl_turn(
+                &format!("(turn-{i})"),
+                ReplTurnOutcome::Ok(format!(":RESULT-{i}")),
+            );
+        }
+        let ring_len = s.agent.as_ref().unwrap().turn_ring.len();
+        assert_eq!(ring_len, TURN_RING_CAP, "the ring must be bounded at the cap");
+
+        let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
+        // The most-recent turn is retained; the two oldest (turn-0, turn-1) are
+        // evicted before they can be harvested.
+        assert!(
+            harvest.contains(&format!("(turn-{})", TURN_RING_CAP + 1)),
+            "the newest turn must be retained: {harvest}"
+        );
+        assert!(
+            !harvest.contains("(turn-0)") && !harvest.contains("(turn-1)"),
+            "the oldest turns beyond the cap must be evicted: {harvest}"
+        );
+    }
+
+    // spec: design/int/agent.md §5.5(4) — `record_repl_turn` is a no-op when the
+    // agent is unconfigured (`self.agent == None`): nothing is recorded, no agent
+    // is created, and the harvest carries no recent-turns block.
+    #[test]
+    fn record_repl_turn_is_noop_without_agent() {
+        let mut s = repl_session(); // agent == None
+        assert!(s.agent.is_none(), "fixture precondition: no agent");
+        s.record_repl_turn(
+            "(defn x [y] y)",
+            ReplTurnOutcome::Error("Error: whatever".to_string()),
+        );
+        assert!(s.agent.is_none(), "record_repl_turn must not construct an agent");
+        let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
+        assert!(
+            !harvest.contains("recent REPL turns"),
+            "no recent-turns block without an agent: {harvest}"
+        );
     }
 }

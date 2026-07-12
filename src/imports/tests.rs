@@ -715,6 +715,61 @@
         assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
     }
 
+    /// A public local `deftrait` binding (`ModuleEntry::TraitDecl`) named `name`.
+    fn trait_decl(name: &str) -> ModuleEntry<Code> {
+        ModuleEntry::TraitDecl {
+            info: cranelisp_types::TraitDeclInfo {
+                name: TraitName::from(name),
+                type_params: vec![],
+                methods: vec![],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        }
+    }
+
+    // spec: 08-modules.md §8.6.4 (S108 Wave-G CS2) — the local-definition arm of
+    // the import-event seam now includes `TraitDecl`: an `import` binding a bare
+    // name already held by a module-LOCAL `deftrait` is a §8.6.4 collision,
+    // rejected via the shared predicate. Fail-on-revert: dropping `TraitDecl`
+    // from the arm makes the import silently win (Ok), failing this expect_err.
+    #[test]
+    fn import_over_local_trait_decl_rejected_via_shared_predicate() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        let aliases = ModuleAliases::default();
+        // user defines a local trait `Show`; base carries a distinct public one.
+        tables
+            .get_mut(&ModuleFullPath::from("user"))
+            .unwrap()
+            .insert(Symbol::from("Show"), trait_decl("Show"));
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("Show"), trait_decl("Show"));
+
+        let err = install_imports(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &aliases,
+            &no_pf(),
+            &[specific_spec("base", "Show")],
+        )
+        .expect_err(
+            "an import over a module-local deftrait (TraitDecl) MUST reject \
+             (§8.6.4 symmetric companion; CS2 TraitDecl widening)",
+        );
+        let msg = match &err {
+            CranelispError::TypeError { message, .. } => message.to_lowercase(),
+            other => panic!("expected a TypeError, got {other:?}"),
+        };
+        assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
+        // The local trait stays the binding — the rejected import had no effect.
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(matches!(user.get("Show"), Some(ModuleEntry::TraitDecl { .. })));
+    }
+
     // spec: 08-modules.md §8.4.0 — a module can USE a name it only EXPORTS.
     // `export` populates the exporting module's OWN bare scope (a resolvable
     // `ModuleEntry::Import` entry, Public), identically to `import` but Public.

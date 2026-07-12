@@ -92,6 +92,7 @@ fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool)
         submit_gave_up: false,
         submit_committed: false,
         current_turn: 0,
+        turn_ring: std::collections::VecDeque::new(),
     }
 }
 
@@ -612,6 +613,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -736,6 +738,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -951,6 +954,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -1086,6 +1090,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
         s
     }
@@ -1245,6 +1250,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 1,
+            turn_ring: std::collections::VecDeque::new(),
         };
         let calls = vec![
             ToolCallRequest { id: "toolu_a".into(), name: "source".into(), argument: "f".into() },
@@ -1364,6 +1370,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 1,
+            turn_ring: std::collections::VecDeque::new(),
         };
         // The batch: [a = submit (will repair), b = a read call]. submit NOT last.
         state.record_assistant_tool_calls(vec![

@@ -915,6 +915,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Ok(FormCheckResult::empty())
             }
             TopLevel::TraitDecl(decl) => {
+                // §8.6.4 (S108 Wave-G convergence): route the trait NAME and
+                // each METHOD name through the ONE definition seam BEFORE
+                // registration — a `deftrait`/`deftrait-` whose trait name or
+                // any method name is already in scope via an explicit
+                // import/export or the implicit prelude is a compile-time
+                // conflict, never a shadow (§8.8.1: the prelude is just an
+                // implicit `(import [prelude [*]])`). Placed at the arm (not
+                // inside `register_trait_decl`) so it covers the plain AND HKT
+                // registration branches with one call site, keeping
+                // `check_form_register` the ONE visible place all typecheck-side
+                // definition forms hit the seam. A trait method is a fresh
+                // module-scope binding with a fresh terminal — it can never
+                // dedup — so each method name is checked identically to the
+                // trait name.
+                self.reject_def_over_binding(
+                    state, &Symbol::from(decl.name.as_ref()), decl.span,
+                )?;
+                for method in &decl.methods {
+                    self.reject_def_over_binding(state, &method.name, decl.span)?;
+                }
                 self.register_trait_decl(state, decl)?;
                 Ok(FormCheckResult::empty())
             }
@@ -3613,7 +3633,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
     ) {
         // DEF-1 (S86): resolve the bare callee through the **prelude-fallback**
-        // chokepoint (`resolve_terminal_entry_or_prelude`), NOT the
+        // scope resolve (`resolve_terminal_fq_scoped`), NOT the
         // current-module-only `resolve_terminal_entry_and_home`. A polymorphic fn
         // provided ONLY via the implicit-prelude outer scope (no explicit import)
         // is invisible to a current-module-rooted lookup, so its concrete mono
@@ -3626,7 +3646,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && !constrained_fn_names.contains(name)
-            && let Some(resolved) = self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+            && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
             && resolved.home != state.current_module
             && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
@@ -3723,7 +3743,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && name != self_name
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
-            && let Some(resolved) = self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+            && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
             && resolved.home == state.current_module
             && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
@@ -3782,7 +3802,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     && param_types.iter().all(|p| p.is_concrete())
                     && ret_ty.is_concrete()
                     && let Some(resolved) =
-                        self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+                        self.resolve_terminal_fq_scoped(state, name.as_ref())
                     && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
                 {
                     // FIXME 0488 sig b: the 0374 implementation only handled the

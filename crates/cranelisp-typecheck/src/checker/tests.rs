@@ -1425,7 +1425,7 @@
         // neither returned nor consulted (inner hit before the fallback).
         let (_, home) = tf
             .env()
-            .resolve_terminal_entry_or_prelude(&state, "helper")
+            .resolve_terminal_entry_scoped(&state, "helper")
             .expect("terminal resolves to the user's binding");
         assert_eq!(home, m, "bare `helper` resolves to the user module, not prelude");
         assert!(matches!(entry, ModuleEntry::Def { .. }));
@@ -1505,7 +1505,7 @@
 
     // spec: 08-modules §8.7.3 — a PRIVATE prelude `deftrait`'s method is NOT
     // discoverable as a bare operator through the trait/chain-follow fallback
-    // (`resolve_terminal_entry_or_prelude` → `method_to_trait`). A PUBLIC
+    // (`resolve_terminal_entry_scoped` → `method_to_trait`). A PUBLIC
     // prelude trait's method IS (regression guard).
     #[test]
     fn prelude_private_trait_method_not_reachable() {

@@ -10,7 +10,7 @@
 
 use cranelisp_types::{
     CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, TopLevel, Type, Warning,
+    ModuleStrategy, Sexp, Span, Symbol, TopLevel, Type,
 };
 
 use cranelisp_typecheck::{CheckResult, CheckState};
@@ -183,23 +183,16 @@ impl CompilerSession {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    // Propagate when the whole input was a single cluster (one
-                    // form, or one `:Type`+form annotation pair); otherwise
-                    // report inline and continue with the next cluster.
-                    if cluster.len() == sexps.len() {
-                        return Err(e);
-                    }
-                    // Multi-form: report error inline but continue.
-                    // TODO: multi-form error handling — for now, wrap as Val.
-                    last_result = Some(EvalResult::Val {
-                        value: 0,
-                        ty: Type::Int,
-                        warnings: vec![Warning {
-                            kind: cranelisp_types::WarningKind::Other,
-                            message: format!("Error: {e}"),
-                            span: Span::SYNTHETIC,
-                        }],
-                    });
+                    // §17.1 sequential-eval-abandon (no-agent path): a REPL line
+                    // that reaches `eval` — a single form, or (with no active
+                    // agent) a multi-form line — is evaluated form-by-form and
+                    // ABANDONS on the FIRST error, surfacing it as a real
+                    // `Error:` result (E7 fix, USER RULING 2026-07-12). Return the
+                    // error directly: do NOT continue to later forms, and do NOT
+                    // synthesize a fake `Val{0}` carrying the error as a warning
+                    // that the trailing `warnings_mut` assignment would clobber
+                    // (the swallow that surfaced a silent `:Int 0`).
+                    return Err(e);
                 }
             }
         }
@@ -555,42 +548,22 @@ impl CompilerSession {
             });
         }
 
-        let module = self.current_module_path();
-        // S78 §2.7.6 — prelude is an OUTER SCOPE, not flattened into the
-        // current table. A bare prelude-provided name (e.g. `add-i64`) is no
-        // longer an `Import` entry here, so the current-table lookup misses;
-        // when the per-module fallback bit is ON, hop to prelude's own table
-        // (where `add-i64` is the `(export …)` re-export Import edge) so the
-        // bare-value display still chains to `primitives/add-i64`. The hop
-        // returns the entry from prelude's table, then `resolve_entry_for_display`
-        // chains it the rest of the way (prelude → primitives).
-        let (entry, lookup_module) = {
-            let guard = self.current_symbol_table();
-            match guard.get(name) {
-                Some(e) => (e.clone(), module.clone()),
-                None => {
-                    drop(guard);
-                    let prelude_path = ModuleFullPath::from("prelude");
-                    let prelude_on = module != prelude_path
-                        && self
-                            .shared
-                            .prelude_fallback
-                            .get(&module)
-                            .map(|b| *b)
-                            .unwrap_or(false);
-                    if !prelude_on {
-                        return None;
-                    }
-                    let pe = self
-                        .shared
-                        .symbol_tables
-                        .get(&prelude_path)?
-                        .get(name)?
-                        .clone();
-                    (pe, prelude_path)
-                }
-            }
-        };
+        // S78 §2.7.6 — prelude is an OUTER SCOPE, not flattened into the current
+        // table. A bare prelude-provided name (e.g. `add-i64`) is no longer an
+        // `Import` entry here, so the current-table lookup misses; when the
+        // per-module fallback bit is ON, the shared two-tier walk hops to
+        // prelude's own table (where `add-i64` is the `(export …)` re-export
+        // Import edge) so the bare-value display still chains to
+        // `primitives/add-i64`. `resolve_entry_for_display` (below) chains it
+        // the rest of the way (prelude → primitives).
+        //
+        // This IS `lookup_with_prelude_fallback_opt(name, false)` — the display
+        // hop's SINGLE copy (Principle 7; the hand-rolled current→prelude walk
+        // was a byte-equivalent mirror). `root: false` keeps the two-tier walk
+        // (a bare special-form name must NOT resolve in the value display), and
+        // the seam's `is_public()` gate applies here automatically — a PRIVATE
+        // prelude binding is not shown "in scope" (spec §8.8.1).
+        let (entry, lookup_module) = self.lookup_with_prelude_fallback_opt(name, false)?;
 
         // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
         // resolver now chases the full chain (user → prelude → primitives)
@@ -872,6 +845,78 @@ mod tests {
             out.is_none(),
             "non-concrete nullary ctor `Nada` MUST NOT introspect (falls to §1.5.1 \
              value display)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // E7 (S108) — §17.1 sequential-eval-abandon on the no-agent multi-form
+    // path. A multi-form REPL line reaching `eval` (the no-agent path — the
+    // classifier routes multi-form to the agent when one is active) is
+    // evaluated form-by-form and ABANDONS on the FIRST error, surfacing it as
+    // a real `Err` — NOT a fake `Val{0}` whose error-carrying warning the
+    // trailing `warnings_mut` assignment then clobbers (the swallow that
+    // produced a silent `:Int 0`). An all-green multi-form line evaluates
+    // without error.
+    // -----------------------------------------------------------------------
+
+    // spec: repl/spec.md §17.1 — a multi-form line whose FIRST form errors
+    // returns that form's error directly (not a swallowed value), and abandons
+    // before the later form.
+    #[test]
+    fn multi_form_error_in_first_form_returns_that_error_not_fake_val() {
+        let mut s = d2_session();
+        match s.eval("foo bar") {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("undefined variable: foo"),
+                    "form-1 error MUST surface `undefined variable: foo`; got: {msg}"
+                );
+                assert!(
+                    !msg.contains("bar"),
+                    "abandon-on-first: the later form `bar` MUST NOT be reached/reported; \
+                     got: {msg}"
+                );
+            }
+            Ok(_) => panic!(
+                "a multi-form line with an error in form 1 MUST return the form-1 error \
+                 (Err), not swallow it into a fake `Val{{0}}`"
+            ),
+        }
+    }
+
+    // spec: repl/spec.md §17.1 — abandon-on-FIRST when a GREEN form precedes
+    // the error: `2 foo` evaluates `2`, then the undefined-`foo` error MUST
+    // still surface as a real `Err` (not a fabricated trailing value line).
+    #[test]
+    fn multi_form_error_in_second_form_after_green_returns_that_error() {
+        let mut s = d2_session();
+        match s.eval("2 foo") {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("undefined variable: foo"),
+                    "the form-2 error MUST surface even though a green form precedes it; \
+                     got: {msg}"
+                );
+            }
+            Ok(_) => panic!(
+                "`2 foo` MUST return the form-2 error (Err), not a swallowed \
+                 fake `Val{{0}}` after the green `2`"
+            ),
+        }
+    }
+
+    // spec: repl/spec.md §17.1 — all-green multi-form control: `1 2 3`
+    // evaluates without error (the display shape is NOT pinned by §17.1; this
+    // asserts only that no error is raised — Wave C must not change the green
+    // path).
+    #[test]
+    fn multi_form_all_green_returns_no_error() {
+        let mut s = d2_session();
+        assert!(
+            s.eval("1 2 3").is_ok(),
+            "an all-green multi-form line `1 2 3` MUST evaluate without error"
         );
     }
 }

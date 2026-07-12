@@ -342,3 +342,47 @@ fn repl_macro_uses_earlier_macro_works() {
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
+
+// =============================================================================
+// G5 — prelude ≡ explicit import: a PRELUDE-DEFINED macro (PLAN.md §III G5)
+//
+// Verified against the coverage above (2026-07-12): this file pins macros
+// defined in a DEPENDENCY module (`mac`) reached via import / FQ ref, but NOT a
+// macro provided by the implicit prelude. The prelude is a dependency (§0.1
+// (a)); a prelude-defined macro MUST expand bare in a consuming module exactly
+// as an explicitly-imported one. Twin over the macro's provenance.
+// =============================================================================
+
+// spec: spec/09-macros.md §9.3.4 + spec/08-modules.md §8.8.1 — a macro DEFINED
+//   in the prelude expands bare in a consuming module identically whether it is
+//   explicitly imported (leg A) or reached via the implicit prelude glob (leg B).
+//
+// CLASSIFICATION: GREEN twin pin (G5). Both legs return 42 (twice 21).
+#[test]
+fn prelude_provided_macro_expands_bare_twin() {
+    const PRELUDE_MACRO: &str = "\
+(export [primitives [*]])
+(defmacro twice [x] `(add-i64 ~x ~x))
+";
+    // Leg A — the prelude macro `twice` explicitly imported (primitives imported
+    // directly so `Pure`/`add-i64` stay in scope after the prelude glob is
+    // suppressed by referencing `prelude`).
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE_MACRO)
+        .file(
+            "user.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (import [prelude [twice]])\n\
+             (defn main [] (Pure (twice 21)))",
+        )
+        .run("user.cl")
+        .output();
+    // Leg B — same program, `twice` reached via the implicit prelude.
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE_MACRO)
+        .file("user.cl", "(defn main [] (Pure (twice 21)))")
+        .run("user.cl")
+        .output();
+    leg_a.assert_exit(42);
+    leg_b.assert_exit(42);
+}

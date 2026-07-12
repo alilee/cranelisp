@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    BindingProvenance, CranelispError, FQSymbol, MethodResolutions, ModuleAliases,
-    ModuleEntry, ModuleFullPath, ResolutionGap, ResolveError, ResolvedCall, Scheme,
+    CranelispError, FQSymbol, MethodResolutions, ModuleAliases,
+    ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
     Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
-    Warning, apply, check_binding_addition,
+    Warning, apply,
 };
 
 // Per single-pair invariant (`facades/typecheck.md` §"Single-pair invariant"):
@@ -303,8 +303,8 @@ where
     /// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
     ///
     /// Read-only here: `int` populates the map in `inject_prelude_if_needed`,
-    /// typecheck consults it at the two bare-name resolution chokepoints
-    /// (`probe_current_or_prelude` and the `current_symbol_table` two-hop view).
+    /// typecheck consults it at the single scope-construction seam
+    /// (`scope_resolve` / `scope_resolve_in`, S108 Wave-G).
     /// When the bit for `state.current_module` is `true`, a bare-name miss in
     /// the inner (current-module) scope falls back to the `prelude` module's
     /// table. Threaded identically to `module_aliases` — borrowed from the
@@ -396,7 +396,9 @@ where
     }
 
     /// Probe this module for a `TraitDecl` named `trait_name`, chain-following
-    /// `Import`/`Reexport` entries to their terminal `TraitDecl`.
+    /// `Import`/`Reexport` entries to their terminal `TraitDecl`. Reached via
+    /// `lookup_trait_decl_in_module` (test-only post S108 Wave-G).
+    #[allow(dead_code)] // delegated to by the test-exercised `lookup_trait_decl_in_module`.
     pub(crate) fn lookup_trait_decl(
         &self,
         trait_name: &TraitName,
@@ -636,16 +638,6 @@ where
         self.read_view(module_path).lookup_type_def(name)
     }
 
-    /// State-rooted variant of [`Self::lookup_type_def`].
-    ///
-    /// Uses `state.current_module` as the access root.
-    pub(crate) fn lookup_type_def_with_state(
-        &self,
-        state: &CheckState,
-        name: &TypeName,
-    ) -> Option<TypeDefInfo> {
-        self.lookup_type_def_in_module(&state.current_module, name)
-    }
 
     /// Resolve a name in `module_path` to its terminal `ModuleEntry`, following
     /// `Import`/`Reexport` chains by `source.module` references (Principle 17).
@@ -696,17 +688,11 @@ where
         }
     }
 
-    /// State-rooted variant of [`Self::lookup_constructor_type`].
-    ///
-    /// Bare-name current-module probe with the implicit-prelude **outer scope**
-    /// fallback (S78 §2.7.5 — Chokepoint 1; FIXME 0317). On an inner miss in
-    /// `current_module`, when the module's [`PreludeFallback`] bit is ON, the
-    /// lookup retries rooted at `prelude` so a primitives ADT constructor
-    /// re-exported through the prelude (`Pair`, `Some`, …) resolves as a bare
-    /// ctor in pattern position just as it does as a value. Only a PUBLIC
-    /// prelude head binding is reachable (I-1): the prelude head is filtered on
-    /// [`Self::prelude_terminal_visible`] before the parent-type read, so a
-    /// private prelude ctor does not leak.
+    /// State-rooted constructor→parent-type resolve (S108 Wave-G §3.3 collapse
+    /// — a thin `DefKind::Constructor` projection over [`Self::scope_resolve`]).
+    /// The prelude fallback (a primitives ADT ctor re-exported via the prelude
+    /// resolving as a bare ctor) and the I-1 public-only filter are intrinsic to
+    /// the scope resolve; a private prelude ctor does not leak.
     ///
     /// The production caller (the `infer.rs` pattern-ctor `exists` gate) was
     /// retired when the product-fallback leg was deleted (S79 Option 3a — product
@@ -719,20 +705,16 @@ where
         state: &CheckState,
         ctor_name: &str,
     ) -> Option<TypeName> {
-        if let Some(tn) =
-            self.lookup_constructor_type_in_module(&state.current_module, ctor_name)
-        {
-            return Some(tn);
+        let resolved = self.scope_resolve(state, ctor_name, Span::default()).ok()?;
+        match &resolved.entry {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                cranelisp_types::DefKind::Constructor { type_name, .. } => {
+                    Some(type_name.name.clone())
+                }
+                _ => None,
+            },
+            _ => None,
         }
-        // Inner miss — consult the prelude outer scope iff the bit is ON. The
-        // I-1 public-only filter is applied to the prelude head entry (the same
-        // binding `lookup_constructor_type_in_module` would chain-follow); a
-        // private prelude ctor is treated as not-found and the parent-type read
-        // is skipped.
-        let prelude = self.prelude_fallback_target(&state.current_module)?;
-        self.probe_module_entry_owned(&prelude, ctor_name)
-            .filter(Self::prelude_terminal_visible)?;
-        self.lookup_constructor_type_in_module(&prelude, ctor_name)
     }
 
     /// Check whether a constructor is marked as internal (not user-constructable).
@@ -886,12 +868,12 @@ where
     /// Returns `Some(prelude_path)` iff the [`PreludeFallback`] bit is ON for
     /// `current_module` **and** `current_module` is not the prelude module
     /// itself (a module never falls back onto itself). Absent/`false` ⇒ `None`
-    /// (§2.7.1 absence-is-OFF). This dedups the bit+self-guard that was
-    /// copy-pasted across the six bare-name chokepoints
-    /// (`resolve_current_or_prelude`, `probe_current_or_prelude`,
-    /// `resolve_entry_in_current_module`, `resolve_terminal_entry_or_prelude`,
-    /// `resolve_type_expr_in_module`'s leaf resolver, and
-    /// `find_hkt_param_index_in_registry`).
+    /// (§2.7.1 absence-is-OFF). Post-S108-Wave-G this is consulted only at the
+    /// two scope constructors [`Self::scope_resolve`] / [`Self::scope_resolve_in`]
+    /// (the single bit-consult per surface; the I-1 public-only filter and the
+    /// prelude retry are now intrinsic to `ResolutionScope::resolve`), plus the
+    /// bulk trait-method-declaring scan `find_trait_method_decl` (an
+    /// enumeration reader, not the resolve walk).
     pub(crate) fn prelude_fallback_target(
         &self,
         current_module: &ModuleFullPath,
@@ -905,24 +887,36 @@ where
         }
     }
 
-    /// Whether a prelude-fallback **terminal** entry is reachable as a bare name
-    /// from an arbitrary user module — i.e. only PUBLIC prelude bindings are
-    /// reachable through the implicit outer scope (S78 §2 / `/review` I-1).
-    ///
-    /// Evaluating reachability relative to the ORIGINAL `current_module` (the
-    /// user module that issued the bare reference), the `cranelisp-types`
-    /// visibility rule is `entry.is_public() || in_subtree(current_module,
-    /// home)`. A user module is never in the prelude subtree, so the rule
-    /// reduces to `entry.is_public()`. We therefore post-filter every
-    /// prelude-hop terminal on its visibility: a private prelude entry is
-    /// treated as **not found** (it must NOT resolve and must NOT shadow), while
-    /// prelude's PUBLIC re-exports (and the chain-follow through them to
-    /// `primitives`) stay reachable.
-    fn prelude_terminal_visible(entry: &ModuleEntry<C>) -> bool {
-        entry.is_public()
+    /// Single-source the scope-construction glue shared by the three resolution
+    /// seams — [`Self::scope_resolve`], [`Self::scope_resolve_in`], and the
+    /// [`Self::reject_def_over_binding`] adapter (S108 Wave-G §3.2; the
+    /// 0564/0565 divergent-duplication category applied to this crate's own new
+    /// code). Each seam differs only in which module's (staging-aware) first-hop
+    /// table it resolves against; the `view()` + prelude-bit consult +
+    /// `ResolutionScope::new` construction is otherwise identical, and the
+    /// prelude fallback is decided ONCE here, at scope construction. The scope is
+    /// passed INTO `f` rather than returned: its `first_hop` borrows the `View`
+    /// guard, which must outlive the scope — a `ResolutionScope` cannot escape
+    /// the borrow of the table it views.
+    fn with_scope<R>(
+        &self,
+        read: &SymbolTableRead<'_, '_, C, L>,
+        module: &ModuleFullPath,
+        f: impl FnOnce(&ResolutionScope<'_, C, L>) -> R,
+    ) -> R {
+        let view = read.view();
+        let prelude = self.prelude_fallback_target(module);
+        let scope = ResolutionScope::new(
+            self.modules,
+            self.module_aliases,
+            &view,
+            module,
+            prelude.as_ref(),
+        );
+        f(&scope)
     }
 
-    /// Resolve a bare (unqualified) `name` via [`cranelisp_types::resolve`]
+    /// Resolve a bare (unqualified) `name` via [`Self::scope_resolve`]
     /// against the current module, falling back to the implicit-prelude
     /// **outer scope** on a not-found miss when the module's
     /// [`PreludeFallback`] bit is ON (S78 §2.7.5 — Chokepoint 2).
@@ -958,27 +952,58 @@ where
     /// NOT inside `cranelisp_types::resolve` — the shared `View` newtype carries
     /// at most staging+live, and `cranelisp-types` is left untouched (S78
     /// §2.7.5: "No change to `cranelisp_types::resolve` itself").
-    fn resolve_current_or_prelude(
+    /// THE typecheck reference lookup (S108 Wave-G convergence §3.2 — the ONE
+    /// scope constructor for the current module). Consults the prelude-fallback
+    /// bit ONCE here, at scope construction (`prelude_fallback_target`); the
+    /// fallback is then INTRINSIC to the resolution — there is no per-call
+    /// fallback flag. The staging∪live first-hop view selection also lives here
+    /// (`current_symbol_table(state).view()`). Every bare-name resolution that
+    /// used the retired per-site prelude-fallback resolver family (the six
+    /// bare-name chokepoints of the S78 census) now routes through this one seam.
+    ///
+    /// The scope (and its borrowed guard/view) cannot be returned as a value —
+    /// the `View` borrows a per-shard DashMap guard that must outlive it — so
+    /// the construct-and-resolve is a single method rather than a returned
+    /// `ResolutionScope`; it is nonetheless the single scope-construction seam.
+    pub(crate) fn scope_resolve(
         &self,
         state: &CheckState,
         name: &str,
         span: Span,
     ) -> Result<cranelisp_types::Resolved<C>, ResolveError> {
-        // The staging-view selection (current-module first hop) stays caller-side;
-        // the resolve+prelude-fallback+public-only-filter body is the shared
-        // `cranelisp_types::resolve_with_fallback` primitive (FIXME 0316(c)).
         let read = self.current_symbol_table(state);
-        let prelude = self.prelude_fallback_target(&state.current_module);
-        cranelisp_types::resolve_with_fallback(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            name,
-            prelude.is_some(),
-            prelude.as_ref().unwrap_or(&state.current_module),
-            span,
-        )
+        self.with_scope(&read, &state.current_module, |scope| scope.resolve(name, span))
+    }
+
+    /// Arbitrary-root scope resolve (S108 Wave-G §3.2 — collapses the former
+    /// `resolve_type_expr_in_module` inline leaf-resolver copy). The first hop
+    /// is a staging-aware view over `module_path`; the prelude bit is consulted
+    /// for `module_path`. A qualified name inside `name` never takes the prelude
+    /// retry (intrinsic to `ResolutionScope::resolve`). An absent `module_path`
+    /// yields a not-found (mirroring the prior chain-follow's graceful `None`).
+    pub(crate) fn scope_resolve_in(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+        span: Span,
+    ) -> Result<cranelisp_types::Resolved<C>, ResolveError> {
+        let live = match self.modules.get(module_path) {
+            Some(g) => g,
+            None => {
+                return Err(ResolveError::TypeNotFound {
+                    name: TypeName::from(name),
+                    from_module: module_path.clone(),
+                    span,
+                });
+            }
+        };
+        let read = match &self.staging {
+            Some(staging) if staging.module == *module_path => {
+                SymbolTableRead::Cluster { staging: staging.cell.borrow(), live }
+            }
+            _ => SymbolTableRead::Live(live),
+        };
+        self.with_scope(&read, module_path, |scope| scope.resolve(name, span))
     }
 
     /// §8.6.4 definition-over-(import|export|prelude) rejection — the single,
@@ -986,85 +1011,25 @@ where
     /// bound IN SCOPE by anything OTHER than this module's OWN prior definition
     /// is a compile-time error, resolved by the fully-qualified reference.
     ///
-    /// The two-scope resolver [`Self::resolve_current_or_prelude`] is the single
-    /// chokepoint (Principle 7): it layers the staging-first inner-table view AND
-    /// the implicit-prelude outer scope (public-only head filter), chain-following
-    /// to the terminal. The decision is provenance, read off the resolved `home`:
-    ///
-    /// - resolve MISS (`Err`) ⇒ the name is not in scope ⇒ **free to define**
-    ///   (the §8.8.3 "not-loading" / fresh-name case);
-    /// - resolves with `home == current_module` ⇒ the module's OWN prior `Def`/
-    ///   `TypeDef` ⇒ ordinary **redefinition, ALLOWED** (the REPL redefine path);
-    /// - resolves with `home != current_module` ⇒ the sole in-scope binding is an
-    ///   explicit `import`/`export` inner entry (§8.4.0 — exports are
-    ///   `Import { Public }`, keyed on provenance not visibility) OR a prelude
-    ///   PUBLIC outer terminal (the no-exception ruling, 2026-07-04) ⇒ **ERROR**.
-    ///
-    /// Because Pass-0 installs all imports/exports and the prelude bit precedes
-    /// `check_forms`, "a Def whose name already resolves in scope" is
-    /// order-independent by construction — def-over-import AND import-over-def
-    /// (import installed first, def registered here) both reduce to this one
-    /// probe, identically in REPL/Additive and batch/Replace (the mode-parity
-    /// MUST). Private prelude/inner entries do not resolve here (the public-only
-    /// head filter treats them as not-found); the prelude module itself never
-    /// self-collides (`prelude_fallback_target` is `None` for it); redundant
-    /// `(import [m [X]]) (export [m [X]])` is import-over-import (§8.6.5
-    /// same-terminal dedup) and never reaches Def registration.
+    /// The seam glue (synthetic-name guard, resolve-in-scope, provenance
+    /// classification off the scope's first-hop head, `check_binding_addition`
+    /// delegate) is single-sourced in `cranelisp_types::reject_def_over_binding`
+    /// (S108 Wave-G §4.1) so int's defmacro path can call the identical seam
+    /// without a typecheck dependency. This method is the 3-line adapter:
+    /// construct the current-module `ResolutionScope` (the ONE bit consult) and
+    /// hand it to the types-owned seam.
     pub(crate) fn reject_def_over_binding(
         &self,
         state: &CheckState,
         name: &Symbol,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Synthetic / mangled names (`__expr`, `__macro_*`, `f__v0`,
-        // `Trait.method$Type`, mono `cmp$Int+Int`) are never user-facing bare
-        // definitions contesting an import/export/prelude binding; skip them so
-        // the seam only ever fires on an authored bare name.
-        let n = name.as_ref();
-        if n.contains('$') || n.starts_with("__") {
-            return Ok(());
-        }
-        let resolved = match self.resolve_current_or_prelude(state, n, span) {
-            Ok(r) => r,
-            Err(_) => return Ok(()), // not in scope — free to define (§8.8.3)
-        };
-        // Classify the existing binding's provenance, then delegate to the ONE
-        // shared §8.6.4 predicate (FIXME 0516 — the def-event and the import-
-        // event now enforce the identical rule through this single helper).
-        let existing = if resolved.home == state.current_module {
-            // The module's OWN prior def/typedef — ordinary redefinition.
-            BindingProvenance::Definition
-        } else {
-            // The sole in-scope binding is an explicit `import`/`export` inner
-            // entry (§8.4.0 — exports are Public `Import` edges) OR a prelude
-            // PUBLIC outer terminal. Name the source kind from the inner head
-            // (staging-aware, no chain-follow, no fallback): an inner `Import`
-            // entry is an explicit import (Private) or export (Public); absence
-            // means the binding came from the implicit-prelude outer scope.
-            let inner_head = self.probe_module_entry_owned(&state.current_module, n);
-            match &inner_head {
-                Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => {
-                    BindingProvenance::Export
-                }
-                Some(ModuleEntry::Import { .. }) => BindingProvenance::Import,
-                _ => BindingProvenance::Prelude,
-            }
-        };
-        check_binding_addition(name, BindingProvenance::Definition, existing, &resolved.fq, span)
+        let read = self.current_symbol_table(state);
+        self.with_scope(&read, &state.current_module, |scope| {
+            cranelisp_types::reject_def_over_binding(scope, name, span)
+        })
     }
 
-    /// Whether a [`ResolveError`] is the neutral bare-name not-found class that
-    /// the prelude fallback retries on (S78 §2.7.5). `PrivateInaccessible` and
-    /// `QualifiedModuleUnknown` are excluded — those are decisive failures, not
-    /// inner-scope misses.
-    fn is_not_found(e: &ResolveError) -> bool {
-        matches!(
-            e,
-            ResolveError::TypeNotFound { .. }
-                | ResolveError::TraitNotFound { .. }
-                | ResolveError::ConstructorNotFound { .. }
-        )
-    }
 
     /// Resolve a bare type name to its `FQTypeName` via symbol-table
     /// chain-follow from `state.current_module`. Phase B Part 5 successor
@@ -1087,7 +1052,7 @@ where
             span,
         };
         let resolved = self
-            .resolve_current_or_prelude(state, type_name.as_ref(), span)
+            .scope_resolve(state, type_name.as_ref(), span)
             .map_err(|e| project_not_found(e, type_not_found))?;
         if let Some(info) = type_def_view_of(&resolved.entry) {
             return Ok(info.name.clone());
@@ -1124,7 +1089,7 @@ where
             span,
         };
         let resolved = self
-            .resolve_current_or_prelude(state, type_name.as_ref(), span)
+            .scope_resolve(state, type_name.as_ref(), span)
             .map_err(|e| project_not_found(e, type_not_found))?;
         if let Some(info) = type_def_view_of(&resolved.entry) {
             return Ok(Type::ADT(info.name.clone(), type_args));
@@ -1154,7 +1119,7 @@ where
             span,
         };
         let resolved = self
-            .resolve_current_or_prelude(state, trait_name, span)
+            .scope_resolve(state, trait_name, span)
             .map_err(|e| project_not_found(e, trait_not_found))?;
         match resolved.entry {
             ModuleEntry::TraitDecl { .. } => Ok(resolved.home),
@@ -1188,7 +1153,7 @@ where
             span,
         };
         let resolved = self
-            .resolve_current_or_prelude(state, ctor_name, span)
+            .scope_resolve(state, ctor_name, span)
             .map_err(|e| project_not_found(e, ctor_not_found))?;
         match resolved.entry {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
@@ -1401,7 +1366,7 @@ where
         name: &str,
         span: Span,
     ) -> Option<FQSymbol> {
-        let resolved = self.resolve_current_or_prelude(state, name, span).ok()?;
+        let resolved = self.scope_resolve(state, name, span).ok()?;
         match &resolved.entry {
             ModuleEntry::Def { kind, .. }
                 if matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) =>
@@ -1457,7 +1422,7 @@ where
         // non-type head (a value `Var`, an unknown name) yields `None` — not an
         // accessor reference.
         let resolved = self
-            .resolve_current_or_prelude(state, type_part, Span::default())
+            .scope_resolve(state, type_part, Span::default())
             .ok()?;
         let fqtn = type_def_view_of(&resolved.entry)?.name.clone();
 
@@ -1486,60 +1451,12 @@ where
     /// [`Self::probe_module_entry_owned`], so in-cluster writes are visible
     /// to downstream resolution.
     fn lookup_in_current_module(&self, state: &CheckState, name: &str) -> Option<Scheme> {
-        let entry = self.probe_current_or_prelude(state, name)?;
+        // The scope resolve returns the chain-followed terminal entry;
+        // `extract_scheme_from_entry_owned`'s own re-follow of a terminal `Def`
+        // is idempotent, so projecting `.entry` is behaviour-identical to
+        // returning the head and following downstream.
+        let entry = self.scope_resolve(state, name, Span::default()).ok()?.entry;
         self.extract_scheme_from_entry_owned(&entry, 0)
-    }
-
-    /// Probe a bare (unqualified) `name` against the **current module**, and on
-    /// an inner miss fall back to the implicit-prelude **outer scope** when the
-    /// module's [`PreludeFallback`] bit is ON (S78 §2.7.5 — Chokepoint 1).
-    ///
-    /// This is the single bare-name entry point for the chain-follow family:
-    /// `lookup_in_current_module` (value/scheme path) and
-    /// `resolve_entry_in_current_module` (entry path — constructors, trait
-    /// decls, type defs) both route through it. The fallback fires **only** for
-    /// the current-module bare-name probe; explicit `fq.module`-qualified
-    /// probes (`resolve_fq_symbol`, `resolve_terminal_entry_and_home` on a
-    /// named module) keep calling the bare [`Self::probe_module_entry_owned`]
-    /// primitive directly and never fall back.
-    ///
-    /// On the fallback hop the probe lands on the `prelude` module's own table;
-    /// the caller's downstream chain-follow (`extract_scheme_from_entry_owned`
-    /// / `chain_follow_to_home`) follows prelude's `(export [primitives [*]])`
-    /// `Import` edges to the canonical primitive entry — so primitives reach
-    /// user code *via* the prelude re-export through this fallback, not via any
-    /// name-key (the S78 §2 structural-not-skip guarantee).
-    ///
-    /// Only PUBLIC prelude bindings are reachable through the implicit outer
-    /// scope (`/review` I-1): a Private entry in prelude's own table is NOT
-    /// returned (it does not resolve, does not shadow). Reachability is judged
-    /// relative to the original user `current_module`, which is never in
-    /// prelude's subtree — so the rule reduces to `is_public()` on the prelude
-    /// head entry. Prelude's public re-exports stay reachable.
-    pub(crate) fn probe_current_or_prelude(
-        &self,
-        state: &CheckState,
-        name: &str,
-    ) -> Option<ModuleEntry<C>> {
-        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
-        // is the shared primitive (FIXME 0316(c)). `resolve_with_fallback` returns
-        // the chain-followed terminal entry — `extract_scheme_from_entry_owned`'s
-        // own re-follow of a terminal `Def` is idempotent, so projecting `.entry`
-        // is behaviour-identical to returning the head and following downstream.
-        let read = self.current_symbol_table(state);
-        let prelude = self.prelude_fallback_target(&state.current_module);
-        cranelisp_types::resolve_with_fallback(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            name,
-            prelude.is_some(),
-            prelude.as_ref().unwrap_or(&state.current_module),
-            Span::default(),
-        )
-        .ok()
-        .map(|resolved| resolved.entry)
     }
 
     /// Probe a name in `module_path`'s symbol table, returning an owned
@@ -1652,23 +1569,8 @@ where
     /// Staging-aware (FIXME 0179): consults staging first via
     /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
-        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
-        // (with chain-follow to the terminal) is the shared primitive
-        // (FIXME 0316(c)). Project the `Resolved` triple to the terminal entry.
-        let read = self.current_symbol_table(state);
-        let prelude = self.prelude_fallback_target(&state.current_module);
-        cranelisp_types::resolve_with_fallback(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            name,
-            prelude.is_some(),
-            prelude.as_ref().unwrap_or(&state.current_module),
-            Span::default(),
-        )
-        .ok()
-        .map(|resolved| resolved.entry)
+        // Terminal-entry projection over the single scope resolve (S108 Wave-G).
+        self.scope_resolve(state, name, Span::default()).ok().map(|resolved| resolved.entry)
     }
 
     /// Resolve a **constructor reference** in a pattern to its terminal
@@ -1724,17 +1626,17 @@ where
     /// downstream impl scans (`for_each_in_module(home, …)`) land on the trait's
     /// true defining module regardless of which scope (current or prelude)
     /// supplied the head reference.
-    pub(crate) fn resolve_terminal_entry_or_prelude(
+    pub(crate) fn resolve_terminal_entry_scoped(
         &self,
         state: &CheckState,
         name: &str,
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
         // Project the fq-carrying resolver's `Resolved` to (terminal entry, home).
-        self.resolve_terminal_fq_or_prelude(state, name)
+        self.resolve_terminal_fq_scoped(state, name)
             .map(|resolved| (resolved.entry, resolved.home))
     }
 
-    /// Like [`Self::resolve_terminal_entry_or_prelude`] but returns the full
+    /// Like [`Self::resolve_terminal_entry_scoped`] but returns the full
     /// [`Resolved`] triple so the caller can read the canonical **terminal**
     /// symbol (`resolved.fq.symbol`) — the bare local name in the home module,
     /// with any `module/symbol` qualifier and module alias already resolved away.
@@ -1748,27 +1650,13 @@ where
     /// reference mint/dispatch under the same bare-mangled name as the bare call.
     ///
     /// [`Resolved`]: cranelisp_types::Resolved
-    pub(crate) fn resolve_terminal_fq_or_prelude(
+    pub(crate) fn resolve_terminal_fq_scoped(
         &self,
         state: &CheckState,
         name: &str,
     ) -> Option<cranelisp_types::Resolved<C>> {
-        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
-        // (with chain-follow to the terminal) is the shared primitive
-        // (FIXME 0316(c)).
-        let read = self.current_symbol_table(state);
-        let prelude = self.prelude_fallback_target(&state.current_module);
-        cranelisp_types::resolve_with_fallback(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            name,
-            prelude.is_some(),
-            prelude.as_ref().unwrap_or(&state.current_module),
-            Span::default(),
-        )
-        .ok()
+        // The full `Resolved` triple over the single scope resolve (S108 Wave-G).
+        self.scope_resolve(state, name, Span::default()).ok()
     }
 
     /// Chain-follow a name starting from `module_path` to its canonical home,
@@ -1831,24 +1719,15 @@ where
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Result<(Option<Scheme>, Option<ResolutionGap>), CranelispError> {
-        // Compose the qualified `module/symbol` form the types primitive
-        // consumes; `resolve` applies §8.6.6 longest-prefix alias substitution
-        // to the module part, chain-follows the symbol within the resolved
-        // module, and runs the §8.7.3 visibility filter. The first-hop view is
-        // unused for a qualified name (the primitive names its module
-        // directly), but the accessor is the canonical way to obtain the
-        // primitive's `View` argument; in cluster mode it unions staging+live
-        // for the current module.
+        // Compose the qualified `module/symbol` form the scope resolve consumes;
+        // it applies §8.6.6 longest-prefix alias substitution to the module part,
+        // chain-follows the symbol within the resolved module, and runs the
+        // §8.7.3 visibility filter. A qualified name names its module directly
+        // and never takes the prelude retry (intrinsic to the scope resolve), so
+        // routing it through `scope_resolve` is behaviour-identical to the former
+        // bare `cranelisp_types::resolve` call.
         let qualified = format!("{module_path}/{name}");
-        let read = self.current_symbol_table(state);
-        match cranelisp_types::resolve(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            &qualified,
-            Span::SYNTHETIC,
-        ) {
+        match self.scope_resolve(state, &qualified, Span::SYNTHETIC) {
             Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry, 0), None)),
             // Module present, symbol absent: a genuine not-found the `lookup`
             // fallback chain may still satisfy via another candidate. No gap.
@@ -2163,6 +2042,13 @@ where
     }
 
     /// Module-rooted lookup of a `TraitDecl` by bare `TraitName`.
+    ///
+    /// The state-rooted `lookup_trait_decl_with_state` caller was retired at the
+    /// S108 Wave-G convergence (the `deftrait` duplicate check became a raw
+    /// same-module `probe_module_entry_owned` probe); this module-rooted variant
+    /// (and the `ModuleReadView::lookup_trait_decl` it delegates to) now serves
+    /// the unit suite (`builtins.rs`, `test_support.rs`, `registry/tests.rs`).
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
     pub(crate) fn lookup_trait_decl_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -2171,13 +2057,25 @@ where
         self.read_view(module_path).lookup_trait_decl(trait_name)
     }
 
-    /// State-rooted variant of [`Self::lookup_trait_decl`].
-    pub(crate) fn lookup_trait_decl_with_state(
+    /// Resolve a trait reference to its `TraitDeclInfo` — a thin `TraitDecl`
+    /// kind-projection over [`Self::resolve_terminal_entry_scoped`], the single
+    /// scope resolve (S108 Wave-G §3.3; the fallback is intrinsic, not
+    /// advertised in the name). Used by the `(impl <trait> <type> …)` form's
+    /// `trait_name` so a prelude-globbed trait (reachable at `user` only via
+    /// the implicit prelude glob, no `Import` edge) resolves exactly as a bare
+    /// `Display` resolves in a lookup position; a genuinely-unknown name yields
+    /// `None` (the impl site still raises `unknown trait`).
+    pub(crate) fn resolve_trait_decl(
         &self,
         state: &CheckState,
         trait_name: &TraitName,
     ) -> Option<cranelisp_types::TraitDeclInfo> {
-        self.lookup_trait_decl_in_module(&state.current_module, trait_name)
+        let (terminal, _home) =
+            self.resolve_terminal_entry_scoped(state, trait_name.as_ref())?;
+        match terminal {
+            ModuleEntry::TraitDecl { info, .. } => Some(info),
+            _ => None,
+        }
     }
 
     /// Look up which trait a method name belongs to.
@@ -2218,7 +2116,7 @@ where
         method_name: &Symbol,
     ) -> Option<TraitName> {
         let (entry, _home) =
-            self.resolve_terminal_entry_or_prelude(state, method_name.as_ref())?;
+            self.resolve_terminal_entry_scoped(state, method_name.as_ref())?;
         match entry {
             ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
             _ => None,
@@ -2271,7 +2169,7 @@ where
         // Chain-follow the trait reference to its defining module, with the
         // prelude outer-scope fallback for bare prelude-backed traits.
         let (terminal, trait_home) =
-            match self.resolve_terminal_entry_or_prelude(state, trait_name.as_ref()) {
+            match self.resolve_terminal_entry_scoped(state, trait_name.as_ref()) {
                 Some(t) => t,
                 None => return false,
             };
@@ -2426,83 +2324,32 @@ where
         module_path: &ModuleFullPath,
         span: Span,
     ) -> Result<Type, ResolveError> {
-        // Leaf-name resolution delegates to the types primitive (S76 §1.3).
-        // A bare `TypeRef` resolves in `module_path` via its first-hop view
-        // (staging-aware in cluster mode); a qualified `TypeRef` composes
-        // `module/name`, which the primitive resolves in the named module
-        // directly (the first-hop view is unconsulted for qualified names).
+        // Leaf-name resolution routes through the arbitrary-root scope resolve
+        // (S108 Wave-G §3.3 — this inline leaf-resolver copy collapses onto
+        // `scope_resolve_in`). The prelude fallback for a bare `TypeRef`, the
+        // I-1 public-only filter, the qualified-name-never-retries guard, and
+        // the staging-aware first hop are ALL intrinsic to the scope resolve.
         // The structural `TypeExpr` recursion (arity validation, type-var
         // allocation) stays in `crate::resolve::resolve_type_expr`.
         let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
             // A self-qualified ref (`:t/Box` from inside module `t`) names the
             // requester's OWN module by FQ name. It must resolve against the
-            // in-progress cluster staging exactly as a bare `:Box` does —
-            // `cranelisp_types::resolve_qualified` reads only COMMITTED tables,
-            // so during cluster-atomic typecheck the in-cluster `Box` (still in
-            // staging, not yet committed) is invisible to the qualified path
-            // (FIXME 0362). Collapse `module == current_module` to the bare path:
-            // the composed `name` becomes just the leaf, and the staging-aware
-            // first-hop `read` view below carries the in-progress definition. A
-            // genuinely cross-module qualified ref keeps the `module/name` form
-            // and resolves against the committed home (Principle 17 — only the
-            // SELF case changes).
+            // in-progress cluster staging exactly as a bare `:Box` does — the
+            // qualified path reads only COMMITTED tables, so during
+            // cluster-atomic typecheck the in-cluster `Box` (still in staging,
+            // not yet committed) is invisible to it (FIXME 0362). Collapse
+            // `module == current_module` to the bare path: the composed `name`
+            // becomes just the leaf, and the staging-aware first-hop view in
+            // `scope_resolve_in` carries the in-progress definition. A genuinely
+            // cross-module qualified ref keeps the `module/name` form and
+            // resolves against the committed home (Principle 17 — only the SELF
+            // case changes).
             let is_self_qualified = tref.module.as_ref() == Some(module_path);
-            let is_bare = tref.module.is_none() || is_self_qualified;
             let name: String = match &tref.module {
                 Some(m) if !is_self_qualified => format!("{m}/{}", tref.name),
                 _ => tref.name.to_string(),
             };
-            // First-hop view over `module_path`. Absent module → no entry
-            // (mirrors the prior chain-follow's graceful `None`).
-            let live = self.modules.get(module_path)?;
-            let read = match &self.staging {
-                Some(staging) if staging.module == *module_path => {
-                    SymbolTableRead::Cluster { staging: staging.cell.borrow(), live }
-                }
-                _ => SymbolTableRead::Live(live),
-            };
-            let first = cranelisp_types::resolve(
-                self.modules,
-                self.module_aliases,
-                &read.view(),
-                module_path,
-                &name,
-                span,
-            );
-            match first {
-                Ok(resolved) => Some(resolved.entry),
-                // Bare-name miss → implicit-prelude outer-scope fallback
-                // (S78 §2.7.5 Chokepoint 2). Only for a bare `TypeRef`; a
-                // qualified `m/name` names its module directly and never
-                // falls back. The bit is keyed on `module_path` (the module
-                // the type expr is being resolved against).
-                Err(e) if is_bare && Self::is_not_found(&e) => {
-                    drop(read);
-                    // Inner miss — consult the prelude outer scope iff the bit is
-                    // ON for `module_path`. Only PUBLIC prelude terminals are
-                    // reachable (I-1): post-filter the prelude-retry terminal on
-                    // its visibility (reachability judged relative to the original
-                    // `module_path`, never in prelude's subtree).
-                    if let Some(prelude_module) = self.prelude_fallback_target(module_path)
-                        && let Some(prelude_guard) = self.modules.get(&prelude_module)
-                    {
-                        let prelude_view = cranelisp_types::View::single(prelude_guard.value());
-                        return cranelisp_types::resolve(
-                            self.modules,
-                            self.module_aliases,
-                            &prelude_view,
-                            &prelude_module,
-                            &name,
-                            span,
-                        )
-                        .ok()
-                        .map(|resolved| resolved.entry)
-                        .filter(Self::prelude_terminal_visible);
-                    }
-                    None
-                }
-                Err(_) => None,
-            }
+            self.scope_resolve_in(module_path, &name, span).ok().map(|resolved| resolved.entry)
         };
         crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
     }

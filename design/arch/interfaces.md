@@ -1537,6 +1537,14 @@ No changes from v1.
 
 ## Resolution primitive — `resolve` / `resolve_macro_head` (S76 W-Macro fold-in)
 
+> **S108 Wave G**: the free-fn entry points below are the landed S76/S81 state.
+> The approved target reshapes them onto `ResolutionScope` — one lookup with
+> the prelude fallback intrinsic, no public fallback-less entry point — per
+> §"`ResolutionScope`" below and `design/arch/prelude-import-convergence.md`.
+> `Resolved`, `ResolveError`, and everything in this section about the
+> view-vs-primitive line, the Principle-16 split guards, and
+> `substitute_module_alias` carries over unchanged.
+
 ```rust
 // crates/cranelisp-types/src/resolve.rs
 pub struct Resolved<C: CodeStore = ()> {
@@ -1590,75 +1598,102 @@ Per Principle 6 (minimum surface), there is one general primitive (`resolve`) pl
 
 **Qualified-split guard — a bare `/` operator is not a qualified name (S81 / FIXME 0331, ratified).** The two private split helpers inside `resolve.rs` — `split_qualified(name)` (resolve.rs:493, the `module/symbol` splitter) and `canonical_symbol(name)` (resolve.rs:591, the post-last-`/` local-symbol extractor) — both require a **non-empty remainder** before splitting on `/`. `split_qualified` filters `split_once('/')` on `!m.is_empty() && !s.is_empty()`; `canonical_symbol` filters `rsplit_once('/')` on a non-empty symbol part. A name whose split would yield an empty part — a bare punctuation operator (`/`, `//`) or a leading/trailing `foo/` / `/bar` — is treated as a literal bare name routed to the unqualified short-name path, never to `resolve_qualified` against an empty root module. This is the structural realization of **Principle 16** (a bare punctuation operator is not special) at the resolution layer: `/` resolves identically to `+` or any other operator. The guard fixes the FIXME-0328 regression (the `resolve_with_fallback` migration made bare `/` resolve as "undefined variable: /") and matches pre-S81-migration literal-lookup behaviour; both helpers are PRIVATE (`fn`, not `pub`) so the fix carries **zero `public-api.txt` delta** (verified — not present in the baseline; `public_api_relocations` passes unchanged).
 
-### `resolve_with_fallback` — the implicit-prelude outer-scope wrapper (S81 / FIXME 0316c)
+### `ResolutionScope` — the one lookup, prelude fallback intrinsic (S108 Wave G; supersedes the S81 `resolve_with_fallback` shape)
+
+> **Ruling home: `design/arch/prelude-import-convergence.md`.** This section is
+> the facade-side record of the approved `cranelisp-types` surface (the crate
+> has no `facades/{crate}.md`). The S81 free-fn `resolve_with_fallback` shape
+> that previously occupied this section (landed FIXME 0316c) is superseded:
+> per-call opt-in fallback (`fallback_on: bool` threaded at every site) proved
+> forgettable — the S108 matrix (`tests/plan/PLAN.md` §"Prelude ≡ explicit
+> import") found six `_or_prelude` variants and four RED silent-accept/skip
+> sites, each a per-site re-decision of the fallback question. Git history
+> preserves the S81 section text. **LANDED S108 Inc3** (baseline
+> regenerated; `/review` structural grep CLEAR).
+
+The prelude is `(import [prelude [*]])` (spec §8.8.1); "outer scope" is a
+resolution *mechanism*, not a language concept. The fallback therefore becomes
+**intrinsic to a resolution scope constructed once per module context** —
+never decided at a call site, and with **no public fallback-less resolution
+entry point** (Principles 18/20 — the forgettable decision is unrepresentable):
 
 ```rust
-// crates/cranelisp-types/src/resolve.rs
+// crates/cranelisp-types/src/resolve.rs  (approved S108 target)
 
-/// Resolve `name` from `current_module`, falling back to the implicit-prelude
-/// **outer scope** on an inner-scope miss when `fallback_on` is true (S78 §2.7.5).
-///
-/// This is the one general realisation of the 3-step shape duplicated 5× across
-/// the codebase (S78 fragmentation, the proximate cause of the recurring
-/// "fallback wired for path X not Y" defect): (1) `resolve` rooted at the
-/// current module; (2) on a not-found miss with `fallback_on`, retry `resolve`
-/// rooted at `prelude_path`; (3) **public-only filter** on the prelude-retry
-/// terminal (the I-1 leak fix — reachability is judged from the original user
-/// `current_module`, never in prelude's subtree, so only a PUBLIC prelude
-/// terminal is reachable as a bare name; a private one is treated as not-found
-/// and does NOT shadow).
-///
-/// **Data-only by construction (no reverse dependency on typecheck).** The
-/// caller does its own `prelude_fallback.get(module)` lookup and passes the
-/// resulting `bool` (`fallback_on`) plus the prelude `ModuleFullPath`
-/// (`prelude_path`, a types-owned type). The crate never names typecheck's
-/// `PreludeFallback` companion-map — it receives the already-resolved decision.
-/// This keeps `cranelisp-types` data-only (Principle 7) and is the same
-/// general-primitive-plus-thin-wrapper pattern `resolve` already follows.
-///
-/// `fallback_on == false`, or `current_module == prelude_path`
-/// (never self-fallback), reduces to a bare `resolve` against the first hop.
-pub fn resolve_with_fallback<C, L>(
-    symbol_tables: &SymbolTables<C, L>,
-    module_aliases: &ModuleAliases,
-    first_hop: &View<'_, C, L>,        // caller-chosen current-module view
-    current_module: &ModuleFullPath,
-    name: &str,
-    fallback_on: bool,                 // caller's own prelude_fallback.get(module)
-    prelude_path: &ModuleFullPath,     // the prelude module to root the retry at
+pub struct ResolutionScope<'a, C: CodeStore, L: LinkerStore> { /* private */ }
+
+impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
+    /// `prelude`: `Some(path)` iff the module's `prelude_fallback` bit is ON
+    /// and `current_module != prelude` — the caller-side role datum
+    /// (Principle 19), resolved ONCE at construction. `None` ⇒ this scope
+    /// never falls back (suppressed-prelude module; the prelude itself;
+    /// platform sig checks).
+    pub fn new(
+        symbol_tables: &'a SymbolTables<C, L>,
+        module_aliases: &'a ModuleAliases,
+        first_hop: &'a View<'a, C, L>,     // caller-chosen view (staging∪live or single)
+        current_module: &'a ModuleFullPath,
+        prelude: Option<&'a ModuleFullPath>,
+    ) -> Self;
+
+    /// THE reference lookup: inner walk; on a not-found-class miss of an
+    /// UNQUALIFIED name, prelude retry with the I-1 public-terminal filter;
+    /// chain-follow; §8.7.3 visibility; §8.6.6 aliases. Qualified `mod/sym`
+    /// never retries (it names its module).
+    pub fn resolve(&self, name: &str, span: Span) -> Result<Resolved<C>, ResolveError>;
+
+    /// Macro-head projection (int Pass-1 recognition) — same walk, kind filter.
+    pub fn resolve_macro_head(&self, name: &str, span: Span)
+        -> Result<Option<FQSymbol>, ResolveError>;
+}
+
+/// The ONE §8.6.4 definition seam (multi-consumer: typecheck Pass-1 register
+/// + int defmacro registration). Resolves `name` in the scope; home ==
+/// current ⇒ own redefinition, allowed; otherwise classifies provenance
+/// (inner Import/Export head, else Prelude) and delegates to
+/// `check_binding_addition`. Synthetic names (`$`, `__`) skip.
+pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
+    scope: &ResolutionScope<'_, C, L>,
+    name: &Symbol,
     span: Span,
-) -> Result<Resolved<C>, ResolveError>
-where
-    C: CodeStore,
-    L: LinkerStore;
+) -> Result<(), CranelispError>;
 ```
 
-**Where it lives.** `crates/cranelisp-types/src/resolve.rs`, beside `resolve` and `resolve_macro_head` (one new `pub fn`; re-exported from `lib.rs` alongside the existing two). It is `/arch`-owned (the types crate is `/arch`'s); the signature above is the authored target — Wave 1 `/dev` implements the body against it, regenerates `crates/cranelisp-types/public-api.txt`, and the baseline gains exactly one `pub fn resolve_with_fallback` line (the two-update baseline-diff discipline applies; this section IS the facade-side record since `cranelisp-types` has no `facades/{crate}.md`).
+- The former free `pub fn resolve` and `pub fn resolve_with_fallback` become
+  private internals of `ResolutionScope::resolve` (I-1 public-only prelude
+  filter, miss-class-only retry, never-self-fallback, prelude-absent ⇒ miss
+  stands, and the Principle-16 `split_qualified`/`canonical_symbol` guards
+  all move inside unchanged). `resolve_macro_head` moves onto the scope.
+- **Staging-view selection stays caller-side** (the `first_hop` argument);
+  the primitive still does not know about staging. The `prelude_fallback`
+  bit stays typecheck/int-side (data-only crate — the scope receives the
+  already-resolved `Option<&ModuleFullPath>`, never the companion map).
+- Scope constructors are the ONLY places the bit is consulted for
+  resolution: typecheck's construct-and-resolve seams (landed as
+  `TypeCheckEnv::scope_resolve` / `scope_resolve_in`, checker.rs — one bit
+  consult + view selection, subsuming `prelude_fallback_target` as their
+  private helper) and int's committed-view seams (macro recognition, the
+  defmacro definition gate). The int DISPLAY gate
+  (`repl.rs::lookup_with_prelude_fallback{,_opt}`) is deliberately NOT a
+  scope consumer — a raw-head + resolving-module display operation with a
+  root special-form tier; settled deviation + the I-1 display-divergence
+  ruling: `prelude-import-convergence.md` §3.5.
+- The typecheck `_or_prelude` variant family and the fallback-less
+  `lookup_{trait_decl,type_def}_with_state` lookalikes delete per the
+  collapse map in `prelude-import-convergence.md` §3.3; the only surviving
+  fallback-less probe is the same-module idempotent re-registration check
+  (a raw table probe — a different question from name-freedom).
 
-**The prelude-retry root + public-only filter live inside the fn**, so all 5 callers shed their bespoke retry+filter. The retry is realised by a second `resolve` call rooted at `prelude_path` (the same caller-side two-hop the wrappers do today, now lifted into one place). The public-only post-filter reads the resolved terminal's `entry.is_public()` — the I-1 rule reduces to `is_public()` on the terminal because the original `current_module` is never in prelude's subtree (so the `in_subtree` visibility-check leg never fires for a prelude hit). The wrapper applies it on the **prelude-retry** result only; the first-hop (current-module) result is returned unfiltered (a module's own bindings are always reachable from itself).
-
-**Migration note — the 5 caller sites collapse to call it:**
-
-| # | Site | Today | After |
-|---|---|---|---|
-| 1 | `checker.rs::resolve_current_or_prelude` (~920) | inline `resolve` + manual prelude-retry + I-1 post-filter | `resolve_with_fallback(... , self.prelude_fallback_target(m).is_some(), &prelude_path, ...)` returning `Resolved<C>` |
-| 2 | `checker.rs::probe_current_or_prelude` (~1260) | `probe_module_entry_owned` + prelude probe + `prelude_terminal_visible` filter | wrap `resolve_with_fallback`, projecting `Resolved` → `Option<ModuleEntry<C>>` (it returns the `entry`) |
-| 3 | `checker.rs::resolve_entry_in_current_module` (~1385) | probe + `chain_follow_to_home` + prelude retry + filter | wrap `resolve_with_fallback`, projecting `Resolved` → terminal `ModuleEntry<C>` |
-| 4 | `checker.rs::resolve_terminal_entry_or_prelude` (~1417) | bare-name terminal `(entry, home)` + prelude retry + filter | wrap `resolve_with_fallback`, projecting `Resolved` → `(entry, home)` (both already on `Resolved`) |
-| 5 | `src/expander.rs::recognize_macro_head` (~262) | `resolve_macro_head` over committed first-hop + prelude retry + `prelude_macro_public` | a `resolve_macro_head`-shaped wrapper *over* `resolve_with_fallback` (the macro-kind filter is the only residue; the prelude-retry + public-only fold in) — see note below |
-
-The four `checker.rs` callers each keep a ~3-line projection of the generic `Resolved<C>` to their local return shape (`ModuleEntry<C>`, `(entry, home)`, `Option<…>`) — the projection is what distinguishes them; the *resolution + fallback + filter* is the shared body that moves into the primitive. **`current_symbol_table(state)` / staging-view selection stays caller-side** (it is the `first_hop` argument — typecheck passes its `View::union(staging, live)`, expander passes `View::single(live)`); the primitive does not know about staging.
-
-**Site 5 (the macro head) is a two-wrapper composition.** `recognize_macro_head` wants `Result<Option<FQSymbol>, ResolveError>` (macro-kind discrimination), which today is `resolve_macro_head`. The clean shape is to give `resolve_macro_head` itself the fallback parameters (or add a `resolve_macro_head_with_fallback` thin wrapper) so it reuses `resolve_with_fallback` internally rather than re-deriving the retry. /arch's Wave-1 guidance: **add the `fallback_on` + `prelude_path` params to `resolve_macro_head` and route it through `resolve_with_fallback`** — it is the same primitive's macro projection, and the macro-public filter (`prelude_macro_public`) is then the same public-only filter the general fn already applies (no separate macro-specific filter needed). This keeps the wrapper count at the existing two (`resolve` + `resolve_macro_head`) plus the one new general fallback fn, rather than introducing a third public entry. `resolve_macro_head` gaining two params is a signature change on an existing baseline line, not a net-new line — note it in the same baseline regen.
-
-**`resolve_terminal_entry_and_home` stays `pub` — no promotion needed.** It is already `pub` (`crates/cranelisp-types/src/module.rs:1927`, exported via `lib.rs:228`), consumed by `resolve_qualified` + `chain_follow_committed` inside `resolve.rs`. The Phase-2 ruling's conditional ("IFF `pub(crate)`, promote") resolves to **no baseline touch** for the 0316(a) terminal-source-dedup path — `insert_detecting_ambiguity` (int, `src/imports.rs:282`) can call the existing `pub fn` directly to chain-follow both the existing and incoming `Import` edges to their terminal `(home, canonical_symbol)` before emitting `Ambiguous`. **0316(a) carries zero `cranelisp-types` public-surface delta.**
-
-**Net `cranelisp-types/public-api.txt` baseline delta for Wave 1 / 0316:**
-- **+1 line**: `pub fn resolve_with_fallback` (the only net-new public item).
-- **±1 line (signature change, not net-new)**: `resolve_macro_head` gains `fallback_on: bool` + `prelude_path: &ModuleFullPath` params.
-- **0 lines** from 0316(a) (`resolve_terminal_entry_and_home` already `pub`; int-only consumer change).
-
-Both touches are `/arch`-pre-approved here; Wave 1 regenerates the baseline in the same change-set per the baseline-diff discipline.
+**Net `cranelisp-types/public-api.txt` baseline delta (S108 Wave G,
+`/arch`-pre-approved; LANDED with the typecheck consumer collapse in one
+change-set, baseline regenerated):** + `ResolutionScope` (+3
+methods) + `pub fn reject_def_over_binding`; − `pub fn resolve`,
+− `pub fn resolve_with_fallback`, − free `pub fn resolve_macro_head`
+(reshaped onto the scope). `Resolved` / `ResolveError` / `BindingProvenance`
+/ `check_binding_addition` / `substitute_module_alias` unchanged.
+`resolve_terminal_entry_and_home` stays `pub` (module.rs; consumed by
+`resolve.rs` internals and int's §8.6.5 install-time comparator). No serde
+shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
 
 ---
 

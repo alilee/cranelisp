@@ -549,6 +549,104 @@ fn hkt_functor_impl_on_option_dispatches_via_match() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
+// ===========================================================================
+// R1 — HKT-arity gate parity: prelude-provided impl target (PLAN.md §II R1)
+//
+// The invariant (spec/08-modules.md §8.8.1): a prelude-provided name is in a
+// module's scope on EXACTLY the same terms as an explicit `import`. The kind-
+// checking MUST (§7.2.3 / §7.3.4) — "an implementation MUST validate that the
+// impl target's type parameter count matches the expected constructor arity" —
+// therefore fires identically whether the target ADT is reached via an explicit
+// `(import [prelude [Zed]])` or via the implicit prelude glob.
+//
+// Twin fixture, parametrised over the TARGET's provenance only:
+//   Leg A — `Zed` explicitly imported: the arity gate looks up `Zed`, finds a
+//     0-arity type, and REJECTS `(impl Functor Zed …)` (Functor expects arity
+//     1). GREEN control today.
+//   Leg B — `Zed` implicit-prelude-provided: the arity gate's
+//     `lookup_type_def_with_state` (impl_check.rs:70) has NO prelude fallback,
+//     misses, and the arity check is SILENTLY SKIPPED — the wrong-arity impl is
+//     accepted (exit 0). RED today; flips GREEN when the resolution convergence
+//     gives the arity-gate lookup the same fallback the reference resolvers have.
+//
+// The divergence IS the whole signal: same program, target-provenance the only
+// difference, MUST reject in both arms. The specific arity substring (not a bare
+// non-zero exit) guards against a false-pass on an unrelated failure.
+//
+// spec: spec/07-traits.md §7.2.3 (Kind Checking — the arity MUST) + §7.3.4
+//       (HKT impl target) + spec/08-modules.md §8.8.1 (prelude ≡ explicit import)
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl (HKT arity gate, lookup_type_def_with_state has no fallback) found=S108 owner=/dev
+#[test]
+fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
+    // A prelude that provides a 0-arity type `Zed` and the arity-1 HKT trait
+    // `Functor`, both via the implicit glob (leg B) or explicit import (leg A).
+    const PRELUDE: &str = "\
+(export [primitives [*]])
+(deftype Zed (ZedC [:Int n]))
+(deftrait (Functor f)
+  (fmap [:(Fn [a] b) func :(f a) x] (f b)))
+";
+    // Leg A — target `Zed` (and `Functor`) reached via explicit prelude import.
+    let leg_a = Cranelisp::new()
+        .prelude(PRELUDE)
+        .file(
+            "user.cl",
+            "(import [prelude [Zed Functor]])\n\
+             (impl Functor Zed (defn fmap [func x] x))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .run("user.cl")
+        .output();
+    let a = format!("{}\n{}", leg_a.stdout, leg_a.stderr).to_lowercase();
+    // GREEN control: the wrong-arity impl on the explicitly-imported target is
+    // rejected with the §7.2.3 arity diagnostic.
+    assert!(
+        a.contains("type parameters") && a.contains("arity"),
+        "LEG A (explicit-import target): a wrong-arity HKT impl MUST be rejected \
+         with the §7.2.3 kind-checking arity diagnostic;\nstdout:\n{}\nstderr:\n{}",
+        leg_a.stdout,
+        leg_a.stderr
+    );
+    assert_ne!(
+        leg_a.status.code(),
+        Some(0),
+        "LEG A: the rejected impl MUST NOT compile clean;\nstdout:\n{}\nstderr:\n{}",
+        leg_a.stdout,
+        leg_a.stderr
+    );
+
+    // Leg B — same program, target `Zed`/`Functor` reached via the IMPLICIT
+    // prelude (no explicit import). MUST produce the SAME arity rejection.
+    let leg_b = Cranelisp::new()
+        .prelude(PRELUDE)
+        .file(
+            "user.cl",
+            "(impl Functor Zed (defn fmap [func x] x))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .run("user.cl")
+        .output();
+    let b = format!("{}\n{}", leg_b.stdout, leg_b.stderr).to_lowercase();
+    assert!(
+        b.contains("type parameters") && b.contains("arity"),
+        "LEG B (implicit-prelude target): the wrong-arity HKT impl MUST get the \
+         SAME §7.2.3 arity rejection as the explicit-import twin — a prelude-\
+         provided target is in scope on identical terms (§8.8.1). RED today: the \
+         arity gate's non-fallback `lookup_type_def_with_state` misses and the \
+         check is silently skipped;\nstdout:\n{}\nstderr:\n{}",
+        leg_b.stdout,
+        leg_b.stderr
+    );
+    assert_ne!(
+        leg_b.status.code(),
+        Some(0),
+        "LEG B: the wrong-arity impl MUST NOT compile clean via the prelude \
+         fallback gap;\nstdout:\n{}\nstderr:\n{}",
+        leg_b.stdout,
+        leg_b.stderr
+    );
+}
+
 // spec: spec/05-definitions.md §5.4.4 + spec/07-traits.md §7.3.4 — when an
 // impl targets a higher-kinded trait, the impl-target syntax is the BARE
 // type constructor (`Option`), NOT an applied form (`(Option a)`). This

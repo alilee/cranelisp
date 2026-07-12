@@ -181,6 +181,45 @@ wrong things.
   input must not succeed silently), display format (no unqualified names where
   qualified are required).
 
+## Coverage by definition variants (standing lens, owned by `/qa`)
+
+Standing coverage-audit category (user directive, S108, 2026-07-12): **coverage
+by definition variants** — the coverage-process face of the codepath-duplication
+class the project is trying everything to eliminate. For any operation that
+must behave UNIFORMLY across a variant family, the rolling audit question is:
+
+- is there a **variant × {positive, negative} matrix** — a row per variant,
+  both polarities — rather than coverage of whichever variant the implementer
+  happened to exercise?
+- does the matrix **pressure ONE codepath**, or has each variant grown its own
+  resolver/registrar/formatter? A per-variant fix that leaves the siblings
+  untested is the smell; the worked exemplar is the prelude ≡ explicit-import
+  convergence (`plan/PLAN.md` §"Prelude ≡ explicit import"), where a
+  variant×polarity matrix forced 12 divergent resolver variants onto ONE
+  codepath.
+
+Variant families to sweep (rolling; extend as the language grows):
+
+- **definition forms** — `defn` / `def` / `deftype` / `deftrait` (trait name
+  AND method names) / `defmacro`, plus the private `-` variants;
+- **resolution sites** — value ref, type-annotation ref, deftype field type,
+  ctor in value/pattern/dotted-member position, impl target, trait ref, macro
+  recognition, mono collection, the §8.6.4 conflict checks (the PLAN §I site
+  enumeration is the template);
+- **import shapes** — specific / renamed / member / glob / glob re-export;
+- **provenance** — explicit import vs implicit prelude (§8.8.1);
+- **output kinds** — the token-styled render surfaces (values, introspection,
+  `/doc`, code printer, search rows, errors — the §10.3 kind table).
+
+**The twin fixture is the highest-signal shape**: one invariant satisfied two
+ways (two variants, two provenances), SAME assertion — a variant that grew its
+own codepath diverges the twins, and the failing twin names the site. **A
+missing cell in the matrix is where a variant silently diverges.**
+
+This is one lens at three altitudes: `/review`'s per-diff duplication cue
+(FIXME 0565), THIS rolling per-sprint coverage lens (`/qa`), and `/audit`'s
+whole-context Duplication attribute (FIXME 0564).
+
 ## `--link` / platform prerequisites (nextest setup script)
 
 The `--link` path links five workspace members it has **no Cargo dependency
@@ -291,6 +330,8 @@ evidenced classes):
 | `enumeration-miss` | A reachable-set enumeration omits, double-counts, or otherwise mis-counts a symbol source — e.g. the bootstrap-seeded modules absent from the `/search` index (S108 E1), or a seeded-vs-file module-name collision double-counted into a permanently-wedged `pending_count` (S108 I-1) |
 | `silent-accept` | Invalid input accepted without error (S107 deftype trailing-form-after-field-bracket class) |
 | `null-got-slot` | Call through an unpopulated/NULL GOT slot → SIGSEGV (S100–101 vec-query value-use family) |
+| `routing-misclassify` | Input dispatched to the wrong destination arm by a classifier/router — e.g. NL prose containing a reader-macro char (`'` in `doesn't`) misrouted to eval as "code" (S108 E6); a single FQ symbol routed to the agent instead of introspection (S108 candidate B). Distinct from `mode-divergence` (same input, different behaviour PER MODE) — here one mode picks the wrong arm |
+| `error-swallow` | A raised diagnostic is dropped or clobbered between its raise site and the display boundary — e.g. the multi-form REPL eval arm wrapping a per-form error as a fake `Val{0}` warning that a later warnings overwrite discards, surfacing silent `:Int 0` (S108 E7). Distinct from `silent-accept` (nothing was ever raised) |
 
 **Rules:**
 

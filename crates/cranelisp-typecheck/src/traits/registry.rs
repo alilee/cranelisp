@@ -81,7 +81,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
-        // Check for duplicate trait name by looking in SymbolTables.
+        // Same-module idempotency probe (S108 Wave-G convergence §3.3/§4.2).
+        // This is the ONE legitimate fallback-less probe — a RAW current-module
+        // table probe (`probe_module_entry_owned`: no chain-follow, no prelude
+        // hop) that answers same-module IDENTITY, **not** name-freedom. The
+        // name-freedom question (is this trait name already in scope via an
+        // import/export or the prelude?) is the §8.6.4 seam, which ran FIRST at
+        // the `check_form_register` `TraitDecl` arm; by the time control reaches
+        // here the trait name is either free or the module's OWN prior decl.
         //
         // The cluster orchestration retries a module's typecheck FROM THE TOP
         // with no saved resume index when a declared submodule must be loaded
@@ -89,16 +96,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // from `sexps`"). On the retry pass the parent's structural decls are
         // re-submitted while the prior pass's results are already committed to
         // live, so `register_trait_decl` is re-invoked for an already-registered
-        // trait. Every other structural-registration site honours this
-        // retry-from-top contract idempotently (`register_type_def` upserts; the
-        // import installer is "idempotent on resume"); only the trait path had a
-        // hard guard, so a `(mod child)` inside a trait-defining module errored
-        // `trait X already defined` (S86 D3). A re-submission of the SAME
-        // declaration is a no-op (idempotent, mirroring `deftype`); a
-        // genuinely-DIFFERENT redeclaration of the same name is still rejected
-        // (spec 07-traits §7.1 duplicate-trait rule, preserved for real
-        // conflicts).
-        if let Some(existing) = self.lookup_trait_decl_with_state(state, &decl.name) {
+        // trait. A re-submission of the SAME declaration is a no-op (idempotent,
+        // mirroring `deftype`; retry-from-top contract, S86 D3); a genuinely-
+        // DIFFERENT same-module redeclaration of the name is rejected (spec
+        // 07-traits §7.1 duplicate-trait rule, preserved for real conflicts).
+        if let Some(cranelisp_types::ModuleEntry::TraitDecl { info: existing, .. }) =
+            self.probe_module_entry_owned(&state.current_module, decl.name.as_ref())
+        {
             if trait_decl_matches(&existing, decl) {
                 // Idempotent retry-from-top re-submission — already registered
                 // identically. Nothing to do.

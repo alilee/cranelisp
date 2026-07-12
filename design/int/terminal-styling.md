@@ -1,25 +1,125 @@
 # Terminal Styling and Pretty-Printer
 
-Implementation design for `repl/spec.md` section 10 (Sprint 24).
+Implementation design for `repl/spec.md` section 10. Originally authored Sprint 24 (the
+two-layer `style.rs` + `pretty.rs` model). The pretty-printer **LAYOUT** algorithm
+(indentation, head-position, special-form indent, the §3.11 pair layout) is unchanged and
+remains the live design; **how styling is *applied* was superseded at S108 Increment 3 (E4)**
+by the one-styling-authority seam — see the banner immediately below.
+
+> ## SUPERSEDED — styling application (S108 Inc3, E4): one styling authority, the `styled::render` seam
+>
+> The original Sprint-24 model in this doc said **"non-Sexp output uses `styled()` directly
+> from Layer 1"** and migrated formatter output by **re-parsing the rendered string** through
+> `pretty_print_str`. **Both are now forbidden patterns — the E4 convergence deleted exactly
+> them.** A newcomer must not author either. The landed model (`repl/spec.md` §10.3;
+> `src/CLAUDE.md` §"REPL display"; arch seam `design/arch/repl-styling-seam.md`):
+>
+> - **ALL token-styled REPL output builds a `StyledDoc` of role-tagged spans** (`src/styled.rs`;
+>   the `Role` vocabulary is the single code manifestation of the §10.3 R1–R15 table) and is
+>   emitted through **`styled::render` — the SOLE site that calls `style::styled`**, plus the
+>   one sanctioned exception, the `src/agent/render.rs` agent frame (markdown/gutter).
+>   `role_style(Role) -> Option<Style>` is THE styling spec in code: one role, one table,
+>   applied once. A second `style::styled` call site in a formatter is a mirror (Principle 7
+>   drift; `/review` watches for it with a one-line grep gate).
+> - **A producer emits roles at construction; it NEVER re-parses its own output** to
+>   re-discover them. Re-parsing value/introspection *formatter output* to rediscover roles
+>   was the condemned anti-pattern (Principle 7 — the role fact had two homes; Principle 21 —
+>   the unnamed function between formatter and styler grew a parser in the crack). (Re-laying
+>   out actual *source* text for `/source`/`/sexp` is legitimate and retained — that is not
+>   formatter-output reparse; see `repl-styling-seam.md` §5.)
+> - **Shared line builders are single-sourced**: `style::error_line` (R8/R9 `Error:` line),
+>   `style::repl_metadata_line` (R6 `;` lifecycle/watcher note), `repl::push_warning_line`
+>   (R6+R11 `; warning:`), `display::envelope` (the `:Type value` / `:Type name ; class`
+>   envelope — closes the value-vs-introspection grammar drift).
+> - **Data-serialization is not display**: persisted `.cl` source / `FailedForm.text` /
+>   introspection `source` fallbacks use `pretty::pretty_print_plain` (the colour-free
+>   `.text()` of the doc), NEVER `pretty::pretty_print` — a colour-ON session serialized
+>   through the display path would embed SGR into stored source and break re-parse.
+>
+> **Design authority for the seam is `design/arch/repl-styling-seam.md`** (actors §2, role
+> vocabulary §3, mechanism §4, collapse table §5). This int doc elaborates interiors below
+> it. Where any section further down prescribes applying `styled()` at a formatter or
+> re-parsing formatter output, read it as: **emit role spans through `styled::render`
+> instead.**
 
 ## Sketch Comparison
 
 The sketch has no terminal styling. All output is plain text with no ANSI escape sequences. The sketch's `format_sexp()` and `format_flat()` functions produce unstyled strings. There is nothing to follow or diverge from -- this is entirely new functionality.
 
-## Architecture
-
-Two layers, as specified in section 10.7:
+## Architecture (as landed — three layers, E4)
 
 ```
-Layer 1: src/style.rs    -- Style enum, styled() function, TTY detection
-Layer 2: src/pretty.rs   -- S-expression pretty-printer (Sexp -> styled indented String)
+Layer 1:   src/style.rs    -- Style enum, styled() SGR primitive, TTY detection
+Layer 1.5: src/styled.rs   -- Role enum, StyledDoc(Vec<(Role,String)>), render(), role_style()
+                              (the SOLE styled() call site + the single §10.3 style table)
+Layer 2:   src/pretty.rs   -- Sexp pretty-printer: LAYOUT (indent, head position, §3.11 pairs)
+                              emitting role spans via a role-assignment walk over the Sexp tree
 ```
 
-Layer 1 is a leaf module with no dependencies on compiler internals. Layer 2 depends on Layer 1 and on `cranelisp_types::Sexp`. Both live in the binary crate (`src/`) because they are REPL presentation concerns, not library crate functionality.
+Layer 1 (`style.rs`) is a leaf module with no dependencies on compiler internals — the SGR
+primitive + TTY/`--no-color` detection only. **Layer 1.5 (`src/styled.rs`, landed E4 Wave D)**
+sits between `style.rs` and every token-styled producer: it owns the role→style table
+(`role_style`) and is the only code that calls `style::styled`. Layer 2 (`pretty.rs`) keeps
+its S-expression **layout** algorithm (below) but emits `(Role, text)` spans through a
+role-assignment walk over the `Sexp` tree rather than calling `styled()` inline. All live in
+the binary crate (`src/`) because they are REPL presentation concerns, not library-crate
+functionality.
 
-### Why two layers
+### Where each producer's roles come from (superseding the old "two layers" split)
 
-The pretty-printer handles S-expression formatting: indentation, syntax highlighting, head-position detection. But some output elements are not S-expressions (prompt, error messages, category headers). These use `styled()` directly from Layer 1. Separating the layers keeps the pretty-printer focused on Sexp tree-walking while giving non-Sexp output a clean styling API.
+The original Sprint-24 rationale was "S-expression output styles inline; non-Sexp output
+(prompt, errors, headers) uses `styled()` directly from Layer 1." **That direct-`styled()`
+split is superseded (see the banner).** Under the landed model:
+
+- **Code producers** (`/sexp`, `/source`, `/expand`, agent code blocks): roles are
+  **structural** — assigned by ONE walk over the `Sexp` tree (head position, atom kind,
+  `:`-symbol, comment node), with two emitters (computed `pp` layout vs spans over original
+  source bytes for verbatim text). The two former highlighters collapse into this one walk.
+- **Semantic producers** (result values, introspection lines, `/search` rows, `/doc`,
+  errors/warnings, prompt/banner — in `src/display.rs` / `src/repl.rs`): they hold the
+  structured parts already (`Type`, `FQSymbol` = `ModuleFullPath` + `Symbol`, docstring), so
+  they build `StyledDoc` spans **directly at construction** — `TypeAnnotation` / `ModulePrefix`
+  / `Name` / `ReplMetadata` / `Error*` / `Warn*` fall out with **no parsing anywhere**. They
+  do NOT map onto the Sexp tree (a `:Type value` line or `<closure>` is session data, not a
+  parseable form — forcing them through the reader recreates the round-trip defect E4 deleted).
+- All producer families render through **`styled::render`** at the write boundary; colour-off
+  ⇒ `render` yields the concatenated plain text byte-identically (the golden-corpus + agent
+  `strip_ansi` invariant).
+
+### The `:Type` typed-line grammar — three intentional builders, one role vocabulary
+
+The `:`+space "typed line" grammar (`:Type <subject>`) is built at three sites, and `/review`
+(S108 Inc1-D2 + E4) noted the multiplicity. **Verdict (drift protocol): (a) intentional
+split — a documented decision, NOT latent drift.** The three:
+
+| Site | Role | Subject it emits |
+|---|---|---|
+| `display.rs::envelope` | value line (`:Type value`) | a caller-supplied **value-span closure** (scalars, vec forms; the ADT arm at `format_result_value` inlines the same three pushes with an ADT value form) |
+| `display.rs::format_scheme_display_doc` | introspection primary line (`:Type module/name`) | a `ModulePrefix` + `Name` FQ-name suffix (definition subject) |
+| `repl.rs::push_type_annotation` | the annotation-span **primitive** (`:Type`, no space, no subject) | nothing — it is the atom the other two would themselves compose from |
+
+**Why the split is correct, not drift.** The *style* is single-sourced by construction: all
+three push `Role::TypeAnnotation` (`src/styled.rs`), and `styled::render` is the SOLE site that
+maps that role to SGR (the seam banner at the top of this doc). No `:Type` can render a
+different colour at one site than another — the drift that a three-homes situation normally
+risks is **structurally impossible** here. What differs across the three is only the *subject
+semantics* — value-closure vs FQ-name vs bare-annotation — which the arch seam design itself
+rules "a legitimate difference, not drift" (`design/arch/repl-styling-seam.md` §4, "The shared
+envelope"). `push_type_annotation` is not a competing envelope: it is the lower-grain
+annotation primitive, used where a line carries a `:Type` with no following subject (or the
+subject is built separately by the introspection helpers `push_fq_name` / `push_metadata`).
+
+**The one recurring literal, and its forward-condition.** The only text actually replicated is
+the trivial `format!(":{type}")` + `plain(" ")` prefix — hand-rolled at `envelope`,
+`format_scheme_display_doc`, and the `format_result_value` ADT arm rather than routed through
+`push_type_annotation`. This is left as-is deliberately: consolidating it buys nothing today
+(the roles cannot drift). It becomes worth doing **only if** the parked `render_type_spans`
+enhancement (§7 of the arch seam — dimming the `module/` prefix *inside* `:module/Type`) is
+ratified: that would split the single `:Type` span into sub-spans and must then land at ONE
+site. **Pre-condition recorded, not filed as a FIXME** (the trigger — a ratified
+`render_type_spans` — is unmet; a FIXME against an unmet trigger only accumulates). If/when
+that enhancement lands, route all `:Type`-span construction through `push_type_annotation`
+first, then extend that one primitive to emit type sub-spans.
 
 ## Layer 1: `src/style.rs`
 
@@ -380,15 +480,36 @@ Every REPL output path that produces S-expression content, and how each gets wir
 
 ### Migration Strategy
 
+> **SUPERSEDED (E4).** The strategy below — "re-parse the rendered display string through
+> `pretty_print_str()`" for `:Type value` / `/sig` / `/info` / `/type` / bare-symbol output —
+> is **precisely the string-reparse anti-pattern the E4 seam deleted** (re-discovering by
+> parsing what the producer knew at construction; Principle 7). The "future optimization"
+> below (producers return structured data, not strings) is what actually landed: the semantic
+> producers build `StyledDoc` role spans directly from the `Type`/`FQSymbol`/docstring parts
+> and render through `styled::render`. Do NOT wrap formatter output in `pretty_print_str`.
+> Only actual *source* text (`/source`, agent ```lisp blocks) is re-laid-out through the
+> reader — that is source relayout, not formatter-output reparse (`repl-styling-seam.md` §5).
+
+The original Sprint-24 text follows for historical continuity:
+
 The key insight from section 10.7: "The migration can be incremental -- individual output paths can be converted one at a time."
 
 The simplest migration path is a wrapper: everywhere we currently `writeln!(stdout, "{display}")` for S-expression content, replace with `writeln!(stdout, "{}", pretty_print_str(&display))`. This re-parses the string through the reader and pretty-printer. For `/expand`, which already has the Sexp tree, call `pretty_print(&expanded)` directly.
 
 This re-parsing approach has negligible cost (REPL output strings are short) and avoids restructuring the display functions. The existing `format_result_value()` / `format_entry_signature()` functions continue to produce plain strings; the pretty-printer adds styling and indentation on top.
 
-**Future optimization**: If re-parsing becomes a concern, refactor display functions to return Sexp trees instead of strings. This is not needed for Sprint 24.
+**Future optimization** (this is what E4 landed): If re-parsing becomes a concern, refactor display functions to return Sexp trees instead of strings. This is not needed for Sprint 24.
 
 ## Non-Formatter Styling
+
+> **SUPERSEDED (E4).** "These chrome elements use `styled()` directly" is the deleted
+> pattern. Under the landed model these emit **role spans through `styled::render`**, and the
+> recurring ones are single-sourced line builders: prompt/banner → `Prompt`/`Banner` roles;
+> `Error:` → `style::error_line` (`ErrorKeyword`+`ErrorDetail`); `; warning:` →
+> `repl::push_warning_line` (`WarnKeyword`+`WarnDetail`); category headers → the `Header` role;
+> lifecycle/watcher notes → `style::repl_metadata_line` (`ReplMetadata`). No formatter calls
+> `style::styled` itself. The concrete examples below show the *intended visual result* (which
+> role maps to which SGR is in `role_style`), but the `styled(...)` call shape is historical.
 
 These chrome elements use `styled()` directly (section 10.4).
 

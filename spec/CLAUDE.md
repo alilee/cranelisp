@@ -61,3 +61,11 @@ Another skill that needs a spec change files a numbered FIXME —
 and `/spec` evaluates it, actions it here, and deletes the FIXME file. Inline
 `FIXME(/spec)` comments are the **old** protocol (superseded Sprint 63); do not
 author new ones.
+
+**Exception — the coverage annotation band (no FIXME).** `/qa` maintains the
+traceability **annotation tags** on requirement rows/headings (`[Tested …]`,
+`[Tested+Neg …]`, `[S{M}]`, `[… IGNORED]`) in the `spec/` files **directly**,
+editing the brackets in place with no FIXME cycle (user-directed 2026-07-12; root
+`CLAUDE.md` §Traceability, `.claude/commands/qa.md` §Boundary). A `/qa` edit
+confined to those tags is not a cross-skill change; only the requirement **prose**
+around them is `/spec`'s and still takes a FIXME.

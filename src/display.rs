@@ -16,6 +16,8 @@ use cranelisp_types::{
 
 use cranelisp_backend::heap::{HeapAdt, HeapVec};
 
+use crate::styled::{Role, StyledDoc, render};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -35,9 +37,9 @@ use cranelisp_backend::heap::{HeapAdt, HeapVec};
 ///   ADT    → constructor dot notation (see below)
 ///   Vec    → "[elem1 elem2 ...]"
 ///
-/// Thin wrapper over `format_field_value`; exercised by this module's unit
-/// tests. `format_result_value` is the production entry point (REPL result
-/// display). Allowed dead in non-test builds.
+/// The plain-text value-only display (no `:Type` prefix) — the `.text()` of the
+/// `push_field_value` span build. Exercised by this module's unit tests;
+/// `format_result_value` is the production entry point (REPL result display).
 #[allow(dead_code)]
 pub fn format_value<C, L>(
     value: i64,
@@ -48,13 +50,17 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    format_field_value(value, ty, symbol_tables)
+    let mut doc = StyledDoc::new();
+    push_field_value(value, ty, symbol_tables, &mut doc);
+    doc.text()
 }
 
 /// Format a runtime value with `:Type value` prefix for REPL display.
 ///
-/// Combines qualified type formatting with value formatting.
-/// This is the top-level entry point for REPL result display.
+/// Combines qualified type formatting with value formatting. This is the
+/// top-level entry point for REPL result display — it builds a role-tagged
+/// `StyledDoc` (the §10.3 R4 type annotation + R2/R3/R15 value spans) and
+/// `render`s it. Colour-off the output is byte-identical to the role-free text.
 pub fn format_result_value<C, L>(
     value: i64,
     ty: &Type,
@@ -64,34 +70,72 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    render(&result_value_doc(value, ty, symbol_tables))
+}
+
+/// Build the `:Type value` result-value `StyledDoc` — R4 type annotation, then
+/// the value literal as R2 (num/bool) / R3 (string) / R15 (closure, ctor, vec).
+pub(crate) fn result_value_doc<C, L>(
+    value: i64,
+    ty: &Type,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> StyledDoc
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let mut doc = StyledDoc::new();
     match ty {
         Type::Bool => {
             let display_val = if value != 0 { "true" } else { "false" };
-            format!(":primitives/Bool {display_val}")
+            envelope(&mut doc, ":primitives/Bool", |d| d.push(Role::LitNumBool, display_val));
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
             let s = format!("{f}");
-            if s.contains('.') {
-                format!(":primitives/Float {s}")
+            let s = if s.contains('.') { s } else { format!("{s}.0") };
+            envelope(&mut doc, ":primitives/Float", |d| d.push(Role::LitNumBool, s));
+        }
+        Type::Int => {
+            envelope(&mut doc, ":primitives/Int", |d| d.push(Role::LitNumBool, value.to_string()));
+        }
+        Type::String => {
+            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
+                envelope(&mut doc, ":primitives/String", |d| {
+                    d.plain(format!("<invalid:{value}>"))
+                });
             } else {
-                format!(":primitives/Float {s}.0")
+                // SAFETY: value is a heap pointer to a valid HeapString.
+                let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
+                envelope(&mut doc, ":primitives/String", |d| {
+                    d.push(Role::LitStr, format!("\"{s}\""))
+                });
             }
         }
-        Type::Int => format!(":primitives/Int {value}"),
-        Type::String => format_string_value(value),
         Type::Fn(_, _) => {
             let type_str = format_type_qualified(ty);
-            format!(":{type_str} <closure>")
+            envelope(&mut doc, &format!(":{type_str}"), |d| d.plain("<closure>"));
         }
         Type::ADT(fqtn, type_args) => {
-            format_adt_value(value, fqtn, type_args, symbol_tables)
+            let type_display = format_adt_type_qualified(fqtn, type_args);
+            doc.push(Role::TypeAnnotation, format!(":{type_display}"));
+            doc.plain(" ");
+            push_adt_value_form(value, fqtn, type_args, symbol_tables, &mut doc);
         }
         other => {
             let type_str = format_type_qualified(other);
-            format!(":{type_str} {value}")
+            envelope(&mut doc, &format!(":{type_str}"), |d| d.plain(value.to_string()));
         }
     }
+    doc
+}
+
+/// Push a `:Type value` envelope: the R4 type annotation, a `Plain` space, then
+/// the caller's value spans.
+fn envelope(doc: &mut StyledDoc, type_ann: &str, value: impl FnOnce(&mut StyledDoc)) {
+    doc.push(Role::TypeAnnotation, type_ann);
+    doc.plain(" ");
+    value(doc);
 }
 
 /// Convenience wrapper: format_result_value with empty symbol_tables.
@@ -127,13 +171,30 @@ pub fn format_type_qualified(
 /// Every occurrence of a constrained type variable in parameter position
 /// is shown as `:TraitName var` (spec §3.5.1).
 /// Unconstrained variables appear bare.
+#[cfg(test)]
 pub fn format_scheme_display(
     name: &str,
     scheme: &Scheme,
     module: &ModuleFullPath,
 ) -> String {
+    format_scheme_display_doc(name, scheme, module).text()
+}
+
+/// The `:Type module/name` primary-line `StyledDoc` — R4 type annotation, R7 dim
+/// `module/` prefix, R15 name. The single-source builder for the introspection
+/// primary line (`format_def_entry`, `format_overloaded_variants`).
+pub(crate) fn format_scheme_display_doc(
+    name: &str,
+    scheme: &Scheme,
+    module: &ModuleFullPath,
+) -> StyledDoc {
     let type_str = format_scheme_type(scheme);
-    format!(":{type_str} {module}/{name}")
+    let mut d = StyledDoc::new();
+    d.push(Role::TypeAnnotation, format!(":{type_str}"));
+    d.plain(" ");
+    d.push(Role::ModulePrefix, format!("{module}/"));
+    d.plain(name);
+    d
 }
 
 /// Render a `Scheme`'s type as a normalized, fully-qualified REPL type string
@@ -251,17 +312,6 @@ fn format_type_with_inline_constraints(
     }
 }
 
-/// Format a String heap value as `:primitives/String "contents"`.
-fn format_string_value(value: i64) -> String {
-    if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-        // Null or small value -- not a valid heap pointer.
-        return format!(":primitives/String <invalid:{value}>");
-    }
-    // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
-    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
-    format!(":primitives/String \"{s}\"")
-}
-
 /// Check whether a type has exactly one constructor whose name matches the type name.
 ///
 /// Single-constructor product types like `(deftype Point [:Int x :Int y])` have
@@ -319,36 +369,37 @@ where
     }
 }
 
-/// Format an ADT value with constructor name lookup and dot notation (spec §1.5).
+/// Push an ADT value's VALUE form (no `:Type` prefix) as role spans (spec §1.5).
 ///
-/// Nullary constructors display as `Type.Ctor` (e.g., `Color.Red`).
-/// Data constructors display as `(Type.Ctor field1 field2)` (e.g., `(Option.Some 42)`).
-/// Single-constructor product types where the constructor name matches the type name
-/// suppress the `Type.` prefix (e.g., `(Point 3 4)` not `(Point.Point 3 4)`).
-/// Type names in the `:Type` prefix are fully qualified.
-fn format_adt_value<C, L>(
+/// Nullary constructors display as `Type.Ctor` (`Color.Red`); data constructors
+/// as `(Type.Ctor field1 field2)` (`(Option.Some 42)`); single-constructor
+/// product types where the ctor name matches the type name suppress the `Type.`
+/// prefix (`(Point 3 4)`). The ctor dot-name and structural punctuation are R15
+/// `Plain`; scalar field literals recurse to R2/R3 via `push_field_value`. This
+/// is the ONE value-only ADT renderer — used by both the top-level result value
+/// and by nested ADT fields.
+fn push_adt_value_form<C, L>(
     value: i64,
     fqtn: &FQTypeName,
     type_args: &[Type],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> String
-where
+    doc: &mut StyledDoc,
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let type_display = format_adt_type_qualified(fqtn, type_args);
     let type_name_str = fqtn.name.as_ref();
 
     // Vec is a built-in type, not in type_defs -- handle it specially.
     if type_name_str == "Vec" {
-        let elem_type = type_args.first();
-        let elems = format_vec_elements(value, elem_type, symbol_tables);
-        return format!(":{type_display} {elems}");
+        push_vec_elements(value, type_args.first(), symbol_tables, doc);
+        return;
     }
 
     let Some(type_info) = lookup_type_def_from_tables(fqtn, symbol_tables) else {
         // No type def available -- fallback to bare value display.
-        return format!(":{type_display} {value}");
+        doc.plain(value.to_string());
+        return;
     };
 
     // R5 value-layout (Wave-3a): a flattened single-ctor single-value-field ADT
@@ -356,10 +407,8 @@ where
     // nor a heap pointer. Recognise it before the tag/heap branching below, else
     // the flat word is misread as a tag (`<tag:N>`) or, for a `Float` field,
     // dereferenced as a pointer (SIGSEGV). Spec §12.9 / repl §1.5.
-    if let Some(form) =
-        format_value_layout_adt(value, fqtn, type_args, &type_info, symbol_tables)
-    {
-        return format!(":{type_display} {form}");
+    if push_value_layout_adt(value, fqtn, type_args, &type_info, symbol_tables, doc) {
+        return;
     }
 
     // Determine if this is a nullary tag or a heap pointer.
@@ -367,52 +416,59 @@ where
         // Nullary constructor: value is the tag directly.
         let tag = value as usize;
         let ctor_name = find_constructor_by_tag(&type_info, tag);
-        let ctor_display = format_ctor_display(type_name_str, &ctor_name, &type_info);
-        format!(":{type_display} {ctor_display}")
+        doc.plain(format_ctor_display(type_name_str, &ctor_name, &type_info));
     } else {
         // Data constructor: read tag and fields from heap.
-        format_adt_heap_value(value, &type_display, type_name_str, &type_info, type_args, symbol_tables)
+        push_adt_heap_value(value, type_name_str, &type_info, type_args, symbol_tables, doc);
     }
 }
 
-/// R5 value-layout display (spec §12.9 / repl §1.5).
+/// R5 value-layout display (spec §12.9 / repl §1.5) — value-only, span form.
 ///
 /// A single-constructor, single-value-field ADT (`(deftype Box (Box [:Int v]))`)
 /// is flattened by the Wave-3a `value_layout` optimisation: its runtime word is
 /// the field's value carried INLINE — NOT a nullary tag and NOT a heap pointer.
-/// The formatter recognises the shape via the SAME `cranelisp_types::value_layout`
-/// predicate the backend's `HeapCategory::Value` arm uses (single-sourced — the
-/// verdict is never re-derived here) and reconstructs `(Ctor field-value)` by
-/// reading the flattened word AS the field's value. A value-layout ADT field is
-/// itself value-eligible, so a nested value field recurses through
-/// `format_field_value`. Returns the value-only form (no `:Type` prefix), or
-/// `None` when the type is not value-layout (keeps the existing tag/heap path).
-fn format_value_layout_adt<C, L>(
+/// Recognises the shape via the SAME `cranelisp_types::value_layout` predicate
+/// the backend's `HeapCategory::Value` arm uses (single-sourced) and pushes the
+/// `(Ctor field-value)` form. Returns `true` when it handled the value; `false`
+/// when the type is not value-layout (the caller keeps the tag/heap path).
+fn push_value_layout_adt<C, L>(
     value: i64,
     fqtn: &FQTypeName,
     type_args: &[Type],
     type_info: &TypeDefInfo,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> Option<String>
+    doc: &mut StyledDoc,
+) -> bool
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
     // Ask the single-sourced predicate — do NOT re-derive value-eligibility.
     let ty = Type::ADT(fqtn.clone(), type_args.to_vec());
-    let concrete = cranelisp_types::ConcreteType::from_type(&ty).ok()?;
-    cranelisp_types::value_layout(&concrete, Some(symbol_tables))?;
+    let Ok(concrete) = cranelisp_types::ConcreteType::from_type(&ty) else {
+        return false;
+    };
+    if cranelisp_types::value_layout(&concrete, Some(symbol_tables)).is_none() {
+        return false;
+    }
 
     // `value_layout` guarantees exactly one constructor with exactly one
     // value-eligible field; the flattened `value` IS that field's value.
-    let ctor_name = type_info.constructors.first()?.to_string();
+    let Some(ctor_name) = type_info.constructors.first().map(|c| c.to_string()) else {
+        return false;
+    };
     let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
-    let field_ty = field_types.first()?;
+    let Some(field_ty) = field_types.first() else {
+        return false;
+    };
     let subst = build_adt_subst(type_info, type_args, symbol_tables);
     let field_ty = substitute_field_type(field_ty, &subst);
-    let field_str = format_field_value(value, &field_ty, symbol_tables);
     let ctor_display = format_ctor_display(fqtn.name.as_ref(), &ctor_name, type_info);
-    Some(format!("({ctor_display} {field_str})"))
+    doc.plain(format!("({ctor_display} "));
+    push_field_value(value, &field_ty, symbol_tables, doc);
+    doc.plain(")");
+    true
 }
 
 /// Format the type portion of an ADT display with qualification (spec §1.4).
@@ -497,15 +553,14 @@ where
 /// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
 /// into field types before formatting. Without this, fields with type variables
 /// would display as raw values instead of properly formatted values.
-fn format_adt_heap_value<C, L>(
+fn push_adt_heap_value<C, L>(
     value: i64,
-    type_display: &str,
     type_name: &str,
     type_info: &TypeDefInfo,
     type_args: &[Type],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> String
-where
+    doc: &mut StyledDoc,
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
@@ -516,34 +571,34 @@ where
     // S70: tag is the index into `constructors: Vec<Symbol>`; field types come
     // from the ctor Def's scheme.
     let Some(ctor_name) = type_info.constructors.get(tag).map(|s| s.to_string()) else {
-        return format!(":{type_display} <unknown-tag:{tag}>");
+        doc.plain(format!("<unknown-tag:{tag}>"));
+        return;
     };
     let fqtn = &type_info.name;
     let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
 
     if field_types.is_empty() {
         // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
-        return format!(":{type_display} {ctor_display}");
+        doc.plain(format_ctor_display(type_name, &ctor_name, type_info));
+        return;
     }
 
     // Build substitution from type_params to type_args for polymorphic ADTs.
     let subst = build_adt_subst(type_info, type_args, symbol_tables);
 
-    // Read and format each field.
-    let mut field_strs = Vec::new();
+    // `(Ctor field1 field2)` — the ctor dot-name and punctuation are R15 Plain;
+    // scalar field literals recurse to R2/R3.
+    doc.plain("(");
+    doc.plain(format_ctor_display(type_name, &ctor_name, type_info));
     for (i, field_ty) in field_types.iter().enumerate() {
         let field_offset = HeapAdt::field_offset(i) as usize;
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
         // Substitute type args into field type before formatting.
         let field_ty = substitute_field_type(field_ty, &subst);
-        let field_str = format_field_value(field_val, &field_ty, symbol_tables);
-        field_strs.push(field_str);
+        doc.plain(" ");
+        push_field_value(field_val, &field_ty, symbol_tables, doc);
     }
-
-    let fields_display = field_strs.join(" ");
-    let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
-    format!(":{type_display} ({ctor_display} {fields_display})")
+    doc.plain(")");
 }
 
 /// Build a type substitution from a TypeDefInfo's type_params and concrete type_args.
@@ -602,24 +657,6 @@ fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
     }
 }
 
-/// Strip the `:{type_display} ` value-line prefix from a recursively-rendered
-/// ADT display, leaving just the constructor value form (e.g.
-/// `(Wrap.MkWrap 7)`).
-///
-/// `type_display` may itself contain spaces when the nested value is a
-/// PARAMETERIZED ADT — `(user/Wrap primitives/Int)`. A naive
-/// `split_once(' ')` split at the first space lands INSIDE the type
-/// (`:(user/Wrap` | `primitives/Int) …`), which is exactly the FIXME 0493
-/// garbling (a type token where the nested constructor should open, plus an
-/// unbalanced closing paren). Stripping the exact known prefix is space-safe.
-fn strip_type_prefix(rendered: String, type_display: &str) -> String {
-    let prefix = format!(":{type_display} ");
-    match rendered.strip_prefix(&prefix) {
-        Some(rest) => rest.to_string(),
-        None => rendered,
-    }
-}
-
 /// Substitute type variables in a field type using the given substitution.
 fn substitute_field_type(
     ty: &Type,
@@ -632,47 +669,52 @@ fn substitute_field_type(
 ///
 /// HeapVec layout: `[alloc_size(+0) | rc(+8) | len(+16) | cap(+24) | data_ptr(+32)]`
 /// Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
-fn format_vec_elements<C, L>(
+fn push_vec_elements<C, L>(
     value: i64,
     elem_type: Option<&Type>,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> String
-where
+    doc: &mut StyledDoc,
+) where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
     if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-        return "[]".to_string();
+        doc.plain("[]");
+        return;
     }
 
     let base = value as *const u8;
     // SAFETY: value is a heap pointer to a valid HeapVec (produced by JIT code).
     let len = unsafe { *(base.add(HeapVec::LEN_OFFSET as usize) as *const i64) } as usize;
     if len == 0 {
-        return "[]".to_string();
+        doc.plain("[]");
+        return;
     }
 
     let data_ptr = unsafe { *(base.add(HeapVec::DATA_PTR_OFFSET as usize) as *const *const i64) };
     if data_ptr.is_null() {
-        return "[]".to_string();
+        doc.plain("[]");
+        return;
     }
 
-    let mut elems = Vec::with_capacity(len);
+    doc.plain("[");
     for i in 0..len {
+        if i > 0 {
+            doc.plain(" ");
+        }
         let elem_val = unsafe { *data_ptr.add(i) };
-        let formatted = match elem_type {
-            Some(ty) => format_field_value(elem_val, ty, symbol_tables),
-            None => format!("{elem_val}"),
-        };
-        elems.push(formatted);
+        match elem_type {
+            Some(ty) => push_field_value(elem_val, ty, symbol_tables, doc),
+            None => doc.plain(format!("{elem_val}")),
+        }
     }
-
-    format!("[{}]", elems.join(" "))
+    doc.plain("]");
 }
 
-/// Format a single field value based on its type.
-///
-/// Field values use `Type.Constructor` dot notation for ADT constructors (spec §1.5).
+/// `#[cfg(test)]`/legacy plain-text field renderer — the `.text()` of
+/// `push_field_value`. `format_field_value` is exercised by this module's unit
+/// tests; the production path builds spans via `push_field_value`.
+#[cfg(test)]
 fn format_field_value<C, L>(
     value: i64,
     ty: &Type,
@@ -682,65 +724,53 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    let mut doc = StyledDoc::new();
+    push_field_value(value, ty, symbol_tables, &mut doc);
+    doc.text()
+}
+
+/// Push a single field value's VALUE spans based on its type (spec §1.5).
+///
+/// Scalars carry their literal role (R2 num/bool, R3 string); ADT ctor
+/// dot-names, `<closure>`, and structural punctuation are R15 `Plain`. Field
+/// values use `Type.Constructor` dot notation for ADT constructors.
+fn push_field_value<C, L>(
+    value: i64,
+    ty: &Type,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    doc: &mut StyledDoc,
+) where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     match ty {
-        Type::Int => format!("{value}"),
+        Type::Int => doc.push(Role::LitNumBool, format!("{value}")),
         Type::Bool => {
-            if value != 0 { "true".to_string() } else { "false".to_string() }
+            doc.push(Role::LitNumBool, if value != 0 { "true" } else { "false" });
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
             let s = format!("{f}");
-            if s.contains('.') { s } else { format!("{s}.0") }
+            let s = if s.contains('.') { s } else { format!("{s}.0") };
+            doc.push(Role::LitNumBool, s);
         }
         Type::String => {
             if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-                format!("<invalid-string:{value}>")
+                doc.plain(format!("<invalid-string:{value}>"));
             } else {
                 // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code);
                 // the guard above rejects null and small (nullary tag) values.
                 let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
-                format!("\"{s}\"")
+                doc.push(Role::LitStr, format!("\"{s}\""));
             }
         }
-        Type::Fn(_, _) => "<closure>".to_string(),
+        Type::Fn(_, _) => doc.plain("<closure>"),
         Type::ADT(fqtn, args) => {
-            let type_name_str = fqtn.name.as_ref();
-            // Vec is built-in, not in type_defs.
-            if type_name_str == "Vec" {
-                return format_vec_elements(value, args.first(), symbol_tables);
-            }
-            // Recursive ADT formatting with dot notation.
-            let type_display = format_adt_type_qualified(fqtn, args);
-            if let Some(info) = lookup_type_def_from_tables(fqtn, symbol_tables) {
-                // R5 value-layout: a nested flattened single-value-field ADT
-                // stores its field value inline — recognise it before the
-                // tag/heap branch (else `<tag:N>` / pointer-deref crash).
-                if let Some(form) =
-                    format_value_layout_adt(value, fqtn, args, &info, symbol_tables)
-                {
-                    form
-                } else if (value as usize) < NULLARY_TAG_THRESHOLD {
-                    let tag = value as usize;
-                    let ctor_name = find_constructor_by_tag(&info, tag);
-                    format_ctor_display(type_name_str, &ctor_name, &info)
-                } else {
-                    // Recursive heap ADT -- format with parens and dot notation.
-                    let inner = format_adt_heap_value(
-                        value, &type_display, type_name_str, &info, args, symbol_tables,
-                    );
-                    // Strip the leading `:{type_display} ` prefix, leaving just
-                    // the nested constructor value. `type_display` may itself
-                    // contain spaces for a PARAMETERIZED nested ADT (e.g.
-                    // `(user/Wrap primitives/Int)`), so the old `split_once(' ')`
-                    // split INSIDE the type — leaking a type token and dropping a
-                    // closing paren (FIXME 0493). Strip the exact known prefix.
-                    strip_type_prefix(inner, &type_display)
-                }
-            } else {
-                format!("{value}")
-            }
+            // The value-only ADT renderer handles Vec / value-layout / nullary /
+            // heap uniformly (single-sourced with the top-level result value).
+            push_adt_value_form(value, fqtn, args, symbol_tables, doc);
         }
-        _ => format!("{value}"),
+        _ => doc.plain(format!("{value}")),
     }
 }
 
@@ -749,37 +779,87 @@ mod tests {
     use super::*;
     use cranelisp_types::FQTraitName;
 
-    // --- strip_type_prefix (FIXME 0493 — nested parameterized-ADT display) ---
+    // === §10.3 colour-ON byte-exact fixtures (Wave-D /dev obligation) =========
+    // The `ColorGuard` forces the process-global colour gate ON (nextest gives
+    // each test its own process, so the force is race-free); the fixtures pin the
+    // exact SGR spans at the exact offsets (§10.3 requirement 3 determinism).
 
-    // The garbling cell: a nested PARAMETERIZED ADT's type_display contains a
-    // space, so the pre-fix split_once(' ') split inside the type, leaking a
-    // type token + dropping a paren. The exact-prefix strip is space-safe.
+    use crate::style::test_support::ColorGuard;
+
+    // K1 — result value (num): `(+ 1 2)` → `:primitives/Int 3`. R4 cyan type
+    // annotation as a single construct + R2 yellow literal; the space is R15.
+    // spec: repl/spec.md §10.3 R4/R2 (result-value colouring, NEW in Wave D).
     #[test]
-    fn strip_type_prefix_parameterized_nested_type_is_space_safe() {
-        let rendered = ":(user/Wrap primitives/Int) (Wrap.MkWrap 7)".to_string();
+    fn colour_on_k1_result_value_int() {
+        let _g = ColorGuard::force(true);
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let out = format_result_value(3, &Type::Int, &empty);
+        assert_eq!(out, "\x1b[36m:primitives/Int\x1b[0m \x1b[33m3\x1b[0m");
+    }
+
+    // K2 — a STRING result value: the `:primitives/String` annotation is R4 cyan,
+    // the quoted literal `"hi"` is R3 green (§10.3 R3-in-value composition). The
+    // heap string is a real allocation so the producer's `read_string_as_str` path
+    // is exercised. Fail-on-revert pin for the string-value role composition.
+    // spec: repl/spec.md §10.3 R4/R3 — string result value.
+    #[test]
+    fn colour_on_k2_result_value_string_green() {
+        let _g = ColorGuard::force(true);
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        // A real heap string (base pointer > NULLARY_TAG_THRESHOLD).
+        let ptr = cranelisp_intrinsics::heap_string::alloc_string(b"hi") as i64;
+        let out = format_result_value(ptr, &Type::String, &empty);
+        assert_eq!(out, "\x1b[36m:primitives/String\x1b[0m \x1b[32m\"hi\"\x1b[0m");
+    }
+
+    // K1 sibling — Bool literal is R2 yellow too.
+    // spec: repl/spec.md §10.3 R2 — bool literal in value display.
+    #[test]
+    fn colour_on_k1_result_value_bool() {
+        let _g = ColorGuard::force(true);
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let out = format_result_value(1, &Type::Bool, &empty);
+        assert_eq!(out, "\x1b[36m:primitives/Bool\x1b[0m \x1b[33mtrue\x1b[0m");
+    }
+
+    // Colour-OFF invariant: the SAME producer emits exactly the plain text (the
+    // non-TTY golden contract, §10.3 requirement 2).
+    // spec: repl/spec.md §10.3 requirement 2.
+    #[test]
+    fn colour_off_k1_result_value_is_plain() {
+        let _g = ColorGuard::force(false);
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        assert_eq!(format_result_value(3, &Type::Int, &empty), ":primitives/Int 3");
+    }
+
+    // K3 primary-line building block — `:(Fn …) module/name` is R4 (whole type)
+    // + Plain space + R7 (dim `module/`) + R15 (name). The introspection primary
+    // line (`format_def_entry`, `/sig`, bare lookup) is built on this doc.
+    // spec: repl/spec.md §10.3 R4/R7/R15 (introspection primary line).
+    #[test]
+    fn colour_on_k3_scheme_display_module_prefix_dim() {
+        let _g = ColorGuard::force(true);
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        };
+        let module = ModuleFullPath::from("user");
+        let out = render(&format_scheme_display_doc("double", &scheme, &module));
         assert_eq!(
-            strip_type_prefix(rendered, "(user/Wrap primitives/Int)"),
-            "(Wrap.MkWrap 7)"
+            out,
+            "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m \x1b[2muser/\x1b[0mdouble"
         );
     }
 
-    #[test]
-    fn strip_type_prefix_simple_type() {
-        let rendered = ":user/Color Color.Red".to_string();
-        assert_eq!(strip_type_prefix(rendered, "user/Color"), "Color.Red");
-    }
-
-    // A doubly-nested value: the whole recursive form after the outer type is
-    // preserved (no premature split at the first inner space).
-    #[test]
-    fn strip_type_prefix_preserves_doubly_nested_value() {
-        let rendered =
-            ":(user/List primitives/Int) (List.Cons 1 (List.Cons 2 List.Nil))".to_string();
-        assert_eq!(
-            strip_type_prefix(rendered, "(user/List primitives/Int)"),
-            "(List.Cons 1 (List.Cons 2 List.Nil))"
-        );
-    }
+    // --- nested-ADT value rendering (FIXME 0493 — nested parameterized ADT) ---
+    //
+    // The FIXME-0493 garbling class (a nested PARAMETERIZED ADT's `:type value`
+    // string split at the first space, landing INSIDE the type) is now
+    // structurally impossible: `push_field_value`/`push_adt_value_form` build the
+    // VALUE form directly (no `:Type` prefix on nested fields, so nothing to
+    // strip). The end-to-end guard is
+    // `display_exact::display_exact_nested_parameterized_adt_wrap_in_wrap`.
 
     // --- constructor-name decision seams (FIXME 0496 — the ADT-render core) ---
     //

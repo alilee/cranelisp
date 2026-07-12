@@ -319,7 +319,7 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ### 1.1 Universal Output Format [Tested+Neg tests/repl_introspection::bare_primitive_type_int_displays_type_info, tests/repl_introspection::display_defn_with_docstring_uses_dash_separator]
 
-All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
+All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. **Colour styling of this format is governed by §10.3, the single token/element styling authority** (the `:Type` annotation is R4 cyan, a literal value R2/R3, a `module/` name prefix R7 dim, the `; classification` comment R6 dim). The primary line is always:
 
 ```
 :Type {value|name} ; {classification} - {docstring first line}
@@ -976,7 +976,9 @@ pattern (`match`); the **right term** is the value (`let`) or the arm body (`mat
 
 **Determinism.** For a fixed input `Sexp`, P0–P5 produce **byte-for-byte identical** output every
 time (colour-off); with colour on, only SGR spans are added around the same characters, at the same
-columns. This is the contract `/qa` pins against a fixed `let`/`match` fixture. [S107]
+columns, per the **§10.3 token/element styling contract** (code roles R1 Head, R2/R3 literals, R4
+type annotations, R5 source comments). This is the contract `/qa` pins against a fixed `let`/`match`
+fixture. [S107]
 
 **Worked example (byte-exact — the FIXME 0554 `rotate` fixture).** Source:
 
@@ -1017,7 +1019,7 @@ Every valid language construct entered at the REPL MUST produce useful feedback.
 
 ### 4.1 Symbol Lookup — Per-Class Specification
 
-Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_negative::unbound_symbol_clear_error]
+Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_negative::unbound_symbol_clear_error] Colour styling of every introspection line here is governed by **§10.3** (the type annotation is R4 cyan, a `module/` name prefix R7 dim, the `; classification` and `; match:`/`; defn:`/`; impl:` drawers R6 dim).
 
 #### 4.1.1 Functions (defn) [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification]
 
@@ -1444,68 +1446,83 @@ Every styled span MUST be terminated by a reset (`\033[0m`) before any newline o
 
 Escape sequences MUST NOT appear inside the value portion of `:Type value` when that value is a String literal — the string content is user data and MUST be printed verbatim.
 
-### 10.3 Colour Palette [R4 S22]
+### 10.3 Token/Element Styling Contract — The One Styling Authority [S108]
 
-The palette assigns one colour per semantic role. There are no user-configurable themes — the defaults are chosen to work on both light and dark terminal backgrounds using the standard 16-colour ANSI palette.
+This subsection is the **single normative authority** for the element → style-role mapping across **all token-styled REPL output**: result values (§1.2/§1.5), introspection lines (§4.1 — `/sig`, `/info`, bare-symbol lookup), pretty-printed code (§3.11 — `/sexp`, `/source`, and the agent ```lisp blocks §17.13.2 routes through the same printer), `/search` result rows (§17.19.2), and error/warning lines (§5). Every byte of token-styled output derives its style from **exactly one** role in the table below; a role is defined once here and applied once at render, so styling cannot drift between surfaces. The per-surface style descriptions that predate this table (§1.1/§1.5 value styling, §3.11 "colour on adds SGR spans", §4.1 introspection styling, and the §10.4 worked illustration) are **subordinate** to it and cross-reference it — **this table wins on any conflict.** There are no user-configurable themes; the defaults work on both light and dark backgrounds using the standard 16-colour ANSI palette. [S108]
 
-| Element | Style | SGR Code | Reset | Rationale |
+**Scope boundary — the layout family is out of styling scope (user, 2026-07-12).** The pure symbol-list **name bodies** of `/list`, `/imports`, and `/exports` (§3.3) are a uniform-**layout** concern, not a token-styling one — their names are default-styled and their layout is governed by §3.3 L0–L4. Only their **category headers** carry a styling role (R12, below), applied through this same contract. `/search` rows DO carry token roles (`:Type`, module path, import snippet) and are **in** scope. [S108]
+
+**The role table (byte-reproducible).** The **SGR** column is the exact Select Graphic Rendition parameter string emitted between `\033[` and `m`. Every styled span is terminated by a reset `\033[0m` per §10.2 before any newline or transition to a differently-styled span.
+
+| # | Role | Elements it covers | Style | SGR |
 |---|---|---|---|---|
-| Prompt (timing + module + `>`) | dim | `\033[2m` | `\033[0m` | Recedes from focus; always visible but never competing |
-| Result type (`:Type` prefix) | cyan | `\033[36m` | `\033[0m` | Distinct from value; teaches the type system visually |
-| Result value | default | — | — | Primary content; no styling needed |
-| Classification comment (`; defn`, `; deftrait`, etc.) | dim | `\033[2m` | `\033[0m` | Metadata — present but subordinate to the type+value |
-| Related-symbol comment lines (`; defn:`, `; impl:`, names) | dim | `\033[2m` | `\033[0m` | Secondary information following the primary line |
-| Error keyword (`Error:`) | bold red | `\033[1;31m` | `\033[0m` | Immediately noticeable |
-| Error detail (message body) | red | `\033[31m` | `\033[0m` | Contextually connected to the error keyword |
-| Warning keyword (`Warning:`) | bold yellow | `\033[1;33m` | `\033[0m` | Less urgent than errors, still attention-getting |
-| Warning detail | yellow | `\033[33m` | `\033[0m` | Contextually connected to the warning |
-| Slash command category headers (`Fns:`, `Types:`, etc.) | bold | `\033[1m` | `\033[0m` | Anchors for scanning `/list`, `/imports`, `/exports` |
-| Slash command body (symbol names, info lines) | default | — | — | Dense informational content; styling would add noise |
-| Startup banner | dim | `\033[2m` | `\033[0m` | One-time context; should not dominate |
-| Agent prose frame (`▌` gutter + agent text) | bright magenta gutter, default body | `\033[95m` (gutter) | `\033[0m` | Reserved exclusively for the agent's *prose* — makes model output unmistakable from deterministic REPL output (§17.2). Only **prose** is guttered; agent-issued commands and their results use their normal roles, and (S107, FIXME 0556) **agent-emitted ```lisp code blocks render un-guttered / `▌`-free so they copy-paste clean** (§17.2 item 3, §17.13.2). [S88] [S107] |
-| Agent-input prompt (`agent>` glyph at agent-echo sites) | dim, bright-magenta `agent` token | `\033[2m` + `\033[95m` (the `agent` token) | `\033[0m` | The prompt prefix shown when the agent "types" a line — a pulled read command (§17.2) or a Build-submit echo (§17.14). Distinct from the dim human prompt (§2.1) and from the `▌` prose gutter, so the transcript reads honestly: who issued each line. Degrades under `--no-color`/non-TTY to the plain-text token `agent>` (no SGR). [S89] |
+| R1 | Head | The **head of an apply form** — the first symbol of a `(…)` list in operator position (pretty-printed code only, §3.11); includes the delimiter when a nested form sits in head position. | bold | `1` |
+| R2 | LitNumBool | Integer, float, and boolean **literals** — in pretty-printed code **AND** in result-value display (§1.2/§1.5). | yellow | `33` |
+| R3 | LitStr | **String literals** — in code **AND** value display. The span wraps the whole quoted literal `"…"` as one unit; per §10.2 **no SGR is ever emitted inside the string content** (user data, printed verbatim). | green | `32` |
+| R4 | TypeAnnotation | A **type annotation** — `:Type`, `:module/Type`, `:(Fn […] …)`, `:(prelude/Option a)` — wherever it appears (result lines, introspection lines, search rows, code). Styled cyan **as a single construct**: a `module/` prefix *inside* an annotation is part of the one cyan span and is **NOT** separately dimmed (user ruling 2026-07-12 — no internal decomposition inside type annotations). | cyan | `36` |
+| R5 | SourceComment | A `;` **source-code comment** in pretty-printed code — a comment the *user wrote in their own source*, surfaced by `/sexp`/`/source`/agent ```lisp blocks. | italic | `3` |
+| R6 | ReplMetadata | A **REPL structured-metadata `;` line or suffix** — the classification comment (`; defn`, `; deftype`, `; deftrait`, `; special form`, `; primitive`, `; impl`), the related-symbol drawer headers and their name bodies (`; match:`, `; defn:`, `; impl:`, and the names beneath), `; doc:` excerpts, the `; warning:` prefix, and lifecycle notes (`; indexing N module(s)…`, `; search index complete.`). These are **not comments in the source-code sense** — they are REPL-emitted structure. | dim | `2` |
+| R7 | ModulePrefix | The **`module/` prefix on a bare fully-qualified symbol NAME** — `collections.vec/` in a `collections.vec/count` name, the module column of a `/search` row. Applies to FQ **names**; it does **NOT** apply inside a type annotation (a `module/` within `:module/Type` is R4 cyan). | dim | `2` |
+| R8 | ErrorKeyword | The `Error:` keyword and equivalents (`runtime error:`). | bold red | `1;31` |
+| R9 | ErrorDetail | The error message body. | red | `31` |
+| R10 | WarnKeyword | The `Warning:` keyword. | bold yellow | `1;33` |
+| R11 | WarnDetail | The warning message body. | yellow | `33` |
+| R12 | Header | A slash-command **category header** — `Fns:`, `Types:`, `Traits:`, `Special forms:`, etc. (the one styling role the layout-family lists carry). | bold | `1` |
+| R13 | Prompt / Banner | The prompt line (timing + module + `>`, §2.1) and the startup banner (§6.2). | dim | `2` |
+| R14 | AgentGutter | The agent prose frame `▌` gutter (§17.2). Only **prose** is guttered; agent-issued commands, their results, and agent-emitted ```lisp code blocks render un-guttered in their own roles (§17.2 item 3, §17.13.2, FIXME 0556). | bright magenta | `95` |
+| R15 | Name / Plain | **Everything else** — the non-prefix part of symbol names, constructor dot-names (`Color.Red`), `<closure>`, vec/list/bracket punctuation, whitespace, and layout padding. | default | — |
+
+**Composite — the `agent>` input prompt (§17.12).** The `agent>` glyph shown when the agent "types" a line is a composite of R13 (Prompt, dim) over the line with the `agent` token in the R14 bright-magenta colour — expressed as R13 + R14-family spans over the same line. It marks who issued each line (distinct from the dim human prompt §2.1 and the `▌` prose gutter) and degrades under colour-off to the plain token `agent>`. [S108]
+
+**Normative requirements.**
+
+- **(1) Completeness — exactly one role per byte.** Every byte of token-styled output MUST derive its style from **exactly one** role above. A surface that needs a role not in this table is a **spec change** (bring it to `/repl` and the user), never an implementation choice. This is what makes "define once, apply once" enforceable and drift structurally impossible. [S108]
+- **(2) Colour-off is byte-identical regardless of role — one global gate.** When colour is disabled (§10.1 — `--no-color`, `NO_COLOR`, or non-TTY) the output MUST be **byte-identical to the role-free plain text** for that line: the concatenation of the spans' text content, with **no SGR whatsoever**. Role assignment MUST NOT change layout, spacing, column positions, or any byte other than the SGR escapes. This one global colour gate is the guarantee behind the non-TTY goldens and the agent `strip_ansi` membrane (§17) — a role that perturbs plain-text bytes is a conformance failure. [S108]
+- **(3) Colour-on adds only SGR spans at the same columns — determinism.** With colour on, rendering MUST add **only** SGR spans wrapping the same characters at the same columns the colour-off output produces (the §3.11 layout-determinism discipline, extended from layout to styling). For a fixed input, colour-on output is byte-for-byte reproducible: the same roles at the same offsets every time. `/qa` pins each output kind against a colour-on byte-exact fixture. [S108]
+
+**FIXME 0561 resolution — source comments italic, REPL metadata dim (two distinct roles).** A `;` **source-code comment** (R5) renders **italic** (`\033[3m`); a REPL **structured-metadata** `;` line (R6 — `; defn`, `; match:`, `; impl:`, `; defn:`, the classification and related-symbol drawers, `; doc:` excerpts, and lifecycle notes) renders **dim** (`\033[2m`). They are **different roles** with different styles: the R6 metadata `;` lines are REPL-emitted structure ("not comments in the source-code sense" — the standing note below), whereas an R5 comment is text the user wrote in their source. The pre-S108 divergence (the code highlighter over-applied italic to the metadata role while the spec said dim) is resolved by this split: **metadata = dim (R6); source comment = italic (R5)**. This closes FIXME 0561. [S108]
 
 Notes on specific choices:
 
-- **No green for comments.** The earlier draft used green for `;` comment lines. However, REPL output comment lines (`;`) carry structured information (classifications, related symbols) — they are not "comments" in the source-code sense. Dim is more appropriate: it creates a visual hierarchy (type = cyan, value = default, metadata = dim) without introducing a third saturated colour.
-- **Bold for category headers only.** Bold is reserved for structural anchors (category names in `/list` output, error/warning keywords). Using bold elsewhere dilutes its signal.
+- **Green is for string literals, not comments.** An earlier draft used green for `;` comment lines; comments are now italic (R5, source) or dim (R6, metadata), and green (R3) is reserved for string literals. REPL metadata `;` lines carry structured information (classifications, related symbols) — they are **not** comments in the source-code sense, so dim (not a saturated colour) keeps the visual hierarchy: type = cyan, literal = coloured, metadata = dim.
+- **Bold for structural anchors only.** Bold (R1, R8/R10 keyword prefixes, R12) is reserved for the head of an apply form, error/warning keywords, and category headers. Using bold elsewhere dilutes its signal.
 - **No colour on user input.** The line editor controls input styling. The REPL MUST NOT emit escape sequences into the input buffer.
 
-### 10.4 Styled Universal Output Format [R4 S22]
+### 10.4 Styled Universal Output Format — Worked Illustration [R4 S22]
 
-The universal output format (§1.1) with styling applied. Angle brackets show styled spans; actual output uses SGR codes, not brackets.
+This subsection **illustrates** the §10.3 contract applied to the universal output format (§1.1); **§10.3 is the authority** and wins on any conflict. Angle brackets show styled spans annotated with their §10.3 role; actual output uses SGR codes, not brackets.
 
-**Expression result:**
+**Expression result** (the literal value is R2 yellow — not default):
 ```
-<cyan>:primitives/Int</cyan> 42
-```
-
-**Definition with classification and docstring:**
-```
-<cyan>:(Fn [primitives/Int] primitives/Int)</cyan> user/double <dim>; defn - Multiply by 2</dim>
+<cyan R4>:primitives/Int</cyan> <yellow R2>42</yellow>
 ```
 
-**Type with related symbols:**
+**Definition with classification and docstring** (the `user/` name prefix is R7 dim; the type annotation is one R4 cyan span; the classification comment is one R6 dim span):
 ```
-<cyan>:user/Color</cyan> <dim>; deftype</dim>
-<dim>; match:</dim>
-<dim>;  Red Green Blue</dim>
+<cyan R4>:(Fn [primitives/Int] primitives/Int)</cyan> <dim R7>user/</dim>double <dim R6>; defn - Multiply by 2</dim>
+```
+
+**Type with related symbols** (drawer headers and name bodies are R6 dim):
+```
+<cyan R4>:user/Color</cyan> <dim R6>; deftype</dim>
+<dim R6>; match:</dim>
+<dim R6>;  Red Green Blue</dim>
 ```
 
 **Error:**
 ```
-<bold-red>Error:</bold-red> <red>Unbound symbol 'foo'</red>
+<bold-red R8>Error:</bold-red> <red R9>Unbound symbol 'foo'</red>
 ```
 
-**Slash command `/list`:**
+**Slash command `/list`** (only the R12 category headers are styled; the name bodies are the layout family, default-styled, out of styling scope per §10.3):
 ```
-<bold>Types:</bold>
+<bold R12>Types:</bold>
   Color Point
-<bold>Fns:</bold>
+<bold R12>Fns:</bold>
   double area
 ```
 
-The reset between the cyan type prefix and the default-styled value is the space character — no visible break, just a colour transition. The classification comment (everything from `; ` onward on the primary line) is a single dim span.
+The reset between the R4 cyan type prefix and the value is the space character — no visible break, just a colour transition. The classification comment (everything from `; ` onward on the primary line) is a single R6 dim span. A string result value renders as one R3 green span; a constructor value (`Color.Red`) and a closure (`<closure>`) are R15 default.
 
 ### 10.5 Batch Mode Output [R4 S22]
 
@@ -2222,7 +2239,7 @@ This section is **additive and behaviorally feature-gated.** It specifies the us
 
 The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
 
-- **The deterministic REPL is untouched.** Any complete form, slash command, or **known**-symbol introspection routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1). The agent is a new destination for input the deterministic REPL would otherwise present as a parse error or an **unbound**-symbol display (genuine parse errors and bare *unknown* symbols/prose, §17.1) — and for the explicit `/ask` door — nothing more.
+- **The deterministic REPL is untouched.** Any **single form** (a bare atom, a fully-qualified symbol, or a compound form) and any slash command routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1) — a single symbol is always introspected (§4), never sent to the agent. The agent is a new destination for **multi-form / unparseable prose** (a line that parses to ≥2 forms, or a genuine parse error, §17.1) — and for the explicit `/ask` door — nothing more.
 - **Everything the agent does is a visible REPL line.** The agent has no private capability surface: its reads, its proposed writes, and its shell proposals all appear as ordinary REPL commands and ordinary REPL output (§17.2). The session remains a legible, replayable script (§15).
 - **Deterministic output and model output are unmistakable.** The agent's *prose* is rendered in a distinct reserved visual frame (§17.2); the deterministic `:Type value` format and the `;`-comment drawer remain exclusively the deterministic REPL's (§1, §4).
 
@@ -2230,35 +2247,36 @@ The agent extends the self-documentation principle (§4) into a conversational p
 
 When the agent is enabled, the REPL classifies each completed line of input into one of the existing deterministic destinations or the agent, **without regressing any §4 self-documentation behavior.** The classifier is a routing decision made one step earlier than evaluation; it does not change what any deterministic destination does.
 
-**Parseable is not sufficient.** The discriminator is **symbol resolution**, not merely whether the reader accepts the input. The naive rule "anything the reader accepts routes deterministically" is wrong about the reader: multi-word natural-language prose (e.g. `how do I define a constrained function over Num?`) parses cleanly as `Ok(N bare symbols)` — a sequence of valid atoms — so a reader-acceptance test would route real sentences to the REPL, not the agent. The classifier therefore goes one step further: when a line parses to **bare atoms**, it **resolves** each symbol against the session before deciding. Known names stay deterministic (§4 is preserved); any unbound/unknown symbol routes the line to the agent. [S88]
+**Form count is the discriminator, not symbol resolution (user ruling 2026-07-12).** The classifier decides by **how many forms the line parses to**, never by whether the forms' symbols resolve. The naive rules that predated this — "anything the reader accepts routes deterministically" or "resolve every bare atom and route unknowns to the agent" — both misjudged real input: multi-word natural-language prose parses cleanly as a *run of atoms*, and any prose containing an apostrophe (`doesn't`) parses to a **compound** form because `'` is the quote reader-macro (`'t` → `(quote t)`), so a compound-means-code rule misroutes a whole English sentence to eval (E6). The corrected rule is purely structural:
+
+- **Exactly one form → the deterministic REPL.** A line that parses to **exactly one form** — a single bare atom (`map`, `42`), a single **fully-qualified** symbol (`primitives/vec-len`), or a single compound form (`(+ 1 2)`, `(defn …)`) — is evaluated/introspected exactly as §1/§4 specify. This decision does **NOT** depend on whether the symbol is known: a single **FQ** symbol **introspects** (§4), it never routes to the agent (this is the E6-candidate-B fix); a single bare unknown symbol shows the §4.1.10 unbound display. [S108]
+- **Anything else → the agent if active, otherwise eval-sequentially-and-abandon.** A line that parses to **more than one form**, or that does not parse at all (unparseable prose, a genuine parse error), routes to the **agent when the agent is active**. When no agent is active, the line is evaluated **form by form in order and abandons on the first error, surfacing it** (§5.1) — never swallowing it into a fake result (the E7 fix). [S108]
 
 A line is routed as follows (the first matching rule wins):
 
 | Input shape | Routes to | Behavior |
 |---|---|---|
 | Starts with `/` (slash command) | Deterministic REPL | Unchanged (§3). `/ask` is the one slash command that forces the agent — see below. |
-| `/ask <text>` | **Agent (always)** | The explicit door. Routes `<text>` to the agent unconditionally — **regardless of resolution** — bypassing the classifier (see below). |
+| `/ask <text>` | **Agent (always)** | The explicit door. Routes `<text>` to the agent unconditionally, bypassing the classifier (see below). |
 | Blank or comment-only | Deterministic REPL | Unchanged — silent re-prompt (§2.3). |
 | `parse(line)` → unclosed `(` or `[` (brackets not balanced) | Continuation | Unchanged — continuation prompt (§2.2). |
-| `parse(line)` → a **genuine parse error** (stray `)`, unterminated string — *not* an unclosed bracket) | **Agent** | The text is sent to the agent as a natural-language turn. |
-| `parse(line)` → `Ok(forms)` containing a **compound form** (`(…)` list or `[…]` vector) | Deterministic REPL | It is code. Expressions, definitions, special-form calls — evaluated/introspected exactly as today (§4, §1). |
-| `parse(line)` → `Ok(forms)` of **bare atoms only**, where **every** symbol resolves (a literal, or a known/bound symbol) | Deterministic REPL | The §4 self-documentation surface is preserved: bare `map`, `+`, `42` are still **described** (§4), never sent to the agent. |
-| `parse(line)` → `Ok(forms)` of **bare atoms** where **any** symbol is unbound/unknown | **Agent** | A bare `yes`, a typo like `lenght`, or any natural-language prose (a run of bare symbols, at least one of which is unknown) reaches the agent. |
+| `parse(line)` → **exactly one form** (a single bare atom, a single fully-qualified symbol, or a single compound `(…)`/`[…]`) | Deterministic REPL | Evaluated/introspected exactly as today (§1, §4). A single FQ symbol introspects — it does **not** route to the agent, regardless of whether it resolves. |
+| **Anything else** — `parse(line)` → **more than one form**, OR a **genuine parse error** / unparseable prose | **Agent** if active; otherwise **eval sequentially, abandon on first error** | Multi-word prose (`why doesn't that typecheck?` — the `'` splits `doesn't` into `doesn` + `(quote t)`, ≥2 forms) reaches the agent. With no agent, `foo bar` evaluates `foo`, hits the undefined-variable error, and surfaces it (never a silent `:Int 0`). |
 
-**Symbol resolution is the discriminator.** For the bare-atom case the classifier consults the **same symbol table the §4 self-documentation uses** to describe a name. If the line is a single bare symbol or a run of bare symbols and **all** of them resolve (literals always resolve; known operators, builtins, special forms, types, traits, macros, and user/imported bindings resolve), the line is deterministic and is described/evaluated exactly as today. If **any** bare symbol is unbound, the line routes to the agent. This is why a bare known `map` is still described by §4, while a bare unknown `yes` — or a real sentence, which is just a run of bare symbols at least one of which is unknown — reaches the agent with no sigil. [S88]
+**Symbol resolution is NOT consulted.** The classifier's single-form → REPL decision is independent of `symbol_is_known`: a single form always routes deterministically, whether its symbols resolve or not. §4 self-documentation is therefore preserved unchanged for every single bare/FQ symbol — a bare known `map`, `+`, `42`, or `primitives/vec-len` is still **described** (§4), and a single bare unknown symbol shows the §4.1.10 unbound display — while multi-token prose (≥2 forms) reaches the agent. [S108]
 
-**§4 self-documentation is preserved for known symbols.** A bare known symbol (`+`, `map`, `42`, a user-defined `foo`) routes to **introspection** (§4) and is **described**, not sent to the agent. The resolve→agent routing fires only on *unknown* symbols, so no input that §4 describes today changes destination. [S88]
+**The reader is unchanged.** The `'`-in-contraction split (`doesn't` → `doesn` `(quote t)`) is language-normative and stays — the fix is entirely in the classifier rule, which now routes the resulting ≥2-form line to the agent (or sequential-eval) rather than treating "contains a compound form" as "is code." No reader change is made. [S108]
 
-**The explicit `/ask` door always reaches the agent.** `/ask <text>` routes `<text>` to the agent **unconditionally**, bypassing the classifier and ignoring resolution. This is the canonical way to ask the agent about a *known* symbol's usage in prose (e.g. `/ask how do I use map with a closure?` — where `map` is bound and would otherwise be described by §4), or to force a single bound word or a form-shaped question to the agent. [S88]
+**The explicit `/ask` door always reaches the agent.** `/ask <text>` routes `<text>` to the agent **unconditionally**, bypassing the classifier. This is the canonical way to ask the agent about a *single known* symbol's usage in prose (e.g. `/ask how do I use map with a closure?` — where `map` alone would otherwise be described by §4), or to force any single-form line to the agent. [S88]
 
-**Feature-off and dormant behavior (byte-identical fallback):**
+**Feature-off and dormant behavior:**
 
-- The resolve→agent routing is **entirely feature-gated.** When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4) the classifier's `Agent` arm does not exist, and routing is **byte-identical to today**:
-  - A bare unbound symbol → today's **"unbound" introspection display** (§4.1.10) — exactly as the deterministic REPL shows now. The resolution check still happens; it simply routes the unbound result to the §4 unbound display rather than to a nonexistent agent. [S88]
-  - A genuine parse error (or a run of bare symbols including an unbound one) → today's **parse-error / unbound display** (§5.1, §4.1.10) — byte-identical to the deterministic REPL with no agent. [S88]
+- The agent arm is **entirely feature-gated.** When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4) the classifier's `Agent` arm does not exist:
+  - A **single form** routes exactly as today — a bare unbound symbol → the §4.1.10 unbound display; a single known symbol → §4 introspection; a single compound form → evaluation (§1). Byte-identical to the deterministic REPL. [S108]
+  - **More than one form** → **evaluate sequentially and abandon on the first error, surfacing it** (§5.1) — e.g. `foo bar` surfaces `undefined variable: foo` rather than swallowing it into a silent `:Int 0` (the E7 fix). A **genuine parse error** → today's parse-error display (§5.1). [S108]
   - `/ask <text>` MUST print a single, clear notice and re-prompt — `agent not built in` when compiled out, or `agent not enabled (no key configured)` when built-in but dormant — and MUST NOT crash, evaluate, or alter session state. [S88]
 
-This fallback is the user-facing guarantee behind "feature-off ⇒ the REPL is the original REPL": no input that routes deterministically today changes, and the only new behavior is the `Agent` arm, which is absent unless the agent is live.
+This fallback keeps the feature-off REPL deterministic: single forms and slash commands route exactly as §1–§16 specify; the only new live-agent behavior is the `Agent` arm for multi-form / unparseable input, and the only corrected deterministic behavior is that a multi-form line now surfaces its first per-form error instead of swallowing it (E7). [S108]
 
 ### 17.2 Agent Output Frame — Prose vs. Commands [S88]
 
@@ -2436,7 +2454,7 @@ The **S90** additions (§17.17–§17.21 — the fluency pillars) introduce **no
 
 The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
-Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The resolution-aware dispatch classifier (§17.1) — which resolves bare atoms and routes any *unknown* symbol to the agent — is itself **entirely feature-gated**: feature-off, an unbound bare symbol still lands on today's §4.1.10 unbound display and a genuine parse error on the §5 display, so the REPL is byte-identical to §1–§16. [S88]
+Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The form-count dispatch classifier (§17.1) — which routes a **single form** to the deterministic REPL and **multi-form / unparseable prose** to the agent — is itself **entirely feature-gated**: feature-off, a single unbound bare symbol still lands on today's §4.1.10 unbound display, a genuine parse error on the §5 display, and a multi-form line evaluates sequentially and surfaces its first error (§5), so §1–§16 stay deterministic. [S88]
 
 ### 17.10 Enabling & Configuring the Agent [S88]
 
@@ -3060,7 +3078,7 @@ The first example shows scheme matches; the second shows the exact-name match `s
 **marked** as already in scope (R13), ranked above the partial `trace-show` (§17.19.1a); the
 third shows a docstring-only hit (`gcd`'s name and signature contain neither word) carrying its
 excerpt facet. Results use the **existing §10.3 palette roles** (the `/list` family) — the
-docstring excerpt line uses the **italic `; ` comment role** (like a classification comment, §10.3)
+docstring excerpt line uses the **dim `; ` metadata role** (the classification-comment / metadata role, §10.3 R6 — a `; doc:` excerpt is REPL-emitted structure, not user source, so dim not italic)
 — and **degrade under `--no-color`/non-TTY** (§10.1) to clean plain text, same rule as `/syntax`
 (§17.17.2) and every other deterministic command. [S90 re-pin] [S106]
 
@@ -3127,7 +3145,7 @@ at a clean line boundary (between a completed prompt cycle and the next prompt),
 bytes into a line the user is typing; the async writer coordinates with the line editor exactly
 as §10.8's interactive line-editor contract requires, so the input buffer is never corrupted.
 **(2) Colour gate + non-TTY byte-identical.** The notice honours the **global** colour gate
-(§10.1, §10.7) — italic styling (the classification-comment role, §10.3) when colour is enabled,
+(§10.1, §10.7) — dim styling (the classification-comment / metadata role, §10.3 R6) when colour is enabled,
 and under `--no-color`/`NO_COLOR`/non-TTY it degrades to clean plain text with **no** SGR codes,
 via the same single global gate every styled line uses, never a separate one. On a **non-TTY**
 session there is no interactive line editor and no armed-then-watched burn-down the user waits

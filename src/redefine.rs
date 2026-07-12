@@ -38,6 +38,7 @@ use cranelisp_types::{
 
 use crate::code::{Code, SessionSymbolTable};
 use crate::session_v4::CompilerSession;
+use crate::styled::{render, Role, StyledDoc};
 
 type SymbolTables = dashmap::DashMap<ModuleFullPath, SessionSymbolTable>;
 
@@ -825,7 +826,11 @@ impl TransactionReport {
         while out.ends_with('\n') {
             out.pop();
         }
-        Some(out)
+        // §10.3 R6: the whole cascade/broken/stale report is REPL structured
+        // metadata (dim). `render` splits the R6 span per line (reset before each
+        // `\n`, §10.2); colour-off it is byte-identical to `out` (the golden
+        // corpus + the redefine unit tests below run colour-off).
+        Some(render(&StyledDoc::span(Role::ReplMetadata, out)))
     }
 }
 
@@ -1487,12 +1492,23 @@ impl CompilerSession {
             symbol: Symbol::from(bare),
         };
         self.shared.broken.get(&fq).map(|info| {
-            format!(
-                "; broken by the redefinition of {}: {}",
-                info.broken_by, info.original_error
-            )
+            broken_status_render(&info.broken_by, &info.original_error)
         })
     }
+}
+
+/// Render a `; broken by the redefinition of <cause>: <error>` provenance line
+/// (`repl/spec.md` §18.4) as one §10.3 **R6** dim `ReplMetadata` span through the
+/// styling seam — matching `TransactionReport::render`'s cascade/broken/stale
+/// lines. Colour-OFF (`render`) is byte-identical to the plain line, so the
+/// `/sig`/`/info` broken-symbol goldens stay green; colour-ON it is dim. A free
+/// function so the role is single-sourced (Principle 7) and unit-pinnable without
+/// a live `SharedState.broken` map.
+fn broken_status_render(broken_by: &FQSymbol, original_error: &str) -> String {
+    render(&StyledDoc::span(
+        Role::ReplMetadata,
+        format!("; broken by the redefinition of {broken_by}: {original_error}"),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2167,5 +2183,52 @@ mod tests {
         b.broken.push((fq("user", "k"), "e".into()));
         let text = b.render(&cur).unwrap();
         assert!(!text.contains("recompiled"), "empty recompiled section omitted: {text}");
+    }
+
+    // §10.3 R6 (Wave-D2) — the `; broken by the redefinition of …` provenance line
+    // (`/sig`/`/info` on a broken symbol, §18.4) is REPL structured metadata: dim
+    // colour-ON, byte-identical to the plain line colour-OFF (the broken-symbol
+    // goldens stay green). Fail-on-revert pin for `broken_status_render`.
+    // spec: repl/spec.md §10.3 R6 / §18.4 — broken-provenance line.
+    #[test]
+    fn broken_status_render_colour_on_is_r6_dim() {
+        let cause = fq("user", "g");
+        {
+            let _g = crate::style::test_support::ColorGuard::force(true);
+            assert_eq!(
+                broken_status_render(&cause, "type error: expected primitives/String"),
+                "\x1b[2m; broken by the redefinition of user/g: \
+                 type error: expected primitives/String\x1b[0m"
+            );
+        }
+        // Colour-OFF byte-identical to the pre-Wave-D2 plain provenance line.
+        let _off = crate::style::test_support::ColorGuard::force(false);
+        assert_eq!(
+            broken_status_render(&cause, "e"),
+            "; broken by the redefinition of user/g: e"
+        );
+    }
+
+    // §10.3 R6 (Wave-D2) — the cascade/broken/stale report is REPL structured
+    // metadata: colour-ON, every `;` line is dim (R6), reset before each `\n`
+    // (§10.2 — no SGR crosses a line boundary); the newlines stay unstyled.
+    // Fail-on-revert pin for the `TransactionReport::render` R6 conversion.
+    // spec: repl/spec.md §10.3 R6 — cascade report metadata.
+    #[test]
+    fn report_render_colour_on_is_r6_dim_per_line() {
+        let _g = crate::style::test_support::ColorGuard::force(true);
+        let cur = ModuleFullPath::from("user");
+        let mut r = TransactionReport::new(fq("user", "f"));
+        r.recompiled.push(fq("user", "g"));
+        let text = r.render(&cur).unwrap();
+        assert_eq!(
+            text,
+            "\x1b[2m; recompiled:\x1b[0m\n\x1b[2m;  g\x1b[0m",
+            "each report line is R6 dim, reset before the newline"
+        );
+        // Colour-OFF stays byte-identical to the plain report (non-TTY contract).
+        drop(_g);
+        let _off = crate::style::test_support::ColorGuard::force(false);
+        assert_eq!(r.render(&cur).unwrap(), "; recompiled:\n;  g");
     }
 }

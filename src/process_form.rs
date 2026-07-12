@@ -313,6 +313,7 @@ pub fn process_cluster_once(
         let authored_source = verbatim_source_slice(ctx, module, sexp);
         register_macro_in_module(
             ctx.symbol_tables, intr, module, name, info, sexp, sexp, authored_source,
+            ctx.module_aliases, ctx.prelude_fallback,
         )?;
     }
 
@@ -742,6 +743,7 @@ fn process_regular_form(
             let authored_source = verbatim_source_slice(ctx, module, sexp);
             register_macro_in_module(
                 ctx.symbol_tables, intr, module, &info.name, &info, &form, sexp, authored_source,
+                ctx.module_aliases, ctx.prelude_fallback,
             )?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
@@ -785,7 +787,7 @@ fn process_regular_form(
                 // may overwrite with the actual input text later.
                 if entry.source.is_none() {
                     let src = verbatim_source_slice(ctx, module, sexp);
-                    entry.source = src.or_else(|| Some(crate::pretty::pretty_print(sexp)));
+                    entry.source = src.or_else(|| Some(crate::pretty::pretty_print_plain(sexp)));
                 }
                 entry.sexp = Some(sexp.clone());
                 if let Some(ref expanded) = effective_sexp {

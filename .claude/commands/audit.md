@@ -60,7 +60,33 @@ The dispatch runs **read-only**, late in the sprint (Phase 6/7 window, after the
   over-documentation, which is decay-in-waiting), and what would it add that
   is missing (gaps)? Accreted complexity, over-budget functions, and dead
   paths are evidence here; so is a stated view of what right-sized looks like.
-- **Duplication** — whole-context mirrors (the P7/P8 class) that per-change review cannot see; a defect class recurring across mirrors is past the consolidation threshold.
+- **Duplication** — the codepath-duplication class the project fights hardest,
+  judged whole-context in THREE code facets plus a spec facet (per-diff cue:
+  `/review`'s FIXME-0565 checklist; rolling coverage lever: `/qa`'s standing
+  "coverage by definition variants" category, `tests/CLAUDE.md` — one lens at
+  three altitudes):
+  1. **Mirror** — near-identical copies (the P7/P8 class) that per-change
+     review cannot see; a defect class recurring across mirrors is past the
+     consolidation threshold.
+  2. **Divergent** — ONE operation implemented N *different* ways: a family of
+     same-purpose helpers whose signatures/bodies drift (not byte-identical, so
+     a mirror-shaped lens misses them). The S108 `_or_prelude` resolver family
+     is the worked exemplar (`design/arch/prelude-import-convergence.md`);
+     convergence to one codepath is the cure.
+  3. **Entry-point** — the same operation re-implemented per call-site or per
+     variant instead of routed through one seam. For any operation that must
+     behave uniformly across a variant family (definition forms, resolution
+     sites, import shapes, output kinds), ask: one codepath, or N entry points
+     each with its own? A variant × {positive, negative} matrix is the lever
+     that forces one codepath — its RED cells are where a variant silently
+     diverged.
+  4. **Spec-surface redundancy** — the *language itself* offering multiple ways
+     to express one thing. Surface these as candidate spec **simplifications**
+     (a first-class recommendation kind, §"The assessment"): the auditor is
+     licensed to question whether a redundant construct should exist, not only
+     whether its implementation is duplicated. Spec is user-arbitrated — these
+     route through the normal Phase-1 acceptance gate to the USER (→ `/spec`
+     only if accepted), never a silent spec edit.
 - **Risk-weighted coverage** — derive the context's top technical risks from
   its invariants, unsafe seams, and defect history, and verdict EACH: pinned
   by a test that exercises the **production path**, or not. A suite probing a
@@ -79,7 +105,7 @@ One fresh, dated record per audit: **`audits/{context}-sNNN.md`** (NNN = the spr
    the second-time solution look like this?". The recommendations section can
    never substitute for a verdict that was not rendered.
 2. **Current state** — an honest, evidence-backed picture of the context against each attribute. Verified claims only; every finding carries file:line or equivalent evidence, not suspicion.
-3. **Recommendations** — each with: the evidence, a cost class (small/medium/large), the proposed owning skill, and what "done" looks like. Design feedback is a first-class recommendation kind. **The "done" criterion must cure the risk, not the symptom** — if the minimum done would leave the underlying risk standing (e.g. gating a dead test-harness path while coverage still probes a non-production seam), it does not meet the bar.
+3. **Recommendations** — each with: the evidence, a cost class (small/medium/large), the proposed owning skill, and what "done" looks like. Design feedback is a first-class recommendation kind; so is **spec-surface simplification** (a redundant language construct surfaced as a candidate spec change — user-arbitrated via the Phase-1 gate, → `/spec` only if accepted). **The "done" criterion must cure the risk, not the symptom** — if the minimum done would leave the underlying risk standing (e.g. gating a dead test-harness path while coverage still probes a non-production seam), it does not meet the bar.
 4. **Disposition trail** — appended at the next sprint's Phase 1, not by `/audit`: accepted (→ FIXME number) or declined (+ rationale). Assessments are point-in-time records: appended to, never rewritten.
 
 ## Acceptance — recommendations are proposals

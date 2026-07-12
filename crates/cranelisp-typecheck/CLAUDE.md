@@ -92,52 +92,84 @@ meaning change: bump `CACHE_SCHEMA_VERSION` in the same change-set (the 0472
 seam cure landed inside the S101 v10→v11 window — no re-bump). Guarded by
 `program::tests::callees_*` (`tests/plan/s101-coverage-postmortem.md` §2.1).
 
-## Bare-name resolution & the implicit-prelude OUTER SCOPE (S78 §2)
+## Bare-name resolution & the prelude fallback (S108 Wave-G convergence)
 
-The prelude is an **outer scope**, not flattened into each module's table
-(`memory/project_prelude_outer_scope.md`). Every bare-name chokepoint roots at
-`state.current_module` first and, on an inner miss, retries against the
-`prelude` module **iff** the module's `PreludeFallback` bit is ON.
+The prelude is **just an implicit `(import [prelude [*]])`** — a
+prelude-provided name is in a module's scope on identical terms to an explicit
+import (spec §8.6.1–§8.6.5, §8.8.1). Whether the implementation materialises
+prelude bindings into each table or consults the prelude on an inner miss is a
+**resolution-mechanism detail with ZERO semantic weight — there is no "outer
+scope" as a language concept**. Design/rustdoc/CLAUDE.md under this ruling say
+"the prelude **fallback**" (a mechanism), never "the outer scope" as a scoping
+level with its own rules.
 
-- **`PreludeFallback`** = `DashMap<ModuleFullPath, bool>` carried on
-  `TypeCheckEnv.prelude_fallback`. Absence-is-OFF (`§2.7.1`). The single gate is
-  `prelude_fallback_target(current_module) -> Option<prelude_path>`: returns the
-  prelude path only when the bit is ON **and** `current_module != prelude` (a
-  module never falls back onto itself).
-- **I-1 public-only discipline**: a private prelude binding must NOT leak as a
-  bare name. Reachability is judged relative to the *original* user
-  `current_module` (never in prelude's subtree), so the rule reduces to
-  `is_public()` on the prelude **head** entry. Filter the prelude-hop head on
-  `prelude_terminal_visible` (== `is_public()`) BEFORE chain-following.
+**Exactly two semantic operations exist, and BOTH consult the prelude:**
 
-The chokepoint family (all in `checker.rs`):
-`resolve_current_or_prelude` (the `resolve`-based value/type/trait/ctor family),
-`probe_current_or_prelude` (chain-follow value/scheme + entry family),
-`resolve_entry_in_current_module`, `resolve_terminal_entry_or_prelude`
-(trait-method/impl-discovery), plus the two **constructor** chokepoints
-threaded for FIXME 0317:
+1. **resolve-a-reference** — `cranelisp_types::ResolutionScope::resolve`. The
+   fallback is **intrinsic to the scope**, decided ONCE at scope construction
+   (from the `PreludeFallback` role bit), never at a call site. There is no
+   public fallback-less resolution entry point and no per-call fallback flag
+   (Principles 18/20 — the forgettable decision is unrepresentable). Typecheck
+   constructs the scope at the ONE seam `TypeCheckEnv::scope_resolve` (current
+   module) / `scope_resolve_in` (arbitrary root); every bare-name resolution
+   routes through it. The I-1 public-only filter (a private prelude binding must
+   NOT leak / shadow) and the qualified-name-never-retries guard are intrinsic
+   to `ResolutionScope::resolve`.
+2. **may-this-name-be-defined** — the §8.6.4 seam
+   `cranelisp_types::reject_def_over_binding(scope, name, span)`, derived from
+   the SAME resolve walk (typecheck's `reject_def_over_binding` is a 3-line
+   adapter constructing the scope). A binding **consults the prelude to REJECT**:
+   a definition over ANY name in scope — explicit import, export, or
+   prelude-provided — is a §8.6.4 compile-time conflict, **never a shadow**
+   (`home == current_module` ⇒ the module's own prior def ⇒ redefinition
+   allowed; otherwise reject). This is the correction of the former
+   spec-inverted rule of thumb ("pick the non-fallback variant to decide whether
+   a name is *free*", "a user `(deftrait Display …)` may legitimately SHADOW a
+   prelude-globbed one") — a name is NOT free merely because the prelude
+   provides it (§8.6.4); that rule of thumb produced the S14 deftrait
+   silent-accept. Every definition form routes through this ONE seam:
+   `defn`/`deftype` at the `program.rs` `check_form_register` arms, `deftrait`
+   (trait name + each method name) at the `TraitDecl` arm, `defmacro` in int.
 
-- **`lookup_constructor_type_with_state`** — the pattern-ctor `exists` gate (used
-  by `infer.rs::lookup_constructor_scheme`). Falls back to prelude; filters the
-  prelude head on `prelude_terminal_visible` before reading the parent type.
+**The ONE legitimate fallback-less probe** is the *idempotent re-registration
+check* — "does THIS module already carry this exact declaration?" (retry-from-top
+re-submission, S86 D3; REPL own-redefinition). That is a raw current-module
+`probe_module_entry_owned` probe, named as a probe: it answers same-module
+IDENTITY, **not** name-freedom, and must never be reachable under a name that
+reads like reference resolution. `registry::register_trait_decl`'s duplicate
+check is exactly this probe (the §8.6.4 name-freedom question already ran at the
+`TraitDecl` arm seam before it).
+
+- **`PreludeFallback`** = `DashMap<ModuleFullPath, bool>` on
+  `TypeCheckEnv.prelude_fallback` (absence-is-OFF, §2.7.1), read ONLY at the two
+  scope constructors via `prelude_fallback_target(current_module) ->
+  Option<prelude_path>` (ON **and** `current_module != prelude`), plus the bulk
+  trait-method-declaring scan `find_trait_method_decl` (an enumeration reader,
+  not the resolve walk). The former per-site prelude-fallback resolver family
+  (the six bare-name chokepoints of the S78 census) is retired — collapsed onto
+  the single scope resolve.
 - **`is_internal_constructor_check_with_state`** — the internal-ctor reject gate
   (used by `infer.rs` value position + `check_constructor_pattern`). After the
-  current-module gate misses, it re-resolves via the already-fallback-aware
-  `resolve_entry_in_current_module` and reads `internal` off the **terminal**
-  `DefKind::Constructor`. **GOTCHA**: `Bind`/`Pure`/`Effect` are registered
-  `Visibility::Public` in `primitives` — the I-1 public filter must NOT hide
-  `Bind`. What rejects `Bind` is its `internal: true` Constructor discriminator,
-  reached *through* the fallback, NOT its visibility.
+  current-module gate misses, it re-resolves via the fallback-aware
+  `resolve_entry_in_current_module` (now a projection over `scope_resolve`) and
+  reads `internal` off the **terminal** `DefKind::Constructor`. **GOTCHA**:
+  `Bind`/`Pure`/`Effect` are registered `Visibility::Public` in `primitives` —
+  the I-1 public filter must NOT hide `Bind`. What rejects `Bind` is its
+  `internal: true` Constructor discriminator, reached *through* the fallback,
+  NOT its visibility.
 
-Rule of thumb when adding a new bare-name path: root at `current_module`, and on
-an inner miss consult `prelude_fallback_target` + the public-head filter. Never
-add a name-key shortcut to primitives; primitives reach user code only *via*
-prelude's `(export [primitives [*]])` re-export, chain-followed through the
-fallback (the §2 structural-not-skip guarantee).
+Rule of thumb when adding a new bare-name path: route it through
+`scope_resolve` / `scope_resolve_in` (reference) or `reject_def_over_binding`
+(definition) — never re-thread `prelude_fallback_target` at a new call site, and
+never add a name-key shortcut to primitives (primitives reach user code only
+*via* prelude's `(export [primitives [*]])` re-export, chain-followed through the
+fallback — the structural-not-skip guarantee).
 
 - **GOTCHA — bare punctuation operators and the `/`-split (FIXME 0328/0331).** The
-  shared `cranelisp_types::resolve`/`resolve_with_fallback` primitive treats a
-  `module/symbol` reference by splitting on `/` (`split_qualified`). The division
+  shared `cranelisp_types::ResolutionScope::resolve` primitive (the sole public
+  resolution entry point since S108 Wave-G — the free `resolve`/`resolve_with_fallback`
+  are now private internals) treats a `module/symbol` reference by splitting on `/`
+  (`split_qualified`). The division
   operator `/` (and `//`) is a legitimate BARE value name (Principle 16). The split
   is guarded to require BOTH module and symbol parts non-empty, so a standalone `/`,
   `//`, leading `/bar`, or trailing `foo/` is a literal bare name — NOT qualified.

@@ -461,6 +461,109 @@ fn type_error_recovery_continues_session() {
     );
 }
 
+// =============================================================================
+// S108 (Increment 3) — E7: a multi-form REPL line SWALLOWS per-form errors,
+// surfacing a silent `:primitives/Int 0`. Default/no-agent build — reproduces
+// WITHOUT the agent feature (this is a general REPL-eval defect, not agent-
+// related). Per /arch P2 the multi-form arm of `src/eval.rs::eval` (~L185-208)
+// DOES raise the per-form error but wraps it as a fake `EvalResult::Val { 0 }`
+// carrying the error as a warning, then clobbers the warning (L207) — so the line
+// surfaces only the last value (or the fake `0`) and the per-form error is
+// dropped. The §17.1 unified user ruling (2026-07-12): with no agent, a multi-form
+// line is evaluated form-by-form and ABANDONS on the first error, surfacing it.
+//
+// defect: class=error-swallow locus=src/eval.rs::eval (multi-form arm fake-Val + warning-clobber) found=S108 owner=/dev
+// =============================================================================
+
+// spec: repl/spec.md §17.1 (sequential-eval-abandon, no-agent path) + Design
+// Principle "self-documenting REPL — No valid language construct should produce
+// an opaque error" — a multi-form line of two undefined bare symbols (`foo bar`)
+// MUST surface `undefined variable: foo`, never a silent `:primitives/Int 0`.
+// RED on HEAD: the fake-`Val{0}` + warning-clobber swallows the error and the
+// line prints `:primitives/Int 0`.
+#[test]
+fn multi_form_line_surfaces_first_error_not_silent_zero() {
+    let out = repl("foo bar\n");
+    assert!(
+        out.stdout.contains("undefined variable: foo"),
+        "a multi-form line `foo bar` MUST surface the first per-form error \
+         `undefined variable: foo` (§17.1 abandon-on-first-error), not swallow it; \
+         got:\n{}",
+        out.stdout
+    );
+    // The load-bearing negative: the swallow's silent `:Int 0` MUST be gone.
+    assert!(
+        !out.stdout.contains(":primitives/Int 0"),
+        "the swallowed-error fake `:primitives/Int 0` MUST NOT appear — the error \
+         is surfaced, not wrapped as a bogus zero value (E7); got:\n{}",
+        out.stdout
+    );
+    out.assert_no_internal_artifacts();
+}
+
+// spec: repl/spec.md §17.1 — abandon-on-FIRST: `2 foo` — a green form (`2`)
+// precedes the error, and the undefined-`foo` error MUST still surface; no
+// fabricated trailing value line. RED on HEAD: the line prints a silent
+// `:primitives/Int 0` (the fake value) and the error is swallowed.
+#[test]
+fn multi_form_error_after_green_form_still_surfaces_not_swallowed_neg() {
+    let out = repl("2 foo\n");
+    assert!(
+        out.stdout.contains("undefined variable: foo"),
+        "`2 foo` MUST surface `undefined variable: foo` even though a green form \
+         precedes it (§17.1 abandon-on-first-error); got:\n{}",
+        out.stdout
+    );
+    // NEG: no fabricated `:primitives/Int 0` result line (the swallowed-error zero).
+    assert!(
+        !out.stdout.contains(":primitives/Int 0"),
+        "`2 foo` MUST NOT surface a fabricated `:primitives/Int 0` — the error is \
+         surfaced, not wrapped into a bogus zero (E7); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.1 — first-error selection: `foo bar` abandons on the
+// FIRST error and reports `foo` (the first undefined), NOT `bar`. RED on HEAD
+// (`:primitives/Int 0`; post-fix this pins WHICH error surfaces).
+#[test]
+fn multi_form_abandons_on_first_error_reports_first_undefined() {
+    let out = repl("foo bar\n");
+    assert!(
+        out.stdout.contains("undefined variable: foo"),
+        "`foo bar` MUST report the FIRST error (`foo`), abandoning before `bar` \
+         (§17.1 abandon-on-first-error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("undefined variable: bar"),
+        "`foo bar` MUST abandon on the FIRST error and NOT reach/report `bar` \
+         (§17.1); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.1 — all-green multi-form control: `1 2 3` evaluates
+// without error. §17.1 pins the ERROR path but is SILENT on what an all-green
+// multi-form no-agent line DISPLAYS (today: the last value, `:primitives/Int 3`),
+// so this control asserts ONLY "no error surfaced" — the display shape is NOT
+// pinned until `/repl` scribes it (flagged to /repl as a non-blocking spec gap).
+// GREEN control — Wave C must not change the green path; this catches it if it does.
+#[test]
+fn multi_form_all_green_line_evaluates_without_error() {
+    let out = repl("1 2 3\n").assert_ok();
+    assert!(
+        !out.stdout.to_lowercase().contains("undefined variable"),
+        "an all-green multi-form line `1 2 3` MUST NOT surface any error; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.to_lowercase().contains("error:"),
+        "an all-green multi-form line `1 2 3` MUST NOT surface any error; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: repl/spec.md §5.1 — bare reference to a constrained polymorphic
 // function as a first-class value (without an instantiating call site at
 // the reference) MUST error. The compiler restriction: a constrained fn

@@ -976,7 +976,7 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
                 // the pretty render.
                 entry.source = Some(
                     verbatim_slice(sexp, backing_source)
-                        .unwrap_or_else(|| crate::pretty::pretty_print(sexp)),
+                        .unwrap_or_else(|| crate::pretty::pretty_print_plain(sexp)),
                 );
             }
             rehydrated += 1;

@@ -437,7 +437,11 @@ All free, all in-process (`repl-embedded-agent.md §4.2`):
 - **Cursor module** — `current_module_path()` (pins #1).
 - **Names in the message** — tokenize `text`, match against `defined_symbols()` keys.
 - **Last error + implicated symbols** — int already formats errors with `ErrorLocation`
-  (int.md §9); the implicated FQ symbols are a harvest signal.
+  (int.md §9); the implicated FQ symbols are a harvest signal. **This signal ranks
+  *committed* symbols only** — it names which in-scope defns to prioritise. It does NOT
+  carry the failed *form* itself (a failed `(defn …)` never commits, so it is in no symbol
+  table), nor the diagnostic text the user read. That missing signal — the errored turn's
+  own source + diagnostic — is a distinct harvest block, §5.5.
 - **`seq`-ordered recency** — per-entry `seq` (above).
 - **Import-graph neighborhood** — `module_aliases` + the per-symbol `Import` edges
   (`install_imports`, `src/imports.rs`) give callee/caller neighbors of in-window fns.
@@ -449,17 +453,117 @@ state (no invalidation problem; §3.3 of the arch doc — the harvest is a pure 
 
 ### 5.4 Graceful-degradation ladder under token budget
 
-When the assembled push exceeds the budget, degrade in this order (drop the cheapest-value
-tail first):
+When the assembled push exceeds the budget, drop the cheapest-value tail first. Budget is
+consumed in **push order** (`harvest_context`), so the blocks below — listed
+**highest-keep-priority first** (the pinned floor) to **lowest-keep-priority last** (the
+first to drop) — degrade from the bottom up: an earlier block always wins the budget over a
+later one. This is a keep-priority ladder, **not** an accretion list; read top-down as "kept
+longest → dropped first":
 ```
-current-module full-src (PINNED)                    — never dropped
-  → + last-10-fns full-src
-    → + last-6-modules preamble+exports
-      → + last-6-modules exports only (drop preambles)
-        → current-module full-src + names-in-message only   (floor)
+current-module full-src            PINNED — never dropped (the floor)
+most-recent errored turn (§5.5)    PINNED — never dropped (joins the floor: the uniquely-
+                                   unrecoverable signal committed state cannot reconstruct)
+older errored turns (§5.5)         newest-first (the oldest errored turn drops first)
+green recent turns (§5.5)          deixis-only — the first recent-turn entry to drop
+== in scope == block (§23)         degrades GRAIN per symbol (full → sig → name); the symbol
+                                   LIST is never truncated
+last-10 mentioned-fns full-src
+last-6 mentioned-modules           preamble+exports → exports-only → dropped (cheapest tail —
+                                   dropped first)
 ```
 The floor always includes the current module (the pin) so the agent is never blind to the
-user's cursor context. The budget number is a runtime config knob (§6.4), not a constant.
+user's cursor context, **and the single most-recent errored turn (§5.5)** — the missing
+signal committed state cannot reconstruct, so it earns the pin next to the cursor module.
+Older errored turns, green recent turns, the `== in scope ==` block, and the mentioned
+fn/module surfaces all degrade above the floor, in the reverse of the keep-priority order
+above (mentioned-module surfaces are the cheapest tail, dropped first). The budget number
+is a runtime config knob (§6.4), not a constant.
+
+### 5.5 Recent-errored-turn feed (E5 — the missing debug signal)
+
+**The finding (S108 Inc3 E5, confirmed in code).** `harvest_context` (§5.1–5.4) assembles
+context *entirely* from **committed** session state — mentioned symbols, in-scope defns,
+module source. A failed `(defn …)` never commits: it is absent from every symbol table,
+therefore absent from the harvest. So when a user types a form that fails to typecheck and
+then asks *"why doesn't that typecheck?"*, the agent has zero visibility into the form or
+its diagnostic — it hallucinates context and asks the user to paste the attempt. Debugging a
+type error is the single highest-value in-REPL agent function, and the push side is blind to
+it. The cure is a fourth harvest source: a bounded record of the recent REPL turns the user
+actually saw, surfacing the **errored** ones — because a green turn's defn is already in the
+symbol table (heuristics #1/#3 carry it), while a failed turn is the signal that lives
+*nowhere else*.
+
+**(1) What each ring entry captures.** One entry per REPL **eval turn** (the
+`process_commands → CommandResult::Compile → eval` path — not slash commands, not `/ask`
+turns, which are agent-conversation and already ride the §3.4 transcript):
+
+- **`input`** — the exact source text the user submitted (`input_str` in the read loop —
+  the buffer already trimmed and cleared for that turn).
+- **`outcome`** — a two-arm record of *the string the user saw*: either the rendered result
+  (`format_eval_result` output, green) **or** the compiler diagnostic verbatim (the
+  `Error: {e}` line — the type error / parse error / warning surfaced). No re-derivation:
+  the outcome is the identical string the display boundary already produced (see (2)).
+
+The ring is **bounded, capacity N = 8 turns.** Justification: N must be large enough that
+the most-recent *error* survives even when a few green or introspection turns follow it
+before the user asks (a realistic debug micro-interaction — try a defn, it fails, poke at
+`/sig` or a helper, then ask), and small enough to stay trivially inside the §5.4 budget.
+Eight `(input, short-diagnostic)` pairs are at most a few hundred tokens, and the harvest
+block is budget-gated like every other source (§5.4) so it degrades before it can crowd the
+pinned module source. N is a tuning knob, not architecture (like the §5.2 push counts); 8 is
+the starting value. The errored-turn *preference* (below) means the pin survives even if all
+8 slots would otherwise fill with green turns — the ring is scanned for errors, not merely
+truncated.
+
+**(2) Where it is fed from — the ONE display boundary (Principle 7).** The ring is written
+from the **single per-turn render site in the `main.rs` REPL read loop** — the same place
+that computes `input_str` and emits the user-visible result (`s.pretty_print(&text, …)` on
+the green arm) or diagnostic (`writeln!(stdout, "Error: {e}")` on the `Err(e)` arm). A small
+`#[cfg(feature="agent")] pub(crate) fn record_repl_turn(&mut self, input: &str, outcome:
+ReplTurnOutcome)` on `CompilerSession` is called once at that seam with **the identical
+strings the user saw** — the read loop threads the already-rendered `text` / `format!("Error:
+{e}")` into the one call at the turn tail (green and error arms feed the two `outcome`
+variants). This is deliberately **not a second transcript store**: the feed reuses the strings
+the display boundary already produced rather than re-capturing or re-rendering input. rustyline
+history is **not** this seam — it is TTY-only, input-only (no results, no diagnostics), and
+exists for line recall; using it would be a parallel transcript channel (Principle 7 forbids
+it, per the E5 `/arch` coherence note). One boundary produces the user-visible strings; the
+ring reads that one boundary.
+
+**(3) How it enters the harvest — a new budget-gated block, errored turns preferentially.**
+`harvest_context` gains a fourth source (`harvest.rs::push_recent_turns_block`, pushed
+right after the current-module pin and before the `== in scope ==` block — alongside
+current-module source, mentioned modules, mentioned fns): it reads the ring and emits a
+labelled context block of recent turns, **ordered errored-first, newest-first** (the ring is
+iterated newest→oldest — `push_back` newest, `.iter().rev()` — and partitioned into errored
+then green, each partition newest-first), each rendered as its `input` form followed by its
+diagnostic (or, for a green turn kept for deixis, its result). It is budget-gated exactly
+like the other sources and sits high in the §5.4 ladder: the **single most-recent errored
+turn is PINNED to the floor** — emitted unconditionally, even past the budget (it is the
+uniquely-unrecoverable signal — committed state cannot reconstruct a form that never
+committed); older errored turns degrade next (newest-first, budget-gated), and green turns
+(kept only so the agent can resolve deixis like *"that"* / *"the last one"* against the
+form immediately preceding the question) are the first to drop. This preference is why the
+ring records green turns at all yet never lets them starve the error: a debug question almost
+always refers to the most recent *failure*, which the pin guarantees is present.
+
+**(4) Feature-gating + byte-identical-when-off.** The ring lives on `AgentState`
+(`turn_ring: VecDeque<ReplTurn>`, cap N) — the state object already fully
+`#[cfg(feature="agent")]` (§3.4), constructed at `enable_agent` (REPL startup, feature-on +
+`--agent`), so it records from the very first turn and the E5 *fail-then-ask* sequence is
+covered with no lazy-first-`/ask` gap (`enable_agent` runs before the read loop). Feature-off,
+`AgentState`, `ReplTurn`, `ReplTurnOutcome`, `record_repl_turn`, and the read-loop call site
+**do not exist** (all `#[cfg(feature="agent")]`), so the read loop is byte-identical to
+today's — the recording call is absent, not a guarded no-op in the compiled binary. Feature-on
+without `--agent` leaves `self.agent == None`; `record_repl_turn` guards on `if let Some(agent)
+= &mut self.agent`, so it is an early-return no-op and nothing is recorded until the agent is
+enabled. The block adds **no** new state window, no worker, no cross-crate edge, no
+`cranelisp-types` change: it is one bounded field on an already-gated int-private struct, fed
+from an existing display boundary — Simplicity (Principle 6) and the §1 byte-identical
+guarantee both hold. **Landed (Wave A, `src/agent/`, `--features agent`):** the ring is
+`AgentState.turn_ring: VecDeque<ReplTurn>` cap `TURN_RING_CAP = 8`
+(`agent/types.rs`), fed by `record_repl_turn` (`agent/mod.rs`) from the two `main.rs`
+per-turn render sites, and read by `harvest.rs::push_recent_turns_block`.
 
 ---
 
@@ -541,6 +645,13 @@ dispatch type; rig's trait is dyn-incompatible, §6.0). The neutral→rig field 
 - **Transcript** (§3.4) → rig `Message` history (user / assistant / tool-result turns).
 - **Tool defs** = the read-only command allowlist (§4.2) → rig tool definitions.
 - **User turn** → the current user message.
+- **Completion budget** → `max_tokens` — a **REQUIRED** field on every assembled request:
+  Anthropic's Messages API rejects a request that omits it (every turn 400s before a token
+  streams). Set on the single shared `build_request` builder (`src/agent/provider.rs`) as
+  `AGENT_MAX_TOKENS = 65536` — a 64K streaming-scale default (full rationale on the
+  constant's rustdoc). This is the **completion output budget** and is explicitly **distinct
+  from the §5/§5.4 harvest token budget** (which bounds *input* context assembly and is a
+  runtime config knob, §6.4); the two never interact.
 
 The single coupling point is `agent/request.rs` (§3.1): the translation between the agent's
 neutral vocabulary and rig's `CompletionRequest` / `Message` / tool-call types. The agent's

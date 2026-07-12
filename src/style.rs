@@ -70,19 +70,40 @@ const AGENT_GUTTER: &str = "\u{258c}"; // ▌ (U+258C LEFT FIVE EIGHTHS BLOCK)
 /// commands and their results render in normal deterministic REPL style (§17.2)
 /// and MUST NOT pass through here.
 pub fn agent_prose(text: &str) -> String {
-    let mut out = String::new();
+    use crate::styled::{Role, StyledDoc, render};
+    let mut doc = StyledDoc::new();
     for line in text.lines() {
-        out.push_str(&styled(AGENT_GUTTER, Style::BrightMagenta));
-        out.push(' ');
-        out.push_str(line);
-        out.push('\n');
+        doc.push(Role::AgentGutter, AGENT_GUTTER);
+        doc.plain(" ");
+        doc.plain(line);
+        doc.plain("\n");
     }
     // An empty body still produces a single gutter line so the frame is visible.
-    if out.is_empty() {
-        out.push_str(&styled(AGENT_GUTTER, Style::BrightMagenta));
-        out.push('\n');
+    if text.lines().next().is_none() {
+        doc.push(Role::AgentGutter, AGENT_GUTTER);
+        doc.plain("\n");
     }
-    out
+    render(&doc)
+}
+
+/// Render a REPL `Error: {message}` line through the §10.3 seam — R8 bold-red
+/// `Error:` keyword + R9 red detail. Colour-off the bytes are `Error: {message}`,
+/// byte-identical to the pre-Wave-D plain line (the non-TTY error contract).
+pub fn error_line(message: &str) -> String {
+    use crate::styled::{Role, StyledDoc, render};
+    let mut doc = StyledDoc::new();
+    doc.push(Role::ErrorKeyword, "Error:");
+    doc.plain(" ");
+    doc.push(Role::ErrorDetail, message.to_string());
+    render(&doc)
+}
+
+/// Render a REPL structured-metadata `;` line (R6 dim) through the §10.3 seam —
+/// e.g. the `; search index complete.` lifecycle note (FIXME 0561: REPL metadata
+/// is dim, distinct from an italic source comment). Colour-off byte-identical.
+pub fn repl_metadata_line(text: &str) -> String {
+    use crate::styled::{Role, StyledDoc, render};
+    render(&StyledDoc::span(Role::ReplMetadata, text.to_string()))
 }
 
 static COLOR_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -323,6 +344,59 @@ mod tests {
         // No `1m`/`0m` literal fragment survives, and no ESC byte remains.
         let out = strip_ansi("\x1b[1mx\x1b[0m");
         assert!(!out.contains('\u{1b}') && !out.contains("1m") && !out.contains("0m"));
+    }
+
+    // === §10.3 colour-ON byte-exact fixtures (Wave-D /dev obligation) =========
+
+    // K8 — an error line: `Error:` is R8 bold-red, the detail R9 red.
+    // spec: repl/spec.md §10.3 R8/R9 — error line.
+    #[test]
+    fn colour_on_k8_error_line() {
+        let _g = test_support::ColorGuard::force(true);
+        assert_eq!(
+            error_line("undefined variable: foo"),
+            "\x1b[1;31mError:\x1b[0m \x1b[31mundefined variable: foo\x1b[0m"
+        );
+    }
+
+    // K8 colour-off: byte-identical to the plain `Error: …` line (non-TTY contract).
+    #[test]
+    fn colour_off_k8_error_line_is_plain() {
+        let _g = test_support::ColorGuard::force(false);
+        assert_eq!(error_line("undefined variable: foo"), "Error: undefined variable: foo");
+    }
+
+    // K12 — the `; search index complete.` lifecycle note is R6 dim (FIXME 0561
+    // resolves REPL metadata to dim, NOT the italic it used pre-Wave-D).
+    // spec: repl/spec.md §10.3 R6 — lifecycle metadata note (0561 metadata half).
+    #[test]
+    fn colour_on_k12_lifecycle_note_dim() {
+        let _g = test_support::ColorGuard::force(true);
+        assert_eq!(
+            repl_metadata_line("; search index complete."),
+            "\x1b[2m; search index complete.\x1b[0m"
+        );
+    }
+
+    // K10 — the startup banner is R13 dim (Prompt / Banner). This is the exact
+    // doc `print_banner` renders.
+    // spec: repl/spec.md §10.3 R13 — banner.
+    #[test]
+    fn colour_on_k10_banner_dim() {
+        use crate::styled::{Role, StyledDoc, render};
+        let _g = test_support::ColorGuard::force(true);
+        let banner = render(&StyledDoc::span(Role::Prompt, "cranelisp REPL — type /help for help"));
+        assert_eq!(banner, "\x1b[2mcranelisp REPL — type /help for help\x1b[0m");
+    }
+
+    // K13 — the agent prose gutter `▌` is R14 bright magenta; the prose body is
+    // Plain (§10.3 R14). The gutter mechanism is unchanged by Wave D (P9) but now
+    // routes through the ONE render.
+    // spec: repl/spec.md §10.3 R14 / §17.2 — agent prose frame.
+    #[test]
+    fn colour_on_k13_agent_gutter_bright_magenta() {
+        let _g = test_support::ColorGuard::force(true);
+        assert_eq!(agent_prose("hello"), "\x1b[95m\u{258c}\x1b[0m hello\n");
     }
 
     #[test]

@@ -681,3 +681,94 @@ fn sexp_empty_let_binding_no_crash() {
         out.stdout
     );
 }
+
+// =============================================================================
+// S108 (Increment 3) — E4 §10.3 styling: colour-OFF byte-identical goldens for
+// the per-output-kinds the corpus was missing (K6 source-comment, K9 warning).
+//
+// Tier decision (repl-styling-seam.md; PLAN §B): the e2e harness is piped/non-TTY
+// and §10.1 forbids a `--color=force` flag, so an e2e subprocess CANNOT produce
+// colour-ON output — the colour-ON per-role/per-kind SGR byte pins are /dev's
+// Wave-D UNIT obligations. These e2e goldens pin the NON-TTY (colour-OFF) contract
+// per output kind: they are GREEN regression guards (colour-off is unchanged by
+// construction through the Wave-D producer rewrite — §10.3 requirement 2), NOT
+// REDs. Their job is to hold every output kind's plain bytes fixed BEFORE Wave D
+// touches rendering, plus a per-kind no-`\x1b[` (no-SGR) negative. The existing
+// goldens (K1/K2 `display_exact_*` value lines, K5 `sexp_rotate_*` code block,
+// K8 `repl_negative` errors, K10/K11 layout goldens) stay; these ADD the K6/K9
+// kinds the matrix flagged as gaps. No colour-ON assertion is authored here.
+// =============================================================================
+
+/// K6 — the byte-exact colour-OFF `/source` block for a defn whose recorded
+/// source carries a `;` comment line (the R5 source-comment kind — 0561's source
+/// half). The comment survives the verbatim-source echo; colour-OFF it is plain
+/// bytes (R5 italic applies colour-ON only, added at exactly these offsets by
+/// Wave D — requirement 3). Byte-exact SUBSTRING (the `user> ` prompt interleaves).
+const SOURCE_COMMENT_BLOCK: &str = concat!(
+    "; source for foo\n",
+    "(defn foo [x]\n",
+    "; double it\n",
+    "  (add-i64 x x))",
+);
+
+// spec: repl/spec.md §10.3 (requirement 2, the non-TTY plain-bytes contract) +
+// §3.11 — K6: `/source` of a defn carrying a source comment MUST emit the
+// comment-bearing block byte-for-byte (colour-off). GREEN regression guard: pins
+// the plain bytes before Wave D adds the R5 italic role (which must NOT perturb
+// the colour-off bytes). Byte-exact substring.
+#[test]
+fn source_comment_block_colour_off_byte_exact() {
+    let out = repl_prims("(defn foo [x]\n  ; double it\n  (add-i64 x x))\n/source foo\n");
+    assert!(
+        out.stdout.contains(SOURCE_COMMENT_BLOCK),
+        "K6: `/source` of a comment-bearing defn MUST emit the §3.11 comment block \
+         byte-for-byte (colour-off, requirement 2):\n\
+         --- expected (byte-exact substring) ---\n{SOURCE_COMMENT_BLOCK}\n\
+         --- actual stdout ---\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §10.3 (requirement 2) — K6 no-SGR negative: in non-TTY mode
+// the source-comment output carries NO SGR escape (`\x1b[`) byte anywhere. The
+// standing `ESC_SGR` idiom (tests/agent.rs): a colour-off surface is byte-plain.
+#[test]
+fn source_comment_colour_off_carries_no_sgr_neg() {
+    let out = repl_prims("(defn foo [x]\n  ; double it\n  (add-i64 x x))\n/source foo\n");
+    assert!(
+        !out.stdout.contains("\u{1b}["),
+        "K6: non-TTY `/source` output MUST carry no SGR escape (`\\x1b[`) — the \
+         colour-off contract (§10.3 req 2); got:\n{}",
+        out.stdout
+    );
+}
+
+/// K9 — the byte-exact colour-OFF `; warning:` line for a field-accessor / bound-
+/// name collision (`ShadowedName`), the §10.3 warning kind (R6 `; warning:` prefix
+/// + R10/R11). Colour-OFF it is plain bytes. Whole-line byte-exact via
+/// `assert_answer_line` (prompt-stripped).
+const WARNING_LINE: &str = "; warning: field accessor `p` for type `Point` conflicts with a name already bound to `p`; the accessor is suppressed and the existing binding is kept";
+
+// spec: repl/spec.md §10.3 (requirement 2) + §1.1 (`; warning:` comment style) —
+// K9: a warning-producing form (a deftype field accessor colliding with an
+// existing binding) MUST emit the `; warning:` line byte-for-byte (colour-off).
+// GREEN regression guard: pins the plain bytes before Wave D adds the R6/R10/R11
+// roles (which must NOT perturb the colour-off bytes). Whole-line byte-exact.
+#[test]
+fn warning_line_colour_off_byte_exact() {
+    let out = repl_prims("(defn p [] 1)\n(deftype Point [:Int p])\n");
+    assert_answer_line(&out, WARNING_LINE);
+}
+
+// spec: repl/spec.md §10.3 (requirement 2) — K9 no-SGR negative: in non-TTY mode
+// the warning output carries NO SGR escape (`\x1b[`) byte anywhere.
+#[test]
+fn warning_line_colour_off_carries_no_sgr_neg() {
+    let out = repl_prims("(defn p [] 1)\n(deftype Point [:Int p])\n");
+    assert!(
+        !out.stdout.contains("\u{1b}["),
+        "K9: non-TTY warning output MUST carry no SGR escape (`\\x1b[`) — the \
+         colour-off contract (§10.3 req 2); got:\n{}",
+        out.stdout
+    );
+}

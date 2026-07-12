@@ -20,6 +20,8 @@
 
 #![cfg(feature = "agent")]
 
+use std::collections::VecDeque;
+
 /// One scripted/observed assistant response from the model, decomposed into the
 /// two cases `agent_turn`'s loop branches on (§3.2). The membrane (`AgentModel`)
 /// erases rig's `AssistantContent` into this neutral shape: rig `Text` →
@@ -159,6 +161,47 @@ pub struct AgentRequest {
     pub turn: usize,
 }
 
+/// The outcome half of a recorded REPL eval turn (E5, §5.5(1)) — the exact
+/// string the user saw at the display boundary, in one of two arms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplTurnOutcome {
+    /// The rendered result the green arm produced (`format_eval_result` output,
+    /// possibly with the §18.3 cascade report appended) — the identical string
+    /// `pretty_print` displayed.
+    Ok(String),
+    /// The compiler diagnostic the error arm produced, verbatim — the identical
+    /// `Error: {e}` line the user read (type error / parse error / warning).
+    Error(String),
+}
+
+impl ReplTurnOutcome {
+    /// True iff this turn errored (the §5.5(3) errored-first partition key).
+    pub fn is_error(&self) -> bool {
+        matches!(self, ReplTurnOutcome::Error(_))
+    }
+}
+
+/// One recorded REPL eval turn (E5, §5.5(1)) — the exact source the user
+/// submitted plus the exact string they saw back. A failed `(defn …)` never
+/// commits, so it is absent from every symbol table and therefore from the
+/// committed-state harvest (§5.1–§5.4); this ring is the ONLY place that signal
+/// lives, so the harvester can surface it when the user asks "why doesn't that
+/// typecheck?" (§5.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplTurn {
+    /// The exact source text the user submitted (the read loop's `input_str`).
+    pub input: String,
+    /// The string the user saw — the rendered result or the verbatim diagnostic.
+    pub outcome: ReplTurnOutcome,
+}
+
+/// The bounded recent-turn ring capacity (§5.5(1)) — a tuning knob, not
+/// architecture (like the §5.2 push counts). Large enough that the most-recent
+/// error survives a few green/introspection turns before the user asks; small
+/// enough (8 short `(input, diagnostic)` pairs ≈ a few hundred tokens) to stay
+/// trivially inside the §5.4 budget, and budget-gated regardless.
+pub const TURN_RING_CAP: usize = 8;
+
 /// The persistent agent state (§3.4) — transcript + the model handle. Lives on
 /// `CompilerSession` as a `#[cfg(feature="agent")] Option<AgentState>` so
 /// feature-off carries zero bytes. `None` until the first `/ask` or agent route.
@@ -203,12 +246,35 @@ pub struct AgentState {
     /// `turn` param down four call chains (Principle 1). `assemble_request`
     /// copies it onto `AgentRequest.turn` for the trace side. `0` between turns.
     pub current_turn: usize,
+    /// The bounded recent-errored-turn feed (E5, §5.5(4)) — one entry per REPL
+    /// eval turn (`input` + the string the user saw), cap `TURN_RING_CAP`. Fed
+    /// from the single per-turn display boundary in `main.rs`'s read loop via
+    /// `CompilerSession::record_repl_turn`; read by `harvest_context`'s fourth
+    /// source, which surfaces the errored turns (the signal committed state
+    /// cannot reconstruct — a failed defn never commits). NOT a second
+    /// transcript store (Principle 7): it reuses the strings the display
+    /// boundary already produced. `push_back` newest; `pop_front` evicts oldest.
+    pub turn_ring: VecDeque<ReplTurn>,
 }
 
 impl AgentState {
     /// True when no provider is reachable (the dormant / "no key" state — §6.4).
     pub fn is_dormant(&self) -> bool {
         self.model.is_none()
+    }
+
+    /// Record one REPL eval turn onto the bounded ring (E5, §5.5). Appends the
+    /// newest turn and evicts the oldest past `TURN_RING_CAP`. Called (via
+    /// `CompilerSession::record_repl_turn`) from the single per-turn render seam
+    /// in `main.rs`'s read loop — never a second capture channel (Principle 7).
+    pub fn record_turn(&mut self, input: &str, outcome: ReplTurnOutcome) {
+        self.turn_ring.push_back(ReplTurn {
+            input: input.to_string(),
+            outcome,
+        });
+        while self.turn_ring.len() > TURN_RING_CAP {
+            self.turn_ring.pop_front();
+        }
     }
 }
 

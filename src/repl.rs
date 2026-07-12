@@ -20,7 +20,8 @@ use cranelisp_types::{
 use cranelisp_typecheck::CheckState;
 
 use crate::code::{Code, SessionSymbolTable};
-use crate::display::{format_result_value, format_scheme_display, format_type_qualified};
+use crate::display::format_type_qualified;
+use crate::styled::{Role, StyledDoc, render};
 use crate::session_v4::{
     discover_test_names, intrinsic_type_from_name, is_comment_only, parens_balanced,
     run_test_by_name, CommandResult, CompilerSession, EvalResult, Introspection,
@@ -292,6 +293,55 @@ pub(crate) fn format_mem_snapshot() -> String {
     )
 }
 
+// ===========================================================================
+// §10.3 introspection-line span helpers (the `:Type module/name ; metadata`
+// envelope). Every introspection producer builds a `StyledDoc` through these,
+// so the R4 type annotation / R7 module prefix / R6 metadata roles are assigned
+// once at construction; `render` (the seam) applies the styles once. Colour-off
+// the concatenated span text is byte-identical to the pre-Wave-D plain lines.
+// ===========================================================================
+
+/// Push a `:Type` annotation as one R4 span (the leading `:` included).
+pub(crate) fn push_type_annotation(doc: &mut StyledDoc, type_str: &str) {
+    doc.push(Role::TypeAnnotation, format!(":{type_str}"));
+}
+
+/// Push a fully-qualified `module/name` — R7 dim `module/` prefix + R15 name.
+pub(crate) fn push_fq_name(doc: &mut StyledDoc, module: &ModuleFullPath, name: &str) {
+    doc.push(Role::ModulePrefix, format!("{module}/"));
+    doc.plain(name);
+}
+
+/// Push a REPL structured-metadata `;` suffix/line as one R6 span.
+pub(crate) fn push_metadata(doc: &mut StyledDoc, text: impl Into<String>) {
+    doc.push(Role::ReplMetadata, text);
+}
+
+/// Push a `; warning: <message>` line (§10.3 K9): the `; warning: ` prefix is R6
+/// metadata (dim), the message body is R11 warning detail (yellow), terminated by a
+/// `\n`. The single builder for the warning-line role composition so it is
+/// single-sourced (Principle 7) and unit-pinnable.
+pub(crate) fn push_warning_line(doc: &mut StyledDoc, message: &str) {
+    push_metadata(doc, "; warning: ");
+    doc.push(Role::WarnDetail, message.to_string());
+    doc.plain("\n");
+}
+
+/// A `; header\n<code>` block — the R6 metadata header line over a code `StyledDoc`
+/// (the `/source`/`/sexp` framing).
+fn code_block_doc(header: &str, code: StyledDoc) -> StyledDoc {
+    let mut doc = StyledDoc::new();
+    push_metadata(&mut doc, header);
+    doc.plain("\n");
+    doc.extend(code);
+    doc
+}
+
+/// Build the `; classification[ - docstring]` metadata string (the R6 comment).
+fn classification_metadata(classification: &str, docstring: Option<&str>) -> String {
+    append_docstring_comment(format!("; {classification}"), docstring)
+}
+
 /// Format an overloaded (multi-sig) function as one line per variant, with
 /// fully-qualified `module/name` per spec §4.1.1. Used by bare-symbol display
 /// (`format_def_entry`).
@@ -299,25 +349,38 @@ pub(crate) fn format_mem_snapshot() -> String {
 /// First line carries the `; defn` classification + optional docstring; subsequent
 /// variant lines carry only the type and qualified name. See repl/spec.md §1.3
 /// + §4.1.1 and design/int/multi-sig-introspection.md.
+#[cfg(test)]
 pub(crate) fn format_overloaded_variants(
     name: &str,
     module: &ModuleFullPath,
     variants: &[OverloadVariant],
     docstring: Option<&str>,
 ) -> String {
-    let mut lines = Vec::with_capacity(variants.len());
+    render(&format_overloaded_variants_doc(name, module, variants, docstring))
+}
+
+pub(crate) fn format_overloaded_variants_doc(
+    name: &str,
+    module: &ModuleFullPath,
+    variants: &[OverloadVariant],
+    docstring: Option<&str>,
+) -> StyledDoc {
+    let mut doc = StyledDoc::new();
     for (i, v) in variants.iter().enumerate() {
+        if i > 0 {
+            doc.plain("\n");
+        }
         let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
         let type_str = format_type_qualified(&fn_ty);
-        let line = if i == 0 {
-            let base = format!(":{type_str} {module}/{name} ; defn");
-            append_docstring_comment(base, docstring)
-        } else {
-            format!(":{type_str} {module}/{name}")
-        };
-        lines.push(line);
+        push_type_annotation(&mut doc, &type_str);
+        doc.plain(" ");
+        push_fq_name(&mut doc, module, name);
+        if i == 0 {
+            doc.plain(" ");
+            push_metadata(&mut doc, classification_metadata("defn", docstring));
+        }
     }
-    lines.join("\n")
+    doc
 }
 
 impl CompilerSession {
@@ -654,12 +717,22 @@ impl CompilerSession {
                 .get(&module)
                 .map(|b| *b)
                 .unwrap_or(false);
+            // The prelude provides only its PUBLIC names (spec §8.8.1: the
+            // implicit prelude is `(import [prelude [*]])`, and `*` brings only
+            // public names). A PRIVATE prelude head is not in scope through the
+            // fallback — resolution never resolves it, so the display /
+            // enumeration classifiers that inherit this seam must not classify
+            // it "in scope" either (worst at `/search`'s "already in scope — no
+            // import needed"). A private head falls through: to the root `""`
+            // tier when `root`, else `None`. (The resolution-side terminal-vs-
+            // head filter is the separate FIXME 0567, cranelisp-types.)
             if on
                 && let Some(e) = self
                     .shared
                     .symbol_tables
                     .get(&prelude_path)
                     .and_then(|t| t.get(name).cloned())
+                && e.is_public()
             {
                 return Some((e, prelude_path));
             }
@@ -1182,20 +1255,24 @@ impl CompilerSession {
         // below the prompt (matching the spec §17.19.2 examples, which show the
         // rows beneath the `user> /search …` line) rather than glued to the
         // prompt in a non-TTY/piped session where the input is not echoed.
-        let mut out = String::from("\n");
+        let mut out = StyledDoc::new();
+        out.plain("\n");
         for row in &rows {
-            out.push_str(&self.render_search_row(row, query));
+            out.extend(self.render_search_row(row, query));
         }
         // A partial (still-indexing) result appends the not-ready note beneath
         // the rows it DID find (§17.19.3 partial-results-plus-a-note); a complete
-        // result has no note.
+        // result has no note (R6 lifecycle metadata).
         if let Some(note) = &not_ready_note {
-            out.push_str(note);
+            push_metadata(&mut out, note.clone());
         }
-        while out.ends_with('\n') {
-            out.pop();
+        // Trim trailing newlines from the rendered text (the `\n` are Plain, so
+        // popping them is byte-safe under both colour modes).
+        let mut rendered = render(&out);
+        while rendered.ends_with('\n') {
+            rendered.pop();
         }
-        out
+        rendered
     }
 
     /// Collect the NAME-axis and DOCSTRING-axis hits for a plain-text query
@@ -1248,7 +1325,21 @@ impl CompilerSession {
     /// the `(import …)` form, REPLACED by the `already in scope — no import
     /// needed` marker for an exact in-scope match (R13); facet 5 is the `; doc:`
     /// excerpt, present ONLY on a docstring-only hit (§17.19.1a tier 6).
-    fn render_search_row(&self, row: &SearchRow, query: &str) -> String {
+    fn render_search_row(&self, row: &SearchRow, query: &str) -> StyledDoc {
+        render_search_row_doc(row, query)
+    }
+}
+
+/// Build the `StyledDoc` for one `/search` result row (§10.3 K7, §17.19.2). A
+/// free function (uses no session state) so the K7 role composition is unit-pinnable
+/// without constructing a `CompilerSession` (`src/CLAUDE.md` testability discipline;
+/// mirrors `render_search_row`'s peer `_doc` producers).
+///
+/// `:{sig} {name}\n  in {module}   — {action}\n` — the sig is R4, the name R15, the
+/// module column R7 (dim), the rest Plain; a docstring-only hit appends a `; doc:`
+/// excerpt as R6 metadata.
+fn render_search_row_doc(row: &SearchRow, query: &str) -> StyledDoc {
+    {
         use crate::session_v4::index_worker::MatchTier;
         let hit = &row.hit;
         let sig = crate::display::format_type_qualified(&hit.scheme);
@@ -1260,17 +1351,28 @@ impl CompilerSession {
         } else {
             format!("(import [{module} [{name}]])")
         };
-        let mut out = format!(":{sig} {name}\n  in {module}   — {action}\n");
-        // Facet 5: docstring excerpt, only for a docstring-only hit.
+        // `:{sig} {name}\n  in {module}   — {action}\n` — the sig is R4, the name
+        // R15, the module column R7 (dim), the rest Plain (§10.3 K7).
+        let mut out = StyledDoc::new();
+        push_type_annotation(&mut out, &sig);
+        out.plain(" ");
+        out.plain(name);
+        out.plain("\n  in ");
+        out.push(Role::ModulePrefix, module);
+        out.plain(format!("   — {action}\n"));
+        // Facet 5: docstring excerpt, only for a docstring-only hit — R6 metadata.
         if hit.tier == MatchTier::DocstringOnly
             && let Some(doc) = &hit.docstring
             && let Some(excerpt) = docstring_excerpt(doc, query)
         {
-            out.push_str(&format!("  ; doc: {excerpt}\n"));
+            push_metadata(&mut out, format!("  ; doc: {excerpt}"));
+            out.plain("\n");
         }
         out
     }
+}
 
+impl CompilerSession {
     /// Bounded wait for the importable-symbol burn-down to drain (pending → 0).
     /// Polls the worklist count; returns early when settled or when `timeout`
     /// elapses (then `/search` serves partial results + the progress note). A
@@ -1448,13 +1550,19 @@ impl CompilerSession {
         }
         if let Some(intr) = self.get_introspection(name) {
             if let Some(ref src) = intr.source {
-                return format!("; source for {name}\n{}", crate::pretty::pretty_print_str(src));
+                return render(&code_block_doc(
+                    &format!("; source for {name}"),
+                    crate::pretty::pretty_print_str_doc(src),
+                ));
             }
             if let Some(ref sexp) = intr.sexp {
-                return format!("; source for {name}\n{}", crate::pretty::pretty_print(sexp));
+                return render(&code_block_doc(
+                    &format!("; source for {name}"),
+                    crate::pretty::pretty_print_doc(sexp),
+                ));
             }
         }
-        format!("Error: no source available for '{name}'")
+        crate::style::error_line(&format!("no source available for '{name}'"))
     }
 
     /// /sexp handler: show parsed S-expression of a definition.
@@ -1464,9 +1572,12 @@ impl CompilerSession {
         }
         if let Some(intr) = self.get_introspection(name)
             && let Some(ref sexp) = intr.sexp {
-                return format!("; sexp for {name}\n{}", crate::pretty::pretty_print(sexp));
+                return render(&code_block_doc(
+                    &format!("; sexp for {name}"),
+                    crate::pretty::pretty_print_doc(sexp),
+                ));
             }
-        format!("Error: no sexp available for '{name}'")
+        crate::style::error_line(&format!("no sexp available for '{name}'"))
     }
 
     /// /ast handler: show AST of a definition.
@@ -1478,7 +1589,7 @@ impl CompilerSession {
             && let Some(ref defn) = intr.ast {
                 return format!("; ast for {name}\n{:#?}", defn);
             }
-        format!("Error: no AST available for '{name}'")
+        crate::style::error_line(&format!("no AST available for '{name}'"))
     }
 
     /// /clif handler: show Cranelift IR of a definition.
@@ -1490,7 +1601,7 @@ impl CompilerSession {
             && let Some(ref clif) = intr.clif_ir {
                 return format!("; clif ir for {name}\n{}", clif);
             }
-        format!("Error: no CLIF IR available for '{name}'")
+        crate::style::error_line(&format!("no CLIF IR available for '{name}'"))
     }
 
     /// /disasm handler: show disassembled native code of a definition.
@@ -1516,11 +1627,11 @@ impl CompilerSession {
             .get_introspection(name)
             .and_then(|intr| intr.code_size)
         else {
-            return format!("Error: no disassembly available for '{name}'");
+            return crate::style::error_line(&format!("no disassembly available for '{name}'"));
         };
         match cranelisp_backend::produce_disasm(&fq, code_size, &self.shared.symbol_tables) {
             Ok(text) => format!("; disasm for {name}\n{text}"),
-            Err(_) => format!("Error: no disassembly available for '{name}'"),
+            Err(_) => crate::style::error_line(&format!("no disassembly available for '{name}'")),
         }
     }
 
@@ -1645,7 +1756,7 @@ impl CompilerSession {
                 let display = format_type_qualified(&ty);
                 format!(":{display}")
             }
-            Err(e) => format!("Error: {e}"),
+            Err(e) => crate::style::error_line(&e.to_string()),
         }
     }
 
@@ -2028,11 +2139,11 @@ impl CompilerSession {
         }
         // Compile any uncompiled macros before expansion.
         if let Err(e) = self.compile_pending_macros() {
-            return format!("Error: {e}");
+            return crate::style::error_line(&e.to_string());
         }
         match self.expand_form_sexp(form_src) {
             Ok(expanded) => format_sexp(&expanded),
-            Err(e) => format!("Error: {e}"),
+            Err(e) => crate::style::error_line(&e.to_string()),
         }
     }
 
@@ -2176,7 +2287,7 @@ impl CompilerSession {
                 let elapsed = start.elapsed();
                 format!("(no result) ({}ms)", elapsed.as_millis())
             }
-            Err(e) => format!("Error: {e}"),
+            Err(e) => crate::style::error_line(&e.to_string()),
         }
     }
 
@@ -2212,7 +2323,7 @@ impl CompilerSession {
         let header = match eval_outcome {
             Ok(Some(result)) => self.format_eval_result(&result),
             Ok(None) => "(no result)".to_string(),
-            Err(e) => format!("Error: {e}"),
+            Err(e) => crate::style::error_line(&e.to_string()),
         };
 
         let delta_line = format!(
@@ -2387,7 +2498,12 @@ impl CompilerSession {
 
     /// Print the session banner.
     pub fn print_banner(&self, stdout: &mut impl Write) {
-        let _ = writeln!(stdout, "cranelisp REPL — type /help for help");
+        // §10.3 R13 (Prompt / Banner) — dim. Colour-off the bytes are unchanged.
+        let banner = render(&StyledDoc::span(
+            Role::Prompt,
+            "cranelisp REPL — type /help for help",
+        ));
+        let _ = writeln!(stdout, "{banner}");
     }
 
     /// Current module name for prompt display.
@@ -2400,6 +2516,19 @@ impl CompilerSession {
     ///
     /// Used both by the non-TTY read loop (written to stdout) and by the TTY
     /// line editor (§10.8: passed to `readline`).
+    ///
+    /// R13 (§10.3) styling — DOCUMENTED DEFERRAL (Wave-D2, /dev): the prompt is
+    /// left PLAIN (not routed through the R13 dim seam) because of rustyline
+    /// prompt handling. This string is (a) passed verbatim to `rustyline::readline`
+    /// on the TTY branch and (b) its byte length is the alignment width for
+    /// `continuation_prompt_string`. Wrapping it in R13-dim SGR under colour-ON
+    /// would inflate that `.len()` and mis-align the continuation `...`, and the
+    /// interactive line-editor surface has NO e2e guard (§10.8 — arrow keys /
+    /// cursor positioning are manually verified only), so a width regression here
+    /// would ship unguarded. Styling the prompt cleanly requires also making the
+    /// continuation width measure the ANSI-stripped length — a coupled change on an
+    /// untestable surface, deferred rather than risked. Colour-OFF (the non-TTY
+    /// harness) is unaffected: the prompt is already plain there.
     pub fn prompt_string(&self, compile_ms: u64, eval_ms: u64) -> String {
         let module = self.current_module_name();
         format!("{compile_ms}+{eval_ms}ms; {module}> ")
@@ -2437,24 +2566,28 @@ impl CompilerSession {
         // here is the single source of truth: every `format_eval_result`
         // caller (REPL loop + `--run` echo + bare-symbol introspection) gets
         // warning display uniformly.
-        let body = self.format_eval_result_body(result);
+        render(&self.format_eval_result_doc(result))
+    }
+
+    /// The full eval-result `StyledDoc` — the `; warning:` lines (R6 prefix + R11
+    /// detail) prepended to the value/definition body.
+    fn format_eval_result_doc(&self, result: &EvalResult) -> StyledDoc {
+        let body = self.format_eval_result_body_doc(result);
         if result.warnings().is_empty() {
             return body;
         }
-        let mut out = String::new();
+        let mut out = StyledDoc::new();
         for w in result.warnings() {
-            out.push_str("; warning: ");
-            out.push_str(&w.message);
-            out.push('\n');
+            push_warning_line(&mut out, &w.message);
         }
-        out.push_str(&body);
+        out.extend(body);
         out
     }
 
     /// The value/definition rendering for an `EvalResult`, without warning
-    /// surfacing. `format_eval_result` wraps this to prepend `; warning:`
+    /// surfacing. `format_eval_result_doc` wraps this to prepend `; warning:`
     /// lines (FIXME 0363).
-    fn format_eval_result_body(&self, result: &EvalResult) -> String {
+    fn format_eval_result_body_doc(&self, result: &EvalResult) -> StyledDoc {
         match result {
             EvalResult::Def { symbol, defined, .. } => {
                 let name = symbol.symbol.as_ref();
@@ -2462,7 +2595,7 @@ impl CompilerSession {
 
                 // Builtin type names (Int, Bool, etc.) from primitives module.
                 if module.as_ref() == "primitives" && intrinsic_type_from_name(name).is_some() {
-                    return self.format_builtin_type_display(name);
+                    return self.format_builtin_type_display_doc(name);
                 }
 
                 let cur_module = self.current_module_path();
@@ -2485,27 +2618,34 @@ impl CompilerSession {
                     Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),
                     None => {
                         // TraitImpl entries have `Trait.Type` names; not in symbol table.
+                        let mut doc = StyledDoc::new();
                         if let Some((trait_name, target_type)) = name.split_once('.') {
-                            return format!(
-                                "impl {module}/{trait_name} for {module}/{target_type}"
-                            );
+                            doc.plain("impl ");
+                            push_fq_name(&mut doc, module, trait_name);
+                            doc.plain(" for ");
+                            push_fq_name(&mut doc, module, target_type);
+                        } else {
+                            push_fq_name(&mut doc, &symbol.module, symbol.symbol.as_ref());
+                            doc.plain(" ");
+                            push_metadata(&mut doc, "; defined");
                         }
-                        return format!("{symbol} ; defined");
+                        return doc;
                     }
                 };
                 // FIXME 0542: a bare LOOKUP (`defined == false`) is pure
                 // introspection — a trait's `; impl:` section is structural
                 // (§4.1.4), shown even when empty. A definition ECHO
                 // (`defined == true`) follows §1.1 and omits the empty section.
-                let body =
-                    self.format_def_entry(&entry, name, &resolved_module, !*defined);
+                let mut body =
+                    self.format_def_entry_doc(&entry, name, &resolved_module, !*defined);
                 // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
                 // self-documenting — the ordinary per-class display (last-good
-                // signature) plus the provenance comment line.
-                match self.broken_status_line(name, &resolved_module) {
-                    Some(line) => format!("{body}\n{line}"),
-                    None => body,
+                // signature) plus the provenance comment line (R6 metadata).
+                if let Some(line) = self.broken_status_line(name, &resolved_module) {
+                    body.plain("\n");
+                    push_metadata(&mut body, line);
                 }
+                body
             }
             EvalResult::Val { value, ty, .. } => {
                 if ty.is_io() {
@@ -2523,11 +2663,11 @@ impl CompilerSession {
                     // `unwrap_io_inline` (FIXME 0457).
                     let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(*value);
                     let inner_type = ty.unwrap_io().clone();
-                    format_result_value(
+                    crate::display::result_value_doc(
                         inner_value, &inner_type, &self.shared.symbol_tables,
                     )
                 } else {
-                    format_result_value(
+                    crate::display::result_value_doc(
                         *value, ty, &self.shared.symbol_tables,
                     )
                 }
@@ -2536,14 +2676,32 @@ impl CompilerSession {
             // category prefix (§5.1) directly followed by the trap payload — no
             // `Error: ` prefix, no `codegen error at 0..0:` wrapper, no
             // `runtime panic: ` slot prefix (normalized away in `pipeline`).
+            // §10.3: `runtime error:` is the R8 error keyword; the payload is R9.
             EvalResult::RuntimeError { message, .. } => {
-                format!("runtime error: {message}")
+                let mut doc = StyledDoc::new();
+                doc.push(Role::ErrorKeyword, "runtime error:");
+                doc.plain(" ");
+                doc.push(Role::ErrorDetail, message.clone());
+                doc
             }
         }
     }
 
     /// Format a definition entry with its classification (spec §1.1, §4.1).
+    /// Renders the role-tagged `StyledDoc` from `format_def_entry_doc`.
     pub(crate) fn format_def_entry(
+        &self,
+        entry: &ModuleEntry<Code>,
+        name: &str,
+        module: &ModuleFullPath,
+        full_trait_sections: bool,
+    ) -> String {
+        render(&self.format_def_entry_doc(entry, name, module, full_trait_sections))
+    }
+
+    /// Build the `:Type module/name ; classification` introspection `StyledDoc`
+    /// (spec §1.1, §4.1) — R4 type annotation, R7 module prefix, R6 metadata.
+    pub(crate) fn format_def_entry_doc(
         &self,
         entry: &ModuleEntry<Code>,
         name: &str,
@@ -2553,14 +2711,14 @@ impl CompilerSession {
         // `/sig`, `/info`). A definition echo passes `false` (§1.1 omits the
         // empty section). Ignored for every non-trait entry.
         full_trait_sections: bool,
-    ) -> String {
+    ) -> StyledDoc {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
                 match kind.as_ref() {
                     // Multi-sig: emit one line per variant per repl/spec.md
                     // §1.3 + §4.1.1.
                     DefKind::Overloaded { variants } if !variants.is_empty() => {
-                        return format_overloaded_variants(
+                        return format_overloaded_variants_doc(
                             name, module, variants, docstring.as_deref(),
                         );
                     }
@@ -2596,10 +2754,16 @@ impl CompilerSession {
                                 None => format!("{tn}.{name}"),
                             }
                         };
-                        return format!(":{type_str} {module}/{ctor_display} ; deftype");
+                        let mut doc = StyledDoc::new();
+                        push_type_annotation(&mut doc, &type_str);
+                        doc.plain(" ");
+                        push_fq_name(&mut doc, module, &ctor_display);
+                        doc.plain(" ");
+                        push_metadata(&mut doc, "; deftype");
+                        return doc;
                     }
                     DefKind::Macro { clauses_meta, .. } => {
-                        return format_macro_display(
+                        return format_macro_display_doc(
                             name, clauses_meta, docstring.as_deref(), module,
                         );
                     }
@@ -2607,9 +2771,9 @@ impl CompilerSession {
                 }
                 // FIXME 0352 (Principle 7): both the constrained and
                 // unconstrained arms render the scheme type through the single
-                // `format_scheme_type` renderer (`format_scheme_display` is the
-                // thin `:type module/name` wrapper around it).
-                let base = format_scheme_display(name, scheme, module);
+                // `format_scheme_type` renderer (`format_scheme_display_doc` is
+                // the `:type module/name` primary-line builder).
+                let mut doc = crate::display::format_scheme_display_doc(name, scheme, module);
                 // Both got-slotted primitives (`DefKind::Primitive`, e.g.
                 // `add-i64`) and slot-less host-promised externs
                 // (`DefKind::PrimitiveExtern`, e.g. the S96 `race`/`select`/
@@ -2623,31 +2787,43 @@ impl CompilerSession {
                     DefKind::Primitive { .. } | DefKind::PrimitiveExtern
                 );
                 let classification = if is_primitive { "primitive" } else { "defn" };
-                let base = format!("{base} ; {classification}");
                 // FIXME 0308: primitive entries now carry their Appendix A.5
                 // description on `PrimitiveDef.docstring`; read it through the
                 // entry's `docstring` field directly (the parallel
                 // `builtin_docs` table is retired), satisfying the §A.5 MUST +
                 // the §1.1 `; primitive - <doc>` format.
-                append_docstring_comment(base, docstring.as_deref())
+                doc.plain(" ");
+                push_metadata(&mut doc, classification_metadata(classification, docstring.as_deref()));
+                doc
             }
             ModuleEntry::SpecialForm { scheme, description, .. } => {
-                format_special_form_display(name, scheme, description)
+                format_special_form_display_doc(name, scheme, description)
             }
             ModuleEntry::TypeDef { .. } => {
-                self.format_type_display(name, module)
+                self.format_type_display_doc(name, module)
             }
             ModuleEntry::TraitDecl { docstring, .. } => {
-                self.format_trait_display(name, docstring.as_deref(), full_trait_sections)
+                // 0558 (S108, resolve-home-enumeration.md §5): pass the RESOLVED
+                // HOME `module` (the fn param, produced by the gate) so the trait
+                // sections root at the home — where the `TraitDecl` is local
+                // (depth 0) and the prelude outer-scope question cannot arise.
+                self.format_trait_display_doc(name, docstring.as_deref(), full_trait_sections, module)
             }
             _ => {
                 // TraitImpl entries have `Trait.Type` symbol names and
                 // aren't stored in the symbol table as named entries.
+                let mut doc = StyledDoc::new();
                 if let Some((trait_name, target_type)) = name.split_once('.') {
-                    format!("impl {module}/{trait_name} for {module}/{target_type}")
+                    doc.plain("impl ");
+                    push_fq_name(&mut doc, module, trait_name);
+                    doc.plain(" for ");
+                    push_fq_name(&mut doc, module, target_type);
                 } else {
-                    format!("{module}/{name} ; defined")
+                    push_fq_name(&mut doc, module, name);
+                    doc.plain(" ");
+                    push_metadata(&mut doc, "; defined");
                 }
+                doc
             }
         }
     }
@@ -2708,8 +2884,20 @@ impl CompilerSession {
     /// Format a user-defined type for display (spec §4.1.3).
     ///
     /// Shows `:module/TypeName ; deftype` with `; match:` and `; impl:` sections.
+#[cfg(test)]
     pub(crate) fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
-        let mut result = format!(":{module}/{type_name} ; deftype");
+        render(&self.format_type_display_doc(type_name, module))
+    }
+
+    /// The `:module/TypeName ; deftype` type-display `StyledDoc` (spec §4.1.3) —
+    /// the whole `:module/Type` is one R4 span (no `module/` decomposition inside
+    /// a type annotation, §10.3 R4); `; deftype` and the `; match:`/`; impl:`
+    /// drawers are R6 metadata.
+    pub(crate) fn format_type_display_doc(&self, type_name: &str, module: &ModuleFullPath) -> StyledDoc {
+        let mut result = StyledDoc::new();
+        push_type_annotation(&mut result, &format!("{module}/{type_name}"));
+        result.plain(" ");
+        push_metadata(&mut result, "; deftype");
         let tn = TypeName::from(type_name);
         // FIXME 0192 method 2: `get_type_constructors` deleted; inline the
         // 1-line wrapper over the relocated `lookup_type_def_chain`.
@@ -2728,47 +2916,67 @@ impl CompilerSession {
             // `ConstructorInfo` struct retired; ctor metadata lives on each
             // ctor's `DefKind::Constructor` entry).
             let names: Vec<&str> = info.constructors.iter().map(|c| c.as_ref()).collect();
-            result.push_str(&format_related_section("match", &names));
+            result.extend(format_related_section_doc("match", &names));
         }
-        // The `; impl:` lookup stays SCOPE-rooted (Decision-45 Pattern B) —
-        // trait enumeration is the current module's view, deliberately not the
-        // type's home.
-        let scope = self.current_module_path();
-        let trait_names = cranelisp_types::get_impls_for_type_chain(
-            &self.shared.symbol_tables, &scope, &tn,
-        );
+        // The `; impl:` view is a Decision-45 Pattern-B VIEW question ("which
+        // traits does this type implement, as visible from HERE") — scope-rooted
+        // by semantics. E8 (S108, resolve-home-enumeration.md §5a): the asking
+        // module's view INCLUDES the prelude outer scope when its
+        // `prelude_fallback` bit is ON, so the candidate SET is the UNION of the
+        // inner-scope run and a prelude-hop run (the ONE `impls_for_type_in_view`
+        // wrapper — never two hand-rolled hops, Principle 7).
+        let trait_names = self.impls_for_type_in_view(&tn);
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-            result.push_str(&format_related_section("impl", &names));
+            result.extend(format_related_section_doc("impl", &names));
         }
         result
     }
 
     /// Format a trait for display (spec §4.1.4).
     ///
-    /// Shows `:module/TraitName ; deftrait` with `; defn:` and `; impl:` sections.
+    /// Shows `:home/TraitName ; deftrait` with `; defn:` and `; impl:` sections,
+    /// ALL rooted at `home` — the trait's RESOLVED home module produced by the
+    /// canonical gate (`lookup_with_prelude_fallback` → `resolve_entry_for_display`,
+    /// held by the sole caller `format_def_entry`).
+    ///
+    /// 0558 (S108, resolve-home-enumeration.md §5, class `wrong-scope-lookup`):
+    /// the prior body re-resolved the home from the asking scope
+    /// (`resolve_terminal_entry_and_home`, no prelude hop) and rooted both section
+    /// lookups at `scope`, so a prelude-globbed trait (reachable at `user` ONLY
+    /// via the implicit outer-scope bit, no `Import` edge) dropped its `; defn:`
+    /// and left `; impl:` empty. Taking the home from the gate and rooting at it —
+    /// where the `TraitDecl` is LOCAL (depth 0) — makes the §4.1.4 unconditional
+    /// sections survive the prelude glob. Rooting the impl enumeration at the
+    /// trait's home is COMPLETE by construction: Decision 0045 writes every
+    /// `impl$Type$Trait` into the trait's defining module, so "implementing types
+    /// of trait T" is a home question, not a view question (Principle 17 shape 3).
+    #[cfg(test)]
     pub(crate) fn format_trait_display(
         &self,
         trait_name: &str,
         docstring: Option<&str>,
         full_impl_section: bool,
+        home: &ModuleFullPath,
     ) -> String {
-        let scope = self.current_module_path();
-        // FIXME 0192 method 6: `defining_module_for` deleted; substitute with
-        // the chain-follow from `resolve_terminal_entry_and_home` (Decision 45
-        // Pattern B). If the trait isn't reachable, fall back to the scope —
-        // the display layer treats unresolved chains as defined-here for
-        // diagnostic continuity (no architectural workaround; just a display
-        // fallback).
-        let defining_module = match cranelisp_types::resolve_terminal_entry_and_home(
-            &self.shared.symbol_tables, &scope, trait_name,
-        ) {
-            Some((ModuleEntry::TraitDecl { .. }, home)) => home,
-            _ => scope.clone(),
-        };
+        render(&self.format_trait_display_doc(trait_name, docstring, full_impl_section, home))
+    }
+
+    /// The `:home/TraitName ; deftrait` trait-display `StyledDoc` (spec §4.1.4) —
+    /// the whole `:home/Trait` is one R4 span; the classification, docstring, and
+    /// `; defn:`/`; impl:` drawers are R6 metadata.
+    pub(crate) fn format_trait_display_doc(
+        &self,
+        trait_name: &str,
+        docstring: Option<&str>,
+        full_impl_section: bool,
+        home: &ModuleFullPath,
+    ) -> StyledDoc {
         let tn = TraitName::from(trait_name);
-        let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
-        result = append_docstring_comment(result, docstring);
+        let mut result = StyledDoc::new();
+        push_type_annotation(&mut result, &format!("{home}/{trait_name}"));
+        result.plain(" ");
+        push_metadata(&mut result, append_docstring_comment("; deftrait".to_string(), docstring));
         // FIXME 0542 (§4.1.4): a bare trait lookup MUST ALWAYS surface BOTH the
         // `; defn:` (method names) and `; impl:` (implementing types) sections —
         // for user-module traits and stdlib traits alike, and even when the
@@ -2777,21 +2985,21 @@ impl CompilerSession {
         // rule (§4.1.3), where an empty `; impl:` section is omitted: a trait's
         // related sections are structural, a type's are conditional.
         // FIXME 0192 method 4: `get_trait_methods` deleted; inline the 1-line
-        // wrapper over `lookup_trait_decl_chain`.
+        // wrapper over `lookup_trait_decl_chain` — rooted at the trait's HOME.
         let method_names: Vec<String> = cranelisp_types::lookup_trait_decl_chain(
-            &self.shared.symbol_tables, &scope, &tn,
+            &self.shared.symbol_tables, home, &tn,
         )
         .map(|decl| decl.methods.iter().map(|m| m.name.to_string()).collect())
         .unwrap_or_default();
         let impl_type_names: Vec<String> = cranelisp_types::get_implementing_types_chain(
-            &self.shared.symbol_tables, &scope, &tn,
+            &self.shared.symbol_tables, home, &tn,
         )
         .iter()
         .map(|t| t.to_string())
         .collect();
         let method_refs: Vec<&str> = method_names.iter().map(String::as_str).collect();
         let impl_refs: Vec<&str> = impl_type_names.iter().map(String::as_str).collect();
-        result.push_str(&format_trait_related_sections(
+        result.extend(format_trait_related_sections_doc(
             &method_refs,
             &impl_refs,
             full_impl_section,
@@ -2801,17 +3009,96 @@ impl CompilerSession {
 
     /// Format a builtin type (Int, Bool, Float, String) for display (spec §4.1.3).
     pub(crate) fn format_builtin_type_display(&self, type_name: &str) -> String {
+        render(&self.format_builtin_type_display_doc(type_name))
+    }
+
+    /// The `:primitives/TypeName ; type` builtin-type `StyledDoc` (spec §4.1.3).
+    pub(crate) fn format_builtin_type_display_doc(&self, type_name: &str) -> StyledDoc {
         let tn = TypeName::from(type_name);
-        let scope = self.current_module_path();
-        let mut result = format!(":primitives/{type_name} ; type");
-        let trait_names = cranelisp_types::get_impls_for_type_chain(
-            &self.shared.symbol_tables, &scope, &tn,
-        );
+        let mut result = StyledDoc::new();
+        push_type_annotation(&mut result, &format!("primitives/{type_name}"));
+        result.plain(" ");
+        push_metadata(&mut result, "; type");
+        // E8 (S108, resolve-home-enumeration.md §5a): the same ONE view wrapper
+        // that feeds `format_type_display` — the candidate SET is the inner-scope
+        // run ∪ the prelude hop (bit-gated), so a bare `Int` under the prelude
+        // surfaces its prelude-globbed trait impls (`; impl: Display Eq Num Ord`,
+        // §4.1.3). Sharing the wrapper closes the two-formatter sibling gap that
+        // recurs when one is fixed and the other is not (the Inc1 D1/D2 lesson).
+        let trait_names = self.impls_for_type_in_view(&tn);
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-            result.push_str(&format_related_section("impl", &names));
+            result.extend(format_related_section_doc("impl", &names));
         }
         result
+    }
+
+    /// The type-side `; impl:` VIEW's candidate-trait enumeration (E8, S108,
+    /// resolve-home-enumeration.md §5a). "Which traits does this type implement,
+    /// as visible from the current scope" is a Decision-45 Pattern-B VIEW
+    /// question — scope-rooted by semantics. But "scope-rooted" governs the
+    /// per-candidate ROOTING and the answer's frame, NOT the candidate SET: the
+    /// asking module's view INCLUDES the prelude outer scope whenever its
+    /// `prelude_fallback` bit is ON (S78 §2 — that is what the bit means), so the
+    /// candidate enumeration is the UNION of:
+    ///
+    /// - the inner-scope run — `get_impls_for_type_chain(tables, scope, tn)`; and
+    /// - the prelude-hop run — the SAME reader rooted at `prelude`, when the bit
+    ///   is ON and scope ≠ `prelude`, restricted to prelude heads that pass the
+    ///   I-1 public-only filter (a PRIVATE prelude trait must NOT leak into a user
+    ///   view — the `recognize_macro_head` / `prelude_terminal_visible`
+    ///   discipline). Since `cranelisp-types` takes no visibility parameter and
+    ///   does not change, the filter is an int-side POST-filter on the head entry.
+    ///
+    /// Merged by bare `TraitName`, sorted + deduped (name-dedup is safe: a
+    /// scope-local trait and a distinct prelude trait sharing a bare name is a
+    /// poisoned name upstream per §8.6.5, so the union cannot conflate two live
+    /// traits). Per-candidate home-probing is unchanged (Decision 0045 makes the
+    /// per-trait answer complete by construction). This is the ONE session wrapper
+    /// feeding BOTH `format_type_display` and `format_builtin_type_display`
+    /// (Principle 7 — never two hand-rolled hops).
+    fn impls_for_type_in_view(&self, tn: &TypeName) -> Vec<TraitName> {
+        let scope = self.current_module_path();
+        let mut traits = cranelisp_types::get_impls_for_type_chain(
+            &self.shared.symbol_tables, &scope, tn,
+        );
+        let prelude_path = ModuleFullPath::from("prelude");
+        if scope != prelude_path {
+            let bit_on = self
+                .shared
+                .prelude_fallback
+                .get(&scope)
+                .map(|b| *b)
+                .unwrap_or(false);
+            if bit_on {
+                for t in cranelisp_types::get_impls_for_type_chain(
+                    &self.shared.symbol_tables, &prelude_path, tn,
+                ) {
+                    // I-1 public-head post-filter: drop a prelude-run trait whose
+                    // head entry in prelude's OWN table is not public.
+                    if self.prelude_trait_head_is_public(&t) {
+                        traits.push(t);
+                    }
+                }
+            }
+        }
+        traits.sort();
+        traits.dedup();
+        traits
+    }
+
+    /// I-1 public-head filter for the E8 prelude hop: `true` iff trait `t`'s head
+    /// entry in prelude's OWN table is public. A private prelude trait
+    /// (`deftrait-`) must not leak into a user's type-side `; impl:` view. Mirrors
+    /// `recognize_macro_head`'s prelude-retry post-filter + typecheck's
+    /// `prelude_terminal_visible`.
+    fn prelude_trait_head_is_public(&self, t: &TraitName) -> bool {
+        let prelude_path = ModuleFullPath::from("prelude");
+        self.shared
+            .symbol_tables
+            .get(&prelude_path)
+            .and_then(|tbl| tbl.get(t.as_ref()).map(|e| e.is_public()))
+            .unwrap_or(false)
     }
 }
 
@@ -2902,35 +3189,61 @@ pub(crate) fn format_special_form_display(
     scheme: &Scheme,
     description: &str,
 ) -> String {
+    render(&format_special_form_display_doc(name, scheme, description))
+}
+
+pub(crate) fn format_special_form_display_doc(
+    name: &str,
+    scheme: &Scheme,
+    description: &str,
+) -> StyledDoc {
+    let mut doc = StyledDoc::new();
     if matches!(scheme.ty, Type::Fn(..)) {
         let type_str = format_type_qualified(&scheme.ty);
-        format!(":{type_str} {name} ; special form - {description}")
-    } else {
-        format!("{name} ; special form - {description}")
+        push_type_annotation(&mut doc, &type_str);
+        doc.plain(" ");
     }
+    // A special form's subject is a bare `name` (no module qualifier), R15.
+    doc.plain(name);
+    doc.plain(" ");
+    push_metadata(&mut doc, format!("; special form - {description}"));
+    doc
 }
 
 /// Format a macro for display (spec §4.1.6).
+#[cfg(test)]
 pub(crate) fn format_macro_display(
     name: &str,
     clauses: &[MacroClauseInfo],
     docstring: Option<&str>,
     module: &ModuleFullPath,
 ) -> String {
-    let mut result = format!(":{module}/{name} ; defmacro");
-    result = append_docstring_comment(result, docstring);
+    render(&format_macro_display_doc(name, clauses, docstring, module))
+}
+
+pub(crate) fn format_macro_display_doc(
+    name: &str,
+    clauses: &[MacroClauseInfo],
+    docstring: Option<&str>,
+    module: &ModuleFullPath,
+) -> StyledDoc {
+    let mut doc = StyledDoc::new();
+    push_type_annotation(&mut doc, &format!("{module}/{name}"));
+    doc.plain(" ");
+    push_metadata(&mut doc, append_docstring_comment("; defmacro".to_string(), docstring));
     for clause in clauses {
         let params = format_macro_clause_params(clause);
-        result.push_str(&format!("\n; {params} -> Sexp"));
+        doc.plain("\n");
+        push_metadata(&mut doc, format!("; {params} -> Sexp"));
     }
     // repl/spec.md §11.2.2: a multi-clause macro card ends with a clause-count
     // summary line (two leading spaces, no `;`). The single-clause worked
     // example (`/info when`) shows NO count line, so gate on `> 1`. The count
     // is always >= 2 under this gate, so a fixed "clauses" is correct.
     if clauses.len() > 1 {
-        result.push_str(&format!("\n  {} clauses", clauses.len()));
+        doc.plain(format!("\n  {} clauses", clauses.len()));
     }
-    result
+    doc
 }
 
 /// Format macro clause parameters as `[param1 param2 ...]`.
@@ -2957,14 +3270,18 @@ pub(crate) fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
 /// Format a related symbols section (spec §1.1). The symbol block uses the
 /// shared §3.3 layout formatter (repl/spec.md:198 — related lists use the same
 /// normative L0–L4 layout as `/list`), rendered as comment rows.
-pub(crate) fn format_related_section(label: &str, names: &[&str]) -> String {
+/// The `StyledDoc` for a related-symbol section — the drawer header AND its name
+/// bodies are all R6 metadata (§10.3 R6); the `\n` line breaks stay Plain.
+pub(crate) fn format_related_section_doc(label: &str, names: &[&str]) -> StyledDoc {
     let owned: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-    let mut out = format!("\n; {label}:");
+    let mut doc = StyledDoc::new();
+    doc.plain("\n");
+    push_metadata(&mut doc, format!("; {label}:"));
     for row in format_symbol_layout(&owned) {
-        out.push_str("\n;  ");
-        out.push_str(&row);
+        doc.plain("\n");
+        push_metadata(&mut doc, format!(";  {row}"));
     }
-    out
+    doc
 }
 
 /// Render a trait's related-symbol sections for introspection display
@@ -2981,19 +3298,144 @@ pub(crate) fn format_related_section(label: &str, names: &[&str]) -> String {
 /// free function so the emit contract is unit-testable without constructing a
 /// `CompilerSession` (`src/CLAUDE.md` testability discipline; mirrors
 /// `collect_related_for`).
+/// §10.3 colour-ON byte-exact fixtures for the introspection producers whose
+/// span builders are free functions (Wave-D /dev obligation, §B.2 K3/K4/K11).
+/// The `ColorGuard` forces the colour gate ON in this test's own nextest process.
+#[cfg(test)]
+mod styling_colour_on_tests {
+    use super::*;
+    use crate::style::test_support::ColorGuard;
+
+    // K3 — the introspection primary line's metadata suffix `; classification -
+    // docstring` is one R6 dim span (§10.3 R6). Composed exactly as
+    // `format_def_entry_doc`'s fn arm does: scheme primary line + ` ` +
+    // classification metadata.
+    // spec: repl/spec.md §10.3 R4/R7/R6 — `/sig` / bare-symbol introspection line.
+    #[test]
+    fn colour_on_k3_defn_line_metadata_dim() {
+        let _g = ColorGuard::force(true);
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        };
+        let module = ModuleFullPath::from("user");
+        let mut doc = crate::display::format_scheme_display_doc("double", &scheme, &module);
+        doc.plain(" ");
+        push_metadata(&mut doc, classification_metadata("defn", Some("Multiply by 2")));
+        assert_eq!(
+            render(&doc),
+            "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m \x1b[2muser/\x1b[0mdouble \
+             \x1b[2m; defn - Multiply by 2\x1b[0m"
+        );
+    }
+
+    // K4 — a `; match:` (or `; defn:`/`; impl:`) drawer: BOTH the header AND the
+    // name-body rows are R6 dim (§10.3 R6); the `\n` line breaks stay Plain.
+    // spec: repl/spec.md §10.3 R6 — introspection drawers.
+    #[test]
+    fn colour_on_k4_drawer_header_and_body_dim() {
+        let _g = ColorGuard::force(true);
+        let out = render(&format_related_section_doc("match", &["Red", "Green", "Blue"]));
+        // The name-body layout sorts alphabetically (§3.3); the roles are what
+        // this fixture pins — the whole header AND body rows are R6 dim.
+        assert_eq!(
+            out,
+            "\n\x1b[2m; match:\x1b[0m\n\x1b[2m;  Blue Green Red\x1b[0m"
+        );
+    }
+
+    // K7 — a `/search` row: the `:Type` sig is R4 cyan, the name R15, the `in
+    // <module>` column R7 dim, the `(import …)` snippet Plain; the `\n` line
+    // breaks stay Plain (§10.3 K7 composition). Fail-on-revert pin for the
+    // `render_search_row_doc` role composition.
+    // spec: repl/spec.md §10.3 R4/R7/R15 — `/search` result row.
+    #[test]
+    fn colour_on_k7_search_row_composition() {
+        use crate::session_v4::index_worker::{MatchTier, SearchHit};
+        let _g = ColorGuard::force(true);
+        let row = SearchRow {
+            hit: SearchHit {
+                name: Symbol::from("count"),
+                module: ModuleFullPath::from("collections.vec"),
+                scheme: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+                docstring: None,
+                tier: MatchTier::ExactName,
+            },
+            in_scope: false,
+        };
+        assert_eq!(
+            render(&render_search_row_doc(&row, "count")),
+            "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m count\n  in \
+             \x1b[2mcollections.vec\x1b[0m   — (import [collections.vec [count]])\n"
+        );
+    }
+
+    // K9 — a `; warning:` line: the `; warning: ` prefix is R6 dim metadata, the
+    // message body R11 yellow warn-detail (§10.3 K9 composition). Fail-on-revert
+    // pin for the `push_warning_line` role composition (the only colour-off e2e
+    // existed pre-Wave-D2).
+    // spec: repl/spec.md §10.3 R6/R11 — `; warning:` line.
+    #[test]
+    fn colour_on_k9_warning_line_r6_r11() {
+        let _g = ColorGuard::force(true);
+        let mut doc = StyledDoc::new();
+        push_warning_line(&mut doc, "shadowed name x");
+        assert_eq!(
+            render(&doc),
+            "\x1b[2m; warning: \x1b[0m\x1b[33mshadowed name x\x1b[0m\n"
+        );
+        // Colour-OFF byte-identical to the plain `; warning: <msg>` line.
+        drop(_g);
+        let _off = ColorGuard::force(false);
+        let mut plain = StyledDoc::new();
+        push_warning_line(&mut plain, "shadowed name x");
+        assert_eq!(render(&plain), "; warning: shadowed name x\n");
+    }
+
+    // K11 — a `/list` category header is R12 bold; the name bodies stay default
+    // (R15) layout (the scope boundary, §10.3). Pins the header role only.
+    // spec: repl/spec.md §10.3 R12 — category header.
+    #[test]
+    fn colour_on_k11_category_header_bold() {
+        let _g = ColorGuard::force(true);
+        let mut buf = String::new();
+        append_name_category(&mut buf, "Fns", &["double".to_string(), "area".to_string()]);
+        assert!(
+            buf.starts_with("\x1b[1mFns:\x1b[0m\n"),
+            "category header must be R12 bold: {buf:?}"
+        );
+        // The name bodies carry no SGR (default-styled layout, out of scope).
+        assert!(!buf["\x1b[1mFns:\x1b[0m\n".len()..].contains('\u{1b}'), "body plain: {buf:?}");
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn format_trait_related_sections(
     method_names: &[&str],
     impl_type_names: &[&str],
     full_impl_section: bool,
 ) -> String {
-    let mut out = String::new();
+    render(&format_trait_related_sections_doc(
+        method_names,
+        impl_type_names,
+        full_impl_section,
+    ))
+}
+
+pub(crate) fn format_trait_related_sections_doc(
+    method_names: &[&str],
+    impl_type_names: &[&str],
+    full_impl_section: bool,
+) -> StyledDoc {
+    let mut doc = StyledDoc::new();
     if !method_names.is_empty() {
-        out.push_str(&format_related_section("defn", method_names));
+        doc.extend(format_related_section_doc("defn", method_names));
     }
     if full_impl_section || !impl_type_names.is_empty() {
-        out.push_str(&format_related_section("impl", impl_type_names));
+        doc.extend(format_related_section_doc("impl", impl_type_names));
     }
-    out
+    doc
 }
 
 /// Indent every line of a rendered definition source by two spaces — the
@@ -3234,8 +3676,11 @@ pub(crate) fn append_name_category(buf: &mut String, label: &str, names: &[Strin
     if names.is_empty() {
         return;
     }
-    buf.push_str(label);
-    buf.push_str(":\n");
+    // §10.3 R12 (Header) — the category header (`Fns:`, `Types:`, …) is bold; the
+    // name bodies stay default-styled layout (the scope boundary, §10.3). Rendered
+    // through the seam so colour-off the bytes are unchanged.
+    buf.push_str(&render(&StyledDoc::span(Role::Header, format!("{label}:"))));
+    buf.push('\n');
     append_layout_body(buf, names);
 }
 
@@ -4061,6 +4506,292 @@ mod fq_arg_tests {
         assert!(
             out.contains("None") && out.contains("Some"),
             "`; match:` MUST list ctors None and Some; got: {out}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // S108 Increment 3 — resolve-home-enumeration.md §5 (0558) + §5a (E8).
+    // -----------------------------------------------------------------------
+
+    /// A `TraitDecl` entry with `name`/`visibility`, no methods.
+    fn trait_decl_entry(name: &str, vis: Visibility) -> ModuleEntry<Code> {
+        ModuleEntry::TraitDecl {
+            info: cranelisp_types::TraitDeclInfo {
+                name: cranelisp_types::TraitName::from(name),
+                type_params: vec![],
+                methods: vec![],
+            },
+            visibility: vis,
+            docstring: None,
+        }
+    }
+
+    /// A `TraitImpl` entry `impl <trait> <type>` written to `home` (Decision 0045).
+    fn impl_entry(home: &ModuleFullPath, trait_name: &str, type_name: &str) -> ModuleEntry<Code> {
+        ModuleEntry::TraitImpl {
+            trait_name: cranelisp_types::FQTraitName::new(
+                home.clone(),
+                cranelisp_types::TraitName::from(trait_name),
+            ),
+            impl_type: cranelisp_types::FQTypeName::new(
+                home.clone(),
+                cranelisp_types::TypeName::from(type_name),
+            ),
+            methods: vec![],
+            visibility: Visibility::Public,
+        }
+    }
+
+    // 0558 (resolve-home-enumeration.md §5): `format_trait_display` roots its
+    // `; defn:`/`; impl:` sections at the RESOLVED HOME passed by the gate — where
+    // the `TraitDecl` is local (depth 0) — not the asking scope. A trait `T`
+    // defined in `home` (not the current `user` scope) surfaces `:home/T` plus its
+    // method and impl sections; the pre-fix scope-rooted lookup mis-homed to
+    // `:user/T` and dropped both sections. spec: repl/spec.md §4.1.4
+    #[test]
+    fn format_trait_display_roots_sections_at_resolved_home() {
+        use cranelisp_types::{TraitDeclInfo, TraitMethodSig, TraitName, TypeExpr};
+        let s = session();
+        let home = ModuleFullPath::from("home");
+        let mut table = SessionSymbolTable::new_with_params(home.clone());
+        table.insert(
+            Symbol::from("T"),
+            ModuleEntry::TraitDecl {
+                info: TraitDeclInfo {
+                    name: TraitName::from("T"),
+                    type_params: vec![],
+                    methods: vec![TraitMethodSig {
+                        name: Symbol::from("mm"),
+                        docstring: None,
+                        params: vec![],
+                        ret_type: TypeExpr::SelfType,
+                        span: Span::SYNTHETIC,
+                        hkt_param_index: None,
+                        default_body: None,
+                    }],
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+            },
+        );
+        table.insert(Symbol::from("T.Widget"), impl_entry(&home, "T", "Widget"));
+        s.shared.symbol_tables.insert(home.clone(), table);
+
+        // The current scope is `user`, where `T` is NOT reachable — a scope-rooted
+        // lookup (the pre-fix bug) would mis-home to `:user/T` + empty sections.
+        assert_ne!(s.current_module_path(), home);
+        let out = s.format_trait_display("T", None, true, &home);
+        assert!(
+            out.contains(":home/T ; deftrait"),
+            "primary line MUST qualify the RESOLVED home, not the asking scope; got: {out}"
+        );
+        assert!(!out.contains(":user/T"), "must NOT mis-home to the asking scope; got: {out}");
+        assert!(
+            out.contains("; defn:") && out.contains("mm"),
+            "the `; defn:` section MUST list method `mm` (home-rooted); got: {out}"
+        );
+        assert!(
+            out.contains("; impl:") && out.contains("Widget"),
+            "the `; impl:` section MUST list `Widget` (home-rooted); got: {out}"
+        );
+    }
+
+    // E8 (resolve-home-enumeration.md §5a): the type-side `; impl:` VIEW's
+    // candidate SET unions the inner-scope run with a PRELUDE-HOP run when the
+    // asking scope's `prelude_fallback` bit is ON — so a PUBLIC prelude-globbed
+    // trait's impl on the type surfaces. spec: repl/spec.md §4.1.3
+    #[test]
+    fn impls_for_type_in_view_unions_public_prelude_trait() {
+        use cranelisp_types::TypeName;
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("Disp"), trait_decl_entry("Disp", Visibility::Public));
+        ptbl.insert(Symbol::from("Disp.Int"), impl_entry(&prelude, "Disp", "Int"));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        assert!(
+            traits.iter().any(|t| t.as_ref() == "Disp"),
+            "the type-side `; impl:` view MUST include the prelude-globbed trait via \
+             the prelude hop; got: {traits:?}"
+        );
+    }
+
+    // E8 negative: a SUPPRESSED prelude (the `prelude_fallback` bit OFF, e.g.
+    // `(import [prelude []])`) yields NO prelude-trait rows in the view.
+    // spec: repl/spec.md §4.1.3
+    #[test]
+    fn impls_for_type_in_view_suppressed_prelude_shows_no_prelude_rows() {
+        use cranelisp_types::TypeName;
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("Disp"), trait_decl_entry("Disp", Visibility::Public));
+        ptbl.insert(Symbol::from("Disp.Int"), impl_entry(&prelude, "Disp", "Int"));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        // Bit deliberately NOT set (absence-is-OFF) — the suppressed-prelude case.
+
+        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        assert!(
+            !traits.iter().any(|t| t.as_ref() == "Disp"),
+            "with the prelude bit OFF, NO prelude-trait rows appear; got: {traits:?}"
+        );
+    }
+
+    // E8 negative: a PRIVATE prelude trait (`deftrait-`) MUST NOT leak into a
+    // user's type-side view — the I-1 public-head post-filter drops it.
+    // spec: repl/spec.md §4.1.3
+    #[test]
+    fn impls_for_type_in_view_drops_private_prelude_trait() {
+        use cranelisp_types::TypeName;
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("Secret"), trait_decl_entry("Secret", Visibility::Private));
+        ptbl.insert(Symbol::from("Secret.Int"), impl_entry(&prelude, "Secret", "Int"));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        let traits = s.impls_for_type_in_view(&TypeName::from("Int"));
+        assert!(
+            !traits.iter().any(|t| t.as_ref() == "Secret"),
+            "a PRIVATE prelude trait MUST NOT leak into a user's `; impl:` view; got: {traits:?}"
+        );
+    }
+
+    // E8 positive (scope-local): a trait + impl in the CURRENT scope surfaces via
+    // the inner-scope run alone (no prelude hop needed) — the union preserves the
+    // Pattern-B inner-scope answer. spec: repl/spec.md §4.1.3
+    #[test]
+    fn impls_for_type_in_view_includes_scope_local_trait() {
+        use cranelisp_types::TypeName;
+        let s = session();
+        let scope = s.current_module_path();
+        if let Some(mut tbl) = s.shared.symbol_tables.get_mut(&scope) {
+            tbl.insert(Symbol::from("Loc"), trait_decl_entry("Loc", Visibility::Public));
+            tbl.insert(Symbol::from("Loc.Gadget"), impl_entry(&scope, "Loc", "Gadget"));
+        } else {
+            let mut tbl = SessionSymbolTable::new_with_params(scope.clone());
+            tbl.insert(Symbol::from("Loc"), trait_decl_entry("Loc", Visibility::Public));
+            tbl.insert(Symbol::from("Loc.Gadget"), impl_entry(&scope, "Loc", "Gadget"));
+            s.shared.symbol_tables.insert(scope.clone(), tbl);
+        }
+
+        let traits = s.impls_for_type_in_view(&TypeName::from("Gadget"));
+        assert!(
+            traits.iter().any(|t| t.as_ref() == "Loc"),
+            "a scope-local trait's impl MUST surface via the inner-scope run; got: {traits:?}"
+        );
+    }
+
+    /// A user-fn `Def` with an explicit visibility (the public `userfn_def`
+    /// helper's private-head sibling — for the prelude public-only gate tests).
+    fn userfn_def_vis(vis: Visibility) -> ModuleEntry<Code> {
+        match userfn_def(None) {
+            ModuleEntry::Def { scheme, docstring, param_names, kind, callees, trait_origin, seq, ast, codegen_view, code, value_use, .. } => {
+                ModuleEntry::Def { scheme, visibility: vis, docstring, param_names, kind, callees, trait_origin, seq, ast, codegen_view, code, value_use }
+            }
+            other => other,
+        }
+    }
+
+    // §8.8.1 gate: the prelude provides only its PUBLIC names, so the
+    // prelude-fallback seam MUST NOT return a PRIVATE prelude head — it falls
+    // through (to the root tier, else `None`). Fail-on-revert: drop the
+    // `is_public()` gate and the private head leaks as `Some`, failing this.
+    // spec: spec/08-modules.md §8.8.1
+    #[test]
+    fn lookup_prelude_fallback_drops_private_head() {
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("secret"), userfn_def_vis(Visibility::Private));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        // Two-tier (the display hop) — a private prelude head is NOT in scope.
+        assert!(
+            s.lookup_with_prelude_fallback_opt("secret", false).is_none(),
+            "a PRIVATE prelude head MUST NOT resolve through the fallback (§8.8.1)"
+        );
+        // Three-tier (describe/`/sig`/`/search`) — the private head still does
+        // not resolve; it falls through the root tier (which lacks `secret`).
+        assert!(
+            s.lookup_with_prelude_fallback_opt("secret", true).is_none(),
+            "a PRIVATE prelude head MUST NOT resolve even with the root tier"
+        );
+    }
+
+    // §8.8.1 positive: a PUBLIC prelude head still resolves through the
+    // fallback, in the prelude module (unchanged behaviour — the gate only
+    // drops private heads). spec: spec/08-modules.md §8.8.1
+    #[test]
+    fn lookup_prelude_fallback_resolves_public_head() {
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("shown"), userfn_def_vis(Visibility::Public));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        let hit = s.lookup_with_prelude_fallback_opt("shown", false);
+        assert!(hit.is_some(), "a PUBLIC prelude head MUST resolve through the fallback");
+        assert_eq!(
+            hit.unwrap().1,
+            prelude,
+            "the public prelude head resolves IN the prelude module"
+        );
+    }
+
+    // §8.8.1 at the `/search` synthesis seam: `exact_in_scope_hit` synthesizes an
+    // in-scope result row for an exact query that resolves bare but is absent from
+    // the public index (a prelude symbol). It inherits the `lookup_with_prelude_
+    // fallback` public-only gate, so a PRIVATE prelude head synthesizes NO row
+    // (None) — the private name never appears as a `/search` result. A PUBLIC
+    // prelude head still synthesizes its row. spec: repl/spec.md §17.19 (R13)
+    #[test]
+    fn exact_in_scope_hit_drops_private_prelude_head() {
+        let s = session();
+        let prelude = ModuleFullPath::from("prelude");
+        let scope = s.current_module_path();
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        ptbl.insert(Symbol::from("secret"), userfn_def_vis(Visibility::Private));
+        ptbl.insert(Symbol::from("shown"), userfn_def_vis(Visibility::Public));
+        s.shared.symbol_tables.insert(prelude.clone(), ptbl);
+        s.shared.prelude_fallback.insert(scope, true);
+
+        assert!(
+            s.exact_in_scope_hit("secret").is_none(),
+            "a PRIVATE prelude binding MUST NOT synthesize a `/search` result row \
+             (§8.8.1) — the leak the public-only gate closes"
+        );
+        assert!(
+            s.exact_in_scope_hit("shown").is_some(),
+            "a PUBLIC prelude binding still synthesizes its in-scope `/search` row"
+        );
+    }
+
+    // E8 negative (§4.1.3 empty-omitted unchanged): with no impls reachable, the
+    // type display omits the `; impl:` section entirely (the type rule, unlike a
+    // trait's unconditional sections). spec: repl/spec.md §4.1.3
+    #[test]
+    fn builtin_type_display_omits_empty_impl_section() {
+        let s = session();
+        // No prelude bit, no trait impls → the view is empty → no `; impl:`.
+        let out = s.format_builtin_type_display("Int");
+        assert!(
+            out.contains(":primitives/Int ; type"),
+            "the primary type line is present; got: {out}"
+        );
+        assert!(
+            !out.contains("; impl:"),
+            "an empty `; impl:` section MUST be omitted for a type (§4.1.3); got: {out}"
         );
     }
 }

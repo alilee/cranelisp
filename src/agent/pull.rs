@@ -1151,6 +1151,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            turn_ring: std::collections::VecDeque::new(),
         });
     }
 

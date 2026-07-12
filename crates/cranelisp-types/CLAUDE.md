@@ -80,12 +80,19 @@ Fields that LOOK optional but are contractually required downstream:
   bare `/`, `//`, `foo/`, `/bar` are literal names (Principle 16, FIXME
   0328/0331). A `/`-named operator mis-resolving means a guard was lost —
   fix HERE, never with a checker-side literal-lookup shortcut.
-- `resolve_with_fallback` retries prelude only on the not-found error class;
+- `ResolutionScope::resolve` (the SOLE public resolution entry point since
+  S108 Wave G — the free `resolve`/`resolve_with_fallback` are private
+  internals, and the fallback is decided ONCE at scope construction, never
+  per call) retries prelude only on the not-found error class;
   `PrivateInaccessible`/`QualifiedModuleUnknown` return as-is. The prelude
-  terminal passes a PUBLIC-only filter; a private prelude hit reports as the
-  ORIGINAL current-module not-found (`resolve.rs:356–392`).
+  retry passes a PUBLIC-only I-1 filter; a private prelude hit reports as the
+  ORIGINAL current-module not-found (`resolve_with_prelude`,
+  `resolve.rs:471–535`). GOTCHA: the filter tests the chain-followed
+  TERMINAL's visibility, not the prelude HEAD's — a private import edge
+  inside prelude chaining to a public terminal leaks; flagged residual,
+  FIXME 0567 (`prelude-import-convergence.md` §3.5.2).
 - The bare primitive's generic miss is `TypeNotFound`-shaped regardless of
-  kind (`not_found`, `resolve.rs:709`) — never infer entry kind from the
+  kind (`not_found`, `resolve.rs:803`) — never infer entry kind from the
   error variant.
 
 ## Soundness-coupled single-source predicates

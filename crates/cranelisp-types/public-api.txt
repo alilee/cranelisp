@@ -1414,6 +1414,18 @@ impl core::marker::Unpin for cranelisp_types::PlatformSpec
 impl core::marker::UnsafeUnpin for cranelisp_types::PlatformSpec
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::PlatformSpec
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::PlatformSpec
+pub struct cranelisp_types::ResolutionScope<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>
+impl<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::ResolutionScope<'a, C, L>
+pub fn cranelisp_types::ResolutionScope<'a, C, L>::new(&'a cranelisp_types::SymbolTables<C, L>, &'a cranelisp_types::ModuleAliases, &'a cranelisp_types::View<'a, C, L>, &'a cranelisp_types::ModuleFullPath, core::option::Option<&'a cranelisp_types::ModuleFullPath>) -> Self
+pub fn cranelisp_types::ResolutionScope<'a, C, L>::resolve(&self, &str, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError>
+pub fn cranelisp_types::ResolutionScope<'a, C, L>::resolve_macro_head(&self, &str, cranelisp_types::Span) -> core::result::Result<core::option::Option<cranelisp_types::FQSymbol>, cranelisp_types::ResolveError>
+impl<'a, C, L> core::marker::Freeze for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResolutionScope<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResolutionScope<'a, C, L>
 pub struct cranelisp_types::Resolved<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Resolved::entry: cranelisp_types::ModuleEntry<C>
 pub cranelisp_types::Resolved::fq: cranelisp_types::FQSymbol
@@ -1733,12 +1745,10 @@ pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(&dashmap::DashMap<cranelis
 pub fn cranelisp_types::lookup_type_def_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::max_type_var_id(&cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
 pub fn cranelisp_types::ownership_analysis_off() -> bool
+pub fn cranelisp_types::reject_def_over_binding<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(&cranelisp_types::ResolutionScope<'_, C, L>, &cranelisp_types::Symbol, cranelisp_types::Span) -> core::result::Result<(), cranelisp_types::CranelispError>
 pub fn cranelisp_types::render_type(&cranelisp_types::Type, cranelisp_types::PrimitiveNaming, cranelisp_types::VarNaming<'_>) -> alloc::string::String
-pub fn cranelisp_types::resolve<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::resolve_macro_head<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<core::option::Option<cranelisp_types::FQSymbol>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::resolve_module_by_name_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &str) -> core::option::Option<cranelisp_types::ModuleFullPath> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::resolve_terminal_entry_and_home<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &str) -> core::option::Option<(cranelisp_types::ModuleEntry<C>, cranelisp_types::ModuleFullPath)> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::resolve_with_fallback<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, bool, &cranelisp_types::ModuleFullPath, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::substitute_module_alias(&cranelisp_types::ModuleAliases, &cranelisp_types::ModuleFullPath) -> cranelisp_types::ModuleFullPath
 pub fn cranelisp_types::type_ctor_names<C, L>(&cranelisp_types::SymbolTable<C, L>, &cranelisp_types::FQTypeName) -> core::option::Option<alloc::vec::Vec<cranelisp_types::Symbol>> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::type_var_names(&cranelisp_types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>
