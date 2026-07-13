@@ -733,6 +733,15 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
                 body: lenient_mono_from_expr(&arm.body),
                 span: arm.span,
                 provenance: None,
+                // The lenient (signature-driven / synthetic-body / generic-template)
+                // path has no `pattern_ctors` sidecar — its ctor arms (the
+                // auto-generated field-accessor `(match self [(Box v) v])`, a
+                // generic-template match) are single in-scope-unambiguous ctors that
+                // `compile_constructor_pattern` resolves via the `None`-arm
+                // `lookup_constructor` fallback (§10.3 fold-in). A scrutinee-directed
+                // same-named ctor never reaches this builder — it lives only in a
+                // user `defn` body, which is `codegen_view` (sidecar-populated).
+                resolved_ctor: None,
             }).collect(),
             span: *span,
             compiler_generated: *compiler_generated,

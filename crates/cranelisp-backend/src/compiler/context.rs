@@ -12,7 +12,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
+    DefKind, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
     Type, TypeDefInfo,
 };
 
@@ -165,6 +165,20 @@ where
         )
     }
 
+    /// Resolve a constructor by its STORAGE `FQSymbol` (the key its `Def` was
+    /// stored under, carried on `MonoMatchArm.resolved_ctor` from typecheck's
+    /// `pattern_ctors` sidecar) — a DIRECT keyed read, NO name resolution, NO
+    /// import-chain walk, NO global fallback, NO DashMap-iteration order (S109
+    /// W1.2, `dotted-ctor-canonical-keys.md` §10.3). This is the ONLY resolver
+    /// pattern position uses; the deterministic, run-to-run-stable answer to
+    /// "which ctor did typecheck pick" that `lookup_constructor`'s context-free
+    /// re-resolution could not give for a scrutinee-directed same-named ctor.
+    pub(crate) fn ctor_meta_at(&self, fq: &FQSymbol) -> Option<(FQTypeName, CtorMeta)> {
+        let table = self.symbol_tables.get(&fq.module)?;
+        let entry = table.get(fq.symbol.as_ref())?;
+        Self::extract_constructor(entry)
+    }
+
     /// Extract constructor metadata from a module entry.
     ///
     /// Post-S70: constructors are uniformly `ModuleEntry::Def { kind:
@@ -227,11 +241,21 @@ where
                 // (`tests/spec_12_runtime.rs::catch_runtime_error_..._leaks`).
                 let canonical =
                     cranelisp_types::member_key(&type_def.name.name, ctor_name.as_ref());
-                table
+                let meta = table
                     .get(canonical.as_ref())
                     .or_else(|| table.get(ctor_name.as_ref()))
                     .and_then(Self::extract_constructor)
-                    .map(|(_, meta)| meta)
+                    .map(|(_, meta)| meta);
+                // §10.5: a ctor whose canonical AND bare probes both miss is
+                // silently dropped — the next keying drift would surface as a
+                // wrong heap classification / drop glue, not an error. Fail loud
+                // in CI (release skips — the `filter_map` still drops it).
+                debug_assert!(
+                    meta.is_some(),
+                    "ctor '{ctor_name}' of '{}' has no resolvable Def — keying drift",
+                    type_def.name
+                );
+                meta
             })
             .collect()
     }

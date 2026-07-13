@@ -292,9 +292,13 @@ fn is_worth_sparking(expr: &MonoExpr, constructors: &HashSet<Symbol>) -> bool {
     let compute_worthy = match expr {
         MonoExpr::Apply { callee, .. } => {
             if let MonoExpr::Var { name, .. } = callee.as_ref() {
-                // Cheap builtins and constructors are not worth sparking.
+                // Cheap builtins and constructors are not worth sparking. The
+                // ctor-exclusion set holds bare terminal names (§10.4); compare
+                // the callee through the SAME `bare_member_name` grammar so a
+                // dotted / FQ / bare sum-ctor call all match.
                 !CHEAP_BUILTINS.contains(&name.as_ref())
-                    && !constructors.contains(name)
+                    && !constructors
+                        .contains(&Symbol::from(cranelisp_types::bare_member_name(name.as_ref())))
             } else {
                 // Non-variable callee (computed function) — conservatively spark.
                 true

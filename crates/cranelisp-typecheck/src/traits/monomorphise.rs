@@ -488,7 +488,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_ret_ty: &Type,
         defn_span: Span,
     ) -> Result<MonoDefn, CranelispError> {
-        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body()) {
+        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &state.method_resolutions.pattern_ctors) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
                 MonoDefnVariant {

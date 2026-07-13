@@ -96,6 +96,40 @@ fn single_sparkable_below_threshold_returns_empty() {
     assert!(find_sparkable_bindings(&bindings, &ctors).is_empty());
 }
 
+// spec: design/arch/dotted-ctor-canonical-keys.md §10.4 (BU-2, I-1 exclusion) —
+// under canonical keying the ctor-exclusion set holds bare terminal names
+// (`bare_member_name` of the storage key `Maybe.Some`), and the callee is
+// compared through the SAME grammar, so a sum-ctor call written bare (`Some`),
+// dotted (`Maybe.Some`), OR module-qualified (`m/Some`) is EXCLUDED from the
+// sparkable set — a real function call alongside it is not enough to admit it.
+// Without the two-sided normalisation the dotted/FQ ctor calls would leak in.
+#[test]
+fn canonically_keyed_sum_ctor_calls_are_excluded_from_sparkable_set() {
+    // The exclusion set is what `collect_module_constructors` now produces:
+    // `bare_member_name("Maybe.Some") == "Some"`.
+    let ctors: HashSet<Symbol> =
+        [sym(cranelisp_types::bare_member_name("Maybe.Some"))].into_iter().collect();
+    assert!(ctors.contains(&sym("Some")), "the exclusion set holds the bare terminal name");
+
+    // Two ctor calls (bare + dotted) alongside — both must be excluded (the
+    // set is non-empty only if a ctor leaked in). A real `compute` call keeps
+    // the min-2 gate reachable so a leak would show as a non-empty result.
+    let bindings = vec![
+        (sym("a"), call("Some")),        // bare sum-ctor call
+        (sym("b"), call("Maybe.Some")),  // dotted canonical sum-ctor call
+        (sym("c"), call("mmod/Some")),   // module-qualified sum-ctor call
+    ];
+    assert!(
+        find_sparkable_bindings(&bindings, &ctors).is_empty(),
+        "every sum-ctor call form (bare / dotted / FQ) is excluded via bare_member_name"
+    );
+
+    // Control: a genuine two-call set with NO ctor names IS sparkable — proving
+    // the exclusion above is the ctor filter, not an unrelated gate.
+    let real = vec![(sym("a"), call("compute")), (sym("b"), call("derive"))];
+    assert_eq!(find_sparkable_bindings(&real, &ctors), vec![0, 1]);
+}
+
 // spec: design/backend/lenient-eval.md §2.6 — dependent-on-sparked is admitted
 //
 // FIXME 0424 limit #2: the second binding references the first (`b` uses `a`),

@@ -13,10 +13,79 @@ fn int_lit(v: i64) -> Expr {
     Expr::IntLit { value: v, span: span(), inferred_type: int_ty() }
 }
 
+// S109 W1.2 §10.2 (BU-3, population→transport seam): a `Pattern::Constructor`
+// arm's `resolved_ctor` is populated from the `pattern_ctors` sidecar keyed by
+// the CONSTRUCTOR PATTERN's OWN span (not the arm span); a `Wildcard` arm stays
+// `None`; an empty sidecar leaves the ctor arm `None` (the loud-miss precondition
+// the backend keys on).
+#[test]
+fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
+    use crate::{FQSymbol, FQTypeName, Pattern, SymbolRef};
+    let pat_span = Span::new(10, 20);
+    let fq = FQSymbol {
+        module: ModuleFullPath::from("m"),
+        symbol: Symbol::from("Maybe.Some"),
+    };
+    let scrut = Expr::Var {
+        name: Symbol::from("s"),
+        span: span(),
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Maybe")),
+            vec![],
+        ))),
+    };
+    let match_expr = Expr::Match {
+        scrutinee: Box::new(scrut),
+        arms: vec![
+            MatchArm {
+                pattern: Pattern::Constructor {
+                    name: SymbolRef::new(None, Symbol::from("Some")),
+                    bindings: vec![Symbol::from("x")],
+                    span: pat_span,
+                },
+                body: int_lit(1),
+                span: Span::new(5, 30),
+            },
+            MatchArm {
+                pattern: Pattern::Wildcard { span: Span::new(40, 41) },
+                body: int_lit(0),
+                span: Span::new(50, 60),
+            },
+        ],
+        span: span(),
+        compiler_generated: false,
+        inferred_type: int_ty(),
+    };
+    let mut pc = std::collections::HashMap::new();
+    pc.insert(pat_span, fq.clone());
+
+    let MonoExpr::Match { arms, .. } =
+        MonoExpr::from_expr(&match_expr, &pc).expect("concrete")
+    else {
+        panic!("expected a Match node");
+    };
+    assert_eq!(
+        arms[0].resolved_ctor.as_ref(),
+        Some(&fq),
+        "the ctor arm carries the sidecar FQSymbol keyed by the pattern span"
+    );
+    assert_eq!(arms[1].resolved_ctor, None, "a wildcard arm has no resolved_ctor");
+
+    // Empty sidecar ⇒ the ctor arm is None (the population gap the backend
+    // detects — it is never silently filled by the transport layer).
+    let MonoExpr::Match { arms: arms2, .. } =
+        MonoExpr::from_expr(&match_expr, &std::collections::HashMap::new()).expect("concrete")
+    else {
+        panic!("expected a Match node");
+    };
+    assert_eq!(arms2[0].resolved_ctor, None, "an empty sidecar leaves the ctor arm None");
+}
+
 #[test]
 fn concrete_int_lit_round_trips() {
     let e = int_lit(42);
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 42, ref ty, .. } if *ty == ConcreteType::Int));
     assert_eq!(m.ty(), &ConcreteType::Int);
 }
@@ -25,7 +94,7 @@ fn concrete_int_lit_round_trips() {
 fn unannotated_node_fails() {
     // inferred_type == None — representation-undetermined.
     let e = Expr::IntLit { value: 1, span: span(), inferred_type: None };
-    assert_eq!(MonoExpr::from_expr(&e).unwrap_err(), NotConcrete::Var(0));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(0));
 }
 
 #[test]
@@ -45,7 +114,7 @@ fn residual_var_node_fails_at_that_node() {
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e).unwrap_err(), NotConcrete::Var(7));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(7));
 }
 
 #[test]
@@ -58,7 +127,7 @@ fn annotate_is_erased() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     // The result is the inner IntLit, NOT a wrapper node.
     assert!(matches!(m, MonoExpr::IntLit { value: 5, .. }));
 }
@@ -79,7 +148,7 @@ fn nested_annotate_erases_to_inner() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&two).expect("concrete");
+    let m = MonoExpr::from_expr(&two, &std::collections::HashMap::new()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 9, .. }));
 }
 
@@ -105,7 +174,7 @@ fn lambda_param_type_exprs_are_erased() {
         span: span(),
         inferred_type: Some(Box::new(lam_ty)),
     };
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Lambda { params, ty, .. } => {
             assert_eq!(params, vec![Symbol::from("x")]);
@@ -132,7 +201,7 @@ fn apply_carries_resolved_call_and_concrete_args() {
         resolved_call: Some(Box::new(rc)),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Apply { resolved_call, args, ty, .. } => {
             assert!(resolved_call.is_some());
@@ -158,7 +227,7 @@ fn concrete_adt_node_round_trips() {
         span: span(),
         inferred_type: Some(Box::new(opt_int)),
     };
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::ConstrADT { tag, fields, ty, .. } => {
             assert_eq!(tag, 1);
@@ -193,7 +262,7 @@ fn match_arm_pattern_survives_body_converts() {
         }
         _ => unreachable!(),
     };
-    let m = MonoExpr::from_expr(&e).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Match { arms, ty, .. } => {
             assert_eq!(arms.len(), 1);
@@ -219,5 +288,5 @@ fn deeply_nested_var_in_let_binding_is_caught() {
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e).unwrap_err(), NotConcrete::Var(3));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(3));
 }

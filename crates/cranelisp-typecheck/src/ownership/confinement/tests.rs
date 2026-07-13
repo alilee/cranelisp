@@ -317,6 +317,7 @@ fn confine_two_match_arms_same_name_param_restored() {
         body: var("p"),
         span: Span::new(70, 71),
         provenance: None,
+        resolved_ctor: None,
     };
     let arm2 = cranelisp_types::MonoMatchArm {
         pattern: cranelisp_types::Pattern::Constructor {
@@ -327,6 +328,7 @@ fn confine_two_match_arms_same_name_param_restored() {
         body: var("p"),
         span: Span::new(72, 73),
         provenance: None,
+        resolved_ctor: None,
     };
     let m = MonoExpr::Match {
         scrutinee: Box::new(var("h")),

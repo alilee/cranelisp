@@ -303,7 +303,17 @@ pub mod linker;
 /// under bare keys; the post-change readers probe canonical keys and would
 /// silently miss. A `.meta.json` content-meaning change — the bump rejects every
 /// schema-16 `.o` wholesale. Value-only invalidation.
-pub const CACHE_SCHEMA_VERSION: u32 = 17;
+///
+/// **S109 W1.2 bump 17 → 18 (DC-11 cure — `dotted-ctor-canonical-keys.md`
+/// §10.2).** `MonoMatchArm` gains `resolved_ctor: Option<FQSymbol>` (the
+/// pattern ctor's STORAGE identity) and its fresh-build value on a
+/// `Pattern::Constructor` arm is `Some` — NOT the `#[serde(default)]` `None`.
+/// The `codegen_view: Option<MonoDefnVariant>` serialises into `.meta.json`, so
+/// a pre-change cached view would deserialize its ctor arms as `None` and the
+/// backend would lose the deterministic keyed read (the exempt-default class
+/// does not apply — the default ≠ the fresh-build value). Serde shape adds one
+/// `#[serde(default)]` field; the bump seals the epoch.
+pub const CACHE_SCHEMA_VERSION: u32 = 18;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

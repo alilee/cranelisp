@@ -216,6 +216,16 @@ where
         let ctor_probe = table
             .get(cranelisp_types::member_key(&fqtn.name, ctor_name.as_ref()).as_ref())
             .or_else(|| table.get(ctor_name.as_ref()));
+        // §10.5: a ctor whose canonical AND bare probes both miss is silently
+        // dropped from the schema — the next keying drift would surface as a wrong
+        // layout-hash / schema, not an error. Fail loud in CI (release skips).
+        debug_assert!(
+            matches!(
+                ctor_probe,
+                Some(ModuleEntry::Def { kind, .. }) if matches!(&**kind, DefKind::Constructor { .. })
+            ),
+            "ctor '{ctor_name}' of '{fqtn}' has no resolvable Def — keying drift"
+        );
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_probe
             && let DefKind::Constructor { tag, field_count, .. } = &**kind
         {

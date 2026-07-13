@@ -324,7 +324,7 @@ pub(crate) fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp
         v
     });
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body)
+        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new())
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),
@@ -689,7 +689,7 @@ pub(crate) fn table_with_def_and_slot(
         v
     });
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body)
+        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new())
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),

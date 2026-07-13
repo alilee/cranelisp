@@ -3211,6 +3211,7 @@
         // Simulate a FormCheckResult with a warning
         let result_with_warning = FormCheckResult {
             method_resolutions: HashMap::new(),
+            pattern_ctors: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),

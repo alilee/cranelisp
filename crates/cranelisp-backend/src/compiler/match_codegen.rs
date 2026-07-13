@@ -101,7 +101,12 @@ where
                     // `lookup_constructor` parses.
                     let ctor_name = Symbol::from(name.to_string());
                     self.compile_constructor_pattern(
-                        &ctor_name, bindings, &match_ctx, &arm.body, span,
+                        &ctor_name,
+                        bindings,
+                        arm.resolved_ctor.as_ref(),
+                        &match_ctx,
+                        &arm.body,
+                        span,
                     )?;
                 }
             }
@@ -216,19 +221,52 @@ where
         &mut self,
         name: &Symbol,
         bindings: &[Symbol],
+        resolved_ctor: Option<&cranelisp_types::FQSymbol>,
         match_ctx: &MatchContext,
         body: &MonoExpr,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Look up constructor info. lookup_constructor handles both
-        // qualified names ("macros/SCons") and bare names ("Some").
-        let (fqtn, ctor_info) =
-            self.ctx
-                .lookup_constructor(name.as_ref())
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: format!("unknown constructor: {name}"),
+        // **Pattern position gets exactly ONE resolver (S109 W1.2, §10.3).** The
+        // arm's `resolved_ctor` is typecheck's STORAGE identity for this pattern
+        // ctor (canonical `Type.Ctor` for a sum ctor; the type-name key for a
+        // product; carried from `pattern_ctors`). Read the `Def` DIRECTLY under
+        // that key — NO name resolution, NO import-chain walk, NO DashMap-order
+        // global fallback. This is the DC-11 cure: a scrutinee-directed
+        // same-named ctor resolves to exactly the candidate typecheck picked,
+        // run-to-run deterministically, instead of `lookup_constructor`'s
+        // context-free re-resolution (arbitrary-iteration wrong-tag / `match
+        // failed` nondeterminism).
+        let (fqtn, ctor_info) = match resolved_ctor {
+            Some(fq) => self.ctx.ctor_meta_at(fq).ok_or_else(|| {
+                // A `Some` that resolves to no `Def` is keying drift — fail
+                // LOUDLY at compile time (Principle 18), never silently mis-tag.
+                CranelispError::CodegenError {
+                    message: format!(
+                        "pattern constructor '{name}' resolved to '{fq}' which has \
+                         no Def (pattern_ctors keying drift)"
+                    ),
                     location: ErrorLocation::from_span(span),
-                })?;
+                }
+            })?,
+            None => {
+                // No typecheck resolution. Sum/enum ctor patterns always carry
+                // one (the sidecar mint at `instantiate_ctor` covers every
+                // `check_constructor_pattern` arm); a `None` here is a
+                // synthetic/lenient body (auto-generated field-accessor `(match
+                // self [(Box v) v])`, generic template) whose pattern ctor is a
+                // single in-scope-unambiguous ctor NOT routed through the sidecar
+                // — the ONE narrow, deterministic use `lookup_constructor` still
+                // serves (a scrutinee-directed same-named ctor never reaches this
+                // arm: it lives only in a user `defn` body → `codegen_view` →
+                // populated `resolved_ctor`). See §10.3 fold-in note.
+                self.ctx
+                    .lookup_constructor(name.as_ref())
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: format!("unknown constructor: {name}"),
+                        location: ErrorLocation::from_span(span),
+                    })?
+            }
+        };
         let _type_def =
             self.ctx
                 .lookup_type_def(&fqtn)

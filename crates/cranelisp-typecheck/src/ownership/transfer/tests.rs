@@ -376,6 +376,7 @@ fn match_arm_shadow_drops_ambiguous_provenance() {
         body: var("x"),
         span: Span::new(40, 41),
         provenance: None,
+        resolved_ctor: None,
     };
     let m = MonoExpr::Match {
         scrutinee: Box::new(var("h")),
@@ -411,6 +412,7 @@ fn match_arm_no_shadow_keeps_provenance() {
         body: var("x"),
         span: Span::new(40, 41),
         provenance: None,
+        resolved_ctor: None,
     };
     let m = MonoExpr::Match {
         scrutinee: Box::new(var("h")),
@@ -517,6 +519,7 @@ fn match_arm_binding_is_projection_of_scrutinee() {
         body: var("inner"),
         span: s(),
         provenance: None,
+        resolved_ctor: None,
     };
     let body = MonoExpr::Match {
         scrutinee: Box::new(var("p")),
@@ -544,6 +547,7 @@ fn shadowed_root_emits_no_provenance() {
         body: var("p"),
         span: s(),
         provenance: None,
+        resolved_ctor: None,
     };
     let body = MonoExpr::Match {
         scrutinee: Box::new(var("p")),
@@ -633,12 +637,14 @@ fn partial_match_some_arms_param_others_fresh_is_alias_not_fresh() {
         body: call("other", vec![]),
         span: Span::new(90, 91),
         provenance: None,
+        resolved_ctor: None,
     };
     let arm2 = MonoMatchArm {
         pattern: Pattern::Wildcard { span: s() },
         body: var("p"),
         span: Span::new(92, 93),
         provenance: None,
+        resolved_ctor: None,
     };
     let body = MonoExpr::Match {
         scrutinee: Box::new(var("p")),
@@ -798,12 +804,14 @@ fn match_arm_binding_does_not_leak_past_arm() {
         body: var("a"),
         span: Span::new(60, 61),
         provenance: None,
+        resolved_ctor: None,
     };
     let arm2 = MonoMatchArm {
         pattern: Pattern::Wildcard { span: s() },
         body: call("consume", vec![var("a")]),
         span: Span::new(62, 63),
         provenance: None,
+        resolved_ctor: None,
     };
     let body = MonoExpr::Match {
         scrutinee: Box::new(var("h")),
@@ -1174,6 +1182,7 @@ fn lambda_body_return_in_match_arm_escapes() {
         body: adt_sp(some_span, vec![var("k")]),
         span: Span::new(242, 243),
         provenance: None,
+        resolved_ctor: None,
     };
     let m = MonoExpr::Match {
         scrutinee: Box::new(var("h")),
@@ -1463,6 +1472,7 @@ fn two_match_arms_same_name_independent_param_restored() {
         body: var("g"),
         span: Span::new(70, 71),
         provenance: None,
+        resolved_ctor: None,
     };
     let arm2 = MonoMatchArm {
         pattern: Pattern::Constructor {
@@ -1473,6 +1483,7 @@ fn two_match_arms_same_name_independent_param_restored() {
         body: var("g"),
         span: Span::new(72, 73),
         provenance: None,
+        resolved_ctor: None,
     };
     let m = MonoExpr::Match {
         scrutinee: Box::new(var("h")),

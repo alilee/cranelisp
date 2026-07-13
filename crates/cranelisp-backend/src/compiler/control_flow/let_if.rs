@@ -47,7 +47,17 @@ where
                                 )
                         )
                     })
-                    .map(|(name, _)| name.clone())
+                    // I-1 (S109 W1.2 §10.4): the storage key is canonical
+                    // `Type.Ctor` (`Maybe.Some`) for a sum ctor / the type name
+                    // for a product; `is_worth_sparking` compares SOURCE-written
+                    // callee names (bare `Some`, dotted `Maybe.Some`, FQ `m/Some`).
+                    // Normalise BOTH sides through the ONE terminal-segment grammar
+                    // (`bare_member_name`) so a sum-ctor call is not silently
+                    // dropped from the spark-exclusion set (heuristic-only surface:
+                    // terminal-segment granularity is acceptable).
+                    .map(|(name, _)| {
+                        Symbol::from(cranelisp_types::bare_member_name(name.as_ref()))
+                    })
                     .collect()
             })
             .unwrap_or_default()

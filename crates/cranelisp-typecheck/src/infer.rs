@@ -154,32 +154,46 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
         let ctor_sym = info.constructors[tag].clone();
-        let fq_ctor = cranelisp_types::FQSymbol {
-            module: type_name.module.clone(),
-            symbol: ctor_sym.clone(),
-        };
-        // Look up the ctor's scheme via its Def in the type's defining module.
+        // Look up the ctor's scheme via its `Def` in the type's defining module,
+        // recording the STORAGE key that HIT as the sidecar identity (§10.1).
         // **S109 dotted-ctor keying.** `TypeDefInfo.constructors` carries the bare
         // display name, but a sum ctor's real got-slotted `Def` now lives under
         // the canonical `member_key(Type, Ctor)` key (`Maybe.Some`) — the bare key
         // is a poison-able `Import` alias (or `Ambiguous` under contest). Probe the
         // canonical key first, falling back to the bare key for the product
         // dual-facet (kept at the type-name key) and for hand-seeded internal ctors
-        // (`Bind`) that retain their bare storage key.
-        let scheme = self
-            .probe_module_entry_owned(
-                &type_name.module,
-                cranelisp_types::member_key(&type_name.name, ctor_sym.as_ref()).as_ref(),
-            )
-            .or_else(|| self.probe_module_entry_owned(&type_name.module, ctor_sym.as_ref()))
+        // (`Bind`) that retain their bare storage key. The returned `FQSymbol.symbol`
+        // is whichever key resolved — the backend reads its `Def` by DIRECT keyed
+        // lookup, never re-resolving the bare name context-free (§10.3, DC-11 cure).
+        let canonical = cranelisp_types::member_key(&type_name.name, ctor_sym.as_ref());
+        let (storage_key, scheme) = self
+            .probe_module_entry_owned(&type_name.module, canonical.as_ref())
             .and_then(|e| match e {
-                cranelisp_types::ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
+                cranelisp_types::ModuleEntry::Def { scheme, .. } => {
+                    Some((canonical.clone(), scheme.clone()))
+                }
                 _ => None,
             })
+            .or_else(|| {
+                self.probe_module_entry_owned(&type_name.module, ctor_sym.as_ref())
+                    .and_then(|e| match e {
+                        cranelisp_types::ModuleEntry::Def { scheme, .. } => {
+                            Some((ctor_sym.clone(), scheme.clone()))
+                        }
+                        _ => None,
+                    })
+            })
             .ok_or_else(|| CranelispError::TypeError {
-                message: format!("constructor {fq_ctor} has no scheme"),
+                message: format!(
+                    "constructor {}.{ctor_sym} has no scheme",
+                    type_name.name
+                ),
                 location: ErrorLocation::from_span(span),
             })?;
+        let fq_ctor = cranelisp_types::FQSymbol {
+            module: type_name.module.clone(),
+            symbol: storage_key,
+        };
         Ok((fq_ctor, self.instantiate(state, &scheme)))
     }
 

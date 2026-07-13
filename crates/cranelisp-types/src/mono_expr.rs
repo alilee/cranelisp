@@ -37,8 +37,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 use crate::{
-    ConcreteType, Expr, FQTypeName, ModeSummary, NotConcrete, Pattern, ResolvedCall, Span, Symbol,
+    ConcreteType, Expr, FQSymbol, FQTypeName, ModeSummary, NotConcrete, Pattern, ResolvedCall,
+    Span, Symbol,
 };
 
 /// One arm of a monomorphised match expression — a [`Pattern`] (reused verbatim:
@@ -57,6 +60,21 @@ pub struct MonoMatchArm {
     /// `None` ⇒ conservative (no provenance; treat as owned/materialized).
     #[serde(default)]
     pub provenance: Option<Symbol>,
+    /// The resolved constructor's STORAGE identity for a `Pattern::Constructor`
+    /// arm (S109 W1.2, `design/arch/dotted-ctor-canonical-keys.md` §10.2) — the
+    /// `FQSymbol` whose `symbol` is the key under which the ctor's `Def` actually
+    /// resolved in typecheck (canonical `Type.Ctor` for sum ctors; the type-name
+    /// key for the product facet; a bare key for a legacy shape), carried from
+    /// `MethodResolutions.pattern_ctors` (keyed by `Pattern::Constructor.span`).
+    /// `Some` for `Pattern::Constructor` arms, `None` for `Wildcard`/`Var`.
+    ///
+    /// The backend reads this by DIRECT keyed lookup and NEVER re-resolves the
+    /// bare pattern name context-free — a `None` on a ctor arm is a hard codegen
+    /// error, not a silent fallback (Principle 18: the run-to-run wrong-tag
+    /// nondeterminism of context-free re-resolution cannot re-open through a
+    /// forgettable default).
+    #[serde(default)]
+    pub resolved_ctor: Option<FQSymbol>,
 }
 
 /// Post-monomorphisation codegen AST node.
@@ -295,7 +313,10 @@ impl MonoExpr {
     /// `ty` (`ConcreteType::Fn`).
     ///
     /// Non-destructive over the source `Expr` (Phase 2 is produces-but-unused).
-    pub fn from_expr(expr: &Expr) -> Result<MonoExpr, NotConcrete> {
+    pub fn from_expr(
+        expr: &Expr,
+        pattern_ctors: &HashMap<Span, FQSymbol>,
+    ) -> Result<MonoExpr, NotConcrete> {
         // The node-level concrete type: every non-erased node MUST carry an
         // `inferred_type`, and it MUST be concrete. An absent annotation is
         // treated as a residual `Var(0)` — the same "this position's type is not
@@ -303,7 +324,7 @@ impl MonoExpr {
         // illegal as a `Var`-typed one). The erased `Annotate` node is the one
         // node that reads no `ty` of its own.
         match expr {
-            Expr::Annotate { expr: inner, .. } => MonoExpr::from_expr(inner),
+            Expr::Annotate { expr: inner, .. } => MonoExpr::from_expr(inner, pattern_ctors),
 
             Expr::IntLit { value, span, .. } => Ok(MonoExpr::IntLit {
                 value: *value,
@@ -337,16 +358,16 @@ impl MonoExpr {
             Expr::Let { bindings, body, span, .. } => Ok(MonoExpr::Let {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e)?)))
+                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors)?)))
                     .collect::<Result<_, NotConcrete>>()?,
-                body: Box::new(MonoExpr::from_expr(body)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::If { cond, then_branch, else_branch, span, .. } => Ok(MonoExpr::If {
-                cond: Box::new(MonoExpr::from_expr(cond)?),
-                then_branch: Box::new(MonoExpr::from_expr(then_branch)?),
-                else_branch: Box::new(MonoExpr::from_expr(else_branch)?),
+                cond: Box::new(MonoExpr::from_expr(cond, pattern_ctors)?),
+                then_branch: Box::new(MonoExpr::from_expr(then_branch, pattern_ctors)?),
+                else_branch: Box::new(MonoExpr::from_expr(else_branch, pattern_ctors)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
@@ -354,7 +375,7 @@ impl MonoExpr {
                 // Param `TypeExpr` annotations are erased — the concrete param
                 // types live in the lambda's `ty` (`ConcreteType::Fn`).
                 params: params.iter().map(|(n, _)| n.clone()).collect(),
-                body: Box::new(MonoExpr::from_expr(body)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors)?),
                 span: *span,
                 ty: node_ty(expr)?,
                 escapes: None,
@@ -362,10 +383,10 @@ impl MonoExpr {
                 unique_static: None,
             }),
             Expr::Apply { callee, args, span, resolved_call, .. } => Ok(MonoExpr::Apply {
-                callee: Box::new(MonoExpr::from_expr(callee)?),
+                callee: Box::new(MonoExpr::from_expr(callee, pattern_ctors)?),
                 args: args
                     .iter()
-                    .map(MonoExpr::from_expr)
+                    .map(|e| MonoExpr::from_expr(e, pattern_ctors))
                     .collect::<Result<_, NotConcrete>>()?,
                 span: *span,
                 resolved_call: resolved_call.clone(),
@@ -376,15 +397,27 @@ impl MonoExpr {
                 provenance: None,
             }),
             Expr::Match { scrutinee, arms, span, compiler_generated, .. } => Ok(MonoExpr::Match {
-                scrutinee: Box::new(MonoExpr::from_expr(scrutinee)?),
+                scrutinee: Box::new(MonoExpr::from_expr(scrutinee, pattern_ctors)?),
                 arms: arms
                     .iter()
                     .map(|arm| {
+                        // Carry the resolved-ctor STORAGE identity for a
+                        // `Pattern::Constructor` arm from the typecheck sidecar
+                        // (§10.2), keyed by the CONSTRUCTOR PATTERN's own span —
+                        // the same key `check_constructor_pattern` writes under.
+                        // `None` for `Wildcard`/`Var` arms (no ctor to resolve).
+                        let resolved_ctor = match &arm.pattern {
+                            Pattern::Constructor { span: pat_span, .. } => {
+                                pattern_ctors.get(pat_span).cloned()
+                            }
+                            _ => None,
+                        };
                         Ok(MonoMatchArm {
                             pattern: arm.pattern.clone(),
-                            body: MonoExpr::from_expr(&arm.body)?,
+                            body: MonoExpr::from_expr(&arm.body, pattern_ctors)?,
                             span: arm.span,
                             provenance: None,
+                            resolved_ctor,
                         })
                     })
                     .collect::<Result<_, NotConcrete>>()?,
@@ -395,7 +428,7 @@ impl MonoExpr {
             Expr::VecLit { elements, span, .. } => Ok(MonoExpr::VecLit {
                 elements: elements
                     .iter()
-                    .map(MonoExpr::from_expr)
+                    .map(|e| MonoExpr::from_expr(e, pattern_ctors))
                     .collect::<Result<_, NotConcrete>>()?,
                 span: *span,
                 ty: node_ty(expr)?,
@@ -405,23 +438,23 @@ impl MonoExpr {
             }),
             Expr::Trace { modules, body, span, .. } => Ok(MonoExpr::Trace {
                 modules: modules.clone(),
-                body: Box::new(MonoExpr::from_expr(body)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::ParBind { bindings, body, span, .. } => Ok(MonoExpr::ParBind {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e)?)))
+                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors)?)))
                     .collect::<Result<_, NotConcrete>>()?,
-                body: Box::new(MonoExpr::from_expr(body)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::LaunchContinue { launched, continuation, span, .. } => {
                 Ok(MonoExpr::LaunchContinue {
-                    launched: Box::new(MonoExpr::from_expr(launched)?),
-                    continuation: Box::new(MonoExpr::from_expr(continuation)?),
+                    launched: Box::new(MonoExpr::from_expr(launched, pattern_ctors)?),
+                    continuation: Box::new(MonoExpr::from_expr(continuation, pattern_ctors)?),
                     span: *span,
                     ty: node_ty(expr)?,
                 })
@@ -431,7 +464,7 @@ impl MonoExpr {
                 tag: *tag,
                 fields: fields
                     .iter()
-                    .map(MonoExpr::from_expr)
+                    .map(|e| MonoExpr::from_expr(e, pattern_ctors))
                     .collect::<Result<_, NotConcrete>>()?,
                 span: *span,
                 ty: node_ty(expr)?,

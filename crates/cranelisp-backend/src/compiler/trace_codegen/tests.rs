@@ -461,6 +461,61 @@ fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, 
     (tables, intlist_ty)
 }
 
+// spec: design/arch/dotted-ctor-canonical-keys.md §10.3 (BU-1, loud-miss) —
+// pattern position resolves a ctor by its STORAGE `FQSymbol` through
+// `CompileContext::ctor_meta_at`: a DIRECT keyed read (deterministic, no name
+// resolution, no global fallback). A key that resolves to a real ctor `Def`
+// yields its `(FQTypeName, CtorMeta)`; a key that resolves to NO `Def` yields
+// `None` — the precondition on which `compile_constructor_pattern` raises the
+// hard `CodegenError` ("keying drift") instead of silently mis-tagging (P18).
+#[test]
+fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
+    let (tables, _ty) = recursive_intlist_tables();
+    let module = ModuleFullPath::from("user");
+    let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
+    let iid = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
+    let aliases = cranelisp_types::ModuleAliases::default();
+    let func_ids: std::collections::HashMap<Symbol, cranelift_module::FuncId> =
+        std::collections::HashMap::new();
+    let func_arities: std::collections::HashMap<Symbol, usize> = std::collections::HashMap::new();
+    let ctx = crate::compiler::CompileContext {
+        func_ids: &func_ids,
+        func_arities: &func_arities,
+        symbol_tables: &tables,
+        module_aliases: &aliases,
+        current_module: module.clone(),
+        alloc_func_id: iid.alloc,
+        dealloc_func_id: iid.dealloc.unwrap(),
+        alloc_string_func_id: iid.alloc_string,
+        panic_func_id: iid.panic,
+        vec_new_func_id: iid.vec_new,
+        vec_drop_func_id: iid.vec_drop,
+    };
+
+    // HIT: the storage key of the data ctor resolves to its `Def` — 2 fields,
+    // tag 1, owned by `IntList`. The deterministic answer, no iteration order.
+    let cons_fq = cranelisp_types::FQSymbol {
+        module: module.clone(),
+        symbol: Symbol::from("Cons"),
+    };
+    let (fqtn, meta) = ctx.ctor_meta_at(&cons_fq).expect("Cons storage key hits its Def");
+    assert_eq!(fqtn.name.as_ref(), "IntList");
+    assert_eq!(meta.tag, 1);
+    assert_eq!(meta.fields.len(), 2);
+
+    // MISS (loud-miss precondition): a key that no `Def` lives under yields
+    // `None`. In `compile_constructor_pattern` a `Some(resolved_ctor)` landing
+    // here is keying drift → hard `CodegenError`, never a silent mis-tag.
+    let ghost = cranelisp_types::FQSymbol {
+        module,
+        symbol: Symbol::from("IntList.Ghost"),
+    };
+    assert!(
+        ctx.ctor_meta_at(&ghost).is_none(),
+        "a storage key with no Def is a None (the §10.3 hard-error precondition)"
+    );
+}
+
 /// Drive `bake_descriptor_blob` for a `TracedFnInfo` whose param/result is
 /// the recursive `IntList` ADT through a real (throwaway) `FnCompiler` over
 /// a JIT module, returning the emitted blob's byte length and descriptor
@@ -468,7 +523,6 @@ fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, 
 fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     use cranelift::codegen::ir::{Function, UserFuncName};
     use cranelift::prelude::*;
-    use cranelift_module::Module;
 
     let (tables, intlist_ty) = recursive_intlist_tables();
     let module_path = ModuleFullPath::from("user");

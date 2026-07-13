@@ -635,7 +635,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // legitimately leave a residual var the `ast`-path codegen never reads).
         let codegen_view: Option<MonoDefnVariant> = ast_variant
             .as_ref()
-            .and_then(|v| crate::program::build_concrete_codegen_view(&mangled_sym, v));
+            .and_then(|v| {
+                crate::program::build_concrete_codegen_view(
+                    &mangled_sym,
+                    v,
+                    &state.method_resolutions.pattern_ctors,
+                )
+            });
         // FIXME 0472: harvest this method body's callee edges (ResolvedCall
         // channel + user-fn references) BEFORE taking the table guard; write
         // them onto the mangled entry after it exists below. This is the

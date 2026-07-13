@@ -262,8 +262,9 @@ fn annotate_expr_from_maps(
 pub(crate) fn build_concrete_codegen_view(
     name: &Symbol,
     variant: &DefnVariant,
+    pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> Option<cranelisp_types::MonoDefnVariant> {
-    match cranelisp_types::MonoExpr::from_expr(&variant.body) {
+    match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors) {
         Ok(mono_body) => Some(cranelisp_types::MonoDefnVariant {
             name: name.clone(),
             params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
@@ -407,6 +408,13 @@ pub(crate) struct FormCheckResult {
     /// In Pass 2: resolutions from the body of this defn.
     pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
 
+    /// The pattern-constructor STORAGE identities discovered while checking this
+    /// form's bodies (`MethodResolutions.pattern_ctors`, keyed by
+    /// `Pattern::Constructor.span`; S109 W1.2 §10.2). Accumulated cross-form so
+    /// the finalize codegen-view rebuild can populate `MonoMatchArm.resolved_ctor`
+    /// AFTER the per-form `state.method_resolutions` has been drained.
+    pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
+
     /// Expression types for this form's AST nodes.
     /// In Pass 1: may contain constructor types for TypeDef forms.
     /// In Pass 2: contains all expr types from the defn body + the defn's Fn type.
@@ -443,6 +451,7 @@ impl FormCheckResult {
     fn empty() -> Self {
         FormCheckResult {
             method_resolutions: HashMap::new(),
+            pattern_ctors: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),
@@ -467,6 +476,7 @@ impl FormCheckResult {
 /// exclusively from the accumulator.
 pub(crate) struct ModuleCheckAccumulator {
     pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
+    pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
     pub(crate) expr_types: HashMap<Span, Type>,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
@@ -505,6 +515,7 @@ impl ModuleCheckAccumulator {
     pub(crate) fn new() -> Self {
         ModuleCheckAccumulator {
             method_resolutions: HashMap::new(),
+            pattern_ctors: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1324,7 +1335,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
             let codegen_view = if is_concrete_codegen_target {
                 annotated.variants.first().and_then(|variant| {
-                    build_concrete_codegen_view(&defn.name, variant)
+                    build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors)
                 })
             } else {
                 None
@@ -1352,6 +1363,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(FormCheckResult {
             method_resolutions: form_mr,
+            pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
             expr_types: form_et,
             constrained_fn,
             mono_defns: Vec::new(),
@@ -1547,6 +1559,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(FormCheckResult {
             method_resolutions: form_mr,
+            pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
             expr_types: form_et,
             constrained_fn: None,
             mono_defns: Vec::new(),
@@ -1588,6 +1601,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         accumulator.method_resolutions.extend(result.method_resolutions);
+        accumulator.pattern_ctors.extend(result.pattern_ctors);
         accumulator.expr_types.extend(result.expr_types);
         if let Some(name) = result.constrained_fn {
             accumulator.constrained_fn_names.insert(name);
@@ -2258,6 +2272,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the `register_mono_entry` seam (their bodies are built post-subst with
         // the dispatch already resolved); they are not re-walked here.
         {
+            // Snapshot the pattern-ctor sidecar BEFORE the mutable symbol-table
+            // borrow — `current_symbol_table_mut(state)` borrows `state` mutably,
+            // so the codegen-view rebuild inside the closure cannot also read
+            // `state.method_resolutions` (§10.2 requires the sidecar to reach
+            // `from_expr`). The map is per-cluster (spans → FQSymbols), cheap.
+            let pattern_ctors_for_views = accumulator.pattern_ctors.clone();
             let sym_table = &mut self.current_symbol_table_mut(state);
             // Reannotate `existing` from the final side maps + subst, then, for a
             // `Concrete{slot}` codegen target, rebuild `codegen_view` from the
@@ -2277,7 +2297,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             kind.as_ref(),
                             DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
                         ) {
-                            *cv = build_concrete_codegen_view(name, existing);
+                            *cv = build_concrete_codegen_view(name, existing, &pattern_ctors_for_views);
                         }
                     }
                 };
@@ -2775,7 +2795,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // subst-resolved variant body the `ast` carries (best-effort; a
                 // `$Var`-param variant body legitimately stays non-concrete — see
                 // `build_concrete_codegen_view`).
-                if let Some(view) = build_concrete_codegen_view(&mangled, &ast) {
+                if let Some(view) = build_concrete_codegen_view(&mangled, &ast, &state.method_resolutions.pattern_ctors) {
                     builder = builder.codegen_view(view);
                 }
                 builder = builder.ast(ast);
@@ -3330,7 +3350,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let codegen_view = concrete_defn
                 .variants
                 .first()
-                .and_then(|v| build_concrete_codegen_view(&name, v));
+                .and_then(|v| build_concrete_codegen_view(&name, v, &state.method_resolutions.pattern_ctors));
 
             // Re-register the entry under the BARE name as `Concrete{slot}`,
             // carrying the concrete scheme + annotated body. Allocate a fresh
