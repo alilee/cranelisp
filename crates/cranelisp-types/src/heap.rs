@@ -272,7 +272,27 @@ where
     L: LinkerStore,
 {
     match table.get(fqtn.name.as_ref())? {
-        ModuleEntry::TypeDef { info, .. } => Some(info.constructors.clone()),
+        // **Obligation A (S109 W1, `dotted-ctor-canonical-keys.md` §2).** Return
+        // the *storage keys* of the ctor `Def`s, not display names.
+        // `TypeDefInfo.constructors` carries bare display names; a sum ctor's real
+        // `Def` now lives under the canonical `member_key(Type, Ctor)` key
+        // (`Maybe.Some`) with the bare name a poison-able `Import` alias — so
+        // consumers probing `table.get(returned)` MUST get the canonical key. The
+        // mapping happens HERE, in the ONE reader. The probe-canonical-else-bare
+        // shape stays robust to the product facet (type-name key).
+        ModuleEntry::TypeDef { info, .. } => Some(
+            info.constructors
+                .iter()
+                .map(|c| {
+                    let canonical = crate::member_key(&fqtn.name, c.as_ref());
+                    if table.get(canonical.as_ref()).is_some() {
+                        canonical
+                    } else {
+                        c.clone()
+                    }
+                })
+                .collect(),
+        ),
         ModuleEntry::Def { kind, .. } => match &**kind {
             DefKind::Constructor { type_def: Some(td), .. } => Some(td.constructors.clone()),
             _ => None,

@@ -43,6 +43,21 @@
         }
     }
 
+    /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
+    /// following the S109 same-module bare→canonical `Import` alias one hop. A
+    /// sum ctor's real `Def` is keyed `Type.Ctor` (`member_key`) with the bare
+    /// name an alias; a product ctor keeps its bare type-name key (no alias, hit
+    /// directly). Type-agnostic — follows the alias edge without knowing the type.
+    fn ctor_entry<'t>(
+        table: &'t cranelisp_types::SymbolTable,
+        name: &str,
+    ) -> Option<&'t ModuleEntry> {
+        match table.get(name)? {
+            ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
+            e => Some(e),
+        }
+    }
+
     // spec: 05-definitions §5.2.3 — enum type registers constructors in symbol table
     #[test]
     fn test_register_enum_type() {
@@ -86,7 +101,7 @@
         )
         .unwrap();
 
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("True2")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "True2")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert_eq!(scheme.ty, Type::ADT(user_fqtn("Bool2"), vec![]));
@@ -122,7 +137,7 @@
         .unwrap();
 
         // None should be polymorphic: forall [a]. (Option a)
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("None")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "None")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert_eq!(scheme.type_vars.len(), 1, "None should have 1 quantified var");
@@ -139,7 +154,7 @@
         }
 
         // Some should be polymorphic: forall [a]. (Fn [a] (Option a))
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("Some")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "Some")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert_eq!(scheme.type_vars.len(), 1, "Some should have 1 quantified var");
@@ -222,7 +237,7 @@
         .unwrap();
 
         // MkPair :: (Fn [Int Bool] Pair)
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("MkPair")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "MkPair")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert!(scheme.type_vars.is_empty(), "MkPair should be monomorphic");
@@ -243,7 +258,7 @@
         assert_eq!(info.constructors.len(), 1);
         assert_eq!(info.constructors[0].as_ref(), "MkPair");
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            tc.symbol_table().get("MkPair")
+            ctor_entry(&tc.symbol_table(), "MkPair")
         {
             if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
                 assert_eq!(*field_count, 2);
@@ -1460,7 +1475,7 @@
         let table = tc.symbol_table();
         for (i, name) in ["North", "South", "East", "West"].iter().enumerate() {
             assert_eq!(info.constructors[i].as_ref(), *name);
-            if let Some(ModuleEntry::Def { kind, .. }) = table.get(*name) {
+            if let Some(ModuleEntry::Def { kind, .. }) = ctor_entry(&table, *name) {
                 if let DefKind::Constructor { tag, .. } = kind.as_ref() {
                     assert_eq!(*tag, i, "{name} should have tag {i}");
                 } else {
@@ -1523,7 +1538,7 @@
         assert_eq!(info.constructors[1].as_ref(), "Some");
         let table = tc.symbol_table();
         for (i, name) in ["None", "Some"].iter().enumerate() {
-            if let Some(ModuleEntry::Def { kind, .. }) = table.get(*name)
+            if let Some(ModuleEntry::Def { kind, .. }) = ctor_entry(&table, *name)
                 && let DefKind::Constructor { tag, .. } = kind.as_ref()
             {
                 assert_eq!(*tag, i, "{name} should have tag {i}");
@@ -1549,7 +1564,7 @@
 
         let table = tc.symbol_table();
         let slot_of = |name: &str| -> Option<usize> {
-            match table.get(name) {
+            match ctor_entry(&table, name) {
                 Some(entry @ ModuleEntry::Def { kind, .. }) => {
                     assert!(
                         matches!(kind.as_ref(), DefKind::Constructor { .. }),
@@ -1587,7 +1602,7 @@
         // ctor's Def — param_names + scheme.ty's Fn signature.
         assert_eq!(info.constructors[1].as_ref(), "Some");
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            tc.symbol_table().get("Some")
+            ctor_entry(&tc.symbol_table(), "Some")
         {
             if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
                 assert_eq!(*field_count, 1);
@@ -1683,7 +1698,7 @@
         .unwrap();
 
         // MkPair :: forall [a, b]. (Fn [a b] (Pair a b))
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("MkPair")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "MkPair")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert_eq!(scheme.type_vars.len(), 2, "MkPair should have 2 quantified vars");
@@ -1749,7 +1764,7 @@
         assert_eq!(info.constructors.len(), 2);
 
         // Both constructors should have 2 quantified vars
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = tc.symbol_table().get("Left")
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&tc.symbol_table(), "Left")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert_eq!(scheme.type_vars.len(), 2);

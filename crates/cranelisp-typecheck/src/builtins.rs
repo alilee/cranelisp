@@ -687,14 +687,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         } else {
             unreachable!("invariant: IO type should be registered before adding Bind");
         }
+        // **Uniform canonical keying (S109 W1):** mirror the LIVE `bootstrap.rs`
+        // shape — the real `Bind` `Def` under `IO.Bind` (`member_key`), the bare
+        // `Bind` an `Import` alias onto it (this fixture stands in for the int
+        // seeds, so it must not keep a bare-keyed sum-ctor `Def`).
         let bind_ctor_slot = primitives_table.allocate_got_slot();
+        let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
         primitives_table.insert(
-            Symbol::from("Bind"),
+            bind_canonical.clone(),
             ModuleEntry::def(
                 bind_ctor_scheme,
                 DefKind::Constructor {
                     got_slot: bind_ctor_slot,
-                    type_name: io_fqtn,
+                    type_name: io_fqtn.clone(),
                     tag: 2,
                     field_count: bind_field_count,
                     internal: true,
@@ -712,6 +717,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span: body_span,
             })
             .build(),
+        );
+        primitives_table.insert(
+            Symbol::from("Bind"),
+            ModuleEntry::Import {
+                source: cranelisp_types::FQSymbol {
+                    module: io_fqtn.module.clone(),
+                    symbol: bind_canonical,
+                },
+                visibility: cranelisp_types::Visibility::Public,
+            },
         );
     }
 
@@ -1112,6 +1127,20 @@ mod tests {
             .expect("primitives module should exist")
     }
 
+    /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
+    /// following the S109 same-module bare→canonical `Import` alias one hop (a
+    /// sum ctor's real `Def` is keyed `Type.Ctor` via `member_key`, the bare name
+    /// an alias). Type-agnostic.
+    fn ctor_entry<'t>(
+        table: &'t cranelisp_types::SymbolTable,
+        name: &str,
+    ) -> Option<&'t ModuleEntry> {
+        match table.get(name)? {
+            ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
+            e => Some(e),
+        }
+    }
+
     // spec: design/arch/fixmes/0239 — Tier-3 presets compose opt-in, not all-on.
     // A builder with only `with_primitives` seeds the primitive Defs but NOT
     // the special-form metadata; this guards the preset boundary (negative).
@@ -1178,7 +1207,7 @@ mod tests {
         table: &cranelisp_types::SymbolTable,
         name: &str,
     ) -> Option<(usize, usize, bool, FQTypeName)> {
-        match table.get(name)? {
+        match ctor_entry(table, name)? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::Constructor { tag, field_count, internal, type_name, .. } => {
                     Some((*tag, *field_count, *internal, type_name.clone()))
@@ -1502,7 +1531,7 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { kind, scheme, .. }) = macros_table.get("SNil") {
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = ctor_entry(&macros_table, "SNil") {
             if let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() {
                 assert_eq!(*tag, 0, "SNil should be tag 0");
                 assert_eq!(*field_count, 0, "SNil should have no fields");
@@ -1530,7 +1559,7 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = macros_table.get("SCons") {
+        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_entry(&macros_table, "SCons") {
             if let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() {
                 assert_eq!(*tag, 1, "SCons should be tag 1");
                 assert_eq!(*field_count, 2, "SCons has 2 fields");
@@ -1609,7 +1638,7 @@ mod tests {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = macros_table.get("SexpSym")
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = ctor_entry(&macros_table, "SexpSym")
             && matches!(kind.as_ref(), DefKind::Constructor { .. })
         {
             assert!(scheme.type_vars.is_empty(), "SexpSym should be monomorphic");
@@ -1662,7 +1691,7 @@ mod tests {
         expected_fields: &[(&str, &Type)],
         ret_type: &Type,
     ) {
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = table.get(name) {
+        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_entry(table, name) {
             let field_count = if let DefKind::Constructor { field_count, .. } = kind.as_ref() {
                 *field_count
             } else {
@@ -1898,7 +1927,7 @@ mod tests {
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            primitives_table.get("Pure")
+            ctor_entry(&primitives_table, "Pure")
         {
             if let DefKind::Constructor { tag, field_count, internal, .. } = kind.as_ref() {
                 assert_eq!(*tag, 0, "Pure should be tag 0");
@@ -1939,7 +1968,7 @@ mod tests {
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            primitives_table.get("Effect")
+            ctor_entry(&primitives_table, "Effect")
         {
             if let DefKind::Constructor { tag, field_count, internal, .. } = kind.as_ref() {
                 assert_eq!(*tag, 1, "Effect should be tag 1");
@@ -2001,7 +2030,7 @@ mod tests {
         assert_eq!(type_name.name.as_ref(), "IO");
 
         // Inspect the synthesised Def: param_names + scheme.ty (Fn).
-        if let Some(ModuleEntry::Def { param_names, scheme, .. }) = primitives_table.get("Bind") {
+        if let Some(ModuleEntry::Def { param_names, scheme, .. }) = ctor_entry(&primitives_table, "Bind") {
             assert_eq!(param_names.len(), 2);
             assert_eq!(param_names[0].as_ref(), "inner");
             assert_eq!(param_names[1].as_ref(), "cont");
@@ -2069,11 +2098,11 @@ mod tests {
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         assert!(
-            primitives_table.get("Pure").is_some(),
+            ctor_entry(&primitives_table, "Pure").is_some(),
             "Pure should be in primitives module"
         );
         assert!(
-            primitives_table.get("Effect").is_some(),
+            ctor_entry(&primitives_table, "Effect").is_some(),
             "Effect should be in primitives module"
         );
 
@@ -2091,16 +2120,16 @@ mod tests {
         let prims_path = ModuleFullPath::from("primitives");
         let prims_table = tf.modules.get(&prims_path).unwrap();
         assert!(
-            prims_table.get("Pure").is_some(),
+            ctor_entry(&prims_table, "Pure").is_some(),
             "Pure should be in primitives module"
         );
         assert!(
-            prims_table.get("Effect").is_some(),
+            ctor_entry(&prims_table, "Effect").is_some(),
             "Effect should be in primitives module"
         );
         // NOT in user module without import
         assert!(
-            tf.symbol_table().get("Pure").is_none(),
+            ctor_entry(&tf.symbol_table(), "Pure").is_none(),
             "Pure should NOT be bare in user"
         );
     }

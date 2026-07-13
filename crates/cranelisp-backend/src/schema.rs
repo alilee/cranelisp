@@ -207,8 +207,16 @@ where
 
     let table = symbol_tables.get(&fqtn.module)?;
     for ctor_name in &info.constructors {
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            table.get(ctor_name.as_ref())
+        // Probe the canonical `member_key(Type, Ctor)` key first (S109 W1 — a sum
+        // ctor's real `Def` lives under `Shape.Circle`, the bare name being an
+        // `Import` alias carrying no `scheme`), bare fallback for the product
+        // dual-facet. The schema/layout-hash stays keyed by the BARE display name
+        // (`raws.push { name: ctor_name }`), so the hash is stable across the
+        // keying change — only the PROBE is canonical-aware.
+        let ctor_probe = table
+            .get(cranelisp_types::member_key(&fqtn.name, ctor_name.as_ref()).as_ref())
+            .or_else(|| table.get(ctor_name.as_ref()));
+        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = ctor_probe
             && let DefKind::Constructor { tag, field_count, .. } = &**kind
         {
             // Sum/enum constructor Def: names from param_names, types from

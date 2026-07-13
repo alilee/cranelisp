@@ -242,7 +242,30 @@ fn register_synth_adt(
         if let Some(doc) = ctor_doc {
             builder = builder.docstring(doc);
         }
-        module.insert(Symbol::from(ctor.name), builder.build());
+        let entry = builder.build();
+        if is_product {
+            // Product dual-facet: single key at the type name (no canonical
+            // re-key, no alias) — mirrors typecheck `register_constructors`.
+            module.insert(Symbol::from(ctor.name), entry);
+        } else {
+            // **Uniform canonical keying (S109 W1, dotted-ctor-canonical-keys.md
+            // §1).** Seeded sum ctors are keyed identically to user `deftype`
+            // ctors: the real `Def` under `member_key(Type, Ctor)`, the bare name
+            // an `Import` alias onto it. No seeded/user split. Seeded types never
+            // share a ctor name within a module, so no §8.6.5 contest arises here.
+            let canonical_key = cranelisp_types::member_key(&fqtn.name, ctor.name);
+            module.insert(canonical_key.clone(), entry);
+            module.insert(
+                Symbol::from(ctor.name),
+                ModuleEntry::Import {
+                    source: cranelisp_types::FQSymbol {
+                        module: fqtn.module.clone(),
+                        symbol: canonical_key,
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+        }
     }
 
     // Register the sum/enum type's separate `TypeDef` entry (carries the
@@ -847,9 +870,14 @@ fn register_io_type(
         unreachable!("invariant: IO type should be registered before adding Bind");
     }
     // Slot rides on the `Constructor` variant (S83 reshape, FIXME 0356/0357).
+    // **Uniform canonical keying (S109 W1):** `Bind` is a sum ctor of `IO`, so —
+    // like `Pure`/`Effect` and every user `deftype` sum ctor — the real `Def` is
+    // keyed `IO.Bind` (`member_key`), the bare `Bind` an `Import` alias onto it;
+    // `internal: true` rides the `Def` unchanged.
     let bind_ctor_slot = primitives.allocate_got_slot();
+    let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
     primitives.insert(
-        Symbol::from("Bind"),
+        bind_canonical.clone(),
         ModuleEntry::def(
             bind_ctor_scheme,
             DefKind::Constructor {
@@ -873,6 +901,16 @@ fn register_io_type(
             span: body_span,
         })
         .build(),
+    );
+    primitives.insert(
+        Symbol::from("Bind"),
+        ModuleEntry::Import {
+            source: cranelisp_types::FQSymbol {
+                module: io_fqtn.module.clone(),
+                symbol: bind_canonical,
+            },
+            visibility: Visibility::Public,
+        },
     );
 }
 
@@ -1199,6 +1237,19 @@ fn register_test_infrastructure(
 mod tests {
     use super::*;
 
+    /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
+    /// following the S109 same-module bare→canonical `Import` alias one hop (a sum
+    /// ctor's real `Def` is keyed `Type.Ctor` via `member_key`). Type-agnostic.
+    fn ctor_entry<'t>(
+        table: &'t SessionSymbolTable,
+        name: &str,
+    ) -> Option<&'t ModuleEntry<crate::code::Code>> {
+        match table.get(name)? {
+            ModuleEntry::Import { source, .. } => table.get(source.symbol.as_ref()),
+            e => Some(e),
+        }
+    }
+
     fn fresh_tables() -> (
         dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
         AtomicU32,
@@ -1254,7 +1305,7 @@ mod tests {
         assert!(matches!(macros.get("SList"), Some(ModuleEntry::TypeDef { .. })));
         // SCons is a data constructor Def.
         assert!(matches!(
-            macros.get("SCons"),
+            ctor_entry(&macros, "SCons"),
             Some(ModuleEntry::Def {
                 kind,
                 ..
@@ -1269,11 +1320,11 @@ mod tests {
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(prims.get("Option"), Some(ModuleEntry::TypeDef { .. })));
-        assert!(matches!(prims.get("Some"), Some(ModuleEntry::Def { .. })));
+        assert!(matches!(ctor_entry(&prims, "Some"), Some(ModuleEntry::Def { .. })));
         assert!(matches!(prims.get("IO"), Some(ModuleEntry::TypeDef { .. })));
         assert!(matches!(prims.get("bind"), Some(ModuleEntry::Def { .. })));
         // Bind is internal.
-        match prims.get("Bind") {
+        match ctor_entry(&prims, "Bind") {
             Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
                 DefKind::Constructor { internal, tag, .. } => {
                     assert!(*internal);
@@ -1410,7 +1461,7 @@ mod tests {
         }
         assert!(matches!(prims.get("Result"), Some(ModuleEntry::TypeDef { .. })));
         // Ok=tag 0, Err=tag 1 (declaration order — the combinator assumes this).
-        match prims.get("Ok") {
+        match ctor_entry(&prims, "Ok") {
             Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
                 DefKind::Constructor { tag, field_count, .. } => {
                     assert_eq!(*tag, 0);
@@ -1420,7 +1471,7 @@ mod tests {
             },
             other => panic!("Ok should be a Def, got {other:?}"),
         }
-        match prims.get("Err") {
+        match ctor_entry(&prims, "Err") {
             Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
                 DefKind::Constructor { tag, .. } => assert_eq!(*tag, 1),
                 _ => panic!("Err should be a Constructor"),

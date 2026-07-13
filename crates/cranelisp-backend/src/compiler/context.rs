@@ -218,8 +218,18 @@ where
             .constructors
             .iter()
             .filter_map(|ctor_name| {
+                // Probe the canonical `member_key(Type, Ctor)` key first (S109 W1
+                // — a sum ctor's real `Def` lives under `Result.Err`, the bare
+                // name being an `Import` alias that `extract_constructor` skips),
+                // bare fallback for the product dual-facet. Without the canonical
+                // probe the drop-glue emitter sees ZERO data ctors → emits no
+                // field decs → heap fields (e.g. an `Err(String)`) leak
+                // (`tests/spec_12_runtime.rs::catch_runtime_error_..._leaks`).
+                let canonical =
+                    cranelisp_types::member_key(&type_def.name.name, ctor_name.as_ref());
                 table
-                    .get(ctor_name.as_ref())
+                    .get(canonical.as_ref())
+                    .or_else(|| table.get(ctor_name.as_ref()))
                     .and_then(Self::extract_constructor)
                     .map(|(_, meta)| meta)
             })

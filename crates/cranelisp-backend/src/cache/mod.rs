@@ -294,7 +294,16 @@ pub mod linker;
 /// seals the R5 epoch independent of the build id: every schema-15 `.o` is
 /// rejected wholesale as `CacheStale::SchemaMismatch`. Serde shape UNCHANGED
 /// (a value-only invalidation). Supersedes the Wave-1 "no re-bump" note.
-pub const CACHE_SCHEMA_VERSION: u32 = 16;
+///
+/// **S109 W1 bump 16 → 17 (dotted-`Type.Ctor` canonical keys — Obligation B,
+/// `dotted-ctor-canonical-keys.md` §2).** Serde shape UNCHANGED, but the
+/// **meaning of the key** under which a sum constructor's `Def` is stored
+/// changes (bare → canonical `member_key(Type, Ctor)`, with the bare name a
+/// poison-able `Import` alias). A cached pre-change module holds ctor `Def`s
+/// under bare keys; the post-change readers probe canonical keys and would
+/// silently miss. A `.meta.json` content-meaning change — the bump rejects every
+/// schema-16 `.o` wholesale. Value-only invalidation.
+pub const CACHE_SCHEMA_VERSION: u32 = 17;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

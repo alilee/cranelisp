@@ -996,77 +996,91 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
-        // A BARE constructor pattern whose name is poisoned (two in-scope types
-        // share it, §8.6.5) is a compile-time error listing the canonical
-        // alternatives — value and pattern agree (spec §6.2.1). The dotted form
-        // `(Maybe.Some x)` disambiguates and is never poisoned; a `/`-qualified
-        // name bypasses local scope. Without this arm the `Ambiguous` sentinel
-        // yields no `Constructor` `Def` below and mis-reports as "unknown
-        // constructor in pattern".
-        if !name.as_ref().contains('.')
-            && !name.as_ref().contains('/')
-            && matches!(
-                self.resolve_entry_in_current_module(state, name.as_ref()),
-                Some(ModuleEntry::Ambiguous { .. })
-            )
+        // Trigger 3 (S70): populate `MethodResolutions.pattern_ctors` keyed
+        // by `pat_span` (FQ-typed sidecar; the bare `Symbol` must not slip into
+        // backend codegen). The pattern ctor name may be **dotted** (`Maybe.Some`,
+        // S109), **bare** (`SCons`, current-module + prelude fallback), or
+        // **module-qualified** (`macros/SCons`, FQ, load-bearing for every
+        // quasiquote macro). `resolve_constructor_entry` dispatches all three.
+        if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
+            self.resolve_constructor_entry(state, name.as_ref())
+            && let cranelisp_types::DefKind::Constructor { type_name, tag, .. } = kind.as_ref()
         {
-            let owners = self.reconstruct_accessor_alternatives(state, name.as_ref());
-            let hint = if owners.is_empty() {
-                String::new()
-            } else {
-                let alts: Vec<String> = owners
-                    .iter()
-                    .map(|t| cranelisp_types::member_key(&t.name, name.as_ref()).as_ref().to_string())
-                    .collect();
-                format!(" — use a qualified constructor ({})", alts.join(" or "))
-            };
-            return Err(CranelispError::TypeError {
-                message: format!(
-                    "ambiguous constructor '{name}' in pattern{hint}"
-                ),
-                location: ErrorLocation::from_span(span),
-            });
+            let (fq_sym, instantiated) = self.instantiate_ctor(state, type_name, *tag, span)?;
+            state.method_resolutions.pattern_ctors.insert(span, fq_sym);
+            return self.unify_pattern_with_scrutinee(
+                state, name, bindings, &instantiated, scrutinee_ty, span,
+            );
         }
 
-        // Trigger 3 (S70): populate `MethodResolutions.pattern_ctors` keyed
-        // by `pat_span`. The bare `Symbol` slipping into backend codegen for
-        // pattern dispatch is the D47-violation flagged by the
-        // cranelisp-types solidness sweep (finding #4); the FQ-typed sidecar
-        // is the resolved-stage replacement.
-        //
-        // Look up the ctor's owning Def to recover (type_name, tag) — these
-        // live on `DefKind::Constructor` post-S70 (the prior
-        // `ModuleEntry::Constructor` variant was retired). The lookup
-        // returns the terminal entry, following Import chains.
-        //
-        // The pattern ctor name may be **bare** (`SCons`, resolved in the
-        // current module with the implicit-prelude outer-scope fallback per
-        // Principle 17 + S78 §2) OR **module-qualified** (`macros/SCons`, an FQ
-        // reference that bypasses import scope and roots directly in the named
-        // module — spec §8.6.6). Quasiquote macros lower their templates into
-        // qualified `macros/SCons`/`macros/SNil` ctor patterns, so the
-        // qualified arm is load-bearing for every macro. `resolve_constructor_entry`
-        // dispatches on the `/` to the right rooting; the prior
-        // `lookup_constructor_scheme` product-fallback leg (which split the `/`)
-        // was retired with S79 Option 3a, so the split must live here.
-        if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref()) {
-            if let cranelisp_types::ModuleEntry::Def { kind, .. } = &entry {
-                if let cranelisp_types::DefKind::Constructor { type_name, tag, .. } = kind.as_ref() {
-                    // Use the shared `instantiate_ctor` helper for the
-                    // resolution+instantiation core (Trigger 2 sharing).
-                    // Single-ctor product types resolve here too (S79 Option
-                    // 3a) — their got-slotted ctor `Def` carries `type_name`/
-                    // `tag` exactly like a sum ctor; the prior
-                    // `constructor_scheme`-on-`TypeDef` product-fallback leg
-                    // is retired.
-                    let (fq_sym, instantiated) = self.instantiate_ctor(
-                        state, type_name, *tag, span,
-                    )?;
+        // **Scrutinee-directed disambiguation (S109 W1, spec §6.2.1 / design §7 /
+        // DC-11).** A BARE ctor name that did NOT resolve to a `Def` above is
+        // either contested (`Ambiguous`) or absent-in-local-scope (an imported
+        // type whose ctors were not brought in). Resolve it against the
+        // scrutinee's type when that type is a DETERMINED ADT: probe the canonical
+        // `member_key(scrutinee_type, bare)` in the scrutinee type's home module
+        // and accept iff the terminal is a ctor of that exact type. The
+        // determination depends only on the scrutinee's type at this point
+        // (front-to-back, no arm-order sensitivity).
+        if !name.as_ref().contains('.') && !name.as_ref().contains('/') {
+            let scrut = self.apply_subst(state, scrutinee_ty);
+            if let Type::ADT(fqtn, _) = &scrut
+                // Only when the scrutinee's TYPE is itself IN SCOPE (resolvable by
+                // name in the current module). A bare ctor of a type that is NOT
+                // in scope stays unresolved — e.g. `Trace`'s `TraceCall` is not
+                // auto-imported (spec §11.2), so `(match (trace ..) [(TraceCall ..)])`
+                // without `(import [primitives [TraceCall]])` is an error. The
+                // "resolvable ADT head" gate of design §7.
+                && self
+                    .scope_resolve(state, fqtn.name.as_ref(), span)
+                    .ok()
+                    .and_then(|r| {
+                        crate::checker::type_def_view_of(&r.entry).map(|td| &td.name == fqtn)
+                    })
+                    .unwrap_or(false)
+            {
+                let key = cranelisp_types::member_key(&fqtn.name, name.as_ref());
+                if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
+                    self.probe_module_entry_owned(&fqtn.module, key.as_ref())
+                    && let cranelisp_types::DefKind::Constructor { type_name, tag, .. } =
+                        kind.as_ref()
+                    && type_name == fqtn
+                {
+                    let (fq_sym, instantiated) =
+                        self.instantiate_ctor(state, type_name, *tag, span)?;
                     state.method_resolutions.pattern_ctors.insert(span, fq_sym);
                     return self.unify_pattern_with_scrutinee(
                         state, name, bindings, &instantiated, scrutinee_ty, span,
                     );
                 }
+            }
+
+            // The scrutinee did not disambiguate. A CONTESTED (`Ambiguous`) bare
+            // name is then a compile-time error listing the canonical
+            // alternatives (spec §6.2.1 "poison only when the scrutinee type
+            // cannot disambiguate").
+            if matches!(
+                self.resolve_entry_in_current_module(state, name.as_ref()),
+                Some(ModuleEntry::Ambiguous { .. })
+            ) {
+                let owners = self.reconstruct_accessor_alternatives(state, name.as_ref());
+                let hint = if owners.is_empty() {
+                    String::new()
+                } else {
+                    let alts: Vec<String> = owners
+                        .iter()
+                        .map(|t| {
+                            cranelisp_types::member_key(&t.name, name.as_ref())
+                                .as_ref()
+                                .to_string()
+                        })
+                        .collect();
+                    format!(" — use a qualified constructor ({})", alts.join(" or "))
+                };
+                return Err(CranelispError::TypeError {
+                    message: format!("ambiguous constructor '{name}' in pattern{hint}"),
+                    location: ErrorLocation::from_span(span),
+                });
             }
         }
 

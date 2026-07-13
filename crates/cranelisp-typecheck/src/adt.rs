@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{ErrorLocation,
-    ConstructorDef, CranelispError, DefKind, DefnVariant, Expr, FQTypeName, FieldInfo,
+    ConstructorDef, CranelispError, DefKind, DefnVariant, Expr, FQSymbol, FQTypeName, FieldInfo,
     ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName,
     Visibility, member_key,
 };
@@ -379,10 +379,97 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(doc) = doc {
                 builder = builder.docstring(doc);
             }
-            // COMMIT 1 (reader-widening) keeps the CURRENT bare keying — the
-            // canonical-key writer flip (gated on `is_product_ctor`) lands in
-            // commit 2 (design §4).
-            self.current_symbol_table_mut(state).insert(ctor.name.clone(), builder.build());
+            let entry = builder.build();
+
+            if is_product_ctor {
+                // **Product dual-facet corner (spec §8.5.2 / design §1).** A
+                // product ctor (type-name == ctor-name) keeps its SINGLE key at
+                // the type name — NO canonical re-key, NO bare alias, NO poison.
+                // `member_key("Point","Point") = "Point.Point"` is degenerate; the
+                // bare name IS the canonical single key, carrying both the type
+                // facet (`type_def: Some`) and the ctor `Def`.
+                self.current_symbol_table_mut(state).insert(ctor.name.clone(), entry);
+            } else {
+                // **Sum ctor — uniform canonical keying (S109 W1, design §1).**
+                // The real got-slotted ctor `Def` is keyed under the canonical
+                // `member_key(Type, Ctor)` (`Maybe.Some`) in the type's home
+                // module; the bare ctor name becomes a convenience `Import` ALIAS,
+                // poisoned to `ModuleEntry::Ambiguous` on a §8.6.5 cross-type
+                // contest. Exact mirror of `synthesise_one_accessor` (bootstrap's
+                // `register_synth_adt` applies the same rule — no seeded/user split).
+                let canonical_key = member_key(&fqtn.name, ctor.name.as_ref());
+
+                // Classify the bare-name binding BEFORE minting the canonical key.
+                // The bare key is normally an `Import` ALIAS onto the FIRST owner's
+                // canonical `Type.Ctor` `Def` — follow that one edge to read the
+                // committed owner. Owner == this type ⇒ redefinition; DIFFERENT
+                // owner ⇒ §8.6.5 distinct-terminal contest.
+                let probed =
+                    self.probe_module_entry_owned(&fqtn.module, ctor.name.as_ref());
+                let committed_owner: Option<FQTypeName> = match probed.as_ref() {
+                    Some(ModuleEntry::Import { source, .. })
+                        if source.module == fqtn.module =>
+                    {
+                        self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
+                            .as_ref()
+                            .and_then(committed_member_owner)
+                    }
+                    Some(entry) => committed_member_owner(entry),
+                    None => None,
+                };
+
+                // Mint the canonical `Def` (unconditionally — the real entry).
+                self.current_symbol_table_mut(state)
+                    .insert(canonical_key.clone(), entry);
+
+                // Install / poison the bare alias.
+                match committed_owner {
+                    // Same-type redefinition (the one deftype re-run): (re)install
+                    // the bare alias afresh — NOT a cross-type contest.
+                    Some(ref owner) if owner == fqtn => {
+                        self.current_symbol_table_mut(state).insert(
+                            ctor.name.clone(),
+                            ModuleEntry::Import {
+                                source: FQSymbol {
+                                    module: fqtn.module.clone(),
+                                    symbol: canonical_key.clone(),
+                                },
+                                visibility,
+                            },
+                        );
+                    }
+                    // Cross-type contest (§8.6.5): poison the bare name. The
+                    // canonical `Maybe.Some`/`Option.Some` `Def`s stay valid; only
+                    // the bare alias becomes `Ambiguous`. Alternatives are
+                    // reconstructed on demand by walking the module for canonical
+                    // keys whose terminal segment equals the bare name
+                    // (`reconstruct_accessor_alternatives`, member-neutral).
+                    Some(_) => {
+                        self.current_symbol_table_mut(state).insert(
+                            ctor.name.clone(),
+                            ModuleEntry::Ambiguous { visibility },
+                        );
+                    }
+                    // Bare name absent → install the convenience alias.
+                    None if probed.is_none() => {
+                        self.current_symbol_table_mut(state).insert(
+                            ctor.name.clone(),
+                            ModuleEntry::Import {
+                                source: FQSymbol {
+                                    module: fqtn.module.clone(),
+                                    symbol: canonical_key.clone(),
+                                },
+                                visibility,
+                            },
+                        );
+                    }
+                    // Bare name present as a non-ctor binding (a user `defn`, an
+                    // unrelated import, or an already-`Ambiguous` third contest):
+                    // do NOT clobber it. The canonical `Maybe.Some` is still minted
+                    // and reachable; the bare name stays whatever it was.
+                    None => {}
+                }
+            }
 
             // **Field accessors (S83, FIXME 0351(a), spec §5.2.6).** For each
             // named field of a **product** type, auto-generate a free accessor
