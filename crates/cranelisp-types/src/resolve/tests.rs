@@ -394,6 +394,60 @@ fn scope_i1_private_prelude_binding_does_not_leak() {
 }
 
 #[test]
+fn scope_i1_filter_gates_on_prelude_head_not_terminal() {
+    // FIXME 0567 / spec §8.8.1 — the prelude provides its PUBLIC names: the
+    // I-1 filter gates on the prelude HEAD binding's visibility (the entry in
+    // the prelude's own table), NOT the chain-followed terminal's. A PRIVATE
+    // `(import …)` edge inside the prelude whose chain terminates at a PUBLIC
+    // `Def` in another module must NOT leak as a bare name in a fallback-ON
+    // module; it reads as the original current-module not-found.
+    let tables = tables_with(&[
+        ("user", "__seed", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private)),
+        // Private import edge INSIDE the prelude (an `(import …)`, not an
+        // `(export …)`) …
+        (PRELUDE, "leak", import("lib", "leak", Visibility::Private)),
+        // … chaining to a PUBLIC terminal in another module.
+        ("lib", "leak", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+    ]);
+    let aliases: ModuleAliases = dashmap::DashMap::new();
+    let user = ModuleFullPath::from("user");
+    let prelude = ModuleFullPath::from(PRELUDE);
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &user, Some(&prelude));
+    let r = scope.resolve("leak", Span::SYNTHETIC);
+    let Err(ResolveError::TypeNotFound { from_module, .. }) = r else {
+        panic!("a private prelude import edge must not leak its public terminal: {r:?}");
+    };
+    // The miss reports the ORIGINAL current-module not-found (the user wrote
+    // the name in `user`, not in the prelude).
+    assert_eq!(from_module, user, "miss attributes to the asking module");
+}
+
+#[test]
+fn scope_falls_back_through_public_prelude_reexport_edge() {
+    // The complement pin: a PUBLIC Import edge in the prelude (the §8.4.0
+    // `export` shape — exactly what the stock re-export-shell prelude is made
+    // of) chaining to a public terminal elsewhere KEEPS resolving through the
+    // fallback. The 0567 head filter must be behaviour-invariant here.
+    let tables = tables_with(&[
+        ("user", "__seed", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private)),
+        (PRELUDE, "gulp", import("lib", "gulp", Visibility::Public)),
+        ("lib", "gulp", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+    ]);
+    let aliases: ModuleAliases = dashmap::DashMap::new();
+    let user = ModuleFullPath::from("user");
+    let prelude = ModuleFullPath::from(PRELUDE);
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &user, Some(&prelude));
+    let r = scope
+        .resolve("gulp", Span::SYNTHETIC)
+        .expect("a public prelude re-export edge resolves through the fallback");
+    assert_eq!(r.home, ModuleFullPath::from("lib"), "chain-followed to the canonical home");
+}
+
+#[test]
 fn scope_qualified_never_retries_prelude() {
     // A qualified `mod/sym` names its module directly and NEVER takes the
     // prelude retry (made explicit in the walk). `user/gulp` is absent from
@@ -409,6 +463,35 @@ fn scope_qualified_never_retries_prelude() {
     assert!(
         scope.resolve("user/gulp", Span::SYNTHETIC).is_err(),
         "a qualified name names its module directly — no prelude retry"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// member_key — the ONE mint point for the canonical `Type.member` key
+// (spec §8.5.2 inverted member model; S109 dotted-ctor capability).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn member_key_mints_dotted_canonical_key() {
+    // Field accessor (`Box.v`) and constructor (`Maybe.Some`) share the ONE
+    // key grammar — a TypeName deref'd ctor name is accepted as `&str` too.
+    assert_eq!(member_key(&TypeName::from("Box"), "v"), Symbol::from("Box.v"));
+    assert_eq!(
+        member_key(&TypeName::from("Maybe"), &TypeName::from("Some")),
+        Symbol::from("Maybe.Some")
+    );
+}
+
+#[test]
+fn member_key_is_local_not_module_qualified() {
+    // The minted key is a module-LOCAL symbol-table key: `.`-dotted, never
+    // `/`-qualified — `split_qualified` must not read it as a module path
+    // (the `/` module separator and the `.` member separator are distinct).
+    let key = member_key(&TypeName::from("Color"), "Red");
+    assert_eq!(key, Symbol::from("Color.Red"));
+    assert!(
+        split_qualified(key.as_ref()).is_none(),
+        "a member key has no `/` and is not a qualified reference"
     );
 }
 

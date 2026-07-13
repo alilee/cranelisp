@@ -338,16 +338,20 @@ prelude, a pure re-export shell whose heads are all public):**
   bare `<name>` takes the unknown-symbol path and `/search <name>` never
   prints the in-scope mark.
 
-**Recorded residual (types-side, `/arch` — FIXME 0567).** Resolution's I-1
-filter tests the chain-followed TERMINAL's visibility
-(`resolve_with_prelude`, resolve.rs:523–531), not the prelude HEAD's. A
-PRIVATE `(import …)` edge inside the prelude chaining to a PUBLIC terminal
-would still leak through `resolve` while the head-filtered display hides
-it — the mirror-image divergence. Unreachable through the stock prelude
-(no private imports there), and §8.8.1's "prelude's public names" reads as
-head (binding) visibility, so the head filter is the spec reading and the
-terminal filter the approximation. Tracked as FIXME 0567 (`target: /arch`;
-fix in `cranelisp-types/src/resolve.rs` with a failing unit pin first).
+**Residual RESOLVED (types-side, `/arch` — was FIXME 0567; fixed S109
+Phase 3).** Resolution's I-1 filter tested the chain-followed TERMINAL's
+visibility (`resolve_with_prelude`), not the prelude HEAD's — a PRIVATE
+`(import …)` edge inside the prelude chaining to a PUBLIC terminal leaked
+through `resolve` while the head-filtered display hid it (the mirror-image
+divergence; unreachable through the stock prelude, which carries no private
+imports). §8.8.1's "prelude's public names" reads as head (binding)
+visibility, so the retry now gates on the prelude head entry's
+`is_public()` with the terminal check kept as defence in depth — display
+and resolution agree on the head reading. Failing-unit-pin-first per METHOD
+§2.2: `cranelisp-types/src/resolve/tests.rs::
+scope_i1_filter_gates_on_prelude_head_not_terminal` (+ the
+public-reexport-edge complement pinning stock-prelude invariance). Zero
+public-API delta; no cache impact.
 
 ## 4. Ruling 2 — the one definition seam
 
@@ -596,8 +600,9 @@ finding.
 - **FIXME 0563** (`target: /arch`, resolve-home-enumeration §4 lifecycle
   gaps) was adjacent but independent — actioned and deleted at S108 Inc3
   close (the §4 amendments landed in `resolve-home-enumeration.md`).
-- **FIXME 0567** (`target: /arch`) tracks the §3.5.2 residual (resolve's
-  terminal-vs-head I-1 filter).
+- **FIXME 0567** (`target: /arch`, the §3.5.2 residual — resolve's
+  terminal-vs-head I-1 filter) — actioned and deleted S109 Phase 3 (head
+  filter landed with unit pins; see §3.5.2).
 
 ## Next skills
 

@@ -466,8 +466,13 @@ where
 /// point since the CS2 removal of the free fallback shim,
 /// `prelude-import-convergence.md` §6). (1) resolve in the current-module first hop; (2) on a not-found miss
 /// of an unqualified name with `prelude = Some`, retry rooted at the prelude;
-/// (3) **public-only I-1 filter** on the prelude-retry terminal (a private
-/// prelude binding does NOT leak as a bare name).
+/// (3) **public-only I-1 filter on the prelude HEAD binding** — spec §8.8.1
+/// provides the prelude's *public names*, so the visibility that gates the
+/// retry is the binding in the prelude's own table, not the chain-followed
+/// terminal's (FIXME 0567: a private `(import …)` edge inside the prelude
+/// chaining to a public terminal elsewhere must NOT leak as a bare name) —
+/// plus the terminal-side public check as defence in depth. A filtered hit
+/// reads as the ORIGINAL current-module not-found.
 fn resolve_with_prelude<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
@@ -511,18 +516,36 @@ where
                 // Prelude not loaded → the inner miss stands.
                 None => return Err(inner_miss()),
             };
+            // Step 2a (FIXME 0567): the §8.8.1 HEAD-visibility filter. The
+            // prelude provides its PUBLIC names — the binding that must be
+            // public is the prelude HEAD (the entry in the prelude's own
+            // table), not the chain-followed terminal. A private `(import …)`
+            // edge inside the prelude whose chain terminates at a public
+            // `Def` elsewhere must NOT leak as a bare name; it reads as the
+            // original current-module not-found. (Only unqualified names
+            // reach this retry — the qualified branch never returns the
+            // retried not-found class — so a bare `Symbol` probe of the
+            // prelude table is exact.) Head-side precedents: typecheck's
+            // `find_trait_method_decl` `public_only`, int's
+            // `prelude_implicit_names`, the §3.5.2 display-gate fix.
+            let prelude_first_hop = View::single(&prelude_view);
+            match prelude_first_hop.lookup(&Symbol::from(name)) {
+                Some(head) if head.is_public() => {}
+                _ => return Err(inner_miss()),
+            }
             let retry = resolve_one(
                 symbol_tables,
                 module_aliases,
-                &View::single(&prelude_view),
+                &prelude_first_hop,
                 prelude_path,
                 name,
                 span,
             );
             match retry {
-                // Step 3: public-only filter on the prelude terminal. A
-                // non-public prelude binding does NOT leak as a bare name; it
-                // reads as the original current-module not-found.
+                // Step 3: public-only filter on the prelude TERMINAL as well
+                // (defence in depth beside `resolve_one`'s own visibility
+                // check — a public prelude head must not expose a private
+                // terminal either).
                 Ok(resolved) if resolved.entry.is_public() => Ok(resolved),
                 Ok(_) => Err(inner_miss()),
                 // A prelude-side miss reports the original current-module miss
@@ -779,6 +802,28 @@ fn in_subtree(accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
     let a: &str = accessor.as_ref();
     let d: &str = definer.as_ref();
     a == d || a.starts_with(&format!("{d}."))
+}
+
+/// Mint the canonical `Type.member` symbol-table key for a type-owned member.
+///
+/// The inverted member model (spec §8.5.2, `bounded-contexts.md` §7) stores a
+/// type's members as real `Def` entries under a **dotted canonical key** in
+/// the type's home module — `Box.v` for the field accessor, and (S109
+/// dotted-ctor capability) `Maybe.Some` for a constructor — with the bare
+/// member name as a convenience ALIAS that §8.6.5 poisons to
+/// `ModuleEntry::Ambiguous` on distinct-terminal collision. This function is
+/// the ONE mint point for that key shape (Principle 7): registration
+/// (`cranelisp-typecheck::adt`), the checker's canonical-key probes, and the
+/// dotted-reference resolver all call it instead of hand-rolling
+/// `format!("{}.{}", …)`, so the key grammar cannot drift per site.
+///
+/// The `.` separator is deliberate and distinct from the `/` module
+/// separator: `mod/Type.member` splits at `/` into (module, `Type.member`)
+/// via [`split_qualified`], and the dotted remainder is then a member key in
+/// the home module's table. `member` is accepted as `&str` so both `Symbol`
+/// and `TypeName` (a ctor name) deref in.
+pub fn member_key(type_name: &TypeName, member: &str) -> Symbol {
+    Symbol::from(format!("{}.{}", type_name, member).as_str())
 }
 
 /// The canonical local symbol for a (possibly qualified) name — the part

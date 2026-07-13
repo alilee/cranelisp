@@ -1364,6 +1364,8 @@ impl ModuleEntry {
 }
 ```
 
+**`ModuleEntry::type_def_info() -> Option<&TypeDefInfo>` — the single "answers as a type" reader (S109 Phase 3, additive).** A type name survives in the table as one of two shapes (S79 Option 3a dual facet): a `ModuleEntry::TypeDef` (sum/enum) or a got-slotted product ctor `Def` carrying `DefKind::Constructor { type_def: Some(..) }` (type-name == ctor-name). Every consumer that needs an entry *as a type* — resolution, arity/exhaustiveness checks, introspection, **persistence** — reads this accessor instead of matching `ModuleEntry::TypeDef` directly; a bare `TypeDef` match is exactly the FIXME-0573 defect class (int's `save.rs generate_types` skipped product `deftype`s from backing-file persistence — silent data loss). Follows the `callable_got_slot()` read-through precedent (one accessor, no per-site re-patterning of the kind set); `type_ctor_names` (heap.rs) is the ctor-name projection over the same two-shape switch. Delegating consumers land in the S109 Phase-5 waves: typecheck's `type_def_view_of` (checker.rs) reduces to it; `save.rs` type emission keys on it. Read-side only — **no serde/cache impact**; +1 `public-api.txt` line.
+
 ### Definition Classification
 
 ```rust
@@ -1637,7 +1639,9 @@ impl<'a, C: CodeStore, L: LinkerStore> ResolutionScope<'a, C, L> {
     ) -> Self;
 
     /// THE reference lookup: inner walk; on a not-found-class miss of an
-    /// UNQUALIFIED name, prelude retry with the I-1 public-terminal filter;
+    /// UNQUALIFIED name, prelude retry gated by the I-1 public filter on the
+    /// prelude HEAD binding (§8.8.1 provides the prelude's public *names*;
+    /// terminal-side public check kept as defence in depth — FIXME 0567);
     /// chain-follow; §8.7.3 visibility; §8.6.6 aliases. Qualified `mod/sym`
     /// never retries (it names its module).
     pub fn resolve(&self, name: &str, span: Span) -> Result<Resolved<C>, ResolveError>;
@@ -1694,6 +1698,33 @@ methods) + `pub fn reject_def_over_binding`; − `pub fn resolve`,
 `resolve_terminal_entry_and_home` stays `pub` (module.rs; consumed by
 `resolve.rs` internals and int's §8.6.5 install-time comparator). No serde
 shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
+
+**S109 Phase-3 amendments (landed, one `/arch` change-set).**
+
+- **I-1 filter corrected to the prelude HEAD (FIXME 0567, closed).** The
+  prelude-retry filter inside `ResolutionScope::resolve` gated on the
+  chain-followed TERMINAL's visibility; spec §8.8.1 provides the prelude's
+  **public names**, i.e. the binding in the prelude's own table. A private
+  `(import …)` edge inside the prelude chaining to a public `Def` elsewhere
+  leaked as a bare name in every fallback-ON module (latent — the stock
+  prelude is a pure public re-export shell). The retry now requires the
+  prelude head entry `is_public()` (the terminal check stays as defence in
+  depth), aligning resolution with the head-side precedents
+  (`find_trait_method_decl`, `prelude_implicit_names`, the §3.5.2 display
+  gate). Unit pins: `resolve/tests.rs::scope_i1_filter_gates_on_prelude_head_
+  not_terminal` (+ the public-reexport-edge complement). Internal walk body
+  only — **zero `public-api.txt` delta, no cache impact**.
+- **`pub fn member_key(&TypeName, &str) -> Symbol` (+1 baseline line,
+  additive).** The ONE mint point for the canonical `Type.member`
+  symbol-table key of the §8.5.2 inverted member model — `Box.v` field
+  accessors today; `Maybe.Some` constructor keys when the S109 dotted-ctor
+  registration lands. Kills the hand-rolled `format!("{}.{}", …)` copies
+  (typecheck `adt.rs` accessor registration, `checker.rs` canonical-key
+  probe; the ctor registration is the third site) so the key grammar cannot
+  drift per site (Principle 7). Lives beside the resolution primitives
+  because the dotted member key is the local-key half of the reference
+  grammar the resolver splits (`/` = module separator, `.` = member
+  separator).
 
 ---
 

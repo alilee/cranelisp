@@ -329,6 +329,7 @@ pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::mode_summary(&self) -> core::option::Option<&cranelisp_types::ModeSummary>
 pub fn cranelisp_types::ModuleEntry<C>::set_mode_summary(&mut self, core::option::Option<cranelisp_types::ModeSummary>) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::set_value_use(&mut self, bool) -> bool
+pub fn cranelisp_types::ModuleEntry<C>::type_def_info(&self) -> core::option::Option<&cranelisp_types::TypeDefInfo>
 pub fn cranelisp_types::ModuleEntry<C>::value_use(&self) -> bool
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
@@ -1744,6 +1745,7 @@ pub fn cranelisp_types::install_module<C, L>(&dashmap::DashMap<cranelisp_types::
 pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDeclInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::lookup_type_def_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::max_type_var_id(&cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
+pub fn cranelisp_types::member_key(&cranelisp_types::TypeName, &str) -> cranelisp_types::Symbol
 pub fn cranelisp_types::ownership_analysis_off() -> bool
 pub fn cranelisp_types::reject_def_over_binding<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(&cranelisp_types::ResolutionScope<'_, C, L>, &cranelisp_types::Symbol, cranelisp_types::Span) -> core::result::Result<(), cranelisp_types::CranelispError>
 pub fn cranelisp_types::render_type(&cranelisp_types::Type, cranelisp_types::PrimitiveNaming, cranelisp_types::VarNaming<'_>) -> alloc::string::String

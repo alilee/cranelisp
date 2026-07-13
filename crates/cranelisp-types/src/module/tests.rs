@@ -299,6 +299,87 @@ fn callable_got_slot_is_structural() {
     assert_eq!(ctor.callable_got_slot(), Some(11));
 }
 
+// ---- S109 Phase 3 — type_def_info: the single "answers as a type" reader ----
+
+/// A `TypeDefInfo` fixture for `ty` in module `user`.
+fn tdi(ty: &str, constructors: &[&str]) -> TypeDefInfo {
+    TypeDefInfo {
+        name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(ty)),
+        type_params: vec![],
+        constructors: constructors.iter().map(|c| Symbol::from(*c)).collect(),
+    }
+}
+
+// spec: spec/04-types.md §4.2 — both surviving type shapes answer as a type
+// through ONE reader (S79 dual facet; FIXME 0573 root-cause class: a bare
+// `ModuleEntry::TypeDef` match silently skips product types).
+#[test]
+fn type_def_info_answers_for_both_type_shapes() {
+    // Sum/enum: a real `ModuleEntry::TypeDef` entry.
+    let sum: ModuleEntry = ModuleEntry::TypeDef {
+        info: tdi("Rotation", &["L", "R"]),
+        visibility: Visibility::Public,
+        docstring: None,
+    };
+    let info = sum.type_def_info().expect("a TypeDef entry answers as a type");
+    assert_eq!(info.name.name, TypeName::from("Rotation"));
+
+    // Single-ctor product: the got-slotted ctor `Def` carrying the type facet
+    // (type-name == ctor-name, S79 Option 3a).
+    let product: ModuleEntry = mk_def(
+        DefKind::Constructor {
+            got_slot: 3,
+            type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Position")),
+            tag: 0,
+            field_count: 1,
+            internal: false,
+            type_def: Some(Box::new(tdi("Position", &["Position"]))),
+            mode_summary: None,
+        },
+        None,
+    );
+    let info = product
+        .type_def_info()
+        .expect("a product ctor Def with a type facet answers as a type");
+    assert_eq!(info.name.name, TypeName::from("Position"));
+    assert_eq!(info.constructors, vec![Symbol::from("Position")]);
+}
+
+// spec: spec/04-types.md §4.2 — entries that are NOT a type answer None:
+// an ordinary sum ctor (type_def: None), a plain user fn, an import edge.
+#[test]
+fn type_def_info_none_for_non_type_entries() {
+    let sum_ctor: ModuleEntry = mk_def(
+        DefKind::Constructor {
+            got_slot: 7,
+            type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Rotation")),
+            tag: 1,
+            field_count: 1,
+            internal: false,
+            type_def: None,
+            mode_summary: None,
+        },
+        None,
+    );
+    assert!(sum_ctor.type_def_info().is_none(), "an ordinary sum ctor is not its own type");
+
+    let user_fn: ModuleEntry =
+        mk_def(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, None);
+    assert!(user_fn.type_def_info().is_none(), "a plain Def never answers as a type");
+
+    let import: ModuleEntry = ModuleEntry::Import {
+        source: FQSymbol {
+            module: ModuleFullPath::from("lib"),
+            symbol: Symbol::from("Position"),
+        },
+        visibility: Visibility::Private,
+    };
+    assert!(
+        import.type_def_info().is_none(),
+        "an import edge is not a type facet — chain-follow first, then read the terminal"
+    );
+}
+
 // ---- Sprint 56 Wave 0 §9.8 — GotTable on SymbolTable ----
 
 // spec: design/typecheck/ast-annotation.md §9.8 — GotTable on SymbolTable: presence + serde roundtrip

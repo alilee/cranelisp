@@ -1362,6 +1362,45 @@ impl<C: CodeStore> ModuleEntry<C> {
         )
     }
 
+    /// The **type-def view** of this entry — `Some(&TypeDefInfo)` iff the
+    /// entry answers *as a type*; the single "does this entry answer as a
+    /// type" reader (Principle 7; the [`Self::callable_got_slot`] precedent
+    /// applied to the type facet).
+    ///
+    /// A type name survives in the symbol table as one of two shapes (S79
+    /// Option 3a — see the `DefKind::Constructor.type_def` rustdoc):
+    ///
+    /// - a [`ModuleEntry::TypeDef`] — the **sum/enum** case (type name
+    ///   distinct from every ctor name); or
+    /// - a `ModuleEntry::Def { kind: DefKind::Constructor { type_def:
+    ///   Some(..), .. } }` — the **single-ctor product** case, where the
+    ///   got-slotted ctor `Def` IS its own type and carries the type facet
+    ///   (type-name == ctor-name).
+    ///
+    /// Every site that needs an entry *as a type* — resolution, arity
+    /// validation, exhaustiveness, introspection, **persistence** — reads
+    /// this accessor rather than matching `ModuleEntry::TypeDef` directly. A
+    /// bare `TypeDef` match is exactly the FIXME-0573 defect class: the
+    /// product `deftype` has no `TypeDef` entry, so a `TypeDef`-only reader
+    /// silently skips it (int's `save.rs generate_types` skipped product
+    /// types from backing-file persistence — silent data loss). Delegating
+    /// consumers: typecheck's `type_def_view_of` (`checker.rs`) and int's
+    /// `save.rs` type emission (both delegated in the S109 Phase-5 waves);
+    /// [`crate::type_ctor_names`] is the ctor-name projection over the same
+    /// two-shape switch.
+    ///
+    /// Read-side only — no serde/cache-schema impact.
+    pub fn type_def_info(&self) -> Option<&TypeDefInfo> {
+        match self {
+            ModuleEntry::TypeDef { info, .. } => Some(info),
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::Constructor { type_def: Some(td), .. } => Some(td),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The entry's ownership summary ([`ModeSummary`]), or `None` when the
     /// entry carries none — the uniform read-through point for the
     /// typecheck→backend ownership contract (S102 CS-A; the

@@ -45,6 +45,12 @@ the kind set:
   `Polymorphic` body was the FIXME-0381 317× backstop fire).
 - `mode_summary()` / `set_mode_summary()` (`module.rs:1377/1399`) — the summary
   rides where the slot rides; `set_` returns `false` for non-carrying kinds.
+- `ModuleEntry::type_def_info()` — the ONE "does this entry answer as a
+  type" reader over the S79 dual facet (`TypeDef` entry OR product ctor
+  `Def{Constructor{type_def:Some}}`). A bare `ModuleEntry::TypeDef` match at
+  a type-consuming seam silently skips product types — the FIXME-0573
+  persistence data-loss class. `type_ctor_names` (heap.rs) is the ctor-name
+  projection over the same switch.
 - `DefKind::PlatformEffect.poll_shape` polarity is INVERTED from the C-ABI
   `blocking` so the serde default (`false`) = blocking — a cached pre-S94
   entry deserializes as blocking (`module.rs:1691`).
@@ -85,12 +91,17 @@ Fields that LOOK optional but are contractually required downstream:
   internals, and the fallback is decided ONCE at scope construction, never
   per call) retries prelude only on the not-found error class;
   `PrivateInaccessible`/`QualifiedModuleUnknown` return as-is. The prelude
-  retry passes a PUBLIC-only I-1 filter; a private prelude hit reports as the
-  ORIGINAL current-module not-found (`resolve_with_prelude`,
-  `resolve.rs:471–535`). GOTCHA: the filter tests the chain-followed
-  TERMINAL's visibility, not the prelude HEAD's — a private import edge
-  inside prelude chaining to a public terminal leaks; flagged residual,
-  FIXME 0567 (`prelude-import-convergence.md` §3.5.2).
+  retry passes a PUBLIC-only I-1 filter on the **prelude HEAD binding** (the
+  entry in prelude's own table — §8.8.1 provides prelude's public *names*;
+  the terminal check stays as defence in depth); a private prelude hit —
+  head OR terminal — reports as the ORIGINAL current-module not-found
+  (`resolve_with_prelude`). The head-vs-terminal gotcha was FIXME 0567,
+  fixed S109; pins: `resolve/tests.rs::scope_i1_*`.
+- `member_key(&TypeName, &str) -> Symbol` (resolve.rs) is the ONE mint point
+  for the canonical dotted `Type.member` key (§8.5.2 inverted member model:
+  field accessors `Box.v`; ctor keys `Maybe.Some` from S109). Never
+  hand-roll `format!("{}.{}", ..)` for a member key — per-site copies are
+  how the key grammar drifts.
 - The bare primitive's generic miss is `TypeNotFound`-shaped regardless of
   kind (`not_found`, `resolve.rs:803`) — never infer entry kind from the
   error variant.
