@@ -648,3 +648,51 @@ fn macro_thread_last_multi() {
         ":primitives/Int 9",
     );
 }
+
+// =============================================================================
+// Sprint 109 W1-prep — AN-1(b) prelude-cascade availability smoke.
+// Plan: tests/plan/PLAN.md §S109 §D.1 AN-1.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.6.2 + root CLAUDE.md stdlib-separation exception —
+// AN-1(b): each core prelude name `do`/`pure`/`cond`/`when`/`case`/`vec`/`list`/
+// `def` is available (the cascade that took them ALL down via one submodule's
+// one-hop miss must not recur). GREEN today; invariance pin + commit-2 acceptance.
+// Gated stdlib-conformance entry (the sole sanctioned workspace-stdlib use).
+#[test]
+fn workspace_prelude_core_names_all_available() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(
+            "(do (pure 1) (pure 42))\n\
+             (cond (= 1 1) 10 20)\n\
+             (when true (Some 7))\n\
+             (case 2 1 100 2 200 999)\n\
+             (vec 1 2 3)\n\
+             (list 1 2 3)\n\
+             (def answer 55)\n\
+             answer\n",
+        )
+        .output()
+        .assert_ok();
+    // Cascade guard: NONE of the core names may be undefined.
+    for name in ["do", "pure", "cond", "when", "case", "vec", "list", "def"] {
+        assert!(
+            !out.stdout.contains(&format!("undefined variable: {name}")),
+            "core prelude name `{name}` MUST be available (AN-1 cascade guard); \
+             got:\n{}",
+            out.stdout
+        );
+    }
+    // Positive witnesses that a representative macro + `def` actually evaluate.
+    assert!(
+        out.stdout.contains(":primitives/Int 42") // (do (pure 1) (pure 42))
+            && out.stdout.contains(":primitives/Int 10") // (cond (= 1 1) 10 20)
+            && out.stdout.contains(":primitives/Int 200") // (case 2 … 2 200 …)
+            && out.stdout.contains(":primitives/Int 55"), // (def answer 55) ; answer
+        "the core prelude names MUST evaluate to their expected values \
+         (AN-1 availability); got:\n{}",
+        out.stdout
+    );
+}

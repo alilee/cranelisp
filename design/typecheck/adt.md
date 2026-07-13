@@ -18,6 +18,16 @@ register_type_def(name, type_params, constructors, ...)
   6. register TypeDef entry   → symbol table
 ```
 
+> **Dotted `Type.Ctor` canonical keys (S109 bucket 2).** As of the dotted-ctor
+> capability, `register_constructors` stores a **sum** ctor's real got-slotted
+> `Def` under the canonical key `member_key(Type, Ctor)` (`Maybe.Some`) with the
+> bare ctor name as a poisoning `Import` alias — the exact mirror of the field
+> accessor's `Type.field` canonical/bare-alias storage. Same-named ctors across
+> in-scope types coexist; the dotted form disambiguates in value AND pattern
+> position. A **product** ctor keeps its single type-name key (the dual facet
+> below); its dotted form is degenerate. Full design:
+> **`design/typecheck/dotted-ctor-registration.md`**.
+
 ### Type Parameter Allocation
 
 Each type parameter (e.g., `a` in `(deftype (Option a) ...)`) gets a fresh type variable via `fresh_var_id`. The `var_map` (HashMap<Symbol, TypeId>) maps parameter names to their allocated IDs, used by `resolve_type_expr` when processing field type annotations.

@@ -1,5 +1,29 @@
 # QA Risk Review
 
+## S109 risk read (2026-07-13, /qa — shapes the depth of the S109 plan in `PLAN.md` §"Sprint 109")
+
+The highest-silent-failure changes in the S109 scope, ranked. Each names the
+guard that converts the silent failure into a loud one.
+
+| # | Risk | Severity | Why silent | Guard (PLAN §S109 rows) |
+|---|---|---|---|---|
+| S109-1 | **In-flight auto-load race** (§8.5.4 edge 7): a member probe against a present-but-non-terminal module misclassifies as "has no member" only under ≥2 priority workers with an unlucky interleaving | HIGH | Nondeterministic — any single run (and most CI runs) passes; the failure surfaces in user sessions under load. Forbidden dispositions apply: one intermittent RED = a real bug | C1-e2e repeated-run sweep (≥25 iterations) + the FOUR enumerated C1-unit arms (deterministic fail-on-revert); the cure (unconditional member-absent gap) is pinned at both the int and typecheck seams |
+| S109-2 | **Exhaustiveness blast radius** of the dotted-ctor keying (design §4): (a) covered-set normalizer misses the `.`-strip → FALSE non-exhaustive on dotted-covered matches; (b) internal-flag probe stops chain-following → IO `Bind`/`Pure`/`Effect` leak into user exhaustiveness | HIGH | (a) blocks valid code with a plausible-looking diagnostic; (b) changes which programs compile with no error at the change site — both fail at a DISTANT seam from the registration edit | BR-1 + BR-2 fail-on-revert guards, authored FIRST, landing in the SAME change-set as registration |
+| S109-3 | **Cache schema 16→17 skew**: the ctor `Def` storage-key MEANING changes; a stale `.meta.json` (bare keys) read by the canonical-key resolver/`type_ctor_names` silently misses ctors and mis-classifies heap categories — a UAF class (`value_layout` is soundness-coupled) | HIGH | No error at read time — resolution just misses; heap misclassification corrupts later | DC-9 warm-cache row + stale-cache invalidation neg; the bump is part of the registration change-set's definition of done (Obligation B) |
+| S109-4 | **0573 product-deftype persistence** — product defs dropped from the backing `.cl` | MEDIUM-HIGH | Data loss observable only at reload, possibly sessions later | The §E shape×persistence matrix (product rows RED; sum rows pinned; no-double-emit neg) |
+| S109-5 | **0570 two-seam privacy**: `/dev` could fix the import gate while the `/search` index still surfaces private-submodule symbols (or vice versa) — one rule, two enforcement seams | MEDIUM | Each seam looks fixed in isolation; the conformance gap is only visible to whichever surface wasn't probed | MV-1 (search) + MV-2 (import, existing) as a PAIR, with the MV-3 public control |
+| S109-6 | **Observability log grain**: content leaking into the §17.20 JSONL (form text, error messages, prose) is a one-way door — it defeats the greppable-index grain and is hard to walk back once consumers mine it | LOW-MEDIUM | Nothing fails; the file just thickens | OB-8 no-content negative; feature-off absence family |
+
+Ranked depth allocation: rows guarding S109-1/-2/-3 are authored FIRST
+(arch-pre-flagged boundaries + spec MUSTs before happy paths, per the S108
+Inc2 rule recorded in `tests/CLAUDE.md` §"QA-first targeting").
+
+---
+
+Historical baseline risk assessment below (ring-era; surviving load-bearing
+risks: RC non-locality, batch/REPL parity, performance-regression
+invisibility, error-message quality, Risk 11 FFI corruption).
+
 Risk assessment for quality assurance in the Cranelisp reimplementation. Based on analysis of:
 - 591 prototype tests (502 integration + 57 RC + 14 trace + 9 run-tests + 9 platform)
 - 10 ignored tests, 2 known-issue-documenting tests

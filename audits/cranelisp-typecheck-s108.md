@@ -433,3 +433,34 @@ constructor references (spec §8.5.2), keeping `Type.field` accessors.**
 ## 4. Disposition trail
 
 *(Appended at S109 Phase 1 by `/sprint` + the user; not by `/audit`.)*
+
+**S109 Phase 1 (2026-07-13) — disposed with user:**
+
+- **R-1 ACCEPTED** → FIXME 0578 (`/design` typecheck). traits.md rewrite +
+  doc-sprawl triage.
+- **R-2 ACCEPTED** → FIXME 0579 (`/dev` typecheck). Resolution-seam doc/naming
+  sweep. Note: the rustdoc must adopt the settled §8.8.1 model — prelude is an
+  **implicit import / one transparent-fallback lookup, NOT an "outer scope"** — so
+  the sweep is also a model correction, not only wording.
+- **R-3 DECLINED.** The proposal was to drop dotted `Type.Ctor` constructor
+  references from spec §8.5.2 as redundant. The user instead chose the
+  **full-capability fix** (S109 scope bucket 2): same-named constructors across
+  in-scope types are a first-class pattern (option/result-likes with `Some`/`Ok`,
+  distinct types sharing `Address`/`Node`), and the dotted form is their
+  type-namespacing mechanism — the assessment undersold it as "redundant." Two
+  decisive facts overrode the redundancy read: (a) the language **already displays**
+  a constructor value as `Color.Red` (the canonical dotted form) but rejects that
+  same text as *input* — an input/output asymmetry, not a missing convenience; and
+  (b) field accessors already coexist + disambiguate via the dotted form
+  (§8.5.2 modules.md:743, tested), so constructors being RED is an inconsistency,
+  not a surplus. `module/Ctor` cannot disambiguate two same-named constructors in
+  the **same** module, leaving the dotted form the only path. S109 therefore
+  IMPLEMENTS the form (define+import same-named ctors, `/dev` typecheck +
+  `/spec` §8.5.2 clarification) rather than dropping it; the committed RED
+  (`dotted_constructor_in_value_position_resolves`) is the record + trigger. The
+  next audit should stop re-raising R-3.
+- **R-4 ACCEPTED** → FIXME 0580 (`/dev` typecheck + `/design` sign-off).
+  `program.rs` module split.
+- **R-5 ACCEPTED** → FIXME 0581 (`/dev` typecheck). S87 residue batch; the S87-1
+  half-FQ-diagnostic twin repro coordinates with the dotted-ctor same-named-ADT
+  work.

@@ -1,67 +1,104 @@
 # Trait System
 
-Solution design for the Cranelisp trait system as implemented in Ring 2. Covers trait declarations, implementations, default methods, constrained polymorphism, monomorphisation, method resolution, and core trait bootstrap.
+Solution design for the Cranelisp trait system as implemented in `cranelisp-typecheck`. Covers trait declarations, implementations, default methods, constrained polymorphism, monomorphisation, method resolution, and core-trait provisioning.
 
-This document is the authoritative design reference for Ring 3 implementers. It describes the data structures, algorithms, and invariants that govern how traits interact with the rest of the typechecker and backend.
+This document is the authoritative design reference for the trait subsystem. It describes the data structures, algorithms, and invariants that govern how traits interact with the rest of the typechecker and backend. It is subordinate to `design/typecheck/typecheck.md` (master) and cites `design/typecheck/monomorphisation.md` for the monomorphisation engine detail.
 
-## 1. Trait Registry
+> **Model note (S87+; this doc rewritten S109 against the as-built).** Traits are **symbol-table-resident**, not held in checker-side registries. The former `TraitRegistry` / `ImplRegistry` / `TypeDefRegistry` global caches on a `TypeChecker` struct were **eliminated** — there is no `TypeChecker` struct. The checker is `TypeCheckEnv<'a, C, L>` (borrowed shared state) + `CheckState` (per-check transient state); all trait declarations, impls, and the method→trait reverse index live as `ModuleEntry` entries in the per-module `SymbolTable`s reached through Principle-17 chain-following resolution. The `TraitRegistry`/`ImplRegistry` names survive only as rustdoc tombstones (`checker.rs:17–18`, `traits/mod.rs:9`). The **ring axis was retired as a scheduling/framing axis (Sprint 64)** — pre-S64 "Ring N" annotations elsewhere are historical; this doc uses sprint-only framing.
 
-The trait system is built on three registries stored as fields on `TypeChecker`:
+## 1. Where trait state lives — symbol-table-resident model
+
+### 1.1 The two checker types (no registry fields)
 
 ```rust
-pub struct TypeChecker {
-    pub(crate) trait_registry: TraitRegistry,
-    pub(crate) impl_registry: ImplRegistry,
-    pub(crate) active_constraints: ActiveConstraints,
-    // ...
+// checker.rs — borrowed shared state; NO registry fields.
+pub struct TypeCheckEnv<'a, C = (), L = ()>
+where C: CodeStore, L: LinkerStore {
+    next_id: &'a AtomicU32,                              // fresh type-var IDs
+    modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, // per-module tables
+    staging: Option<TypeCheckStaging<'a, 'a, C, L>>,    // cluster-mode write redirect
+    module_aliases: &'a ModuleAliases,                  // §8.6.6 alias table
+    prelude_fallback: &'a PreludeFallback,              // §8.6.1 prelude-fallback bits
+}
+
+// checker.rs — per-check transient state.
+pub struct CheckState {
+    // ... subst, env (scope stack), current_module, side-maps (method_resolutions,
+    //     expr_types, user_fn_refs, pending_auto_curry) ...
+    active_constraints: ActiveConstraints,   // the ONE surviving "registry-like" field
 }
 ```
 
-### TraitRegistry
+Trait decls, impls, type defs, and the method→trait index are **not** HashMaps on the checker — they are `ModuleEntry` entries in the `modules` DashMap, keyed per module, resolved by chain-follow (Principle 17: short-name lookup is current-module-only with per-symbol `Import`/`Reexport` chain-follow; no universe scan). This is the structural realisation of "the crate carries no shared session state" (BC §2) — the durable trait facts live in the caller-supplied module tables, and only the transient inference companion (`active_constraints`) rides `CheckState`.
+
+### 1.2 Trait declaration entry — `ModuleEntry::TraitDecl`
 
 ```rust
-pub struct TraitRegistry {
-    pub(crate) decls: HashMap<TraitName, TraitDecl>,
-    pub(crate) method_to_trait: HashMap<Symbol, TraitName>,
+// cranelisp-types::module — module.rs:1049
+TraitDecl { info: TraitDeclInfo, visibility: Visibility, docstring: Option<String> }
+```
+
+`TraitDeclInfo` (a slimmed payload, S72 Phase B — it no longer embeds the frontend AST node) carries the trait `name`, `type_params`, and `methods` (each a `TraitMethodSig`). `visibility`/`docstring` live on the entry, not duplicated in the payload. One `TraitDecl` entry per declared trait, under the trait-name key in its defining module.
+
+### 1.3 Trait impl entry — `ModuleEntry::TraitImpl`
+
+```rust
+// cranelisp-types::module — module.rs:1110
+TraitImpl {
+    trait_name: FQTraitName,   // fully-qualified trait identity
+    impl_type: FQTypeName,     // fully-qualified target-type identity
+    methods: Vec<Symbol>,      // the method names this impl provides
+    visibility: Visibility,    // always Public (see below)
 }
 ```
 
-- **`decls`**: Maps trait name to its full AST declaration (`TraitDecl`). Stores the method signatures, type parameters, visibility, and span.
-- **`method_to_trait`**: Reverse lookup from method name to the trait that owns it. This is the key structure for method resolution -- when `infer_apply` sees a call to `+`, it checks this map to determine that `+` belongs to `Num`.
+- **Key.** The impl entry is stored under the **synthetic key `impl${FQTypeName}${FQTraitName}`** (minted at `impl_check.rs:149–152`). This is an index/metadata entry — it has no `callees`, no scheme; it records *that* `(Trait, Type)` has an impl, so dispatch can answer "is there an impl?" without a universe scan.
+- **Placement — Decision 45 / Pattern B.** The impl entry is written to the **trait's defining module's** table, NOT the writer's module (`impl_check.rs:125–161`, via `symbol_table_mut_in(&trait_home)`). The write target is resolved by chain-following the trait reference from the writer's module to the trait's home. This is what makes cross-module impl discovery a single-module scan: to find all impls of a trait, dispatch chain-follows to the trait's home and scans *that one module's* `TraitImpl` entries (`has_impl_in_module`, `get_implementing_types_in_module`).
+- **Visibility.** `TraitImpl` is always constructed `Public` (spec §5.11.1; the lossless-mark convention, `module.rs:1120`) — an impl is globally visible for coherence.
 
-**Invariant**: Every method name in `method_to_trait` has a corresponding entry in exactly one trait's `decls`. Method names are globally unique across traits (no two traits can declare a method with the same name).
+### 1.4 The method→trait reverse index — `trait_origin` on the method `Def`
 
-### ImplRegistry
-
-```rust
-pub struct ImplRegistry {
-    pub(crate) impls: HashMap<TraitName, HashMap<TypeName, RegisteredImpl>>,
-}
-
-pub struct RegisteredImpl {
-    pub trait_name: TraitName,
-    pub impl_type: TypeName,
-    pub method_primitives: HashMap<Symbol, Symbol>,
-}
-```
-
-Two-level map: `trait_name -> impl_type -> RegisteredImpl`. The `method_primitives` field stores the method-to-primitive delegation mapping (used for builtin impls; for user impls, each method maps to itself).
-
-### ActiveConstraints
+The old `method_to_trait: HashMap<Symbol, TraitName>` is gone. Each trait method is registered as an ordinary constrained `ModuleEntry::Def`, and that `Def` carries:
 
 ```rust
-pub struct ActiveConstraints {
-    pub(crate) constraints: HashMap<TypeId, Vec<TraitName>>,
-}
+// cranelisp-types::module — module.rs:760
+trait_origin: Option<FQTraitName>,   // "Replaces the method_to_trait reverse index"
 ```
 
-Tracks trait constraints on type variables during inference. Populated when a constrained scheme is instantiated (via `instantiate_constrained`), consulted during `generalize` to propagate constraints onto the generalized scheme. Idempotent adds -- duplicate `(TypeId, TraitName)` pairs are ignored.
+So "which trait owns method `+`?" is answered by **resolving the name `+` to its `Def` and reading `trait_origin`** — a chain-follow, prelude-fallback-aware lookup, not a map probe. Three read-throughs (`checker.rs`):
+- `method_to_trait(method_name)` (`:2088`) — defaults the root to the `user` module.
+- `method_to_trait_in_module(module_path, method_name)` (`:2094`) — resolves an entry in a named module and reads `Def { trait_origin: Some(fqtn), .. } => fqtn.name`.
+- `method_to_trait_with_state(state, method_name)` (`:2113`) — roots at `state.current_module`, chain-follows via `resolve_terminal_entry_scoped`, prelude-fallback aware. **This is the dispatch-path entry** (§7).
 
-**Lifetime**: Active constraints accumulate across the checking of a compilation unit. They are NOT cleared between top-level forms in the same batch. The `generalize` method resolves constraints through the substitution, so constraints recorded on one variable correctly attach to the variable it was unified with.
+Consequence: method-name→trait resolution obeys the same module-locality and prelude-fallback discipline as every other name (Principle 17 + the `scope_resolve` chokepoint) — there is no privileged global method table.
+
+### 1.5 `ActiveConstraints` — the transient inference companion
+
+```rust
+// traits/registry.rs:16
+pub struct ActiveConstraints { constraints: HashMap<TypeId, Vec<FQTraitName>> }
+```
+
+Held on `CheckState.active_constraints` (`checker.rs:145`). Tracks trait constraints on type variables **during** inference: populated when a constrained scheme is instantiated (`instantiate_constrained`, `monomorphise.rs:22` → `active_constraints.add(fresh_var, trait)`), consulted during `generalize` (`checker.rs:1900`) to propagate constraints onto the generalized scheme. Idempotent adds (duplicate `(TypeId, FQTraitName)` ignored). Snapshotted/restored across passes (`form.rs:284`, `program.rs:2426`); reset only by the test-only `clear_transient_state`. It accumulates across a compilation unit and is NOT cleared between top-level forms — `generalize` resolves constraints through the substitution so a constraint recorded on one variable correctly attaches to the variable it was unified with (§6 Invariant 7).
+
+### 1.6 The `traits/` module layout (S87 Wave-5e decomposition)
+
+The former monolithic `traits.rs` is five cohesive production submodules under a hub (`design/typecheck/s87-traits-decomposition.md` §1). All items are crate-private (`lib.rs` declares `mod traits;` — never `pub`; `public-api.txt` byte-identical):
+
+| Submodule | LOC | Concern |
+|---|--:|---|
+| `traits/mod.rs` | ~89 | hub: submodule decls, crate-internal re-exports, `mangle_trait_method` |
+| `traits/registry.rs` | ~364 | **write-side**: `TraitDecl` → symbol-table state; `ActiveConstraints`; `register_trait_decl`, `register_hkt_trait`, `register_trait_method`, `build_method_type` |
+| `traits/impl_check.rs` | ~889 | impl recording (`register_trait_impl`) + method-body checking (`check_impl_method`, `check_impl_method_with_sig`, default generation) |
+| `traits/dispatch.rs` | ~452 | **read-side**: `try_resolve_trait_method`, `primitive_for_trait_method`, HKT/return-type dispatch helpers |
+| `traits/monomorphise.rs` | ~1107 | the monomorphisation engine + mangling primitives (`monomorphise_call`, `recheck_body_for_mono`, `build_mangled_name`, `concrete_type_name`) |
+| `traits/type_resolve.rs` | ~456 | `TypeExpr → Type` resolution free functions |
+
+`traits/test_helpers.rs` (~324, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface.
 
 ## 2. Trait Declaration (`deftrait`)
 
-### Surface Syntax
+### Surface syntax
 
 ```clojure
 (deftrait (TraitName a)
@@ -69,48 +106,38 @@ Tracks trait constraints on type variables during inference. Populated when a co
   (method2 [x y] Bool (not (method1 x y))))   ;; default method
 ```
 
-### Registration Pipeline
+### Registration pipeline
 
-`register_trait_decl(&TraitDecl)` performs:
+`deftrait` registration runs in two seams — the **§8.6.4 name-freedom gate** (in `program.rs`) then the **write** (in `registry.rs`):
 
-1. **Duplicate check**: Error if `trait_registry.decls` already contains the trait name.
+1. **§8.6.4 seam (name-freedom), at the `check_form_register` `TraitDecl` arm (`program.rs:932–937`).** Before any write, `reject_def_over_binding(state, name, span)` is called for the trait **name** AND **each method name** (the loop at `:935`). A definition over any name already in scope — explicit import, export, or prelude-provided — is a §8.6.4 compile-time conflict, never a shadow (`home == current_module` ⇒ the module's own prior def ⇒ redefinition allowed; otherwise reject). This is the single definition-freedom chokepoint (`crates/cranelisp-typecheck/CLAUDE.md §"Bare-name resolution"`).
 
-2. **Fresh type variable allocation**: A single `fresh_var_id()` call allocates a type variable for the trait's type parameter (e.g., `a`). All methods share this variable -- they are polymorphic over the same `a`.
+2. **`register_trait_decl(state, decl)` (`registry.rs:79`)** then performs the write:
+   - **Idempotency probe (the ONE legitimate fallback-less probe, `registry.rs:84–115`).** A **raw current-module** `probe_module_entry_owned` (no chain-follow, no prelude hop) answering same-module IDENTITY — NOT name-freedom (that already ran at step 1). The cluster orchestrator retries a module's typecheck from the top with no resume index (loading a declared submodule), re-submitting the parent's structural decls while prior results are committed to live. A re-submission of the *same* declaration (`trait_decl_matches`) is a no-op (`Ok(())`, idempotent, mirroring `deftype`, S86 D3); a genuinely-different same-module redeclaration is rejected (`"trait … already defined"`, spec §7.1).
+   - **Fresh type-var allocation.** One `fresh_var_id()` allocates the trait's type parameter (e.g. `a`); all methods share it — they are polymorphic over the same `a`.
+   - **Method registration** (`register_trait_method`, `registry.rs:262`): builds each method's function type via `build_method_type`, wraps it in a `Scheme { vars: [type_var_id], constraints: { type_var_id: [trait_name] } }`, inserts the method as a constrained `ModuleEntry::Def` carrying `trait_origin: Some(fq_trait)` (§1.4), and — for HKT traits — routes through `register_hkt_trait` (`registry.rs:168`).
+   - **Trait entry.** Inserts the `ModuleEntry::TraitDecl { info, visibility, docstring }` under the trait-name key (`registry.rs:150`).
 
-3. **Method registration**: For each `TraitMethodSig`, calls `register_trait_method()`:
-   - Builds the method's function type via `build_method_type()`.
-   - Wraps it in a `Scheme` with `vars: [type_var_id]` and `constraints: { type_var_id: [trait_name] }`.
-   - Inserts the method into the symbol table as `ModuleEntry::Def` with `DefKind::UserFn { constrained_fn: None }`.
-   - Registers the reverse lookup in `method_to_trait`.
+### Type-variable allocation in method signatures
 
-4. **Trait storage**: Stores the `TraitDecl` in `trait_registry.decls`.
+`build_method_type` resolves `TypeExpr` values against a `var_map`:
 
-5. **Symbol table entry**: Registers the trait name itself as `ModuleEntry::TraitDecl` for REPL introspection.
+- Trait type parameters (e.g. `a`) → `Type::Var(type_var_id)` (the shared variable).
+- `TypeExpr::Named("Bool")` → `Type::Bool` (`Type::from_name`).
+- `TypeExpr::SelfType` → `Type::Var(type_var_id)`.
+- A `TypeExpr::TypeVar` that does NOT match a trait type parameter gets a fresh variable (handles method-local extra type params).
 
-### Type Variable Allocation
-
-The `build_method_type` function resolves `TypeExpr` values in the method signature against a `var_map`:
-
-- Trait type parameters (e.g., `a`) map to `Type::Var(type_var_id)` -- the shared type variable.
-- `TypeExpr::Named("Bool")` resolves to `Type::Bool` via `Type::from_name`.
-- `TypeExpr::SelfType` resolves to `Type::Var(type_var_id)`.
-- Other `TypeExpr::TypeVar` values that do NOT match trait type parameters get fresh type variables (I3 fix). This handles methods with additional type parameters beyond the trait's own.
-
-**Example**: For `(deftrait (Num a) (+ [a a] a))`, the `+` method gets:
+**Example** — `(deftrait (Num a) (+ [a a] a))` gives `+`:
 
 ```
-Scheme {
-    vars: [42],
-    constraints: { 42: ["Num"] },
-    ty: Fn([Var(42), Var(42)], Var(42))
-}
+Scheme { vars: [42], constraints: { 42: ["Num"] }, ty: Fn([Var(42), Var(42)], Var(42)) }
 ```
 
-This scheme says: `+` is polymorphic over one type variable, constrained to types that implement `Num`.
+`+` is polymorphic over one variable, constrained to types implementing `Num`.
 
 ## 3. Trait Implementation (`impl`)
 
-### Surface Syntax
+### Surface syntax
 
 ```clojure
 (impl Num Int
@@ -120,98 +147,47 @@ This scheme says: `+` is polymorphic over one type variable, constrained to type
   (/ [x y] (div-i64 x y)))
 ```
 
-### Registration Pipeline
+### Registration pipeline — `register_trait_impl(state, impl_) -> Result<Vec<Defn>>` (`impl_check.rs:18`)
 
-`register_trait_impl(&TraitImpl)` performs:
+1. **Trait lookup + target resolution.** Chain-follow the trait reference to its `TraitDecl` (error if unknown); resolve the impl target to its `FQTypeName` (`concrete_type_for_impl_target`, ADT-arity-checked).
+2. **Required-method check** (`check_impl_methods_present`, `impl_check.rs:196`): every method without a `default_body` MUST be provided; defaulted methods may be omitted.
+3. **Field-accessor collision check (spec §7.3.1, FIXME 0365).** An impl method whose name equals an existing field-accessor name of the target type is rejected at impl time (see `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the check runs alongside `check_impl_methods_present`, before the impl entry is written).
+4. **Default-method generation** (`generate_default_methods`): for each omitted defaulted method, mint a mangled `Defn` (§3.1) whose body is built by `build_default_body`.
+5. **Impl entry write.** Insert `ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility: Public }` under `impl${FQTypeName}${FQTraitName}` in the **trait's defining module** (Decision 45, §1.3). There is no explicit dedup guard — a re-run re-`insert`s under the synthetic key, overwriting idempotently.
+6. **Method-body type-checking** (`check_impl_method` / `check_impl_method_with_sig`): resolve the concrete `Self` type, seed a `var_map` `{ trait_type_param → concrete_self }`, resolve each signature param/return through `resolve_trait_type_expr`, and check the body against those concrete types (`check_defn_body_with_types`). The mangled-name `Def` writeback (with its `codegen_view`, `callees`, `ast`) runs through the shared `finalize_impl_method_writeback` tail (the single/HKT paths converge there).
+7. **Return.** The provided + default `Defn` nodes are returned to the caller for codegen (core-trait impls' returns are discarded — §5).
 
-1. **Trait lookup**: Finds the `TraitDecl` in `trait_registry.decls`. Error if unknown.
+### Post-inference
 
-2. **Required method check**: `check_impl_methods_present` verifies all methods without `default_body` are provided. Methods with defaults may be omitted.
+`resolve_deferred_trait_calls` runs after body checking to resolve trait-method calls in the impl body that couldn't resolve eagerly (§7).
 
-3. **Default method generation**: `generate_default_methods` creates `Defn` nodes for any missing methods that have defaults. Each gets a mangled name `TraitName.method_name$FQTargetType` (e.g., `Eq.!=$primitives/Int`) — the `$Type` suffix is the **home-qualified** type head (see §"Mangling Convention"). The body is constructed by `build_default_body` (see Section 4).
+### 3.1 Mangling convention — `mangle_trait_method`
 
-4. **Impl registration**: Inserts a `RegisteredImpl` into `impl_registry.impls[trait_name][target_type]`.
-
-5. **Method body type-checking**: For each provided method, `check_impl_method` resolves the concrete type for `Self` (e.g., `Int`), builds concrete parameter and return types by substituting the trait type parameter with the concrete type, then calls `check_defn_body_with_types` to type-check the body.
-
-6. **Mangled Defn emission**: Each method produces a `Defn` with mangled name `TraitName.method_name$FQTargetType` (e.g., `Num.+$primitives/Int`). These are returned to the caller for codegen.
-
-### Mangling Convention
-
-Trait method implementations use the naming pattern:
+Trait-method implementations use:
 
 ```
 {TraitName}.{method_name}${home}/{TargetType}
 ```
 
-Examples:
-- `Num.+$primitives/Int` -- addition for integers
-- `Eq.=$primitives/String` -- equality for strings
-- `Display.show$primitives/Bool` -- string conversion for booleans
-- `Eq.!=$primitives/Int` -- default method, inequality for integers
-- `Describe.describe$a/Widget` -- a user impl for a module-`a` ADT
+Examples: `Num.+$primitives/Int`, `Eq.=$primitives/String`, `Eq.!=$primitives/Int` (a default), `Describe.describe$a/Widget` (a user impl on a module-`a` ADT).
 
-**FQ `$Type` suffix (S102 — 4th lossy-head cure).** The `$Type` suffix carries
-the **fully-qualified, home-qualified** type head (`module/Type`), NOT the bare
-head. Spec §3.8.4 makes two same-bare-named types from different modules
-(`a/Widget` ≠ `b/Widget`) DISTINCT; the pre-S102 bare-head grammar
-(`Describe.describe$Widget`) collapsed both onto one linker symbol, so their two
-impl bodies collided and every `(describe x)` call dispatched to whichever
-same-named `Widget` was in the caller's scope — a silent wrong-dispatch. This is
-the same lossy-head class 0519 cured for the mono-instance mangler, now extended
-to the trait-method grain. Home-qualifying the suffix makes the symbol
-collision-free by construction (Principle 20).
+**FQ `$Type` suffix (S102 — lossy-head cure).** The `$Type` suffix carries the **fully-qualified, home-qualified** type head (`module/Type`), not the bare head. Spec §3.8.4 makes two same-bare-named types from different modules (`a/Widget` ≠ `b/Widget`) DISTINCT; a bare-head grammar collapsed both onto one linker symbol, silently wrong-dispatching every `(describe x)`. Home-qualifying the suffix makes the symbol collision-free by construction (Principle 20) — the same lossy-head class 0519 cured for the mono-instance mangler, extended to the trait-method grain.
 
-**One mint, both sides — the lock-step invariant (name-path == definition-path).**
-The dispatch site (`dispatch::try_resolve_trait_method`) and the
-definition/writeback site (`impl_check` — `check_impl_method_with_sig`,
-`check_hkt_impl_method`, `generate_default_methods`) mint through the ONE shared
-`mangle_trait_method(trait, method, &FQTypeName)` helper against the SAME
-canonical `FQTypeName`, or the call's linker symbol would not match the impl
-method's definition symbol and dispatch would not resolve. The two sides derive
-the `FQTypeName` differently but land on the same value for a given impl:
-- **Definition side** — `resolve_type` on the impl target (`impl a/Widget` in
-  module `a` → `a/Widget`), resolved ONCE in `register_trait_impl` and threaded
-  to all three writeback paths (Principle 7).
-- **Dispatch side** — `fq_type_for_dispatch_mangle(&resolved_arg, &fallback)`
-  takes the FQ head from the resolved argument's OWN type (an ADT carries its
-  home directly). It does NOT re-resolve the bare head in the caller's module
-  (the `fallback`, used only for intrinsic receivers whose bare head is globally
-  unambiguous) — that re-resolution is exactly the home-erasing bug.
+**One mint, both sides — the lock-step invariant (name-path == definition-path).** The dispatch site (`dispatch.rs::try_resolve_trait_method`) and the definition/writeback sites (`impl_check.rs` — `check_impl_method_with_sig`, `check_hkt_impl_method`, `generate_default_methods`) mint through the ONE shared `mangle_trait_method(trait, method, &FQTypeName)` helper (`traits/mod.rs:74`) against the SAME canonical `FQTypeName`, or the call's linker symbol would not match the impl method's definition symbol. The two sides derive the `FQTypeName` differently but land on the same value:
+- **Definition side** — `resolve_type` on the impl target, resolved ONCE in `register_trait_impl` and threaded to all writeback paths (Principle 7).
+- **Dispatch side** — `fq_type_for_dispatch_mangle(&resolved_arg, &fallback)` takes the FQ head from the resolved argument's OWN type (an ADT carries its home). It does NOT re-resolve the bare head in the caller's module — that re-resolution is the home-erasing bug.
 
-**Grain: receiver HEAD only.** The suffix carries the receiver type's FQ head;
-ADT type-args are NOT recursed (`Vec Int` and `Vec String` both yield the head
-`primitives/Vec`). This MATCHES the trait-impl registration grain, which names by
-the impl target head (`impl_target_name_or_panic`), so the two sides agree.
-Arg-distinguishing the trait-method grain would require a coordinated change to
-impl registration too and is out of scope for this cure — keeping the head-only
-grain is what preserves the lock-step invariant.
+**Grain: receiver HEAD only.** The suffix carries the receiver type's FQ head; ADT type-args are not recursed (`Vec Int` and `Vec String` both yield head `primitives/Vec`). This matches the impl-registration grain (impl target head), so both sides agree; arg-distinguishing the grain would require a coordinated impl-registration change and is out of scope.
 
-*(The `primitive_for_trait_method` short-circuit means Ring-0 operator impls on
-primitive types — `Num.+$…/Int`, `Display.show$…/Int`, etc. — never actually
-mint a trait-method symbol; they collapse to `ResolvedCall::BuiltinFn` and inline.
-The mangle path is exercised by user traits and user impls on ADTs.)*
-
-### Body Type-Checking
-
-`check_impl_method` resolves the concrete self type from `impl_.target_type`:
-
-- Primitive types (`Int`, `Float`, `Bool`, `String`) resolve via `Type::from_name`.
-- User-defined types resolve to `Type::ADT(name, [])`.
-
-A `var_map` is pre-seeded with `{ trait_type_param -> concrete_self }`. Each method signature parameter and return type is resolved through `resolve_trait_type_expr` using this map, producing concrete types. The body is then checked against these concrete types using `check_defn_body_with_types`, which pushes a scope, binds parameters, infers the body, and unifies with the expected return type.
-
-**Post-inference**: `resolve_deferred_trait_calls` runs after body checking to resolve any trait method calls within the impl body that couldn't be resolved eagerly (see Section 8).
+*(The `primitive_for_trait_method` short-circuit means operator impls on primitive types — `Num.+$…/Int`, `Display.show$…/Int` — never actually mint a trait-method symbol; they collapse to `ResolvedCall::BuiltinFn` and inline. The mangle path is exercised by user traits and user impls on ADTs.)*
 
 ## 4. Default Methods
 
-Default methods are trait methods with a body that can be omitted from `impl` blocks. The trait declaration specifies the body; implementations inherit it unless they provide their own.
+Default methods are trait methods with a body that may be omitted from `impl` blocks; the trait decl supplies the body and impls inherit it unless they override.
 
 ### Declaration
 
-In `TraitMethodSig`, `default_body: Option<Sexp>` signals a default method. When `Some(...)`, the method may be omitted from implementations.
-
-For the core traits, default bodies are flagged with a placeholder (`Sexp::Symbol("default", ...)`) rather than actual Cranelisp source. The `build_default_body` function hard-codes the AST construction for known defaults:
+In `TraitMethodSig`, `default_body: Option<Sexp>` signals a default. For the core traits, default bodies are flagged with a placeholder (`Sexp::Symbol("default", …)`) and `build_default_body` hard-codes the AST:
 
 | Method | Body |
 |--------|------|
@@ -220,421 +196,212 @@ For the core traits, default bodies are flagged with a placeholder (`Sexp::Symbo
 | `Ord.<=` | `(not (< y x))` |
 | `Ord.>=` | `(not (< x y))` |
 
-**Ring 3 note**: When user-defined traits with default methods are supported via parsed source, `build_default_body` will need to be replaced with a pipeline that parses the `default_body` Sexp through the frontend's AST builder. The current hard-coded approach only works for the four known builtin defaults.
+> **Follow-up (was "Ring 3"):** user-defined traits with parsed-source default bodies would replace `build_default_body`'s hard-coding with a frontend-parse of the `default_body` Sexp. The current hard-coded approach covers only the four builtin defaults; parsed defaults are unscheduled.
 
-### Generation
+### Generation + override
 
-When `register_trait_impl` finds a method not provided by the impl but present in the trait decl with a default body:
+When `register_trait_impl` finds a defaulted method the impl omits, it mints the mangled name (§3.1), builds the body via `build_default_body`, and includes the `Defn` in the returned vector — compiled by the backend like any other function. If the impl *provides* a defaulted method, `generate_default_methods` skips it (the provided body wins). Default `Defn`s ride `CheckResult.default_method_defns`.
 
-1. A mangled name `TraitName.method$home/TargetType` is generated (FQ suffix; see §"Mangling Convention").
-2. `build_default_body` constructs the AST body.
-3. A `Defn` is created with the default parameter names and the constructed body.
-4. The `Defn` is included in the returned vector alongside explicitly provided methods.
+## 5. Core-trait provisioning
 
-Default method `Defn` nodes are returned as `default_method_defns` in `CheckResult` / `ReplCheckResult` and compiled by the backend like any other function.
+The core traits (`Num`, `Eq`, `Ord`, `Display`) and their primitive-type impls are provisioned so `(+ 1 2)` type-checks before any user source. Two facts govern the design:
 
-### Override
+1. **Same pipeline as user traits (former Decision 17, resolved S9).** Core traits flow through the *same* `register_trait_decl` / `register_trait_impl` code paths as user traits — no special-case registration logic. The provisioning code constructs `TraitDecl` / `TraitImpl` AST structs directly in Rust (the typecheck crate cannot depend on the frontend, so it cannot parse them from `.cl` source — a permanent architectural constraint, not a temporary compromise). Pipeline uniformity does not require parsing from source; it requires the same registration code paths.
 
-If an impl provides a method that has a default, the provided implementation is used instead. The `generate_default_methods` function checks the `provided` set and skips any method found there.
+2. **Bootstrap ordering + transient-state cleanup.** Provisioning runs before any user source; registering core impls type-checks their method bodies (e.g. `(add-i64 x y) : (Fn [Int Int] Int)`), populating `expr_types` / `method_resolutions` / `subst` at `Span::SYNTHETIC`. A cleanup step wipes those transient maps so synthetic entries do not leak into user-program checking and cause spurious span matches.
 
-## 5. Core Trait Bootstrap (Decision 17 -- Resolved)
+> **Provisioning locus — verify at implementation time.** The historical text placed core-trait construction in `register_builtins()`/`builtins.rs`; `design/typecheck/typecheck.md` records that core traits now live in `.cl` files loaded at session start (per `design/arch/CLAUDE.md` Decision 17 retraction note). The two are not contradictory if `builtins.rs` is the *test-fixture* world-builder (`TestFixture` seeds `Num`/`Eq`/`Ord`/`Display` in-crate) while production loads the core-trait `.cl` files through the same `register_trait_decl`/`register_trait_impl` seams. When touching this path, confirm which locus is production vs test — the invariant that matters (and is asserted below) is *same registration code path*, not *which caller constructs the structs*.
 
-The four core traits (`Num`, `Eq`, `Ord`, `Display`) and their implementations for primitive types are registered during `TypeChecker::new()` by Rust code in `builtins.rs`. This was originally flagged as Decision 17 for elimination; it was resolved in Sprint 9 by routing all registrations through the normal `register_trait_decl` / `register_trait_impl` pipeline (see "Decision 17 Status" below).
-
-### Why Not Parse From Source
-
-Core traits cannot be registered by parsing Cranelisp source because:
-
-1. **Circular dependency**: The frontend (parser, macro expander, AST builder) depends on the typechecker's symbol table, which needs these traits to resolve operators. Loading them from source would require a partially-functional pipeline.
-
-2. **Bootstrap ordering**: `register_builtins()` runs before any Cranelisp source is processed. The trait declarations and implementations must be available before the first `(+ 1 2)` can be type-checked.
-
-3. **No frontend dependency**: The typechecker crate does not depend on the frontend crate. Constructing `TraitDecl` and `TraitImpl` AST structs directly in Rust avoids introducing this dependency.
-
-### Implementation
-
-`register_builtins()` calls:
-
-1. `register_primitives()` -- Ring 0 monomorphic primitives (`add-i64`, `eq-i64`, etc.)
-2. `register_ring1_primitives()` -- Ring 1 extern primitives (`int-to-string`, `str-eq`, etc.)
-3. `register_vec_primitives()` -- Polymorphic Vec primitives
-4. `register_special_forms()` -- Special form entries for introspection
-5. `register_core_trait_decls()` -- Constructs `TraitDecl` AST structs and routes through `register_trait_decl()`
-6. `register_core_trait_impls()` -- Constructs `TraitImpl` AST structs with real method bodies (delegating to named primitives) and routes through `register_trait_impl()`
-7. `clear_transient_state()` -- Clears `expr_types`, `method_resolutions`, and `subst` accumulated during core impl type-checking
-
-The key design principle: core traits use **the same pipeline** as user-defined traits. `register_core_trait_decls` constructs `TraitDecl` structs and calls `register_trait_decl`; `register_core_trait_impls` constructs `TraitImpl` structs with method bodies like `(add-i64 x y)` and calls `register_trait_impl`. The returned `Defn` nodes are discarded because the backend's `primitive_for_trait_method` short-circuits all core methods to inline IR (see Section 8).
-
-### 12 Core Impl Registrations
+### 12 core impl registrations (the primitive coverage)
 
 | Trait | Int | Float | Bool | String |
 |-------|-----|-------|------|--------|
-| Num | `+` `-` `*` `/` | `+` `-` `*` `/` | -- | -- |
+| Num | `+` `-` `*` `/` | `+` `-` `*` `/` | — | — |
 | Eq | `=` | `=` | `=` | `=` |
-| Ord | `<` | `<` | -- | -- |
+| Ord | `<` | `<` | — | — |
 | Display | `show` | `show` | `show` | `show` |
 
-Default methods (`!=`, `>`, `<=`, `>=`) are auto-generated for all Eq/Ord impls.
-
-### Transient State Cleanup
-
-After registering core trait impls, `clear_transient_state()` wipes `expr_types`, `method_resolutions`, and `subst`. This is necessary because `register_trait_impl()` type-checks method bodies (e.g., checking that `(add-i64 x y)` has type `(Fn [Int Int] Int)`), which populates these maps with entries keyed at `Span::SYNTHETIC`. Without cleanup, these entries would leak into user program checking and cause spurious matches.
-
-### Decision 17 Status
-
-Decision 17 was resolved in Sprint 9 (task #4). The original concern was that core traits were registered via bespoke `register_core_traits()` / `register_builtin_impls()` helper functions rather than the normal trait pipeline. The resolution replaced those helpers so that core traits now use the standard `register_trait_decl()` / `register_trait_impl()` code paths:
-
-- **Normal pipeline**: `register_core_trait_decls()` constructs `TraitDecl` AST structs in Rust and passes them to `register_trait_decl()`. `register_core_trait_impls()` constructs `TraitImpl` AST structs (with real method bodies delegating to named primitives) and passes them to `register_trait_impl()`. No special-case registration logic exists.
-- **No frontend dependency**: The typechecker crate cannot depend on the frontend crate, so AST structs (`TraitDecl`, `TraitImpl`, `TraitMethodSig`, etc.) are constructed directly in Rust rather than parsed from Cranelisp source. This is a permanent architectural constraint, not a temporary compromise.
-- **Transient state cleanup**: `clear_transient_state()` wipes `expr_types`, `method_resolutions`, and `subst` accumulated during core impl type-checking, preventing `Span::SYNTHETIC` entries from leaking into user program checking.
-- **Module context**: Core traits are registered in the `primitives` module context (Sprint 9 trait module fix), consistent with how other builtin symbols are scoped.
-
-No Ring 3 macro pipeline dependency was needed. The key insight is that pipeline uniformity (Invariant 14) does not require parsing from Cranelisp source -- it only requires that core traits flow through the same `register_trait_decl` / `register_trait_impl` code paths as user traits, which they now do.
+Defaults (`!=`, `>`, `<=`, `>=`) auto-generate for all Eq/Ord impls.
 
 ## 6. Constrained Polymorphism
 
-### What It Is
-
-A function is *constrained polymorphic* when its generalized type scheme has non-empty constraints. This happens when the function body calls trait methods, leaving the concrete type unresolved.
+A function is *constrained polymorphic* when its generalized scheme has non-empty `constraints` — its body calls trait methods, leaving the concrete type unresolved:
 
 ```clojure
-(defn add [x y] (+ x y))
-;; Inferred: add :: forall a:Num. (Fn [a a] a)
+(defn add [x y] (+ x y))     ;; add :: forall a:Num. (Fn [a a] a)
 ```
 
-Here `a` must implement `Num` because the body calls `+`. Unlike unconstrained polymorphism (which can be compiled once), constrained functions must be *monomorphised* at each call site -- the concrete type determines which trait impl to use.
+`a` must implement `Num`. Unlike unconstrained polymorphism (compile once), a constrained function is *monomorphised* per concrete type combination at its call sites (§7).
 
 ### Scheme.constraints
 
 ```rust
-pub struct Scheme {
-    pub vars: Vec<TypeId>,
-    pub constraints: HashMap<TypeId, Vec<TraitName>>,
-    pub ty: Type,
-}
+pub struct Scheme { vars: Vec<TypeId>, constraints: HashMap<TypeId, Vec<FQTraitName>>, ty: Type }
 ```
 
-`constraints` maps quantified type variable IDs to the list of traits they must implement. A scheme with empty `constraints` is unconstrained polymorphic (or monomorphic if `vars` is also empty).
+`constraints` maps quantified var IDs to the traits they must implement. Empty `constraints` ⇒ unconstrained (or monomorphic if `vars` empty too).
 
-### Constraint Propagation
+### Constraint propagation — three stages
 
-Constraints flow through three stages:
+- **Instantiation** — `instantiate_constrained` (`monomorphise.rs:22`) maps old vars to fresh ones and carries constraints to the fresh vars in `active_constraints`.
+- **Unification** — during body checking, fresh vars may unify with the function's param vars; the substitution records the binding but does NOT move constraints (they stay on the original fresh var).
+- **Generalization** — `generalize(state, ty)` (`checker.rs:1900`) resolves each `active_constraints` entry through `state.subst`: a constraint on `Var(X)` where `subst[X] = Var(Y)` and `Y ∈ scheme.vars` attaches to `Y` in the scheme (dedup per FIXME 0354 Bug A). This is the critical step — the constraint recorded on an instantiation-fresh var correctly reaches the scheme's quantified var it was unified with.
 
-**Stage 1 -- Instantiation**: When a constrained scheme (e.g., `+` with `Num` constraint) is instantiated, `instantiate_constrained` maps old type variables to fresh ones and carries the constraints to the fresh variables in `active_constraints`:
+### Detection (in the register/body passes)
+
+- **Eager marking.** After each body is checked, a trial `generalize`; if the trial scheme has constraints, the function is immediately marked constrained (a `ConstrainedFn` stored in its `DefKind::UserFn { fn_state: Constrained(..) }`). Eager because later bodies in the same unit may pin this function's vars through the shared substitution.
+- **Final clearing.** After all bodies, re-generalize; if a function's final scheme has no constraints (later call sites pinned all vars), the eager marker is cleared.
+- **Re-resolution.** A final `resolve_deferred_trait_calls` pass retries trait calls that were unresolved when first seen.
+
+### ConstrainedFn storage
 
 ```rust
-fn instantiate_constrained(&mut self, scheme: &Scheme) -> Type {
-    // Build old_var -> fresh_var mapping
-    // For each (old_var, traits) in scheme.constraints:
-    //   active_constraints.add(fresh_var, trait)
-    apply(&inst_subst, &scheme.ty)
-}
+pub struct ConstrainedFn { defn: Defn, scheme: Scheme }   // in DefKind::UserFn { fn_state: Constrained(Box<ConstrainedFn>) }
 ```
 
-**Stage 2 -- Unification**: During body checking, the fresh variables from instantiation may be unified with other variables (e.g., the function's parameter type variables). The substitution records these bindings but does NOT move constraints -- they remain on the original fresh variable.
+`defn` is the original definition (re-checked during monomorphisation); `scheme` is the constrained polymorphic scheme.
 
-**Stage 3 -- Generalization**: `TypeChecker::generalize` resolves constraints through the substitution:
+## 7. Method Resolution
 
-```rust
-fn generalize(&self, ty: &Type) -> Scheme {
-    let mut scheme = scheme::generalize(&self.subst, ty, &env_fv);
-    // For each (constrained_var, traits) in active_constraints:
-    //   let resolved = apply(subst, Var(constrained_var))
-    //   if resolved is Var(resolved_id) and resolved_id in scheme.vars:
-    //     scheme.constraints[resolved_id] = traits
-    scheme
-}
-```
+Resolution happens in `infer_apply` and is refined post-inference by `resolve_deferred_trait_calls`. The result is a `ResolvedCall` in `method_resolutions`, keyed by the `Apply` node's span.
 
-This is the critical step. The constraint was recorded on a fresh variable (from instantiation), which was unified with one of the function's parameter type variables. The substitution maps the fresh variable to the parameter variable, so the constraint correctly attaches to the scheme's quantified variable.
+### During inference — `try_resolve_trait_method` (`dispatch.rs:21`)
 
-### Detection
+`try_resolve_trait_method(state, callee_name, arg_types, span) -> Result<Option<ResolvedCall>>`:
 
-Constrained functions are detected in `pass2_check_bodies` using a two-phase approach:
+1. `method_to_trait_with_state(state, callee_name)` (§1.4) → the owning trait, or bail `Ok(None)`.
+2. Select the dispatch argument — `hkt_param_idx_for_method` (default arg 0) or return-type dispatch for nullary-return-poly methods.
+3. `concrete_type_name` of the resolved dispatch arg; if still a `Var`, return `None` (defer to mono).
+4. `has_impl_with_state(state, &trait_name, &impl_type_name)` — chain-follow to the trait's home and scan its `TraitImpl` entries (Decision 45); error `no impl of trait T for type X` if absent.
+5. Primitive short-circuit: `primitive_for_trait_method` hit ⇒ `ResolvedCall::BuiltinFn`.
+6. Otherwise mint `ResolvedCall::TraitMethod { trait_name, method_name, impl_type, mangled_name }` via `mangle_trait_method`.
 
-**Phase 1 -- Eager marking**: After each function body is checked, a trial `generalize` is performed. If the trial scheme has non-empty constraints, the function is immediately marked as constrained by storing a `ConstrainedFn` in its `DefKind`. This must happen eagerly because later function bodies (in the same compilation unit) may call this function, pinning its type variables to concrete types through the shared substitution.
+If not a trait method, `infer_apply` falls to `is_primitive` (⇒ `BuiltinFn`) or leaves no entry (regular function call).
 
-**Phase 2 -- Final generalization**: After all bodies are checked, all functions are generalized again. If a function's final scheme has no constraints (because later call sites pinned all type variables), any eager `constrained_fn` marker is cleared.
+### Deferred resolution — `resolve_deferred_trait_calls`
 
-**Phase 3 -- Re-resolution**: A final `resolve_deferred_trait_calls` pass runs over all function bodies. During Phase 1, some trait calls could not be resolved because argument types were still unresolved variables. After Phase 2, those variables may be pinned to concrete types.
+During inference an argument type may still be a `Var` (e.g. `x`/`y` in `(defn add [x y] (+ x y))`), so `concrete_type_name` returns `None` and step 3 defers. After all bodies are checked and the substitution is populated, `resolve_deferred_trait_calls` walks the tree and retries resolution for any trait-method `Apply` with no `method_resolutions` entry, reading argument types from `expr_types` (subst-applied) rather than re-inferring. It runs after each body (eager), after all bodies (re-resolution), and after `check_defn_body_with_types` (impl methods, mono).
 
-### ConstrainedFn Storage
-
-```rust
-pub struct ConstrainedFn {
-    pub defn: Defn,
-    pub scheme: Scheme,
-}
-```
-
-Stored inside `DefKind::UserFn { constrained_fn: Option<Box<ConstrainedFn>> }`. The `defn` is the original function definition (needed to re-check the body during monomorphisation). The `scheme` is the constrained polymorphic scheme.
-
-## 7. Monomorphisation
-
-### Overview
-
-Monomorphisation generates specialized versions of constrained functions for each concrete type combination encountered at call sites. Each specialization has its own mangled name, method resolutions, and expression types.
-
-### Mangling Convention
-
-```
-{fn_name}${Type1}+{Type2}+...
-```
-
-Where `Type1`, `Type2`, etc. are the concrete parameter types. Examples:
-- `add$Int+Int` -- `add` specialized to `(Int, Int)`
-- `add$Float+Float` -- `add` specialized to `(Float, Float)`
-
-### Batch Pipeline (Pass 4)
-
-`pass4_monomorphise` in `program.rs`:
-
-1. **Collect call sites**: Walk all non-constrained function bodies with `collect_constrained_calls`, finding `Apply` nodes whose callee is a known constrained function. Records `(fn_name, arg_spans, call_span)` triples.
-
-2. **Resolve argument types**: Look up concrete types from `resolved_expr_types` using the argument spans.
-
-3. **Deduplicate**: Build a key `"fn_name$Type1+Type2+..."` and skip if this specialization was already generated.
-
-4. **Monomorphise**: Call `monomorphise_call` for each unique specialization.
-
-5. **Record dispatch**: Insert `ResolvedCall::SigDispatch { mangled_name }` into `method_resolutions` for each call site.
-
-### monomorphise_call
-
-`monomorphise_call(fn_name, arg_types, call_span)` in `traits.rs`:
-
-1. **Look up ConstrainedFn**: Retrieve the original `Defn` and constrained `Scheme`.
-
-2. **Instantiate and unify**: Instantiate the scheme with fresh variables, then unify each parameter type with the concrete argument type. This pins all type variables to concrete types.
-
-3. **Build mangled name**: `name$Type1+Type2`.
-
-4. **Constraint satisfaction check**: For each constraint `(var_id, traits)` in the scheme, resolve the var through the substitution and check that the concrete type has an impl for each required trait. Error if not.
-
-5. **Re-check body**: Save and swap out `method_resolutions` and `expr_types`. Re-check the function body with concrete parameter types via `check_defn_body_with_types`. This produces method resolutions specific to this specialization (e.g., `+` at Int resolves to `Num.+$Int`).
-
-6. **Inner call resolution**: Scan the body for calls to other constrained functions and generate `SigDispatch` entries for them (handles self-recursive constrained calls).
-
-7. **Produce MonoDefn**: Package the mangled `Defn`, per-specialization `resolutions`, and per-specialization `expr_types` into a `MonoDefn`.
-
-8. **Restore state**: Restore the original `method_resolutions` and `expr_types`.
-
-### MonoDefn
-
-```rust
-pub struct MonoDefn {
-    pub defn: Defn,                       // mangled name, original body
-    pub resolutions: MethodResolutions,   // per-specialization call resolutions
-    pub expr_types: HashMap<Span, Type>,  // per-specialization expression types
-}
-```
-
-Each `MonoDefn` carries its own method resolutions and expression types. The backend compiles it as a standalone function, using the per-mono maps instead of the program-wide ones.
-
-### REPL Path
-
-`monomorphise_expr_calls(expr)` handles the REPL case:
-
-1. Scans the symbol table for all constrained function names.
-2. Calls `collect_constrained_calls` on the expression.
-3. Resolves argument types from `expr_types` (applying the substitution).
-4. Calls `monomorphise_call` for each call site.
-
-This runs for both `ReplInput::Expr` and `ReplInput::Defn`.
-
-### Invariants
-
-- Constrained functions are never compiled directly -- only their monomorphised specializations are compiled.
-- `constrained_fn_names` in `CheckResult` tells the backend which `Defn` nodes to skip.
-- Each `MonoDefn` shares the same `Span` values as the original `Defn` (since the body is reused). The per-mono `expr_types` and `resolutions` override the program-wide maps for this specialization.
-
-## 8. Method Resolution
-
-### Resolution Pipeline
-
-Method resolution happens in `infer_apply` and is refined post-inference by `resolve_deferred_trait_calls`. The result is a `ResolvedCall` entry in `method_resolutions`, keyed by the `Apply` node's span.
-
-#### During Inference (infer_apply)
-
-After unifying callee and argument types:
-
-1. **Trait method check**: `try_resolve_trait_method(name, resolved_args, span)` -- looks up the callee in `method_to_trait`, resolves the first argument's type through the substitution, extracts the concrete type name, checks for an impl, and produces `ResolvedCall::TraitMethod` with the mangled name.
-
-2. **Primitive check**: If not a trait method, checks `is_primitive(name)` and produces `ResolvedCall::BuiltinFn`.
-
-3. **Neither**: No entry in `method_resolutions` -- the backend treats it as a regular function call.
-
-#### Deferred Resolution (resolve_deferred_trait_calls)
-
-During inference, argument types may still be unresolved variables (e.g., in `(defn add [x y] (+ x y))`, the types of `x` and `y` are fresh variables when `+` is processed). The `try_resolve_trait_method` call returns `None` because `concrete_type_name(Var(_))` returns `None`.
-
-After all bodies are checked and the substitution is fully populated, `resolve_deferred_trait_calls` walks the expression tree and retries resolution for any `Apply` node whose callee is a trait method but has no entry in `method_resolutions`. It reads argument types from `expr_types` (applying the substitution) rather than re-inferring.
-
-This runs:
-- After each body in `pass2_check_bodies` Phase 1
-- After all bodies in `pass2_check_bodies` Phase 3 (re-resolution)
-- After body checking in `check_defn_body_with_types` (impl methods, monomorphisation)
-
-### ResolvedCall Enum
+### ResolvedCall
 
 ```rust
 pub enum ResolvedCall {
-    TraitMethod {
-        trait_name: TraitName,
-        method_name: Symbol,
-        impl_type: TypeName,
-        mangled_name: JitSymbol,
-    },
+    TraitMethod { trait_name: TraitName, method_name: Symbol, impl_type: TypeName, mangled_name: JitSymbol },
     SigDispatch { mangled_name: JitSymbol },
-    AutoCurry { target_name: Symbol, applied_count: usize },
-    BuiltinFn { name: Symbol },
+    AutoCurry   { target_name: Symbol, applied_count: usize },
+    BuiltinFn   { name: Symbol },
 }
 ```
 
-The backend dispatches on this enum in `compile_resolved_call`:
+Backend dispatch (`compile_resolved_call`): `TraitMethod` checks `primitive_for_trait_method` first (inline IR / extern call for primitives; direct call to the mangled name for user impls); `SigDispatch` is a direct call to the mangled specialization; `BuiltinFn` emits inline IR; `AutoCurry` builds a closure capturing applied args.
 
-- **`TraitMethod`**: Checks `primitive_for_trait_method` first. If it returns a primitive name, emits inline Cranelift IR or an extern call. If not (user-defined impl), compiles as a direct call to the mangled name.
-- **`SigDispatch`**: Direct call to the mangled specialization name (monomorphised constrained function or multi-sig variant).
-- **`BuiltinFn`**: Emits inline Cranelift IR via `emit_builtin_op`.
-- **`AutoCurry`**: Generates a closure capturing applied arguments (Ring 2 auto-curry).
+### `primitive_for_trait_method` (Decision 14)
 
-### primitive_for_trait_method (Decision 14)
+The typechecker emits `ResolvedCall::TraitMethod` for *all* trait-method calls; the backend decides inline-vs-call. `primitive_for_trait_method(trait, method, impl_type) -> Option<&'static str>` (`dispatch.rs:144`) is a static `(Trait, method, Type) → primitive` table (26+ entries across Num/Eq/Ord/Display for Int/Float/Bool/String). `Some(prim)` ⇒ backend inlines / extern-calls; `None` ⇒ user-defined impl compiled as a direct call to the mangled name. Macro-/user-compiled impls never appear in the table, so they take the `None` (direct-call) path — correct, no change needed.
 
-Per architecture Decision 14, the typechecker emits `ResolvedCall::TraitMethod` for all trait method calls. The backend decides whether to inline the operation or compile a function call. This keeps the typechecker ignorant of codegen details.
+### `concrete_type_name`
 
-`primitive_for_trait_method(trait_name, method_name, impl_type) -> Option<&'static str>` is a static mapping from `(TraitName, method, Type)` triples to primitive names. It covers 26+ entries across Num, Eq, Ord, and Display for Int, Float, Bool, and String.
+`concrete_type_name(ty) -> Option<TypeName>`: `Int/Float/Bool/String → Some(name)`, `ADT(name,_) → Some(name)`, `Var(_) → None`, `Fn(_,_) → None`. Returning `None` for `Var` is exactly what triggers deferred resolution.
 
-If the mapping returns `Some(prim_name)`, the backend emits inline IR (for `PrimitiveKind::Inline` prims like `add-i64`) or an extern call (for `PrimitiveKind::Extern` prims like `int-to-string`). If it returns `None`, the method is a user-defined function and is compiled as a direct call to the mangled name.
+## 8. Monomorphisation
 
-**Ring 3 implication**: When macro-compiled functions define trait impls, their methods will NOT appear in `primitive_for_trait_method`. The backend will compile them as direct calls to the mangled function name. This is correct and requires no changes -- the `None` path already handles user-defined impls.
+Full engine design: `design/typecheck/monomorphisation.md`. Locus: the **collection/driver** lives in `program.rs` (Pass 4), the **per-call engine** in `traits/monomorphise.rs`.
 
-### concrete_type_name
+### Collection (Pass 4, `program.rs`)
 
-The helper `concrete_type_name(ty: &Type) -> Option<TypeName>` extracts the type name from a resolved type:
+`pass4_monomorphise(state, defns, constrained_fn_names) -> Result<Vec<MonoDefn>>` (`program.rs:3367`):
 
-| Type | Result |
-|------|--------|
-| `Int` | `Some("Int")` |
-| `Float` | `Some("Float")` |
-| `Bool` | `Some("Bool")` |
-| `String` | `Some("String")` |
-| `ADT(name, _)` | `Some(name)` |
-| `Var(_)` | `None` |
-| `Fn(_, _)` | `None` |
+1. `collect_constrained_calls` (`program.rs:3858`) walks non-constrained bodies for `Apply` nodes whose callee is a known constrained function → `(fn_name, arg_spans, call_span)` triples (plus `collect_imported_constrained_calls` for cross-module callees, and the parametric-call collectors).
+2. Resolve argument types from the resolved `expr_types`.
+3. Deduplicate on the mangled key `fn_name$Type1+Type2+…` — one `MonoDefn` per unique specialization.
+4. `monomorphise_call` per unique specialization.
+5. Record `ResolvedCall::SigDispatch { mangled_name }` per call site.
 
-Returning `None` for `Var` is what causes deferred resolution -- the method call cannot be resolved until the variable is pinned to a concrete type.
+### The engine — `monomorphise_call` (`traits/monomorphise.rs:83`)
+
+`monomorphise_call(state, fn_name, arg_types, call_span, home: Option<&ModuleFullPath>) -> Result<Option<MonoDefn>>` is a 7-phase sequential driver (phase boundaries + state-channel invariants: `s87-traits-decomposition.md` §2). Sketch: look up the `ConstrainedFn` (module `home` for imported callees); instantiate + unify params to concrete; verify each constraint has an impl (rooted in `home`); pin the call-site return; re-check the body with concrete types under the `home` module switch (`recheck_body_for_mono`), harvesting per-mono resolutions/expr-types; record self-recursion dispatch; build the annotated mono `Defn` and its concrete-boundary codegen view (`MonoExpr::from_expr` — the §3.11.1 ambiguity error on a non-concrete body); register the mono entry.
+
+**Cross-module scoping (load-bearing).** The `home` (defining) module threads into `get_constrained_fn`, `recheck_body_for_mono`, `resolve_inner_constrained_calls`, and `verify_constraints`. Three facts, any wrong ⇒ spurious `no impl of trait T for type X`: (1) body re-check switches `state.current_module` to `home`; (2) constraint verification resolves through the instantiation `var_mapping`, not raw scheme var-ids (cross-module the raw ids may collide with a caller var); (3) impl lookup for verification roots in `home` too. Full walkthrough: `monomorphisation.md` §3.7.
+
+### `MonoDefn` — the codegen-view carrier (shape change vs the retired model)
+
+```rust
+// cranelisp-types::check — check.rs:156
+pub struct MonoDefn { pub defn: Defn }
+```
+
+> **Delta from the old design.** The pre-S84 `MonoDefn` carried its own `resolutions: MethodResolutions` + `expr_types: HashMap<Span, Type>` side maps. Those were **dropped**: a minted mono instance is registered as an ordinary concrete `ModuleEntry::Def` in the **caller's** module (its own GOT slot), and its per-specialization body view rides the entry's **`codegen_view: Option<MonoDefnVariant>`** (the concrete-boundary `MonoExpr` body, `crates/cranelisp-typecheck/CLAUDE.md §"Concrete-boundary codegen_view"`), not a side `Vec`. The backend's existing concrete-mono codegen path wires it — no backend special-case. `MonoDefnVariant` (the codegen-view type, `mono_expr.rs:477`) is distinct from `MonoDefn`.
+
+### REPL path
+
+The REPL monomorphises on demand: scan the symbol table for constrained-fn names, `collect_constrained_calls` on the expression, resolve arg types from `expr_types` (subst-applied), `monomorphise_call` per site. Runs for both expression and defn REPL inputs.
 
 ## 9. Multi-Signature Functions
 
-### Surface Syntax
+### Surface syntax + AST
 
 ```clojure
-(defn map
-  ([f :Vec v] (vec-map f v))
-  ([f :List l] (list-map f l))
-  ([f :Seq s] (seq-map f s)))
+(defn map ([f :Vec v] (vec-map f v)) ([f :List l] (list-map f l)) ([f :Seq s] (seq-map f s)))
 ```
 
-### AST Representation
+`TopLevel::DefnMulti { name, docstring, variants: Vec<DefnVariant>, visibility, span }` — each `DefnVariant` is essentially a standalone function definition.
 
-```rust
-TopLevel::DefnMulti {
-    name: Symbol,
-    docstring: Option<String>,
-    variants: Vec<DefnVariant>,
-    visibility: Visibility,
-    span: Span,
-}
-```
+### Dispatch + mangling
 
-Each `DefnVariant` has parameters, annotations, and a body -- essentially a standalone function definition.
+Multi-sig dispatch is resolved at type-check time by matching concrete argument types against variant param-type annotations; each call site produces `ResolvedCall::SigDispatch { mangled_name }`. Variants use the same `$Type1+Type2+…` mangling as monomorphisation (e.g. `map$Vec+Fn`). Registration is `register_mangled_variants` / `register_overloaded_base` / `resolve_pending_overloads` (`program.rs`). See `design/typecheck/signature-match.md` for the match-predicate detail.
 
-### Dispatch
+### Known interaction limit
 
-Multi-sig dispatch is resolved at type-checking time by matching concrete argument types against variant parameter type annotations. The typechecker produces `ResolvedCall::SigDispatch { mangled_name }` for each call site.
-
-### Mangling Convention
-
-Multi-sig variants use the same `$` separator as monomorphisation:
-
-```
-{fn_name}${Type1}+{Type2}+...
-```
-
-For example, `map$Vec+Fn` for the Vec variant.
-
-### Interaction with Constrained Polymorphism
-
-Multi-sig functions and constrained polymorphism are not yet combined. A multi-sig variant that calls trait methods is not automatically detected as constrained. This is a known limitation documented in MEMORY.md.
-
-### REPL Status
-
-Multi-sig functions are not yet supported in REPL mode (`check_repl_input` returns a `TypeError` for `ReplInput::DefnMulti`).
+Multi-sig + constrained polymorphism are not yet combined — a multi-sig variant that calls trait methods is not auto-detected as constrained.
 
 ## 10. Invariants
 
-These properties must always hold. Violations indicate implementation bugs.
+These must always hold; violations are implementation bugs.
 
-### Registry Invariants
+### Storage + registration
 
-1. **Method name uniqueness**: No two traits declare the same method name. `register_trait_method` would overwrite the `method_to_trait` entry, corrupting dispatch.
+1. **Method-name uniqueness within a scope.** Two visible traits declaring the same method name collide at the §8.6.4 seam (the method-name loop, `program.rs:935`) — dispatch never sees an ambiguous `trait_origin`.
+2. **Idempotent re-registration.** `register_trait_decl`'s same-module identity probe (`registry.rs:84`) is fallback-less and answers IDENTITY only; name-freedom is decided upstream at the §8.6.4 seam. A same-decl re-submission is a no-op; a different same-module redecl is rejected.
+3. **Impl completeness.** Every impl provides all non-defaulted methods (`check_impl_methods_present`).
+4. **Impl type-correctness.** Every impl method body type-checks against the trait method signature with `Self` substituted for the concrete target.
+5. **Decision-45 placement.** A `TraitImpl` entry lives in the **trait's defining module** under `impl${FQType}${FQTrait}`; impl discovery chain-follows to that module and scans it — no universe scan.
+6. **`trait_origin` consistency.** If method `m` resolves to a `Def { trait_origin: Some(T) }`, then `T`'s `TraitDecl` exists and declares a method named `m`.
 
-2. **Impl completeness**: Every impl provides all required methods (those without `default_body`). Checked by `check_impl_methods_present`.
+### Constraints
 
-3. **Impl type-correctness**: Every impl method body type-checks against the trait's method signature with `SelfType` substituted for the concrete target type.
+7. **Constraint resolution.** After generalization, every `Scheme.constraints` key is in the scheme's `vars`.
+8. **Active-constraints accumulation.** `active_constraints` is not cleared between top-level forms within a `check` unit — later generalizations may need earlier constraints.
+9. **Substitution resolution.** `generalize` resolves constraints through `state.subst` (a constraint on `Var(X)` with `subst[X]=Var(Y)` attaches to `Y`).
 
-4. **Registry consistency**: If `method_to_trait[m] = T`, then `trait_registry.decls[T]` exists and contains a method named `m`.
+### Monomorphisation
 
-### Constraint Invariants
+10. **Constrained functions not compiled directly.** The backend skips any `Defn` in `CheckResult.constrained_fn_names`; only `MonoDefn` specializations compile.
+11. **Per-mono isolation via the entry.** Each mono instance's body view rides its own registered entry's `codegen_view` (§8), not a program-wide map.
+12. **Deduplication.** At most one `MonoDefn` per unique `(fn_name, concrete_arg_types)`; multiple call sites share via `SigDispatch`.
+13. **Mangle lock-step.** Dispatch and definition mint through the ONE `mangle_trait_method` against the same `FQTypeName` (§3.1) — else the call symbol misses the definition symbol.
 
-5. **Constraint resolution**: After generalization, every constraint in a `Scheme` references a type variable that is in the scheme's `vars` list.
+### Resolution
 
-6. **Active constraints accumulation**: `active_constraints` is never cleared between top-level forms within a single `check_program` call. Constraints from earlier forms may be needed during generalization of later forms.
+14. **Span-keyed resolutions.** `method_resolutions` is keyed by `Apply` span; each span → exactly one `ResolvedCall`; a missing span ⇒ regular function call.
+15. **Deferred completeness.** After `resolve_deferred_trait_calls`, every trait-method call with concrete arg types has a `TraitMethod` entry; calls with still-`Var` types (inside constrained bodies) resolve during mono re-checking.
 
-7. **Substitution resolution**: `generalize` resolves constraints through the substitution. A constraint on `Var(X)` where `subst[X] = Var(Y)` attaches to `Y` in the scheme, not `X`.
+### Provisioning
 
-### Monomorphisation Invariants
+16. **Same code path.** Core traits use the same `register_trait_decl` / `register_trait_impl` seams as user traits — no special-case registration logic (§5).
+17. **Transient-state cleanup.** After core-impl body checking, the `Span::SYNTHETIC` transient maps (`expr_types`, `method_resolutions`, `subst`) are wiped before user checking.
 
-8. **Constrained functions not compiled directly**: The backend must skip any `Defn` whose name appears in `CheckResult.constrained_fn_names`. Only the `MonoDefn` specializations are compiled.
+## 11. Evolution notes (ring axis retired)
 
-9. **Per-mono isolation**: Each `MonoDefn` has its own `resolutions` and `expr_types`. The backend must use these instead of the program-wide maps when compiling a monomorphised specialization.
+The ring axis (which structured earlier trait work) was **retired as a scheduling/framing axis in Sprint 64**; the capabilities below are all landed. Retained here as a capability inventory, not a ring roadmap:
 
-10. **Deduplication**: `pass4_monomorphise` generates at most one `MonoDefn` per unique `(fn_name, concrete_arg_types)` combination. Multiple call sites with the same types share the same specialization via `SigDispatch`.
+- **Landed:** trait decls + impls (single + HKT); constrained-polymorphism detection + monomorphisation (batch + on-demand REPL); core-trait provisioning through the shared pipeline; deferred method resolution; Eq/Ord default methods; the `primitive_for_trait_method` backend optimization; multi-signature functions (batch + REPL); module-scoped decls/impls with cross-module resolution + monomorphisation.
+- **Unscheduled follow-ups:** user-defined default method bodies parsed from `.cl` source (replacing `build_default_body`'s hard-coding); macro-defined trait impls; applied types in trait-method signatures (`resolve_trait_type_expr` currently errors); multi-sig + constrained-polymorphism interaction.
 
-### Resolution Invariants
+## 12. Cross-references
 
-11. **Span-keyed resolutions**: `method_resolutions` entries are keyed by the `Apply` node's span. Each span maps to exactly one `ResolvedCall`. If a span is not in the map, the backend treats it as a regular function call.
-
-12. **Deferred resolution completeness**: After `resolve_deferred_trait_calls`, every trait method call with concrete argument types has a `ResolvedCall::TraitMethod` entry. Calls with still-unresolved types (inside constrained function bodies) remain unresolved -- they are handled during monomorphisation re-checking.
-
-### Bootstrap Invariants
-
-13. **Transient state cleanup**: After `register_core_trait_impls`, `clear_transient_state` must be called. Failure to clear would leave `Span::SYNTHETIC` entries in `expr_types` and `method_resolutions` that interfere with user program checking.
-
-14. **Pipeline uniformity**: Core traits use the same `register_trait_decl` / `register_trait_impl` code paths as user traits. No special-case logic exists for core traits in the registration pipeline.
-
-## Per-Ring Evolution
-
-### Ring 2A (Current)
-
-- Trait declarations and implementations
-- Constrained polymorphism detection and monomorphisation
-- Core trait bootstrap (Decision 17 -- resolved in Sprint 9)
-- Deferred method resolution
-- Default methods for Eq/Ord
-- `primitive_for_trait_method` backend optimization
-- Multi-signature functions (batch mode only)
-
-### Ring 2B (Current)
-
-- Module-scoped trait declarations and implementations
-- Cross-module trait method resolution
-- REPL trait declaration and implementation
-- REPL on-demand monomorphisation
-
-### Ring 3 (Planned)
-
-- User-defined default method bodies parsed from Cranelisp source (not hard-coded AST)
-- Macro-defined trait implementations (macros that expand to `impl` forms)
-- Applied types in trait methods (currently returns an error in `resolve_trait_type_expr`)
-- Multi-sig + constrained polymorphism interaction
+- `design/typecheck/typecheck.md` — master design (this doc is subordinate).
+- `design/typecheck/monomorphisation.md` §3.7 — the monomorphisation engine + cross-module scoping.
+- `design/typecheck/signature-match.md` — multi-sig match predicates.
+- `design/typecheck/s87-traits-decomposition.md` — the `traits/` module cut + `monomorphise_call` phase boundaries.
+- `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the impl-time field-accessor collision check (§3 step 3).
+- Sources: `crates/cranelisp-typecheck/src/traits/{mod,registry,impl_check,dispatch,monomorphise,type_resolve}.rs`; `checker.rs` (`TypeCheckEnv`, `CheckState`, `method_to_trait_*`, `has_impl_*`, `generalize`); `program.rs` (§8.6.4 seam arms, `pass4_monomorphise`); `cranelisp-types::module` (`ModuleEntry::TraitDecl`/`TraitImpl`, `Def.trait_origin`); `cranelisp-types::check` (`Scheme`, `ConstrainedFn`, `MonoDefn`).

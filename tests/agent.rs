@@ -4313,3 +4313,277 @@ fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
         out.stdout
     );
 }
+
+// ===========================================================================
+// Sprint 109 — Observability (§17.20.3a field→metric acceptance) + §17.2.1
+// probe channel. Plan: tests/plan/PLAN.md §S109 §F. Agent-feature build only
+// (feature-off there is no agent and no log). Stub-driven, zero network; the
+// activity log (`CRANELISP_AGENT_LOG`) is read back and asserted on raw JSONL
+// text (the greppable-keys contract, §17.20.3). The six §17.20.3a fields
+// (`question`, `error_class` on pull, `cause`, `primer_hash`/`harvest_len`,
+// `scenario`, step accounting) are new this sprint, so the pos rows are RED
+// (field absent) until /dev lands them; the metadata-only and probe-channel
+// guards frame the contract they must preserve.
+// ===========================================================================
+
+/// Drive the stub agent with `CRANELISP_AGENT_LOG` enabled; return the session
+/// output and the raw JSONL log text (empty string if no log was written).
+#[cfg(feature = "agent")]
+fn stub_log_session(
+    script: &str,
+    stdin: &str,
+    extra_env: &[(&str, &str)],
+) -> (helpers::e2e::CrOutput, String) {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, script).unwrap();
+    let mut cl = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_LOG", "agent-activity.jsonl");
+    for (k, v) in extra_env {
+        cl = cl.env(k, v);
+    }
+    let out = cl.stdin(stdin).output();
+    let log = if out.tmp_exists("agent-activity.jsonl") {
+        out.read_tmp("agent-activity.jsonl")
+    } else {
+        String::new()
+    };
+    (out, log)
+}
+
+// spec: repl/spec.md §17.20.3a F1 — a `pull` record carries a `question` field
+// (the specific thing the probe wanted to learn). RED until F1 lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_pull_records_question() {
+    let (_, log) = stub_log_session(
+        "tool: source foo\ndone: that is the source\n",
+        "(defn foo [] (add-i64 1 2))\n/ask show me foo\n",
+        &[],
+    );
+    assert!(
+        log.contains("\"event\":\"pull\""),
+        "the probe pull MUST be logged; log={log}"
+    );
+    assert!(
+        log.contains("\"question\""),
+        "F1: a `pull` record MUST carry a `question` field (§17.20.3a); log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3b F1 (enumerated /dev-unit deferral — NOT authored
+// here). `question` is a REQUIRED argument on every probe/pull tool in the
+// §17.2.1 set; a probe with no `question` is a tool-schema non-conformance. The
+// e2e cannot enumerate per-tool schema conformance — that is a /dev unit
+// obligation in `src/agent`. ENUMERATED cases (one assertion per probe tool,
+// fail-on-revert): each of `/type`, `/syntax`, `/sig`, `/info`, `/source`,
+// `/doc`, `/exports`, `/list`, `/search`, `/refs` declares a required
+// `question` argument, and the harness records it. Owner: /dev (src/agent).
+
+// spec: repl/spec.md §17.20.3a F2 — a FAILED `pull` result carries an
+// `error_class` (the classifier the repair path already runs). RED until F2
+// lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_failed_pull_carries_error_class() {
+    let (_, log) = stub_log_session(
+        "tool: source no-such-symbol-xyz\ndone: could not find it\n",
+        "/ask show me no-such-symbol-xyz\n",
+        &[],
+    );
+    assert!(
+        log.contains("\"event\":\"pull\""),
+        "the failed probe pull MUST be logged; log={log}"
+    );
+    assert!(
+        log.contains("\"error_class\""),
+        "F2: a failed `pull` MUST carry an `error_class` field (§17.20.3a); log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3a F3 — a `give_up` record carries a `cause`
+// (`step_budget`/`model_declined`) and the dominant `error_class`. Verify-first:
+// forcing a give_up e2e requires validator exhaustion (a persistently-broken
+// submit). If the give_up cannot be forced through the stub, /dev pins the
+// ENUMERATED unit cases at the give_up emission seam (fail-on-revert):
+// (i) `step_budget` cause; (ii) `model_declined` cause; (iii) dominant-class
+// computation from the run-up. RED until F3 lands (the `cause` field is absent
+// even when a give_up fires).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_give_up_records_cause_and_dominant_class() {
+    let broken = "tool: submit (defn broken [] (undefined-xyz 1))\n";
+    let script = format!("{broken}{broken}{broken}{broken}{broken}done: I give up\n");
+    let (_, log) = stub_log_session(&script, "/ask define broken\n", &[]);
+    assert!(
+        log.contains("\"event\":\"give_up\""),
+        "a give_up MUST be logged when the agent abandons a broken submit \
+         (verify-first — if unattainable e2e, /dev pins the enumerated unit \
+         cases); log={log}"
+    );
+    assert!(
+        log.contains("\"cause\""),
+        "F3: a `give_up` record MUST carry a `cause` field (§17.20.3a); log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3a F4 — the session-start (or first exchange) record
+// stamps the context version: `primer_hash` + `harvest_len`. RED until F4 lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_session_start_stamps_context_version() {
+    let (_, log) = stub_log_session("done: hello\n", "/ask hello\n", &[]);
+    assert!(
+        !log.is_empty(),
+        "an /ask MUST produce at least one log record; log={log}"
+    );
+    assert!(
+        log.contains("\"primer_hash\"") && log.contains("\"harvest_len\""),
+        "F4: the context-version stamp (`primer_hash` + `harvest_len`) MUST be \
+         recorded (§17.20.3a); log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3a F5 + §17.20.3b — `CRANELISP_AGENT_SCENARIO` is
+// stamped as a `scenario` field on EVERY log record. RED until F5 lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_scenario_env_stamped_on_every_record() {
+    let (_, log) = stub_log_session(
+        "tool: source foo\ndone: ok\n",
+        "(defn foo [] (add-i64 1 2))\n/ask show foo\n",
+        &[("CRANELISP_AGENT_SCENARIO", "safe-dial")],
+    );
+    assert!(!log.is_empty(), "records MUST be written; log={log}");
+    for line in log.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            line.contains("\"scenario\":\"safe-dial\""),
+            "F5: EVERY log record MUST carry the `scenario` tag (§17.20.3a); \
+             line={line}"
+        );
+    }
+}
+
+// spec: repl/spec.md §17.20.3a F5 (NEG) — with `CRANELISP_AGENT_SCENARIO` unset,
+// the `scenario` field is absent (or neutral), never a spurious value. GREEN
+// today (no scenario field) — a fail-on-revert guard once F5 lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_neg_no_scenario_field_when_env_unset() {
+    let (_, log) = stub_log_session("done: hello\n", "/ask hello\n", &[]);
+    assert!(
+        !log.contains("\"scenario\":\"safe-dial\""),
+        "with the scenario env UNSET, no scenario value may be stamped; log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3a F6 — a `submit` record carries step accounting
+// (`step` / `steps_at_submit`). RED until F6 lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_submit_carries_step_accounting() {
+    // `--yes` auto-accepts the confirm gate so the submit COMMITS and records.
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent")
+        .cli_flag("--yes");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(
+        &script_path,
+        "tool: submit (defn bar [] (add-i64 20 22))\ndone: defined bar\n",
+    )
+    .unwrap();
+    let out = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_LOG", "agent-activity.jsonl")
+        .stdin("/ask define bar\n")
+        .output();
+    let log = if out.tmp_exists("agent-activity.jsonl") {
+        out.read_tmp("agent-activity.jsonl")
+    } else {
+        String::new()
+    };
+    assert!(
+        log.contains("\"event\":\"submit\""),
+        "a submit MUST be logged (committed under --yes); log={log}"
+    );
+    assert!(
+        log.contains("\"steps_at_submit\"") || log.contains("\"step\""),
+        "F6: a `submit` record MUST carry step accounting (§17.20.3a); log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.20.3 (NEG) — the log is metadata-only: it carries NO
+// content (no form text, no error message, no model prose). GREEN — the contract
+// every metric's substrate preserves.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_neg_carries_no_content_fields() {
+    let (_, log) = stub_log_session(
+        "tool: source foo\ndone: the private conclusion prose\n",
+        "(defn foo [] (add-i64 1 2))\n/ask show foo\n",
+        &[],
+    );
+    assert!(!log.is_empty(), "records MUST be written; log={log}");
+    for key in ["\"form\"", "\"prose\"", "\"content\"", "\"message\"", "\"error_message\""] {
+        assert!(
+            !log.contains(key),
+            "§17.20.3: the log MUST NOT carry a content field ({key}); log={log}"
+        );
+    }
+    // Nor the model prose body itself.
+    assert!(
+        !log.contains("the private conclusion prose"),
+        "§17.20.3: the log MUST NOT carry the model prose content; log={log}"
+    );
+}
+
+// spec: repl/spec.md §17.2.1 (NEG) — probe traffic MUST NOT echo `agent> {cmd}`
+// + its result into the user session; it routes to the private working channel
+// (log/trace). RED today: §17.2 item 2 still echoes the probe command inline.
+// defect: class=routing-misclassify locus=src/agent/pull.rs (probe pull echoed to the user session instead of the private channel) found=S108 owner=/dev
+#[cfg(feature = "agent")]
+#[test]
+fn agent_probe_traffic_not_echoed_to_session_neg() {
+    let (out, _) = stub_log_session(
+        "tool: source foo\ndone: foo returns three\n",
+        "(defn foo [] (add-i64 1 2))\n/ask show me foo\n",
+        &[],
+    );
+    assert!(
+        !out.stdout.contains("/source foo"),
+        "§17.2.1: a probe's command MUST NOT be echoed into the user session; \
+         stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.2.1 — the user DOES see the agent's conclusions (framed
+// `▌` gutter prose) and the finished definition, even when probe traffic is
+// hidden. GREEN.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_probe_conclusions_and_definition_still_shown() {
+    let (out, _) = stub_log_session(
+        "tool: source foo\ndone: foo returns three\n",
+        "(defn foo [] (add-i64 1 2))\n/ask show me foo\n",
+        &[],
+    );
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the agent conclusions MUST be framed (§17.2.1); stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("foo returns three"),
+        "the conclusion prose MUST render to the user (§17.2.1); stdout={}",
+        out.stdout
+    );
+}

@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (Sprint 66).** A completed implementation slice, retained for the audit trail; NOT a durable subsystem reference. The durable design lives in `typecheck.md` + the subsystem docs. Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # Sprint 66 implementation slice — `cranelisp-typecheck`
 
 **Status.** Phase 4 refresh — Wave 3a-α redo (post-Decision-45 reversal: Pattern B + chain-follow)

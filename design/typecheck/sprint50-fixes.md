@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (Sprint 50).** A completed fix log, retained for the audit trail; NOT a durable subsystem reference. The durable design lives in the subsystem docs (`inference.md`, `traits.md`, `adt.md`, `typecheck.md`). Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # Sprint 50 Typecheck Fixes
 
 Two fixes targeting regressions RC4 (builtin type leaking) and RC5 (macro body type checking).

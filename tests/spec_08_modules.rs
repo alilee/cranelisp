@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 use std::time::Duration;
 
 // =============================================================================
@@ -2309,6 +2309,1019 @@ fn dotted_constructor_in_value_position_resolves() {
             "(import [primitives [Pure]])\n\
              (deftype Color Red Green)\n\
              (defn main [] (Pure (match (let [c Color.Red] c) [Red 7 Green 0])))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// =============================================================================
+// Sprint 109 — §8.5.4 Auto-loading (AL rows) + 0571 FQ defect class (FQ rows) +
+// dotted-`Type.Ctor` capability (DC rows) + 0570 `mod-` search twin (MV rows).
+// Plan: tests/plan/PLAN.md §"Sprint 109 — sprint-wide failing-test plan".
+// Fixtures are stdlib-free: own modules composed into the tmpdir via `.file()`,
+// PreludeVariant::None (default) unless a row needs primitives named in-file.
+// =============================================================================
+
+/// Combined stdout+stderr of a capture — module/compile errors under `--run`
+/// may land on either stream; error tests match the union (substring standard).
+fn combined(out: &helpers::e2e::CrOutput) -> String {
+    format!("{}\n{}", out.stdout, out.stderr)
+}
+
+/// The 0571 D1 signature (FQ-D3): a source-level fault that typecheck must
+/// decide leaking to the backend surfaces as the doubly-wrapped
+/// `codegen error … codegen failed for / … codegen error` shape. A conforming
+/// resolution-layer diagnostic NEVER produces this. Shared across AL/FQ rows.
+fn assert_no_doubly_wrapped_codegen_leak(text: &str) {
+    let leak = text.contains("codegen failed for /")
+        || (text.matches("codegen error").count() >= 2);
+    assert!(
+        !leak,
+        "output leaks a doubly-wrapped codegen-layer error (FQ-D3 §8.5.4 edge 3 \
+         — a resolution-layer fault MUST NOT surface as a codegen leak):\n{text}"
+    );
+}
+
+// --- AL-1 / A1 — call position auto-loads, all modes (§8.5.4 edge 1) ---------
+
+// spec: spec/08-modules.md §8.5.4 — a FQ call-position reference to an
+// unimported, file-backed module auto-loads and resolves it, uniformly across
+// REPL, `--run`, and `--link` (edge 1: all modes). Mode divergence is a defect.
+#[test]
+fn fq_call_position_autoloads_all_modes() {
+    let aux = "(import [primitives [Int mul-i64]])\n\
+               (defn square [:Int x] :Int (mul-i64 x x))\n";
+    let entry = "(import [primitives [Pure]])\n\
+                 (defn main [] (Pure (mathx/square 5)))\n";
+    // --run
+    Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output()
+        .assert_exit(25);
+    // --link then run
+    Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file("main.cl", entry)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(25);
+    // REPL — the aux module in cwd auto-loads on the qualified reference.
+    Cranelisp::new()
+        .repl()
+        .file("mathx.cl", aux)
+        .stdin("(mathx/square 5)\n")
+        .output()
+        .assert_stdout_contains(":primitives/Int 25");
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (value position, A2) — a FQ reference
+// bound in a `let` and applied auto-loads and resolves (concrete fn).
+#[test]
+fn fq_value_position_ref_call_through_let() {
+    let aux = "(import [primitives [Int add-i64]])\n\
+               (defn inc1 [:Int x] :Int (add-i64 x 1))\n";
+    let entry = "(import [primitives [Pure]])\n\
+                 (defn main [] (Pure (let [f mathx/inc1] (f 41))))\n";
+    Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file("main.cl", entry)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (macro, A3) + §9.3.6 — a FQ reference
+// to a macro auto-loads its defining module and expands at the qualified call
+// site. Verify-first: A3 is expected GREEN today per arch verification.
+#[test]
+fn fq_macro_ref_expands_at_qualified_site() {
+    let aux = "(import [primitives [Int add-i64]])\n\
+               (defmacro dbl [x] `(add-i64 ~x ~x))\n";
+    let entry = "(import [primitives [Pure]])\n\
+                 (defn main [] (Pure (macx/dbl 21)))\n";
+    let out = Cranelisp::new()
+        .file("macx.cl", aux)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output();
+    assert_no_doubly_wrapped_codegen_leak(&combined(&out));
+    out.assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (type, A4) — a fully-qualified type
+// name in an annotation participates in auto-load: referencing `shapes/Circle`
+// as an annotation triggers loading `shapes`. Verify-first.
+#[test]
+fn fq_type_annotation_triggers_autoload() {
+    let aux = "(import [primitives [Int]])\n\
+               (deftype Circle [:Int r])\n";
+    let entry = "(import [primitives [Pure Int]])\n\
+                 (defn area [:shapes/Circle c] :Int (shapes/Circle.r c))\n\
+                 (defn main [] (Pure (area (shapes/Circle 9))))\n";
+    let out = Cranelisp::new()
+        .file("shapes.cl", aux)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output();
+    assert_no_doubly_wrapped_codegen_leak(&combined(&out));
+    out.assert_exit(9);
+}
+
+// --- AL-2 — absolute path resolution + phantom-child negative ----------------
+
+// spec: spec/08-modules.md §8.5.4 edge 2 — auto-load resolves the qualified
+// `module_path` as an ABSOLUTE module path, same resolution as `import`, with a
+// file-backed module and no preceding import/mod declaration.
+#[test]
+fn fq_ref_autoloads_absolute_module_path() {
+    Cranelisp::new()
+        .file(
+            "util/helper.cl",
+            "(import [primitives [Int]])\n(defn val [] :Int 13)\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (util.helper/val)))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(13);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 2 (NEG) — auto-load MUST NOT invent a
+// phantom child module from a bare qualifier: `util/helper` names an ABSOLUTE
+// module `util`; when no `util.cl` (nor `util/`) backs it, the reference is a
+// compile-time error at the reference site, not a silently-invented child.
+#[test]
+fn autoload_neg_no_phantom_child_from_bare_qualifier() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (util.helper/val)))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "an unresolvable absolute FQ path MUST error, not invent a phantom child; {}",
+        combined(&out)
+    );
+    assert_no_doubly_wrapped_codegen_leak(&combined(&out));
+}
+
+// --- AL-3 — file-not-found error at the REFERENCE SITE (span-pinned RED) -----
+
+// spec: spec/08-modules.md §8.5.4 edge 3 — auto-load that cannot locate a
+// backing file is a compile-time error AT THE REFERENCE SITE, produced at the
+// resolution layer, naming both the referenced and referencing modules. It MUST
+// NOT surface with the bogus `0..0` span, as `undefined variable`, or through a
+// codegen-layer frame.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (missing-module FQ ref reported at module head 0..0, not the reference span) found=S108 owner=/dev
+#[test]
+fn fq_ref_missing_module_errors_at_reference_site() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (nonesuch/square 5)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "missing module MUST error; {text}");
+    // Names both modules (referenced + referencing).
+    assert!(
+        text.contains("nonesuch"),
+        "error MUST name the referenced module 'nonesuch'; {text}"
+    );
+    // Span-pinned (structural): the reference-site span, NOT the bogus `0..0`
+    // module-head span. RED today (the wrap reports at module head).
+    assert!(
+        !text.contains("at 0..0"),
+        "error MUST be span-pinned at the reference site, not the bogus `0..0` \
+         module-head span (AL-3, structural span standard); {text}"
+    );
+    // Neg facet: resolution-layer, not a codegen/undefined-variable leak.
+    assert!(
+        !text.contains("undefined variable"),
+        "a missing-module FQ ref is a resolution-layer error, NOT `undefined \
+         variable`; {text}"
+    );
+    assert_no_doubly_wrapped_codegen_leak(&text);
+}
+
+// --- AL-4 — member absent names module+member, order-independent -------------
+
+// spec: spec/08-modules.md §8.5.4 edge 4 — an auto-loaded module that lacks the
+// named member yields "module X has no member Y", naming both.
+#[test]
+fn fq_ref_member_absent_names_module_and_member() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int]])\n(defn present [] :Int 1)\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (mathx/absent)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "member-absent MUST error; {text}");
+    assert!(
+        text.contains("mathx") && text.contains("absent"),
+        "error MUST name both the module and the absent member; {text}"
+    );
+    assert_no_doubly_wrapped_codegen_leak(&text);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4 (NEG twin) — the member-absent error is
+// order-independent: identical class whether the module was auto-loaded by this
+// reference or explicitly imported first. The preloaded leg must produce the
+// same member-absent error (not a different diagnostic).
+#[test]
+fn fq_ref_member_absent_error_identical_when_preloaded_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int]])\n(defn present [] :Int 1)\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [mathx [present]])\n\
+             (defn main [] (Pure (mathx/absent)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "member-absent MUST error even when preloaded; {text}");
+    assert!(
+        text.contains("mathx") && text.contains("absent"),
+        "preloaded leg MUST give the SAME member-absent error naming both \
+         (order-independence, §8.6.4 terminal-source); {text}"
+    );
+}
+
+// --- AL-5 — dependency compile failure ⇒ chained diagnostic; REPL survives ---
+
+// spec: spec/08-modules.md §8.5.4 edge 5 — a located-but-failing dependency
+// fails the referencing form with a chained diagnostic naming the failed
+// module, at the reference site (not a session-killer).
+#[test]
+fn fq_ref_dep_compile_error_chained_diagnostic() {
+    let out = Cranelisp::new()
+        .file(
+            "broken.cl",
+            "(import [primitives [Int]])\n(defn f [] :Int (not-a-thing 1))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (broken/f)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "a failing dep MUST fail the reference; {text}");
+    assert!(
+        text.contains("broken"),
+        "the chained diagnostic MUST name the failed module 'broken'; {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 5 (NEG) — a REPL session survives an
+// auto-load dependency compile error: the failing reference reports and the
+// session continues to the next prompt (a follow-on form still evaluates).
+#[test]
+fn fq_ref_dep_compile_error_repl_survives_to_next_prompt_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "broken.cl",
+            "(import [primitives [Int]])\n(defn f [] :Int (not-a-thing 1))\n",
+        )
+        .stdin("(broken/f)\n(add-i64 1 2)\n")
+        .output();
+    // The follow-on form MUST still evaluate — the session survived.
+    out.assert_stdout_contains(":primitives/Int 3");
+}
+
+// --- AL-6 — cycles ⇒ circular-dependency error naming the path (B4 RED) ------
+
+// spec: spec/08-modules.md §8.5.4 edge 6 — a FQ reference that closes a module
+// dependency cycle MUST be reported as a circular-dependency error naming the
+// cycle path, at parity with import-induced cycles. It MUST NOT deadlock and
+// MUST NOT surface as "undefined variable".
+// defect: class=routing-misclassify locus=src/worker.rs (FQ-induced cycle reported as `undefined variable`, not circular-dependency) found=S108 owner=/dev
+#[test]
+fn fq_ref_cycle_reports_circular_dependency_path() {
+    let out = Cranelisp::new()
+        .file("a.cl", "(import [primitives [Int]])\n(defn x [] :Int (b/y))\n")
+        .file("b.cl", "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (a/x)))\n",
+        )
+        .timeout(Duration::from_secs(15))
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "a FQ cycle MUST error; {text}");
+    assert!(
+        text.to_lowercase().contains("circular") || text.to_lowercase().contains("cycle"),
+        "a FQ-induced cycle MUST be a circular-dependency error naming the path; {text}"
+    );
+    assert!(
+        !text.contains("undefined variable"),
+        "a FQ cycle MUST NOT surface as `undefined variable` (§8.5.4 edge 6); {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 6 (mixed cycle, B5/C2) — a cycle mixing
+// an `import` edge and an FQ-ref edge (A imports B, B FQ-refs A) is deterministic
+// (the import edge forces the order) and MUST report as a cycle, never
+// `undefined variable`.
+#[test]
+fn fq_ref_mixed_cycle_import_plus_fq_reports_cycle() {
+    let out = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [Int]])\n(import [b [y]])\n(defn x [] :Int (y))\n",
+        )
+        .file("b.cl", "(import [primitives [Int]])\n(defn y [] :Int (a/x))\n")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(import [a [x]])\n(defn main [] (Pure (x)))\n",
+        )
+        .timeout(Duration::from_secs(15))
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(!out.status.success(), "a mixed cycle MUST error; {text}");
+    assert!(
+        text.to_lowercase().contains("circular") || text.to_lowercase().contains("cycle"),
+        "a mixed import+FQ cycle MUST report as a cycle; {text}"
+    );
+    assert!(
+        !text.contains("undefined variable"),
+        "a mixed cycle MUST NOT surface as `undefined variable`; {text}"
+    );
+}
+
+// --- AL-8 — idempotence: a second reference does not reload ------------------
+
+// spec: spec/08-modules.md §8.5.4 edge 8 — a second FQ reference to an
+// already-loaded module resolves against the loaded instance (at most once per
+// context). Observed behaviorally here: two references in one program both
+// resolve to the correct combined value.
+// NOTE (enumerated /dev-unit deferral): the "exactly one load event"
+// structural assertion via CRANELISP_MODULE_TRACE is not reliably expressible
+// e2e (the trace emits only sparse cache-hit lines). /dev pins the at-most-once
+// load in the worker (`drive_module_dep`) with a load-counter unit test.
+#[test]
+fn fq_ref_second_reference_no_reload() {
+    Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int mul-i64]])\n(defn square [:Int x] :Int (mul-i64 x x))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (defn main [] (Pure (add-i64 (mathx/square 5) (mathx/square 6))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(61);
+}
+
+// --- AL-9 — visibility unchanged; private member via FQ is an error ----------
+
+// spec: spec/08-modules.md §8.5.4 edge 9 + §8.6.6 — a private member reached via
+// FQ auto-load reference is a compile-time error (auto-load does not widen
+// visibility).
+#[test]
+fn fq_ref_private_member_rejected_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int]])\n(defn- secret [] :Int 99)\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/secret)))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "a private member MUST NOT be reachable via FQ auto-load (§8.5.4 edge 9); {}",
+        combined(&out)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 9 (pos twin) — a public member via the
+// same FQ auto-load path resolves.
+#[test]
+fn fq_ref_public_member_resolves() {
+    Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int]])\n(defn public-val [] :Int 7)\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/public-val)))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// --- AL-10 — no scope pollution ---------------------------------------------
+
+// spec: spec/08-modules.md §8.5.4 edge 10 (NEG) — auto-load installs NO bare
+// bindings: after a FQ reference `(mathx/square 3)` resolves, the bare name
+// `square` is still unresolved in the referencing module.
+#[test]
+fn autoload_neg_installs_no_bare_bindings() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int mul-i64]])\n(defn square [:Int x] :Int (mul-i64 x x))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (defn main [] (Pure (add-i64 (mathx/square 3) (square 4))))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "auto-load MUST NOT install a bare `square` binding (§8.5.4 edge 10); {}",
+        combined(&out)
+    );
+    assert!(
+        combined(&out).contains("square"),
+        "the error should be the unresolved bare `square`; {}",
+        combined(&out)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 10 (NEG) — auto-load introduces no §8.6.5
+// ambiguity: a local `(defn square …)` after a FQ ref to `mathx/square` is NOT a
+// conflict (the FQ ref installed no bare `square`), so the program compiles.
+#[test]
+fn autoload_neg_no_ambiguity_with_local_def() {
+    Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int mul-i64]])\n(defn square [:Int x] :Int (mul-i64 x x))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int add-i64]])\n\
+             (defn use-fq [] :Int (mathx/square 3))\n\
+             (defn square [:Int x] :Int (add-i64 x 1))\n\
+             (defn main [] (Pure (add-i64 (use-fq) (square 4))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(14);
+}
+
+// --- AL-11 — chain depth ≥3 parks/resumes -----------------------------------
+
+// spec: spec/08-modules.md §8.5.4 edges 1+8 composed — a FQ chain A→B→C of depth
+// three parks and resumes, producing the correct value.
+#[test]
+fn fq_ref_chain_depth_three_resumes() {
+    Cranelisp::new()
+        .file("cc.cl", "(import [primitives [Int]])\n(defn v [] :Int 4)\n")
+        .file(
+            "bb.cl",
+            "(import [primitives [Int add-i64]])\n(defn v [] :Int (add-i64 (cc/v) 10))\n",
+        )
+        .file(
+            "aa.cl",
+            "(import [primitives [Int add-i64]])\n(defn v [] :Int (add-i64 (bb/v) 100))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (aa/v)))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(114);
+}
+
+// --- AL-12 — diamond loads C once, both legs resume -------------------------
+
+// spec: spec/08-modules.md §8.5.4 edges 7+8 composed — a diamond (root refs A
+// and B, both FQ-ref C) loads C once and both legs resume with correct values.
+// (Load-count via trace is a /dev-unit pin per AL-8; here we assert behaviorally
+// that both legs resolve against the one loaded C.)
+#[test]
+fn fq_ref_diamond_loads_once_both_resume() {
+    Cranelisp::new()
+        .file("cc.cl", "(import [primitives [Int]])\n(defn base [] :Int 5)\n")
+        .file(
+            "aa.cl",
+            "(import [primitives [Int add-i64]])\n(defn va [] :Int (add-i64 (cc/base) 1))\n",
+        )
+        .file(
+            "bb.cl",
+            "(import [primitives [Int add-i64]])\n(defn vb [] :Int (add-i64 (cc/base) 2))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure add-i64]])\n\
+             (defn main [] (Pure (add-i64 (aa/va) (bb/vb))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(13);
+}
+
+// --- C1-e2e — the in-flight race confidence sweep (edge 7) -------------------
+
+// spec: spec/08-modules.md §8.5.4 edge 7 — in-flight atomicity. Deterministic
+// e2e forcing of the interleaving is unattainable (no scheduler-pause hook), so
+// this is the probabilistic confidence sweep: repeat the diamond-under-load
+// spawn many times; EVERY iteration MUST exit 0 with the correct value and
+// NEVER report `has no member` (the racy misclassification). A single failing
+// iteration is a real bug — the forbidden dispositions (flaky/timing-sensitive)
+// apply in full. The deterministic guard is the /dev int gap-arm unit pins
+// (C1-unit: absent⇒park; non-terminal⇒PARK-not-err; terminal+present⇒resolve;
+// terminal+absent⇒member-absent) enumerated in PLAN §C.
+#[test]
+fn autoload_diamond_race_under_load_repeated() {
+    let cc = "(import [primitives [Int]])\n(defn base [] :Int 5)\n";
+    let aa = "(import [primitives [Int add-i64]])\n(defn va [] :Int (add-i64 (cc/base) 1))\n";
+    let bb = "(import [primitives [Int add-i64]])\n(defn vb [] :Int (add-i64 (cc/base) 2))\n";
+    // root imports A and B (import wave puts both in-flight); A also FQ-refs B.
+    let main = "(import [primitives [Pure add-i64]])\n\
+                (import [aa [va]])\n(import [bb [vb]])\n\
+                (defn main [] (Pure (add-i64 (va) (vb))))\n";
+    for i in 0..25 {
+        let out = Cranelisp::new()
+            .file("cc.cl", cc)
+            .file("aa.cl", aa)
+            .file("bb.cl", bb)
+            .file("main.cl", main)
+            .cli_flag("--priority-workers")
+            .cli_flag("4")
+            .run("main.cl")
+            .output();
+        let text = combined(&out);
+        assert!(
+            !text.contains("has no member"),
+            "iteration {i}: the in-flight member-probe race misclassified as \
+             `has no member` (§8.5.4 edge 7 — a real bug, never flaky); {text}"
+        );
+        out.assert_exit(13);
+    }
+}
+
+// =============================================================================
+// FQ defect-class rows (0571) — FQ-D1 (check-gate-leak), FQ-D3 (no-leak sweep),
+// FQ-D4 (import invariance twin).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.4 edge 1 + spec/03-types.md §3.11 — a
+// value-position FQ reference to a GENERIC fn concretely used MUST either
+// resolve check-side (a mono minted at the inferred concrete type) or die
+// check-side with an actionable annotation-required error — NEVER a codegen-
+// layer error. Today it leaks the doubly-wrapped codegen error (RED).
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position ref to slot-less Polymorphic template never mints a mono; leaks to backend/literals.rs) found=S108 owner=/dev
+#[test]
+fn fq_value_ref_generic_fn_concrete_use_never_reaches_codegen() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int Vec vec-len]])\n(defn gcount [v] :Int (vec-len v))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (let [f mathx/gcount] (f [1 2 3]))))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    // The load-bearing assertion: it MUST NOT reach the backend as a codegen
+    // leak. Either it resolves (exit 3) or it is a check-side annotation error.
+    assert_no_doubly_wrapped_codegen_leak(&text);
+    if out.status.success() {
+        assert_eq!(out.status.code(), Some(3), "if it resolves, the value is 3");
+    } else {
+        assert!(
+            !text.contains("codegen"),
+            "a slot-less generic value-position FQ ref MUST be decided check-side, \
+             not leaked to codegen (0571 D1 check-gate-leak); {text}"
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 3 (NEG sweep) — no AL/FQ fixture output
+// ever matches the doubly-wrapped codegen-error shape. Dedicated guard using
+// the shared helper over the FQ-D1 fixture.
+#[test]
+fn fq_ref_neg_no_doubly_wrapped_codegen_error() {
+    let out = Cranelisp::new()
+        .file(
+            "mathx.cl",
+            "(import [primitives [Int Vec vec-len]])\n(defn gcount [v] :Int (vec-len v))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (mathx/gcount [1 2 3])))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert_no_doubly_wrapped_codegen_leak(&combined(&out));
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 10 + §8.6.4 — import invariance: the same
+// program with and without a prior `(import [mathx [square]])` behaves
+// identically (value AND diagnostic legs). Here the value leg: both produce 25.
+#[test]
+fn fq_ref_import_invariance_twin() {
+    let aux = "(import [primitives [Int mul-i64]])\n(defn square [:Int x] :Int (mul-i64 x x))\n";
+    // Leg A — no prior import.
+    let a = Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/square 5)))\n",
+        )
+        .run("main.cl")
+        .output();
+    // Leg B — with a prior import of the same member.
+    let b = Cranelisp::new()
+        .file("mathx.cl", aux)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(import [mathx [square]])\n\
+             (defn main [] (Pure (mathx/square 5)))\n",
+        )
+        .run("main.cl")
+        .output();
+    a.assert_exit(25);
+    b.assert_exit(25);
+}
+
+// =============================================================================
+// Dotted-`Type.Ctor` capability (DC rows) — value-position twins + product +
+// import-shape provenance. Pattern-position twins live in
+// tests/spec_06_pattern_matching.rs (DC-4/DC-5); cache row in tests/cache.rs.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.2/§8.6.5 — two in-scope types sharing BOTH
+// constructor names (`Some` data + `None` nullary): the canonical dotted forms
+// `Maybe.Some`/`Option.Some` (applied) and `Maybe.None`/`Option.None` (nullary)
+// each resolve directly and unconditionally in value position. Both types share
+// both names so the fixture exercises the same-named DATA and same-named NULLARY
+// cases — not only the `Some` data ctor. Concrete construction only — no
+// free-type-var param annotation (W1 fixture constraint). Mode-relevant DC twin:
+// run through REPL/--run/--link. GREEN after the W1 registration change.
+#[test]
+fn same_named_ctors_dotted_value_position_both_resolve() {
+    run_through_all_modes(
+        "(import [primitives [Pure add-i64]])\n\
+         (deftype (Maybe a) None (Some [:a v]))\n\
+         (deftype (Option a) None (Some [:a v]))\n\
+         (defn main [] (Pure\n\
+           (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.None 0])\n\
+                    (match Option.None [(Option.Some x) x Option.None 3]))))\n",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(10);
+}
+
+// spec: spec/08-modules.md §8.6.5 + §6.2.1 unifying rule — in VALUE position
+// there is no type context, so a contested bare constructor ALWAYS poisons: bare
+// `Some` in value position is a compile-time error LISTING the canonical
+// alternatives `Maybe.Some`/`Option.Some`. This is the "no context" arm of the
+// DC-3/DC-11 unifying-rule pair (value always poisons; pattern resolves when the
+// scrutinee is determined). 0568 facet: the diagnostic MUST NOT contain the
+// internal `__expr` binder. RED today — bare `Some` silently resolves.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck (contested bare ctor `Some` silently resolves instead of poisoning) found=S108 owner=/dev
+#[test]
+fn same_named_ctors_bare_value_poisoned_lists_alternatives_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype (Maybe a) MNone (Some [:a v]))\n\
+             (deftype (Option a) ONone (Some [:a v]))\n\
+             (defn main [] (Pure (match (Some 7) [(Some x) x _ 0])))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(
+        !out.status.success(),
+        "a contested bare ctor `Some` MUST be poisoned (§8.6.5), not silently \
+         resolve; {text}"
+    );
+    assert!(
+        text.contains("Maybe.Some") && text.contains("Option.Some"),
+        "the poison error MUST list the canonical alternatives; {text}"
+    );
+    assert!(
+        !text.contains("__expr"),
+        "the diagnostic MUST NOT leak the internal `__expr` binder (0568); {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2/§8.6.5 (DC-6 twin A — define+import) — same
+// assertions as the define+define twin, with one type local and one imported.
+// A provenance that grew its own codepath diverges the twins.
+#[test]
+fn same_named_ctors_define_plus_import_twin() {
+    let out = Cranelisp::new()
+        .file(
+            "optmod.cl",
+            "(import [primitives [Int]])\n(deftype (Option a) ONone (Some [:a v]))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (import [optmod [Option]])\n\
+             (deftype (Maybe a) MNone (Some [:a v]))\n\
+             (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert_no_doubly_wrapped_codegen_leak(&combined(&out));
+    out.assert_exit(7);
+}
+
+// spec: spec/08-modules.md §8.5.2/§8.6.5 (DC-6 twin B — import+import) — both
+// types imported; dotted forms resolve, bare contest poisons.
+#[test]
+fn same_named_ctors_import_plus_import_twin() {
+    let maybe = "(import [primitives [Int]])\n(deftype (Maybe a) MNone (Some [:a v]))\n";
+    let option = "(import [primitives [Int]])\n(deftype (Option a) ONone (Some [:a v]))\n";
+    // pos: dotted resolves.
+    Cranelisp::new()
+        .file("maybemod.cl", maybe)
+        .file("optmod.cl", option)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (import [maybemod [Maybe]])\n(import [optmod [Option]])\n\
+             (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+    // neg: bare contest poisons.
+    let neg = Cranelisp::new()
+        .file("maybemod.cl", maybe)
+        .file("optmod.cl", option)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (import [maybemod [Maybe]])\n(import [optmod [Option]])\n\
+             (defn main [] (Pure (match (Some 7) [(Some x) x _ 0])))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !neg.status.success(),
+        "a contested bare ctor across two imported types MUST poison; {}",
+        combined(&neg)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2 product corner (DC-7) — for a product type
+// whose ctor name equals the type name, the dotted form `Point.Point` is
+// degenerate and does NOT resolve; bare `Point` does, with no spurious poison.
+#[test]
+fn product_ctor_dotted_form_does_not_resolve_neg() {
+    // pos: bare Point works.
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int add-i64]])\n\
+             (deftype Point [:Int x :Int y])\n\
+             (defn main [] (Pure (add-i64 (Point.x (Point 3 4)) (Point.y (Point 3 4)))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+    // neg: Point.Point does not resolve.
+    let neg = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype Point [:Int x :Int y])\n\
+             (defn main [] (Pure (Point.x (Point.Point 3 4))))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !neg.status.success(),
+        "the degenerate dotted form `Point.Point` MUST NOT resolve (§8.5.2); {}",
+        combined(&neg)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2 first-class MAY (DC-8) — a dotted ctor is
+// first-class: bound in a `let` and applied. RED until the dotted value-position
+// constructor path lands.
+#[test]
+fn dotted_ctor_passed_as_argument_and_let_bound() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype (Maybe a) MNone (Some [:a v]))\n\
+             (deftype (Option a) ONone (Some [:a v]))\n\
+             (defn main [] (Pure (match (let [f Maybe.Some] (f 3)) [(Some x) x MNone 0])))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(3);
+}
+
+// =============================================================================
+// MV-4 — `mod-` child-file pattern loads (the /stdlib precondition). Gate row:
+// verified PASS empirically before authoring the 0570/MV group.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2.5 — a `(mod- test)` private submodule declared
+// via the child-file pattern (`<module>/test.cl`) loads and is usable from the
+// parent subtree (here: a qualified reference `main.test/answer`).
+#[test]
+fn mod_dash_child_file_pattern_loads() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (mod- test)\n\
+             (defn main [] (Pure (main.test/answer)))\n",
+        )
+        .file("main/test.cl", "(import [primitives [Int]])\n(defn answer [] :Int 42)\n")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// =============================================================================
+// Sprint 109 W1-prep — §D.1 acceptance negatives (the 73-regression classes as
+// permanent guards). Plan: tests/plan/PLAN.md §S109 §D.1. AN-1/AN-4 are
+// behaviour-invariance pins (GREEN today, must stay green through commit-1/2);
+// AN-2/AN-5 are pre-existing-defect repros owed ahead of the wave.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.6.2 (chain-follow to terminal) — AN-1(a) prelude-
+// cascade ROOT-CAUSE twin. A prelude-shaped module with a `(mod test)` submodule
+// whose test file `match`es an imported bare nullary ctor MUST NOT cause the
+// parent's LATER export lines to fail to install (the `collections.list.test`
+// one-hop miss cascade that took down `do`/`pure`/`cond`/…). Guard: a name
+// defined AFTER the `(mod test)` is still importable. GREEN today; invariance pin.
+#[test]
+fn prelude_module_with_ctor_matching_submodule_still_exports_all() {
+    Cranelisp::new()
+        .file(
+            "colors.cl",
+            "(import [primitives [Int]])\n(deftype Color Red Green Blue)\n",
+        )
+        .file(
+            "pre.cl",
+            "(import [primitives [Int]])\n\
+             (import [colors [Red Green Blue]])\n\
+             (mod test)\n\
+             (defn later-fn [] :Int 99)\n\
+             (export [colors [Color Red Green Blue]])\n",
+        )
+        .file(
+            "pre/test.cl",
+            "(import [primitives [Int]])\n\
+             (import [colors [Red Green Blue]])\n\
+             (defn t [] :Int (match Red [Red 1 Green 2 Blue 3]))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [pre [later-fn]])\n\
+             (defn main [] (Pure (later-fn)))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// spec: spec/06-pattern-matching.md §6.3 + spec/08-modules.md §8.6.2 — AN-2
+// cross-module nullary-ctor SOUNDNESS: an imported bare nullary ctor (`Red`),
+// reached through a ≥2-hop re-export chain, `match`ed on, MUST produce the CORRECT
+// arm value (the wrong-value / "match failed" shape is the silent-soundness neg
+// facet arch found in `lookup_constructor`'s one-hop miss). Mode-relevant.
+// NOTE (/testing, S109 W1-prep): the defect does NOT reproduce as RED on the
+// current binary in the shapes probed (bare/qualified/renamed import, 2- and
+// 3-hop re-export, glob/specific, --run/REPL, contested/uncontested) — the
+// `lookup_constructor` global-fallback rescues them. Authored as the soundness
+// guard asserting the CORRECT value; it is currently GREEN. Arch's exact RED
+// repro is owed (reported to /qa). Kept as the permanent soundness guard the
+// class targets.
+// defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/context.rs::lookup_constructor (one-hop copy vs resolve_driven multi-hop — two resolvers, one name) found=S109 owner=/dev
+#[test]
+fn imported_bare_nullary_ctor_match_compiles_to_tag_not_closure() {
+    let defmod = "(import [primitives [Int]])\n(deftype Color Red Green Blue)\n";
+    let midmod = "(export [defmod [Color Red Green Blue]])\n"; // re-export hop (≥2 hops)
+    let entry = "(import [primitives [Pure Int]])\n\
+                 (import [midmod [Red Green Blue]])\n\
+                 (defn main [] (Pure (match Red [Red 1 Green 2 Blue 3])))\n";
+    // --run
+    let run = Cranelisp::new()
+        .file("defmod.cl", defmod)
+        .file("midmod.cl", midmod)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output();
+    assert!(
+        !combined(&run).to_lowercase().contains("match failed"),
+        "the cross-module nullary ctor MUST NOT compile to a closure whose tag \
+         comparison fails at runtime (AN-2 soundness); {}",
+        combined(&run)
+    );
+    run.assert_exit(1);
+    // --link
+    Cranelisp::new()
+        .file("defmod.cl", defmod)
+        .file("midmod.cl", midmod)
+        .file("main.cl", entry)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(1);
+}
+
+// spec: spec/08-modules.md §8.4 import shapes + §8.6.2 — AN-4 member-glob import
+// keeps bare ctor refs: after a glob `(import [m [*]])` a bare imported ctor
+// constructs and pattern-matches; the member-glob twin `(import [m [Lst.*]])`
+// does the same. GREEN today; invariance pin (guards alias-edge installation).
+#[test]
+fn glob_import_bare_ctor_still_resolves() {
+    let m = "(import [primitives [Int]])\n(deftype Lst (Cons [:Int h :Lst t]) Nil)\n";
+    // glob import
+    Cranelisp::new()
+        .file("m.cl", m)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (import [m [*]])\n\
+             (defn main [] (Pure (match (Cons 5 Nil) [(Cons h t) h Nil 0])))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(5);
+    // member-glob twin
+    Cranelisp::new()
+        .file("m.cl", m)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (import [m [Lst.*]])\n\
+             (defn main [] (Pure (match (Cons 9 Nil) [(Cons h t) h Nil 0])))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(9);
+}
+
+// spec: spec/08-modules.md §8.5.2 field-accessor alias + §8.6.2 — AN-5 latent
+// same-cluster `--run` defect: a bare field accessor `v` MUST resolve in the SAME
+// cluster under `--run`. RED today: bare `v` is never resolved same-cluster
+// (the live-only chain-follow misses the same-module staged alias) → `undefined
+// variable: v`. Flips GREEN at commit-1 (the §3.5 primitive amendment).
+// defect: class=wrong-scope-lookup locus=cranelisp-types/src/resolve.rs::chain_follow_committed (same-module Import hop reads LIVE table, misses the caller's staging view) found=S109 owner=/dev
+#[test]
+fn bare_field_accessor_same_cluster_run_mode() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype Box [:Int v])\n\
+             (defn main [] (Pure (v (Box 7))))\n",
         )
         .run("main.cl")
         .output()

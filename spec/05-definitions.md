@@ -69,6 +69,22 @@ A multi-signature function definition provides multiple variants with different 
 - Dispatch is resolved statically at compile time based on inferred argument types. If no variant matches the concrete types at a call site, it is a compile-time error.
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
+- **The multi-variant form is available only for `defn`/`defn-`.** The anonymous `fn` ([§4.5](04-expressions.md#45-lambda-expression)) is single-arity — a lambda takes exactly one `[params] body`, and the parenthesised multi-arity clause form is a parse error for `fn`.
+- **Each variant is type-checked independently.** A variant carries no type information into or out of its sibling variants: matching parameter identifiers across clauses (e.g. `p` and `rot` appearing in two clauses) are **not** evidence that the parameters share a type, and a delegating call from one clause to another (`([p rot] (rp p rot 0))` calling the 3-arg clause) does **not** back-flow the callee clause's parameter types into the caller clause's parameters. Consequently, **each variant MUST carry its own annotations wherever inference cannot pin its parameters from that variant's own body.** A variant whose parameters stay polymorphic after checking its own body is an ambiguous-type compile-time error, exactly as for a single-signature `defn` (§5.1.1) — the sibling variant's annotations do not rescue it.
+
+```clojure
+;; ERROR: the 2-arg variant's p / rot are unpinned — the annotated
+;; 3-arg sibling is NOT consulted, and the delegating call does not
+;; back-flow types.
+(defn rp
+  ([p rot]                               (rp p rot 0))
+  ([:Position p :Rotation rot :Int idx]  (match rot …)))
+
+;; CORRECT: annotate the 2-arg variant too.
+(defn rp
+  ([:Position p :Rotation rot]           (rp p rot 0))
+  ([:Position p :Rotation rot :Int idx]  (match rot …)))
+```
 
 ### 5.1.3 Auto-Currying [Tested tests/spec_05_definitions::defn_auto_curry_call_with_fewer_args]
 

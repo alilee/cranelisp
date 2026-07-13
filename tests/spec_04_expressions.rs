@@ -877,3 +877,42 @@ fn type_annotation_qualified_and_bare_resolve_identically() {
         .assert_stdout_contains(":primitives/Int 42")
         .assert_stdout_does_not_contain("user/primitives/Int");
 }
+
+// =============================================================================
+// Sprint 109 — SS-1: §4.5 `fn` is single-arity; the parenthesised multi-arity
+// clause form is a compile-time (parse) error. Plan: tests/plan/PLAN.md §S109 §I.
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.5 — `(fn ([x] x) ([x y] x))` (the parenthesised
+// multi-arity clause form, `defn`-only) is a compile-time PARSE error, in REPL
+// and `--run` alike. The rejection already fires; the ERROR-QUALITY facet is the
+// RED — the diagnostic MUST name `fn` as single-arity and point the user at
+// `defn` (the 0575 `/dev` diagnostic tail), not a generic "expected bracket".
+// defect: class=silent-accept locus=crates/cranelisp-frontend (fn multi-arity rejected with a generic parse error, not a single-arity/defn-pointing diagnostic) found=S108 owner=/dev
+#[test]
+fn fn_multi_arity_clause_form_parse_error_neg() {
+    // REPL leg.
+    let out = repl_prims("(fn ([x] x) ([x y] x))\n");
+    let text = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        text.contains("error"),
+        "the multi-arity `fn` form MUST be rejected; {text}"
+    );
+    assert!(
+        text.contains("single-arity")
+            || text.contains("single arity")
+            || text.contains("defn"),
+        "the error MUST name `fn` as single-arity and point at `defn` (0575); {text}"
+    );
+    // --run leg — the same rejection, uniform across modes.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(import [primitives [Pure]])\n(def bad (fn ([x] x) ([x y] x)))\n(defn main [] (Pure 0))\n")
+        .output();
+    assert!(
+        !run.status.success(),
+        "the multi-arity `fn` form MUST be rejected under --run too; {}\n{}",
+        run.stdout, run.stderr
+    );
+}

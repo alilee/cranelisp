@@ -1379,3 +1379,117 @@ fn cache_pre_r5_schema_object_invalidated_wholesale() {
          mismatch, not served stale"
     );
 }
+
+// =============================================================================
+// Sprint 109 — DC-9 (dotted-ctor warm-cache round-trip) + AL-8 warm-cache leg
+// (FQ auto-load from cache). Plan: tests/plan/PLAN.md §S109 §A/§D.
+// =============================================================================
+
+// spec: design/typecheck/dotted-ctor-canonical-keys.md Obligations A/B — a
+// dotted-ctor program resolves identically cold and warm: the canonical-key /
+// `type_ctor_names` mapping round-trips through `.meta.json` so the warm run
+// resolves the dotted constructor exactly as the cold run does. RED today (the
+// dotted value-position constructor path does not resolve yet); after the
+// registration change this is a permanent cold≡warm round-trip guard.
+// defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev
+#[test]
+fn dotted_ctor_resolves_from_warm_cache() {
+    let src = "(import [primitives [Pure Int add-i64]])\n\
+               (deftype (Maybe a) Nil (Some [:a v]))\n\
+               (deftype (Option a) Nil (Some [:a v]))\n\
+               (defn main [] (Pure\n\
+                 (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.Nil 0])\n\
+                          (match (Option.Some 3) [(Option.Some x) x Option.Nil 0]))))\n";
+    // Cold run — builds the cache (RED until dotted ctors resolve); then the
+    // warm run served from the `.meta.json` cache gives the identical result.
+    project(&[("main.cl", src)])
+        .run("main.cl")
+        .output()
+        .assert_exit(10)
+        .run_again()
+        .run("main.cl")
+        .output()
+        .assert_exit(10);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 8 — an auto-loaded module's resolution
+// MAY be satisfied from the warm cache: a FQ reference resolves identically on a
+// cold run (auto-load + compile) and a warm run (cache hit). GREEN — the
+// cache-hit leg of AL-8 idempotence.
+#[test]
+fn fq_ref_resolves_from_warm_cache() {
+    let files = &[
+        (
+            "mathx.cl",
+            "(import [primitives [Int mul-i64]])\n(defn square [:Int x] :Int (mul-i64 x x))\n",
+        ),
+        (
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/square 5)))\n",
+        ),
+    ];
+    // Cold: auto-load + compile; then the warm run (same TempDir) is a cache hit.
+    project(files)
+        .run("main.cl")
+        .output()
+        .assert_exit(25)
+        .run_again()
+        .run("main.cl")
+        .output()
+        .assert_exit(25);
+}
+
+// =============================================================================
+// Sprint 109 W1.2 — DC-14: CACHE_SCHEMA_VERSION 17→18 (arch §10.2/§10.8).
+// `MonoMatchArm.resolved_ctor` serializes into the cached codegen_view; a pre-18
+// meta lacks it (serde default `None`) and would hard-error at the backend, so a
+// pre-18 `.meta.json` MUST be rejected wholesale (recompiled), never silently
+// read; a warm schema-18 rerun of the DC-12 differing-layout twin stays green.
+// Plan: tests/plan/PLAN.md §S109 §D.3 DC-14. RED today — this rides the §10
+// sidecar-transport change-set (the DC-12 twin itself is the Blocker), and the
+// 17→18 bump lands with it; the pre-18-specific reject fully materialises once
+// /dev bumps the binary to schema 18.
+// =============================================================================
+
+// spec: design/backend/module-caching.md §10.2/§10.8 — schema 17→18 bump: warm
+// cache of the DC-12 differing-layout twin stays green + a pre-current-schema
+// meta is rejected wholesale (recompiled to the correct result).
+#[test]
+fn pre_schema_18_cache_rejected_and_warm_18_green() {
+    // The DC-12 differing-layout twin (order A) — a single entry file.
+    let twin = "(import [primitives [Pure add-i64 Int]])\n\
+                (deftype (Maybe a) None (Some [:a v]))\n\
+                (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
+                (defn main [] (Pure\n\
+                  (add-i64 (match (Maybe.Some 5) [(Some x) x None 0])\n\
+                           (match (Opt2.Some 10 20) [(Some x y) (add-i64 x y) None2 0]))))\n";
+    // Cold compile (RED today — the wrong-ctor Blocker); then the WARM cache hit
+    // MUST give the same correct result 35.
+    let warm = project(&[("main.cl", twin)])
+        .run("main.cl")
+        .output()
+        .assert_exit(35)
+        .run_again()
+        .run("main.cl")
+        .output()
+        .assert_exit(35);
+
+    // Pre-(current-schema) meta is rejected WHOLESALE: patch schema_version to a
+    // stale sentinel, rerun — the cache MUST reject it and recompile to the
+    // correct result (never silently read a stale/None-armed codegen view).
+    let meta_path = warm.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let text = fs::read_to_string(&meta_path).expect("meta exists after successful compile");
+    let stale = regex::Regex::new(r#""schema_version"\s*:\s*\d+"#)
+        .unwrap()
+        .replace(&text, "\"schema_version\":1")
+        .into_owned();
+    assert!(
+        stale.contains("\"schema_version\":1"),
+        "the schema_version patch must land; meta:\n{text}"
+    );
+    fs::write(&meta_path, &stale).expect("write stale-schema meta");
+    warm.run_again()
+        .run("main.cl")
+        .output()
+        .assert_exit(35);
+}

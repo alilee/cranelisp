@@ -36,8 +36,8 @@ A `match` expression MUST contain at least one arm.
 ```ebnf
 pattern      = ctor_pattern | wildcard | var_pattern
 
-ctor_pattern = '(' symbol symbol* ')'     ; data constructor with bindings
-             | symbol                       ; nullary constructor (see 6.2.4 for disambiguation)
+ctor_pattern = '(' (symbol | dotted_symbol) symbol* ')'  ; data constructor with bindings
+             | symbol | dotted_symbol        ; nullary constructor (see 6.2.4 for disambiguation)
 
 wildcard     = '_'
 
@@ -71,6 +71,12 @@ The number of variable bindings MUST equal the number of fields declared in the 
 
 Binding names are arbitrary — they need not match the field names from the type definition. Bindings are always positional: the first binding corresponds to the first field, the second binding to the second field, and so on.
 
+**Dotted constructor patterns.** The first symbol of a constructor pattern MAY be a dotted canonical constructor name — `(Maybe.Some x)` matches `Maybe`'s `Some` constructor and binds its field. The dotted form always resolves regardless of scrutinee type, and field-binding arity (above) and exhaustiveness (§6.5) are computed against the type it names.
+
+**Contested bare constructor patterns resolve against the scrutinee type.** When two in-scope types share a bare constructor name (`Maybe` and `Option` each own `Some`), a **bare** constructor pattern for that name resolves against the **match scrutinee's type** — in `(match m [(Some x) …])` with `m : Maybe`, the bare `(Some x)` resolves to `Maybe.Some`. This mirrors how every constructor pattern is already checked against the scrutinee type (§6.4.1): the scrutinee provides the type context that selects the constructor. A bare contested constructor pattern is **poisoned (a compile-time error listing the canonical alternatives) ONLY when the scrutinee type cannot disambiguate it** — i.e. the scrutinee's type is not determined (a polymorphic or unannotated-lambda-parameter scrutinee with no other constraint). In that case, write the dotted form `(Maybe.Some x)` / `(Option.Some x)`.
+
+This is the unifying rule across positions: a contested bare constructor resolves against whatever **type context** is available, and is poisoned only when there is none. In **value** position there is no such context, so a contested bare constructor always poisons (§8.6.5) and the dotted form is required. In **pattern** position the scrutinee type is the context, so a bare contested pattern resolves whenever the scrutinee type is determined, and poisons only when it is not. The dotted form is always available in either position.
+
 ### 6.2.2 Constructor Pattern (nullary) [Tested tests/spec_06_pattern_matching::pattern_nullary_constructor]
 
 ```clojure
@@ -88,6 +94,8 @@ A bare symbol that names a known **nullary constructor** (a constructor with no 
    Green "green"
    Blue  "blue"])
 ```
+
+The scrutinee-directed rule of §6.2.1 applies to nullary constructor patterns exactly as to data ones: when two in-scope types share a bare nullary constructor name, a bare `None` pattern resolves against the scrutinee type (`(match m [None …])` with `m : Maybe` → `Maybe.None`), and is poisoned only when the scrutinee type cannot disambiguate it; the dotted form `Maybe.None` / `Option.None` always resolves.
 
 ### 6.2.3 Wildcard Pattern [Tested tests/spec_06_pattern_matching::pattern_wildcard_catchall]
 
@@ -120,6 +128,8 @@ A bare symbol that is NOT a known constructor and is NOT `_` is a **variable pat
 3. Otherwise, it is a **variable pattern**.
 
 This means that if a constructor and a local variable have the same name, the constructor takes precedence. Constructor names are capitalized by convention, so this conflict is rare in practice.
+
+A **dotted** symbol in head position of a pattern is always a constructor pattern (never a variable pattern), resolving directly via its parent type per §8.5.2 — the bare-symbol precedence rule above is reached only for bare symbols.
 
 **Example:**
 

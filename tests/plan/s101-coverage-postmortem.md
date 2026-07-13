@@ -5,6 +5,14 @@ amendment, `sprints/SPRINT.md` §Notes 2026-07-03). Peer of
 `tests/plan/s100-ownership-verification.md` (whose §6.1 set was drafted in the same
 wave); registered in `tests/CLAUDE.md` §Plan documents.
 
+> **Citation freeze (S109, /qa).** File/line citations in this document
+> (`program.rs:NNN`, `infer.rs:NNN`, `save.rs:NNN`, …) are evidence frozen at
+> S101 HEAD. The S109 FIXME-0580 decomposition splits
+> `crates/cranelisp-typecheck/src/program.rs` into submodules (tests →
+> `program/tests.rs`, per `design/typecheck/program-decomposition.md`). Do not
+> chase the relocation here — this is a historical post-mortem; current seams
+> are named in the live design docs and source.
+
 The S101 Phase-3 design pass surfaced three defects/gaps that the existing ~1800-test
 suite had never flagged. Each is an instance of a coverage **category**, not a one-off.
 This post-mortem records the per-find root cause of the miss, then executes the

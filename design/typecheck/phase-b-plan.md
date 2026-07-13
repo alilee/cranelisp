@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (Sprint 72 Wave 3a).** A completed design plan, retained for the audit trail; NOT a durable subsystem reference. The durable per-form-pipeline design lives in `check-form-api.md` + `typecheck.md`. Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # Sprint 72 Wave 3a — Phase B design plan
 
 This plan is executable by `/dev typecheck` in Wave 3b. It scopes (1) activating

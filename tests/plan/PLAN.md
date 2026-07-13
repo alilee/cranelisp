@@ -2002,3 +2002,419 @@ lens (`tests/CLAUDE.md`): provenance axis — explicit-import vs
 implicit-prelude, × public vs private. The re-baselined test above is the
 worked example. (The E3 fixture recipe in §"Sprint 108 Increment 3" describing
 `(import [foo [other]])` is superseded by this re-baseline.)
+
+## Sprint 109 — sprint-wide failing-test plan (Phase-3 exit gate, 2026-07-13, /qa)
+
+The QA-first drafting spec for `/testing` (Phase 5 authors to THIS plan before
+any per-crate D/D/R begins). Scope: `sprints/SPRINT.md` all six buckets. Spec
+contracts: `spec/08-modules.md` §8.5.2/§8.5.4/§8.6.5/§8.2.3;
+`spec/06-pattern-matching.md` §6.2.1/§6.2.2/§6.2.4; `spec/04-expressions.md`
+§4.5; `spec/05-definitions.md` §5.1.2; `repl/spec.md` §1.1/§1.5/§17.2.1/
+§17.19.2(+a,b)/§17.20.3a–c. Design contracts:
+`design/typecheck/dotted-ctor-registration.md` (§4 blast radius),
+`design/arch/dotted-ctor-canonical-keys.md` (Obligations A/B).
+
+Discipline reminders binding on this plan: REDs are failing-not-ignored;
+every fix pairs a `/dev` unit test in the same change-set (METHOD §2.2); every
+deferral to unit tier below ENUMERATES its cases (S108 Inc2 lesson — a bare
+"unit-pinned" is a hole); fixtures are stdlib-free (own modules composed into
+the tmpdir via `.file()`; `PreludeVariant::None`/`PrimitivesOnly` unless a row
+says otherwise); language-semantics rows run through all modes via
+`run_through_all_modes`. Spec-side `[S109]` tags flip to `[Tested …]` by `/qa`
+at Phase 6/7, never at drafting.
+
+**Vocabulary addition (this pass, /qa):** `class=check-gate-leak` added to the
+controlled `// defect:` vocabulary in `tests/CLAUDE.md` — a source-level fault
+that typecheck must decide (resolve or reject check-side) leaks past the check
+boundary and surfaces as a codegen/backend-layer error (the 0571 D1 shape).
+Distinct from `silent-accept` (nothing raised) and `error-swallow` (raised then
+dropped): here the wrong LAYER raises.
+
+> **REVISED at the W1 re-ruling (2026-07-13, /qa; second vocabulary addition:
+> `class=resolver-mirror`).** After the W1.1a landing/revert (73 regressions;
+> `design/arch/dotted-ctor-canonical-keys.md` REVISED — user-ruled COORDINATE)
+> and the landed §6.2.1/§6.2.2 **scrutinee-directed** bare-pattern rule:
+> DC-11 added (determined-scrutinee bare pattern RESOLVES), DC-5 reframed
+> (poison only on an indeterminate scrutinee), the §D fixture constraint added
+> (no free-type-var param annotations — the live W6 defect), §D.1 acceptance
+> negatives AN-1…AN-5 added (the 73-regression classes as guards; AN-2/AN-5
+> are pre-existing-defect repros owed RED ahead of the wave), §D.2 records the
+> two-commit acceptance structure (commit-1 reader-widening holds the 25-fail
+> baseline; commit-2 writer-flip + cache 16→17 flips the DC/BR REDs), and §L
+> adds the W6 annotation-resolution matrix.
+>
+> **REVISED again at W1.2 (arch §10 Blocker ruling, commit `d45e2cee`):** §D.3
+> adds the tag-order class — DC-12 (differing-layout twins, both source
+> orders), DC-13 (the `xmod.cl` cross-module nondeterminism guard, exit 1/7/7
+> today), BU-1/BU-2 (`/dev` backend unit pins: loud-miss + I-1 spark
+> exclusion), DC-14 (cache 17→18). The committed DC-11/DC-6 greens are
+> tag-layout coincidences; `/review` re-checks them against DC-12, not the
+> coincident fixtures.
+
+### Risk read (summary; full entries in `risks.md` §"S109 risk read")
+
+Highest-silent-failure changes this sprint, in order: (1) the **C-class
+in-flight race** (auto-load member-probe against a non-terminal module) —
+nondeterministic, invisible to single runs, and the forbidden-disposition rules
+make any intermittent RED a real bug by definition; (2) the **two blast-radius
+sites** `/design` pre-flagged (exhaustiveness `.`-strip; IO-internal-ctor
+exclusion) — both fail SILENTLY on revert (false non-exhaustive blocks valid
+code; internal-exclusion loss forces users to match `Bind`/`Pure`/`Effect`),
+so both get fail-on-revert guards in the registration change-set; (3) the
+**cache-schema 16→17** key-meaning change — a stale `.meta.json` read by the
+canonical-key resolver silently misses ctor `Def`s and mis-classifies heap
+categories (a UAF class per the arch note); (4) **0573 product persistence** —
+silent data loss, observable only at reload. Arch-pre-flagged boundaries and
+spec MUSTs are authored FIRST (before happy paths), per the S108 Inc2 rule.
+
+### A. §8.5.4 Auto-loading — the ten-edge MUST list (file: `tests/spec_08_modules.rs` unless noted)
+
+Every edge is a row; every row carries its negative. Edge 1 (all modes ×
+positions × kinds) is expanded as matrix M2 (§H); rows AL-2…AL-10 cover edges
+2–10. Arch's 0571 A/B rows fold in where they coincide (noted).
+
+| Row | Edge / arch id | Spec citation | Test (proposed) | Status | Polarity |
+|---|---|---|---|---|---|
+| AL-1 | 1 / A1–A4 | §8.5.4 edge 1 — all modes, positions, kinds | matrix M2 cells (§H): `fq_call_position_autoloads_all_modes` (A1, `run_through_all_modes`), `fq_value_position_ref_call_through_let` (A2), `fq_macro_ref_expands_at_qualified_site` (A3, §9.3.6), `fq_type_annotation_triggers_autoload` (A4) | [S109] — A1/A3 mostly GREEN today per arch verification; A2/A4 verify-first | pos + M2 neg column |
+| AL-2 | 2 | §8.5.4 edge 2 — absolute path, same resolution as `import` | `fq_ref_autoloads_absolute_module_path` (file-backed fixture module, no import); neg `autoload_neg_no_phantom_child_from_bare_qualifier` (undeclared child dir `main/util.cl` NOT invented from bare `util/helper`; error at reference site) | [S109] | pos+neg |
+| AL-3 | 3 / B1 | §8.5.4 edge 3 — file not found ⇒ compile error AT REFERENCE SITE, names both modules, resolution-layer | `fq_ref_missing_module_errors_at_reference_site` — **span-pinned** (reference-site span, not `0..0`; RED until the span fix); neg facet: output does NOT contain `undefined variable` or a codegen-layer frame | [S109] — RED (span + wrapping today) | pos+neg |
+| AL-4 | 4 / B2 | §8.5.4 edge 4 — "module *X* has no member *Y*", order-independent | `fq_ref_member_absent_names_module_and_member`; neg `fq_ref_member_absent_error_identical_when_preloaded_neg` (twin: auto-loaded leg vs explicitly-imported-first leg, byte-same error class) | [S109] | pos+neg |
+| AL-5 | 5 / B3 | §8.5.4 edge 5 — dep compile failure ⇒ chained diagnostic; REPL survives | `fq_ref_dep_compile_error_chained_diagnostic` (names failed module + underlying error); neg `fq_ref_dep_compile_error_repl_survives_to_next_prompt_neg` (follow-on `(add-i64 1 2)` still evaluates) | [S109] — RED expected (chaining) | pos+neg |
+| AL-6 | 6 / B4+B5 | §8.5.4 edge 6 — cycle ⇒ circular-dependency error NAMING THE PATH; no deadlock; never "undefined variable" | `fq_ref_cycle_reports_circular_dependency_path` (**B4 — RED today**, misattribution); `fq_ref_mixed_cycle_import_plus_fq_reports_cycle` (B5: A imports B, B FQ-refs A); neg facets: harness timeout = deadlock failure; assert NOT `undefined variable` | [S109] — B4 RED | pos+neg |
+| AL-7 | 7 / C1 | §8.5.4 edge 7 — in-flight atomicity | §C below (the e2e-vs-unit enumeration) | [S109] | pos+neg |
+| AL-8 | 8 / A7 | §8.5.4 edge 8 — idempotence, at-most-once load, cache MAY satisfy | `fq_ref_second_reference_no_reload` (`CRANELISP_MODULE_TRACE=1`: one load event); `fq_ref_resolves_from_warm_cache` (cache.rs — cache-hit leg) | [S109] | pos+neg (`_no_reload` IS the neg) |
+| AL-9 | 9 | §8.5.4 edge 9 — visibility unchanged; private member via FQ ref is a compile error (§8.6.6) | `fq_ref_private_member_rejected_neg` (`defn-` in target); pos twin `fq_ref_public_member_resolves` | [S109] | pos+neg |
+| AL-10 | 10 | §8.5.4 edge 10 — no scope pollution: no bare bindings, no §8.6.5 ambiguity introduced | `autoload_neg_installs_no_bare_bindings` (after `(mathx/square 3)`, bare `square` unresolved); `autoload_neg_no_ambiguity_with_local_def` (local `(defn square …)` after the FQ ref is NOT a conflict) | [S109] | neg (two fns) |
+| AL-11 | (chain) / A5 | §8.5.4 edges 1+8 composed — chain depth ≥3 parks/resumes | `fq_ref_chain_depth_three_resumes` (A FQ-refs B, B FQ-refs C; correct value) | [S109] | pos |
+| AL-12 | (diamond) / A6 | §8.5.4 edges 7+8 composed — diamond, C loads once, both resume | `fq_ref_diamond_loads_once_both_resume` (root refs A and B, both FQ-ref C; module trace: C loaded once) | [S109] | pos+neg (load-count) |
+
+### B. 0571 failure-mode + defect-class rows (arch A/B/C/D fold-in)
+
+A-capability rows are AL-1/AL-11/AL-12 above; B-failure rows are AL-3/4/5/6.
+The D rows below are the actual 0571 defect class:
+
+| Row | Arch id | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|---|
+| FQ-D1 | D1 | §8.5.4 edge 1 + spec/03-types.md §3.11 — value-position FQ ref to a GENERIC fn concretely used (`(let [f mathx/gcount] (f [1 2 3]))`) MUST either resolve check-side (mono minted at the inferred concrete type) or die check-side with an actionable §3.11-style annotation-required error — NEVER a codegen-layer error | `fq_value_ref_generic_fn_concrete_use_never_reaches_codegen` | tests/spec_08_modules.rs | **[S109] — RED, THE failing-not-ignored repro `/testing` owes.** `// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position ref to slot-less Polymorphic template never mints a mono; leaks to backend/literals.rs) found=S108 owner=/dev` | pos-or-error + neg (no codegen frame) |
+| FQ-D2 | D2 | repl/spec.md §1.5/§1.5.1 + §8.5.4 — bare REPL FQ ref displays via the SAME introspection path a bare imported name uses; no codegen forced | `fq_bare_display_parity_with_imported_introspection` (twin: `mathx/gcount` bare vs `(import …)` + `gcount` bare — same envelope) | tests/repl_introspection.rs | [S109] | pos (twin parity) |
+| FQ-D3 | D3 | §8.5.4 edge 3 ("MUST NOT surface as a codegen-layer leak") — NEGATIVE sweep | `fq_ref_neg_no_doubly_wrapped_codegen_error` — dedicated fn PLUS a shared assertion helper applied across every AL/FQ fixture: output NEVER matches the doubly-wrapped `codegen error … codegen failed for /` shape | tests/spec_08_modules.rs | [S109] | neg |
+| FQ-D4 | D4 | §8.5.4 edge 10 + §8.6.4 order-independence — import-invariance | `fq_ref_import_invariance_twin` — same program ± a prior `(import …)` behaves identically (value AND diagnostic legs) | tests/spec_08_modules.rs | [S109] | pos (twin) + neg (diagnostic leg) |
+
+### C. C-class — the in-flight race: e2e-vs-unit enumerated per case (edge 7)
+
+Deterministic e2e forcing of the "member-probe arrives while the module is
+in-flight" interleaving is **unattainable** today (no scheduler-pause test
+hook; adding one is not warranted while the unit arms below hold). The split,
+per case — neither tier substitutes for the other:
+
+1. **C1-e2e (owner `/testing`, e2e tier — the confidence sweep, probabilistic
+   detection, deterministic guard value under repetition):**
+   `autoload_diamond_race_under_load_repeated` — `--run` with
+   `--priority-workers 4`; root imports A and B (the import wave puts both
+   in-flight); A FQ-refs B in a top-level form. **Repeat ≥25 process spawns in
+   one test fn**; EVERY iteration asserts exit 0 + the correct value, and
+   NEVER `has no member` (the racy misclassification). File:
+   `tests/spec_08_modules.rs`. A single failing iteration is a real bug —
+   forbidden dispositions (`flaky`/`timing-sensitive`) apply in full.
+2. **C1-unit (owner `/dev` int/`src`, the deterministic guard — arch's
+   scheduler-seam fallback, ENUMERATED):** the int gap-arm decision logic gets
+   four unit pins, each failing on revert of its arm:
+   (i) module ABSENT from map → load + park;
+   (ii) module PRESENT but NON-TERMINAL → **PARK, not err** (the race cure);
+   (iii) TERMINAL + member present → resolve;
+   (iv) TERMINAL + member absent → "module X has no member Y".
+3. **C1-tc-unit (owner `/dev` typecheck):** `resolve_qualified`'s
+   member-absent arm yields the gap **unconditionally** (typecheck stays
+   scheduler-free; INT decides) — one unit pin: a present-but-non-terminal
+   module's member probe emits a gap, never the member-absent diagnostic.
+4. **C2 (deterministic e2e):** the mixed cycle AL-6 `…mixed_cycle…` row — the
+   import edge forces the ordering, so this cycle leg IS deterministic.
+
+`/dev` + `/review` confirm each enumerated unit case has a fail-on-revert
+guard (S108 Inc2 enumerated-deferral rule).
+
+### D. Dotted-`Type.Ctor` capability — twins + blast-radius fail-on-revert guards
+
+| Row | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| DC-1 | §8.5.2 | `dotted_constructor_in_value_position_resolves` — the committed RED (§VI above) **flips GREEN** at the registration change; row then reads `[Tested]` | tests/spec_08_modules.rs | [S109] — RED today (committed 2026-07-12) | pos |
+| DC-2 | §8.5.2/§8.6.5 | `same_named_ctors_dotted_value_position_both_resolve` — two in-scope types sharing `Some`; `Maybe.Some`/`Option.Some` both resolve (applied) + `Maybe.None`/`Option.None` (nullary) | tests/spec_08_modules.rs | [S109] — RED | pos |
+| DC-3 | §8.6.5 + §6.2.1 unifying rule ("in **value** position there is no context, so a contested bare constructor always poisons") | `same_named_ctors_bare_value_poisoned_lists_alternatives_neg` — bare `Some` in VALUE position is a compile error LISTING `Maybe.Some` and `Option.Some`; **0568 facet: the diagnostic MUST NOT contain the internal `__expr` binder**. This is the "no context" arm of the DC-3/DC-11 unifying-rule pair | tests/spec_08_modules.rs | [S109] — RED | neg |
+| DC-4 | §6.2.1/§6.2.2 ("the dotted form **always resolves regardless of scrutinee type**") | `same_named_ctors_dotted_pattern_position_disambiguates` — `(Maybe.Some x)` binds positionally; dotted nullary `Maybe.None` arm matches; exhaustiveness + field-binding arity computed against the type the dotted ctor names. Dotted is never contingent on the scrutinee | tests/spec_06_pattern_matching.rs | [S109] — RED | pos |
+| DC-11 | §6.2.1/§6.2.2 **scrutinee-directed (W1 re-ruling, landed)** — a contested BARE constructor pattern RESOLVES against a determined scrutinee type | `contested_bare_pattern_resolves_against_determined_scrutinee` — `(match m [(Some x) …])` with `m : Maybe` determined (concretely constructed, or concrete-annotated — NO free-var annotation, see fixture constraint below) resolves bare `(Some x)` to `Maybe.Some`; nullary leg: a bare `None` arm resolves to `Maybe.None`. **REPLACES the pre-re-ruling expectation that a contested bare pattern requires the dotted form.** DC-3 (value: always poisons) + DC-11 (pattern: resolves when determined) pin the one-rule-two-contexts framing together | tests/spec_06_pattern_matching.rs | [S109] — RED | pos |
+| DC-5 | §6.2.1 + §8.6.5 — poisoned **ONLY when the scrutinee type cannot disambiguate** | **REFRAMED (W1 re-ruling):** `contested_bare_pattern_indeterminate_scrutinee_poisoned_neg` — an INDETERMINATE scrutinee (per the landed §6.2.1 wording: an unannotated-lambda-parameter scrutinee with no other constraint) with a contested bare `(Some x)` is a compile error listing the canonical alternatives; in-test control: the same match written dotted compiles. The negative targets the indeterminate-scrutinee case ONLY — a determined-scrutinee bare pattern is DC-11's positive, never a poison | tests/spec_06_pattern_matching.rs | [S109] — RED | neg |
+| DC-6 | §8.5.2 + §8.6.5 (import shapes) | `same_named_ctors_define_plus_import_twin`, `same_named_ctors_import_plus_import_twin` — SAME assertions as DC-2/DC-3 with provenance varied (local `deftype` + imported type; two imported types). The twin fixture: a provenance that grew its own codepath diverges the twins | tests/spec_08_modules.rs | [S109] — RED | pos+neg per twin |
+| DC-7 | §8.5.2 product corner | `product_ctor_dotted_form_does_not_resolve_neg` — `Point.Point` does not resolve; bare `Point` does; NO spurious poison (bare `Point` stays usable) | tests/spec_08_modules.rs | [S109] | neg+pos |
+| DC-8 | §8.5.2 first-class MAY | `dotted_ctor_passed_as_argument_and_let_bound` — `(let [f Maybe.Some] (f 3))` | tests/spec_08_modules.rs | [S109] | pos |
+| DC-9 | Obligations A/B (`dotted-ctor-canonical-keys.md`) | `dotted_ctor_resolves_from_warm_cache` — cold run then warm run, identical result (guards the canonical-key/`type_ctor_names` round-trip through `.meta.json`); neg: a pre-bump cache is invalidated, not silently mis-read (version-bump behaviour) | tests/cache.rs | [S109] | pos+neg |
+| **BR-1** | §6.5 exhaustiveness × the `.`-strip (design §4.1 — **arch-pre-flagged, author FIRST**) | `match_over_dotted_covered_ctor_not_false_nonexhaustive_neg` — a TOTAL match written with dotted arms (`(Maybe.Some x)` / `Maybe.None`) compiles with NO "non-exhaustive" diagnostic. **FAILS if the covered-set normalizer's `.`-strip regresses** | tests/spec_06_pattern_matching.rs | [S109] — RED until the change-set lands (dotted patterns don't resolve yet); permanent fail-on-revert guard after | neg |
+| **BR-2** | §6.5 × internal-ctor exclusion (design §4.2 — **arch-pre-flagged, author FIRST**) | e2e: a user `match` over an IO-typed value covering only its public surface compiles WITHOUT "non-exhaustive: missing `Bind`/`Pure`/`Effect`" (`io_internal_ctors_stay_excluded_from_exhaustiveness_neg`, tests/spec_10_io.rs — `/testing` verifies the IO-match idiom is expressible e2e). **Enumerated unit fallback if not** (`/dev` typecheck, fail-on-revert): the per-ctor `internal` flag read chain-follows the bare alias to the terminal ctor `Def` — asserts `internal == true` for `Bind`/`Pure`/`Effect` AFTER the bare key becomes an alias | tests/spec_10_io.rs (or enumerated unit) | [S109] | neg |
+| DC-10 | repl/spec.md §17.19.2b (+§3.3/§3.5) | `search_lists_constructor_once_canonical_form` + `search_neg_no_bare_duplicate_ctor_row`; `/list` + `/exports` twins (`list_shows_ctor_once_canonical`, `exports_show_ctor_once_canonical`) — the bare alias is never a second row | tests/search.rs, tests/repl_introspection.rs | [S109] — `/testing` twin owed (design §6 display row; couples 0572/E4) | pos+neg |
+
+**Fixture constraint (W1 re-ruling; unblocks DC-2/DC-5/BR-1 from the W6
+defect).** Fixtures for the DC/BR rows MUST NOT use a **free type variable in a
+`defn`/`fn` parameter annotation** (`:(Maybe a) m`, `:a x`) — that hits the
+separate, live W6 poly-annotation defect (`unknown type 'a'`, verified live)
+and would make these rows RED for the WRONG reason. Use **concrete types or
+inference** instead: `deftype` type parameters are fine (`(deftype (Maybe a)
+MNone (MSome [:a v]))` works), so determine the scrutinee/value by concrete
+construction (`(Maybe.Some 5)` / `(MSome 5)`), by a concrete-application
+annotation (`:(Maybe Int) m`), or by inference from a constructed value.
+Dotted-ctor coverage is unchanged by this constraint — resolution is about
+ctor-name keying, not type parameters. The poly-annotation defect gets its OWN
+coverage in §L (the W6 matrix).
+
+#### D.1 W1 coordinate acceptance negatives (arch re-ruling §5 — the 73-regression classes as guards)
+
+`design/arch/dotted-ctor-canonical-keys.md` §3/§5: the first W1.1a landing
+flipped the writers without the readers — 73 regressions, classes empirically
+pinned. Each class below becomes a permanent guard. AN-1/3/4 are
+**behaviour-invariance pins** (GREEN today, authored BEFORE the wave; they must
+still pass after commit-1 AND commit-2 — they are the writer-flip's acceptance
+negatives). AN-2/AN-5 are **pre-existing defects W1 incidentally fixes** —
+failing-not-ignored repros owed AHEAD of the wave, flipping GREEN at commit-1.
+
+| Row | Regression class (arch §5) | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|---|
+| AN-1 | (B) prelude cascade — the `collections.list.test` one-hop miss took down `do`/`pure`/`cond`/`when`/`case`/`vec`/`list`/`def` | spec/08 §8.6.2 (chain-follow to terminal) + root CLAUDE.md stdlib-separation exception | Two guards: (a) free-standing ROOT-CAUSE twin — a fixture prelude module with a `(mod test)` submodule whose test file `match`es an imported bare nullary ctor, then the prelude's LATER export lines must still install (`prelude_module_with_ctor_matching_submodule_still_exports_all`); (b) stdlib-prelude availability smoke via the gated `use_workspace_stdlib_for_stdlib_conformance_only()` entry — each of `do`/`pure`/`cond`/`when`/`case`/`vec`/`list`/`def` evaluates (`workspace_prelude_core_names_all_available`) | (a) tests/spec_08_modules.rs, (b) tests/spec_11_stdlib.rs | [S109] — GREEN today; invariance pin + commit-2 acceptance | neg (cascade absence) |
+| AN-2 | (D) cross-module nullary-ctor SOUNDNESS — the silent wrong-value class: `lookup_constructor`'s one-hop miss falls through to the fn-as-value closure wrap; tag comparison against a heap pointer → runtime "match failed" | spec/06 §6.3 + spec/08 §8.6.2; arch §3.1 (two backend resolvers disagreeing on one name) | `imported_bare_nullary_ctor_match_compiles_to_tag_not_closure` — import a bare nullary ctor (`Red`) cross-module (include a re-export hop so the chain is ≥2 hops), `match` on it, assert the CORRECT arm value (the wrong-value/`match failed` shape is the neg facet). **The failing-not-ignored repro arch found is OWED** | tests/spec_08_modules.rs | **[S109] — RED ahead of the wave (pre-existing, silent); flips GREEN at commit-1** (`lookup_constructor` collapses onto `resolve_driven`). `// defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/context.rs::lookup_constructor (one-hop copy vs resolve_driven multi-hop — two resolvers, one name) found=S109 owner=/dev` | pos+neg (soundness) |
+| AN-3 | (C) display — data ctor values rendered with fields DROPPED (`(Cons 2 …)` → bare `Lst.Cons`) | repl/spec.md §1.5 (data ctor display row) | `data_ctor_value_displays_with_fields_not_bare_name_neg` — a user `(Cons 5 Nil)`-shaped value renders `(Lst.Cons 5 Lst.Nil)`-form WITH fields; assert the bare-ctor-name-only render is ABSENT | tests/repl_introspection.rs | [S109] — GREEN today; invariance pin + commit-2 acceptance (guards `display.rs::ctor_field_types` canonical-aware probe) | neg |
+| AN-4 | (B/§3.3) member-glob import loses bare ctor refs (canonical names collected, alias edges skipped) | spec/08 §8.4 import shapes + §8.6.2 | `glob_import_bare_ctor_still_resolves` — after `(import [m [*]])` a bare imported ctor constructs and pattern-matches; `/testing` twins the member-glob shape (`(import [m [(Lst *)]])`-style) per the import-shapes variant family | tests/spec_08_modules.rs | [S109] — GREEN today; invariance pin + commit-2 acceptance (guards `imports.rs::collect_member_glob` alias installation) | pos (its absence post-flip is the guarded regression) |
+| AN-5 | (arch §6) latent field-accessor same-cluster `--run` defect — bare accessor `v` NEVER resolved same-cluster under `--run` (live-only chain-follow misses the same-module staged alias) | spec/08 §8.5.2 field-accessor alias + §8.6.2 | `bare_field_accessor_same_cluster_run_mode` — one `--run` file defining `(deftype Box [:Int v])` and using bare `(v (Box 7))` in the SAME cluster. **Failing-not-ignored repro owed ahead of the wave** (pre-existing); the `/dev` types-level unit pin (staging-view alias hop in `chain_follow_committed`) is arch-directed, same change-set | tests/spec_08_modules.rs (or spec_05 accessor family) | **[S109] — RED ahead of the wave; flips GREEN at commit-1** (the §3.5 primitive amendment). `// defect: class=wrong-scope-lookup locus=cranelisp-types/src/resolve.rs::chain_follow_committed (same-module Import hop reads LIVE table, misses the caller's staging view) found=S109 owner=/dev` | pos |
+
+#### D.2 Two-commit acceptance structure (arch §4 — how the RED/GREEN arithmetic works)
+
+W1 lands as ONE `/dev` deployment, TWO commits; the plan's acceptance is
+staged accordingly:
+
+1. **Commit 1 — reader widening (behaviour-invariant).** All readers become
+   canonical-aware with bare fallback. **MUST hold the S109 baseline (25
+   fails)** — plus the deliberate adds: AN-2 and AN-5 (authored RED ahead of
+   the wave as pre-existing-defect repros) flip GREEN **here**; AN-1/AN-3/AN-4
+   and the whole existing suite must be byte-level undisturbed. Commit 1 is
+   independently revertable; the AN guards are what make a revert loud.
+2. **Commit 2 — writer flip + `CACHE_SCHEMA_VERSION` 16→17 + RED flips.** All
+   ctor writers (user `deftype`, `bootstrap.rs` seeds incl. `IO.Bind`,
+   typecheck fixture seeds — the uniform keying rule, arch §1) mint
+   canonical+alias. The DC/BR REDs (DC-1…DC-11, BR-1/BR-2) flip GREEN here;
+   AN-1/AN-3/AN-4 MUST STAY GREEN (they are the §5 regression classes as
+   acceptance negatives); DC-9's cache legs bind to this commit (the bump is
+   part of commit-2's definition of done, never a follow-up).
+
+The reader-side bare fallback is NOT a Principle-8 interim — it permanently
+serves the product facet (arch §4). `/review` checks both commits are present
+in the one deployment and that no writer keeps bare-keyed sum-ctor `Def`s.
+
+#### D.3 W1.2 DC-11-Blocker acceptance rows (arch §10.9, commit `d45e2cee` — the tag-order class)
+
+**Why these rows exist (the missing definition-variants cells, named).** The
+committed DC-11/DC-6 greens are **tag-layout coincidences**: the twin fixtures
+gave both candidate types the same tag order/arity, so a wrong-ctor resolution
+produced the right answer anyway — masking a silent wrong-ctor soundness
+Blocker. Typecheck records the scrutinee-directed resolution in
+`MethodResolutions.pattern_ctors`, but **no backend code consumes it**:
+`compile_constructor_pattern` re-resolves the source-written bare name
+context-free, falling to `resolve_driven`'s global fallback — a **DashMap
+iteration in arbitrary order** → wrong module's same-named ctor, wrong tag,
+runtime `match failed`, run-to-run nondeterminism. The missing variant axis is
+**ctor declaration order across candidate types/modules**; the decisive cells
+are the tag-order-DIFFERING twins. Cure: arch §10.1–10.3 (sidecar carries the
+STORAGE key; transported on `MonoMatchArm.resolved_ctor` via a required
+`MonoExpr::from_expr` parameter; backend does a direct keyed read and
+HARD-ERRORS on a miss — no fallback).
+
+**`/review` obligation (recorded):** DC-11 and DC-6 MUST be re-checked against
+the differing-layout twins below, NOT the coincident fixtures — a green on
+same-layout twins is no evidence for this class.
+
+| Row | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| **DC-12** | §6.2.1 scrutinee-directed + arch §10.9 (**the decisive rows — differing-layout twins**) | `contested_bare_pattern_differing_layout_twins_both_orders` — two in-scope types sharing a ctor name with **DIFFERENT tags AND different arities**: `(deftype (Maybe a) None (Some [:a v]))` (`Some` = tag 1, arity 1) vs `(deftype Opt2 (Some [:Int a :Int b]) None2)` (`Some` = tag 0, arity 2). Scrutinee-directed bare `(Some …)` matched over BOTH types in ONE program (`(Some x)` on the `Maybe` scrutinee, `(Some x y)` on the `Opt2` scrutinee), **both directions asserted** (each match returns its own type's correct arm value). Authored with the two `deftype`s in **BOTH source orders** — two fixture legs, identical assertions: the DashMap-arbitrary-iteration failure mode means both orders MUST give the correct, identical result. **REPL + `--run` parity** | tests/spec_06_pattern_matching.rs | **[S109] — RED** (the Blocker made flesh; flips at the §10 sidecar-transport change-set) | pos ×2 source orders (order-invariance IS the neg) |
+| **DC-13** | arch §10.9 + §6.3 — cross-module nondeterminism regression guard | `xmod_same_named_ctor_pattern_deterministic_across_runs` — commit the `/review` `xmod.cl` repro (same ctor name across two IMPORTED modules, differing tag orders): **three consecutive `--run` invocations MUST give the SAME correct value** (observed today: exit 1/7/7). `// defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/match_codegen.rs::compile_constructor_pattern (context-free re-resolution; the pattern_ctors sidecar never consumed — typecheck and backend disagree, one seam up from AN-2) found=S109 owner=/dev` | tests/spec_06_pattern_matching.rs | **[S109] — RED, failing-not-ignored** (nondeterministic today; the three-run shape makes it loud — forbidden dispositions apply in full: 1-in-3 wrong is a real bug) | pos (determinism + correct value) + neg (no `match failed`) |
+| BU-1 | arch §10.3 loud-miss (Principle 18) | **`/dev`-owned backend in-crate unit pin (enumerated, fail-on-revert):** a hand-built codegen view whose ctor arm lacks `resolved_ctor` yields the §10.3 `CodegenError` ("pattern constructor '{name}' has no typecheck resolution"), **NEVER a silent fallback** to context-free re-resolution | cranelisp-backend unit | [S109] — lands with the §10 change-set | neg |
+| BU-2 | arch §10.4 — I-1 sparkability exclusion via `bare_member_name` (landed) | **`/dev`-owned backend in-crate unit pin (enumerated):** with a canonically-keyed table, a sum-ctor call is EXCLUDED by `find_sparkable_bindings`/`find_sparkable_args` — asserted via the exclusion SET, not wall-clock | cranelisp-backend unit | [S109] — lands with the §10 change-set | neg |
+| **DC-14** | arch §10.2/§10.8 — `CACHE_SCHEMA_VERSION` **17→18** (`MonoMatchArm.resolved_ctor` serializes into the cached `codegen_view`; fresh-build value `Some` on ctor arms ≠ serde default `None`, so the exempt-class rule does not apply) | `pre_schema_18_cache_rejected_and_warm_18_green` — a pre-18 `.meta.json` is **rejected wholesale** (never silently read into a `None`-armed view that would hard-error at the backend); a warm schema-18 rerun of the DC-12 differing-layout twin stays green | tests/cache.rs | [S109] — the 17→18 bump rides the §10 change-set. NOTE: this is the sprint's SECOND schema step (16→17 at D.2 commit-2 — DC-9's legs; 17→18 here — this row) | pos+neg |
+
+### E. 0573 — deftype-shape × persistence matrix (the "coverage by definition variants" category made flesh; file: `tests/repl_lifecycle.rs`)
+
+| Shape | backing `.cl` contains the def | reload retains type + accessor | Status |
+|---|---|---|---|
+| sum (`deftype (Opt a) None (Some [:a v])`) | `sum_deftype_persisted_to_backing_file` | `sum_deftype_reload_retains_type_and_ctors` | [S109] — expected GREEN (pins; verify-first against existing persistence coverage) |
+| product (`deftype Point [:Int x :Int y]`) | `product_deftype_persisted_to_backing_file` | `product_deftype_reload_retains_type_and_accessor` | **[S109] — RED, the 0573 defect (silent data loss); repro owed.** `// defect: class=enumeration-miss locus=src/…/save.rs::generate_types (matches ModuleEntry::TypeDef only; product facet is Def{Constructor{type_def:Some}}) found=S108 owner=/dev` |
+| neg (post-fix guard) | `sum_deftype_not_double_emitted_neg` — the `type_def_info()`-keyed fix must NOT emit sum types twice (sum ctor `Def`s carry `type_def: None`) | — | [S109] | 
+
+### F. Observability — §17.20.3a field→metric acceptance + §17.2.1 probe channel (file: `tests/agent.rs`, agent-feature build; feature-off negs ride the existing family)
+
+Each field row cites the `agent-context-tuning.md §4` metric it feeds — the
+two-sided match `/qa` checks at review. **Metric-side reconciliation resolved
+this pass (the `/repl` flag): F6 folds into the two existing metrics as named
+facets — no standalone step-accounting metric is minted.** §4 amended
+accordingly (see that doc); the repl-side mapping table (§17.20.3a) is exactly
+accurate as landed.
+
+| Row | Field / MUST | Metric fed (§4) | Test (proposed) | Tier | Polarity |
+|---|---|---|---|---|---|
+| OB-1 | F1 `question` on `pull`, verbatim | Unresolved-question list | `agent_log_pull_records_question` | e2e | pos |
+| OB-2 | §17.20.3b — `question` REQUIRED on every probe tool (schema non-conformance without) | (enabler for F1) | enumerated unit deferral (`/dev` `src/agent`): every probe-tool definition in the §17.2.1 set declares required `question`; harness records it | unit (enumerated: one assertion per probe tool in the set) | neg |
+| OB-3 | F2 `error_class` on failed `pull` result | Error-class histogram; First-submit-typecheck rate | `agent_log_failed_pull_carries_error_class` | e2e | pos |
+| OB-4 | F3 `give_up` cause + dominant class | Give-up rate + cause histogram | `agent_log_give_up_records_cause_and_dominant_class` — e2e IF the step budget is externally configurable (verify-first, `/testing`); else enumerated unit at the give_up emission seam (cases: `step_budget` cause; `model_declined` cause; dominant-class computation) | e2e-or-enumerated-unit | pos |
+| OB-5 | F4 `primer_hash`+`harvest_len` at session start | Comparable-runs discipline (§5) | `agent_log_session_start_stamps_context_version` | e2e | pos |
+| OB-6 | F5 `scenario` on EVERY record; absent/neutral when env unset | Per-scenario slicing | `agent_log_scenario_env_stamped_on_every_record` + `agent_log_neg_no_scenario_field_when_env_unset` | e2e | pos+neg |
+| OB-7 | F6 `step`/`steps_at_submit`/`steps_at_give_up` | Probes-per-submit (step facet); Give-up histogram (step facet) | `agent_log_submit_carries_step_accounting` | e2e | pos |
+| OB-8 | §17.20.3 contract preserved — metadata-only, NO content; silent; fields absent on non-agent build | (guards every metric's substrate) | `agent_log_neg_carries_no_content_fields` (no form text / error message / model prose keys); feature-off absence rides the existing `*_feature_off_*` family | e2e | neg |
+| OB-9 | §17.2.1 — probe traffic MUST NOT echo `agent> {cmd}` + result into the user session | (experience MUST, thread B) | `agent_probe_traffic_not_echoed_to_session_neg` | e2e | neg |
+| OB-10 | §17.2.1 — user DOES see conclusions (`▌` gutter prose) + the finished definition | (experience MUST) | `agent_probe_conclusions_and_definition_still_shown` | e2e | pos |
+
+### G. Display/envelope MUSTs — 0572/0569 + the `[S109 — repro owed]` items `/repl` annotated
+
+| Row | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| EV-1 | §1.5 "named function value carries its qualified name, not `<closure>`" (0572) | `named_function_value_displays_fq_name_not_closure` — bare `primitives/vec-len` (and a user fn) shows the FQ name in the value slot; neg facet: NOT `<closure>` | tests/repl_introspection.rs | **[S109] — RED, repro owed** (`/repl` annotated) | pos+neg |
+| EV-2 | §1.5 — `<closure>` reserved for genuinely anonymous values | existing `closure_value_display_shows_closure_token` stays GREEN (the counter-guard: the fix must not qualify anonymous lambdas) | tests/repl_introspection.rs | [Tested …] — keep | neg-control |
+| EV-3 | §17.19.2a — macro `/search` row shows `; defmacro`, NEVER a placeholder scalar (0569) | `search_macro_row_shows_defmacro_not_scalar_type_neg` — user-defined fixture `defmacro`; colour-off byte assertions: primary line is the macro envelope (`:{mod}/{name} ; defmacro …`), NOT `:primitives/Int {name}` | tests/search.rs | **[S109] — RED, repro owed** | pos+neg |
+| EV-4 | §1.1 one-envelope + §17.19.2 (0572) | `search_row_primary_line_byte_identical_to_bare_lookup` — same symbol: `/search` primary line == bare-lookup primary line (colour off, byte compare); sibling cells `/sig`/`/info` in matrix M3 | tests/search.rs | [S109] | pos (byte-identity IS the neg) |
+| EV-5 | §17.19.2b | DC-10 rows (§D) | — | [S109] | — |
+
+### H. The variant × {pos, neg} matrices (standing definition-variants lens — explicit tables; a missing cell is where a variant silently diverges)
+
+**M1 — dotted-ctor position/provenance family** (one codepath pressure: every
+cell must be served by the ONE `resolve_dotted_member_entry` core, design §3):
+
+| Variant | Positive (dotted resolves / correct behaviour) | Negative (bare poisoned / wrong thing absent) |
+|---|---|---|
+| value position, single type | DC-1 | (no contest — n/a by construction) |
+| value position, two types | DC-2 | DC-3 (bare ALWAYS poisons — no context) |
+| call position (applied ctor) | DC-2 (applied leg) | DC-3 |
+| pattern, dotted (any scrutinee) | DC-4 (data + nullary — never scrutinee-contingent) | BR-1 (no false non-exhaustive) |
+| pattern, bare contested, DETERMINED scrutinee | **DC-11 (bare RESOLVES — scrutinee-directed, W1 re-ruling)** | — (resolution IS the cell; wrong-type dotted vs scrutinee is an ordinary type error, §6.4.1) |
+| pattern, bare contested, INDETERMINATE scrutinee | (dotted control inside DC-5) | **DC-5 (poison listing canonical alternatives — the ONLY pattern-position poison)** |
+| **tag order: differing layouts (tags AND arities), both source orders** | **DC-12 (both directions correct, both orders identical — the decisive cells; DC-11/DC-6 alone are tag-layout coincidences)** | DC-12 order-invariance leg + BU-1 (loud-miss, never fallback) |
+| **tag order: cross-module (imported candidates)** | **DC-13 (three-run determinism)** | DC-13 (no `match failed`) |
+| sidecar transport: warm cache (schema 18) | DC-14 (warm-18 twin green) | DC-14 (pre-18 cache rejected wholesale) |
+| first-class (let-bound / arg) | DC-8 | — (covered by DC-3's poison) |
+| provenance: define+define | DC-2/3/11/5 | same |
+| provenance: define+import | DC-6 twin A | DC-6 twin A neg |
+| provenance: import+import | DC-6 twin B | DC-6 twin B neg |
+| provenance: imported bare nullary, chain ≥2 hops (re-export) | **AN-2 (tag, not closure — soundness)** | AN-2 neg facet (no wrong-value / "match failed") |
+| provenance: glob + member-glob import, bare ctor | **AN-4** | AN-4 post-flip regression guard |
+| product degenerate | DC-7 (bare `Point` works) | DC-7 (`Point.Point` does not; no spurious poison) |
+| warm cache | DC-9 | DC-9 (stale-cache invalidation; binds to commit-2) |
+| display: value with fields | **AN-3 (fields rendered)** | AN-3 (bare-name-only render absent) |
+| display `/search`/`/list`/`/exports` | DC-10 canonical listing | DC-10 no-bare-duplicate |
+| exhaustiveness | BR-1 (dotted-covered total match) | BR-1 (no false non-exhaustive) + BR-2 (internal exclusion) |
+| sibling family: field accessor, same-cluster `--run` | **AN-5** | — (the `/dev` types unit pin is the deterministic revert guard) |
+| prelude cascade (writer-flip acceptance) | AN-1 (a+b) | AN-1 (cascade absence) |
+
+**M2 — §8.5.4 auto-load: kind×position × mode** (language-semantics rows use
+`run_through_all_modes`, so one fn covers the three mode columns; the NEG
+column is the FQ-D3 no-codegen-leak sweep + the row's own edge negative):
+
+| Kind × position | REPL | `--run` | `--link` | Negative |
+|---|---|---|---|---|
+| fn, call position | AL-1/A1 | AL-1/A1 | AL-1/A1 | FQ-D3 sweep |
+| fn, value position | AL-1/A2 + FQ-D2 (display) | AL-1/A2 | AL-1/A2 | FQ-D1 (generic template — check-side, never codegen) |
+| generic fn, value position | FQ-D1 | FQ-D1 | FQ-D1 | FQ-D1 neg facet |
+| macro, call position | AL-1/A3 | AL-1/A3 | AL-1/A3 | FQ-D3 sweep |
+| type, annotation position | AL-1/A4 | AL-1/A4 | AL-1/A4 | AL-3 (unresolvable FQ type = resolution-layer error) |
+| ctor, pattern position (qualified) | M2-P: `fq_ctor_pattern_position_autoloads` (edge-1 "pattern position" leg — NEW fn, tests/spec_06_pattern_matching.rs) | same fn | same fn | DC-5-style bare contest unaffected by auto-load (edge 10) |
+
+**M3 — envelope surfaces × symbol kinds** (§1.1 one-envelope; extends the S108
+Inc3 §B byte-identity strategy):
+
+| Surface | defn | defmacro | ctor | 
+|---|---|---|---|
+| bare lookup | existing §1.1 pins | existing §4.1 macro pins | DC-10/§1.5 canonical form |
+| `/sig` / `/info` | EV-4 sibling cells | EV-4 sibling cells | EV-4 sibling cells |
+| `/search` row | EV-4 | EV-3 | DC-10 |
+
+### I. Settled-semantics rows — 0575 (§4.5) + 0576 (§5.1.2)
+
+| Row | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| SS-1 | §4.5 "`fn` is single-arity … compile-time (parse) error" | `fn_multi_arity_clause_form_parse_error_neg` — `(fn ([x] x) ([x y] x))` rejected in REPL + `--run`; error-quality facet: names `fn` as single-arity and points at `defn` (the 0575 `/dev` tail) | tests/spec_04_expressions.rs | [S109] — behaviour may already reject; the ERROR-QUALITY assertion is the RED | neg |
+| SS-2 | §4.5 (control) | existing `lambda_immediate_call` — single-clause `fn` stays GREEN | tests/spec_04_expressions.rs | [Tested …] — cite | pos-control |
+| SS-3 | §5.1.2 "each variant type-checked independently … ambiguous-type compile-time error" | `defn_multi_arity_unpinned_clause_ambiguous_error_names_clause_neg` — the spec's ERROR example (unannotated 2-arg delegating clause); diagnostic NAMES the offending param/clause (0576 `/dev` diagnostic tail) and does NOT contain `__expr` (0568) | tests/spec_05_definitions.rs | [S109] — RED on the diagnostic-quality facet | neg |
+| SS-4 | §5.1.2 (control) | `defn_multi_arity_annotated_clauses_compile` — the spec's CORRECT example; delegating call returns the right value | tests/spec_05_definitions.rs | [S109] | pos |
+| SS-5 | §5.1.2 dispatch | existing `defn_multi_clause_arity` stays GREEN | tests/spec_05_definitions.rs | [Tested …] — cite | pos-control |
+
+### J. 0570 — `mod-` twin (§8.2.3 tested-neg extended to search-surfacing)
+
+| Row | Citation | Test (proposed) | File | Status | Polarity |
+|---|---|---|---|---|---|
+| MV-1 | §8.2.3 ("Surfacing a private submodule's symbol as an importable result … MUST NOT occur") + §17.19.2 | `mod_dash_submodule_symbols_absent_from_search_neg` — a `(mod- internal)` submodule's symbol NEVER appears as a `/search` row (wait for `indexing…` note to clear or assert on completed index); no `(import …)` hint anywhere | tests/search.rs | [S109] — RED expected (the 0570 surfacing gap) | neg |
+| MV-2 | §8.2.3 import leg | existing `mod_dash_private_submodule_not_importable_from_peer_neg` stays GREEN | tests/spec_08_modules.rs | [Tested+Neg …] — cite | neg-control |
+| MV-3 | §8.2.3 (control) | `bare_mod_submodule_symbols_present_in_search` — a public `(mod test)` sibling's symbol DOES appear (proves MV-1 asserts privacy, not a dead index) | tests/search.rs | [S109] | pos-control |
+| MV-4 | §8.2.5 × `mod-` (the `/stdlib` precondition) | `mod_dash_child_file_pattern_loads` — `(mod- test)` with `<module>/test.cl` child file loads and is usable from the parent subtree | tests/spec_08_modules.rs | [S109] — verify-first (the bare-`mod` stdlib convention was deliberate) | pos |
+
+### K. Cross-skill citation churn (0580 `program.rs` split) — disposition
+
+- `tests/plan/s101-coverage-postmortem.md` (**mine**): line citations frozen
+  with a provenance note added this pass (historical post-mortem; do not chase
+  the 0580 relocation). No further action.
+- `crates/cranelisp-typecheck/CLAUDE.md` + any `// spec:`-anchored
+  `program/tests.rs` references: **`/dev`'s to sweep in the 0580 move
+  change-set** (as SPRINT.md already assigns; `design/typecheck/check-form-api.md`
+  is the `// spec:` anchor and is `/design`'s).
+- `/qa` reruns both structural verifiers (`plan/spec_link_check.py`,
+  `plan/spec_coverage_reconcile.py`) after the 0580 wave lands and repairs any
+  annotation-band citation the move breaks (annotation band is `/qa`'s, edited
+  in place).
+
+### L. W6 — annotation-resolution variant × {pos, neg} matrix (the poly-annotation defect's own coverage)
+
+The coverage-gap finding from the W1 re-ruling pass: a **free type variable in
+a `defn`/`fn` parameter annotation** fails `unknown type 'a'` (verified live)
+— and no cell in the suite would have caught it, because annotation-resolution
+coverage grew per whichever position an implementer exercised. The matrix
+below is the missing family. **Spec-stance verify-first (`/testing` before
+authoring, `/spec` if silent):** `deftype` field EBNF explicitly admits `:a`
+(§5.2, `field_def`), and `deftrait` method signatures use type vars
+normatively (§7); the `defn`/`fn`-param and let-binding cells cite §4.5.2 +
+§5.1.1 — if the spec is found silent on free-var annotations in those
+positions, that is a normative question routed via `/spec` to the user BEFORE
+the REDs land (a RED needs a MUST behind it; do not pin semantics the spec has
+not settled).
+
+Annotation shape × position (each cell = one test; free-type-var cells are
+the expected REDs — the defect class):
+
+| Position \ annotation shape | concrete app (`:(Maybe Int)`) | free type var (`:(Maybe a)`) | bare var (`:a`) |
+|---|---|---|---|
+| `defn` param | pos pin (`defn_param_concrete_app_annotation`) | **RED owed** (`defn_param_free_var_annotation`) | **RED owed** (`defn_param_bare_var_annotation`) |
+| `fn` (lambda) param | pos pin | **RED owed** | **RED owed** |
+| `deftype` field | pos pin (likely existing — verify-first) | GREEN control (works today: `(Some [:a v])` is the language's bread and butter — cite existing) | GREEN control |
+| `let` binding annotation | pos pin | **RED owed** (verify-first: may share the defn-param seam) | **RED owed** |
+
+Sweep for further cells in the family (enumerated so none falls through;
+`/testing` probes each and adds the cell with its observed polarity):
+
+- `defn` RETURN-type annotation (`:(Maybe a)` return) — same free-var question;
+- higher-order param (`:(Fn [a] a) f`) — free vars inside an `Fn` annotation;
+- expression annotation (the `:Type form` reader macro in expression position,
+  §1.4.5/§2.3.8/§4.9) with a free var;
+- `deftrait` method signature (GREEN control — type vars are normative there)
+  and `impl` target/method sigs;
+- multi-arity `defn` per-clause annotations (couples SS-3/SS-4 — each clause
+  independently, §5.1.2).
+
+Consistency negative once the stance is settled: whatever the ruling, the SAME
+annotation shape must behave identically across positions (`defn` param vs
+`fn` param vs `let`) — a per-position divergence is the codepath-duplication
+smell this matrix exists to catch.
+
+### Phase-5 sequencing note for `/testing`
+
+Author order: (1) the pre-existing-defect REDs + arch-pre-flagged boundaries
+FIRST — **DC-12 + DC-13 (the tag-order Blocker rows — decisive, currently
+masked by coincident fixtures)**, BR-1/BR-2, FQ-D1, AN-2, AN-5, the AL-6 cycle
+row, PM product rows; (1b) the AN-1/AN-3/AN-4 invariance pins (GREEN today —
+they must exist BEFORE W1 commit-1 lands to make the two-commit acceptance
+checkable); (2) the DC twins (incl. DC-11 and the reframed DC-5, under the
+fixture constraint — no free-var param annotations; note DC-12's differing
+arities keep it clear of the W6 defect by construction — concrete `:Int`
+fields) + AL edge set + DC-14; (3) observability + display rows
+(these depend on the `/repl`-specced surfaces and the agent harness;
+verify-first items marked above); (4) the §L W6 matrix (spec-stance
+verify-first, then the free-var REDs); (5) remaining GREEN pins/controls.
+Every RED lands failing-not-ignored with `// spec:` + (for defect rows) the
+`// defect:` line given in its row.

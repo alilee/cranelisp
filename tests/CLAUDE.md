@@ -322,6 +322,7 @@ evidenced classes):
 |---|---|
 | `wrong-scope-lookup` | Lookup rooted at the wrong scope/module, e.g. `current_module_path()` instead of the symbol's resolved home (S108 D1/D2; FIXME 0558) |
 | `display-envelope-mirror` | Two formatter paths for one display concept diverge (S108 D2 dual-path; the FIXME 0321 mis-qualify class) |
+| `resolver-mirror` | Two resolution paths for one name-resolution concept diverge — the P7 divergent-duplication defect at a resolution seam, e.g. backend `lookup_constructor`'s one-hop copy vs `resolve_driven`'s multi-hop chain-follow producing the silent nullary-ctor-as-closure wrong value (S109 AN-2). The resolution-seam sibling of `display-envelope-mirror` (added S109, /qa) |
 | `rc-miscount` | Refcount inc/dec imbalance — leak or premature free (S97 ADT-wrapping-Vec; S101 vec-COW copy-branch leak; S94 catch-runtime-error leak) |
 | `uaf` | Use-after-free / dangling pointer (TCO tail-arg alias; S97–98 grid Vec double-free) |
 | `marshal-overrun` | Byte-level over/under-write at the host↔platform marshalling boundary (S86 DEF-6 base-vs-payload pointer) |
@@ -332,6 +333,7 @@ evidenced classes):
 | `null-got-slot` | Call through an unpopulated/NULL GOT slot → SIGSEGV (S100–101 vec-query value-use family) |
 | `routing-misclassify` | Input dispatched to the wrong destination arm by a classifier/router — e.g. NL prose containing a reader-macro char (`'` in `doesn't`) misrouted to eval as "code" (S108 E6); a single FQ symbol routed to the agent instead of introspection (S108 candidate B). Distinct from `mode-divergence` (same input, different behaviour PER MODE) — here one mode picks the wrong arm |
 | `error-swallow` | A raised diagnostic is dropped or clobbered between its raise site and the display boundary — e.g. the multi-form REPL eval arm wrapping a per-form error as a fake `Val{0}` warning that a later warnings overwrite discards, surfacing silent `:Int 0` (S108 E7). Distinct from `silent-accept` (nothing was ever raised) |
+| `check-gate-leak` | A source-level fault typecheck must decide (resolve or reject check-side) leaks past the check boundary and surfaces as a codegen/backend-layer error — e.g. the slot-less generic value-position FQ ref reaching `backend/literals.rs` as an opaque codegen error (S108, 0571 D1). Distinct from `silent-accept` (nothing raised anywhere) and `error-swallow` (raised then dropped): here the wrong LAYER raises (added S109, /qa) |
 
 **Rules:**
 

@@ -233,6 +233,8 @@ E |- (if cond then-expr else-expr) => v
 
 A lambda expression creates an anonymous function value (closure). The result is a first-class value that can be called, bound with `let`, passed as an argument, or returned from a function.
 
+**`fn` is single-arity.** A lambda takes exactly one parameter list and one body: `(fn [params] body)`. The parenthesised multi-arity clause form — multiple `([params] body)` clauses dispatched by arity — is **`defn`-only** ([§5.1.2](05-definitions.md#512-multi-signature)) and is **not** valid for anonymous `fn`. Writing `(fn ([p] …) ([p q] …))` is a compile-time (parse) error; use `defn` (or a single clause) instead. This asymmetry is deliberate: multi-arity dispatch is a named-function feature — dispatch is resolved by the definition's name at each call site (§5.1.2) — and an anonymous value has no name to dispatch on.
+
 ```
 captures = free_vars(body) - {param1, ..., paramN} - globals
 for each c_i in captures: E |- c_i => v_i

@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (Sprint 76).** A completed change plan, retained for the audit trail; NOT a durable subsystem reference. The durable resolution design lives in `typecheck.md` + `crates/cranelisp-typecheck/CLAUDE.md §"Bare-name resolution & the prelude fallback"` (S108 Wave-G convergence supersedes the S76 per-site resolver framing). Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # Typecheck S76 — resolution-primitive re-pointing, macro-entanglement cleanup, ctor got-slot, platform-sig entry
 
 > **Scope.** Phase-3 design for the four typecheck-side S76 items: (1) re-point the

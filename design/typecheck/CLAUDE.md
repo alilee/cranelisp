@@ -25,3 +25,35 @@ This is distinct from:
 - Include typing rules in judgement notation where they clarify the algorithm
 - Record rejected alternatives briefly — "considered X, chose Y because Z"
 - Update docs when the implementation changes; stale design docs are worse than none
+
+## Document index (durable vs historical) — the triage of record
+
+Maintained by `/design` (triaged S109, FIXME 0578). An agent designing against
+this crate reads the **durable** docs; the **historical** docs are retained for
+the audit trail only and each carries a top-of-file `HISTORICAL` banner — do not
+treat them as current design intent. When a durable doc and a historical doc
+disagree, the durable doc (and current source) wins.
+
+**Master.** `typecheck.md` — the single source of design intent; every other doc
+is subordinate.
+
+**Durable subsystem docs** (one-per-subsystem, current):
+`inference.md`, `traits.md`, `monomorphisation.md`, `adt.md`,
+`ownership-inference.md`, `hkt.md`, `signature-match.md`, `auto-curry.md`,
+`io-types.md`, `check-form-api.md` (the per-form pipeline API; a `// spec:` anchor
+for `program/tests.rs`), `ast-annotation.md` (the AST-co-located annotation model).
+
+**Active subordinate feature docs** (scoped elaborations of a subsystem doc, live):
+`fixme-0365-field-accessor-dotted.md` (dotted field accessors → subordinate to
+`adt.md`), `dotted-ctor-registration.md` (dotted `Type.Ctor` capability, S109 →
+subordinate to `adt.md`), `s87-traits-decomposition.md` (the `traits/` module cut +
+`monomorphise_call` phase boundaries — retained as the active decomposition
+**precedent**, cited by the `program.rs` split design), `program-decomposition.md`
+(the S109 `program.rs` module-cut sign-off).
+
+**Historical working docs** (`HISTORICAL`-bannered; completed/superseded, audit
+trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `implementation-slice-s66.md`,
+`wave-3a-check-form.md`, `s76-resolution-and-enablement.md`, `step4-macro-deps.md`,
+`s87-fq-walk-consolidation.md`, `dashmap-migration.md`, `stateless-tc-impl.md`.
+(The last two describe now-as-built structure under the retired `TypeChecker`
+name — the as-built types are `TypeCheckEnv` + `CheckState`, `traits.md §1.1`.)

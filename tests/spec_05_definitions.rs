@@ -1345,3 +1345,73 @@ fn impl_method_colliding_with_field_accessor_rejected_neg() {
     // correct value, and only if the impl is rejected rather than overriding).
     out.assert_stdout_does_not_contain(":primitives/Int 99");
 }
+
+// =============================================================================
+// Sprint 109 — SS-3/SS-4: §5.1.2 multi-arity each-variant-independent checking.
+// Plan: tests/plan/PLAN.md §S109 §I.
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.1.2 — the spec's ERROR example: a multi-arity
+// `defn` whose 2-arg delegating clause is unannotated is an ambiguous-type
+// compile-time error (the annotated 3-arg sibling is NOT consulted; the
+// delegating call does not back-flow types). The rejection already fires; the
+// DIAGNOSTIC-QUALITY facet is the RED — the error MUST NAME the offending
+// param/clause (the 0576 `/dev` diagnostic tail) and MUST NOT leak `__expr` (0568).
+// defect: class=silent-accept locus=crates/cranelisp-typecheck (multi-arity ambiguous-clause error names the fn but not the offending param/clause) found=S108 owner=/dev
+#[test]
+fn defn_multi_arity_unpinned_clause_ambiguous_error_names_clause_neg() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(import [primitives [Pure Int]])\n\
+             (deftype Position PZero)\n\
+             (deftype Rotation RZero)\n\
+             (defn rp\n\
+               ([p rot] (rp p rot 0))\n\
+               ([:Position p :Rotation rot :Int idx] idx))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .output();
+    let text = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        !out.status.success(),
+        "an unannotated delegating multi-arity clause MUST be an ambiguous-type \
+         error (§5.1.2); {text}"
+    );
+    assert!(
+        text.contains("rot")
+            || text.contains("clause")
+            || text.contains("variant")
+            || text.contains("arity")
+            || text.contains("2-arg"),
+        "the diagnostic MUST NAME the offending param/clause, not only the fn \
+         name (0576); {text}"
+    );
+    assert!(
+        !text.contains("__expr"),
+        "the diagnostic MUST NOT leak the internal `__expr` binder (0568); {text}"
+    );
+}
+
+// spec: spec/05-definitions.md §5.1.2 — the spec's CORRECT example: with each
+// clause carrying its own annotations, the multi-arity `defn` compiles and the
+// delegating 2-arg clause (calling the 3-arg sibling with `idx = 0`) returns the
+// right value.
+#[test]
+fn defn_multi_arity_annotated_clauses_compile() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(import [primitives [Pure Int add-i64]])\n\
+             (deftype Position PZero)\n\
+             (deftype Rotation RZero)\n\
+             (defn rp\n\
+               ([:Position p :Rotation rot] (rp p rot 0))\n\
+               ([:Position p :Rotation rot :Int idx] idx))\n\
+             (defn main [] (Pure (add-i64 (rp PZero RZero) (rp PZero RZero 7))))\n",
+        )
+        .output()
+        .assert_exit(7);
+}

@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (Sprint 87), completed.** A completed consolidation design, retained for the audit trail; NOT a durable subsystem reference. The consolidated `Type` walk lives in `cranelisp-types` (`/arch`-owned). Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # S87 — FQ Type-rendering walk consolidation (one parameterized `Type` walk in `cranelisp-types`)
 
 > **Status.** Design (S87 Stage-B → Wave-5+ hygiene). Resolves the FQ-rendering

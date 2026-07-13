@@ -1,3 +1,5 @@
+> **HISTORICAL — completed-migration record.** The stateless split is now as-built as `TypeCheckEnv` (borrowed shared state) + `CheckState` (per-check transient), `traits.md §1.1`. This doc is the migration rationale, retained for the audit trail; NOT a durable subsystem reference. The durable design lives in `typecheck.md`. Note: "TypeChecker" in the title is the retired name; the as-built types are `TypeCheckEnv`/`CheckState`. (Triaged S109, FIXME 0578.)
+
 # Stateless TypeChecker: Implementation Design
 
 Sprint 51 critical path. This document covers how to make the `cranelisp-typecheck` crate stateless by extracting persistent state to `SharedState` and replacing registry lookups with module-system queries.

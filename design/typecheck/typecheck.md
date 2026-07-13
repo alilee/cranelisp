@@ -5,7 +5,7 @@ Owner: `/design` (per-crate triad). Audience: triad agents working the typecheck
 This document is the **single source of design intent** for the typecheck crate. The contract it designs against is:
 
 1. `design/arch/bounded-contexts.md` §2 — Typecheck (the bounded context — what the crate is responsible for)
-2. `design/arch/facades/typecheck.md` — the as-designed public surface
+2. The crate's **public surface itself** — `crates/cranelisp-typecheck/public-api.txt` (the checked baseline) + the `pub` item rustdoc (`lib.rs` re-exports: `CheckState`, `TypeCheckEnv`, `PreludeFallback`, `check_forms`, `CheckResult`). *(The former `design/arch/facades/typecheck.md` facade was retired at S72 Wave 5 — all nine facades retired, `design/arch/CLAUDE.md` facades row; the canonical surface is now source rustdoc + BC §2, not a separate facade doc.)*
 3. `design/arch/CLAUDE.md` Decisions 30, 41 (active) and 1, 2, 6, 8, 9, 14, 19, 21, 22, 33, 38, 39 (legacy — embodied) — cross-crate decisions binding typecheck. Note: Decisions 15 and 17 have been retracted (per `design/arch/CLAUDE.md` Decisions section); their constraints are embodied in current code (Ring 0-1 builtin/trait coexistence in the resolution machinery; core traits live in `.cl` files, not in `register_builtins`)
 
 The document describes **how the crate fulfils that contract** — its internal architecture, mutation discipline, error model, and quality posture — and pins the implementation gaps where current source has not yet caught up to the contract. Where this doc and a subordinate doc disagree, this doc wins; subordinate docs are scoped elaborations.

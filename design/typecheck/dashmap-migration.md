@@ -1,3 +1,5 @@
+> **HISTORICAL — completed-migration record.** The DashMap `modules` table is now as-built (`TypeCheckEnv.modules: &DashMap<ModuleFullPath, SymbolTable>`, `traits.md §1.1`). This doc is the migration rationale, retained for the audit trail; NOT a durable subsystem reference. The durable concurrency design lives in `typecheck.md`. Note: the migrated type is `TypeCheckEnv`/`CheckState`, not the retired `TypeChecker` this doc's title names. (Triaged S109, FIXME 0578.)
+
 # DashMap Migration: TypeChecker Concurrent Module Tables
 
 Sprint 47, Step 12. Design document for migrating `TypeChecker.modules` from `HashMap` to `DashMap`, enabling concurrent module table access from multiple priority worker threads.

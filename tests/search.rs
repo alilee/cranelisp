@@ -1076,3 +1076,173 @@ fn search_unloaded_module_still_indexes_alongside_loaded_feed_neg() {
 // a way to hold the burn-down open (e.g. an injectable per-module index delay or
 // a barrier env var), revisit for a deterministic e2e repro.
 // ===========================================================================
+
+// ===========================================================================
+// Sprint 109 — MV-1/MV-3 (0570 `mod-` search-exclude twin), EV-3 (macro row
+// shows `; defmacro`, 0569), EV-4 (search-row ≡ bare-lookup envelope), DC-10
+// (constructor listed once, canonical form). Plan: tests/plan/PLAN.md §S109
+// §J/§G/§D. Stdlib-free; PrimitivesOnly; reachable modules built inline.
+// ===========================================================================
+
+/// A REPL session with a parent module declaring a PRIVATE `(mod- priv)` and a
+/// PUBLIC `(mod pub)` submodule via the child-file pattern, on a lib-dir. Drives
+/// `cmds` through /search.
+fn mod_dash_search_session(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/host.cl",
+            "(import [primitives [Int]])\n\
+             (mod- priv)\n\
+             (mod pub)\n\
+             (defn host-fn [] :Int 1)\n",
+        )
+        .file(
+            "lib/host/priv.cl",
+            "(import [primitives [Int]])\n(defn secret-priv-sym [] :Int 42)\n",
+        )
+        .file(
+            "lib/host/pub.cl",
+            "(import [primitives [Int]])\n(defn public-pub-sym [] :Int 7)\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: spec/08-modules.md §8.2.3 + repl/spec.md §17.19.2 (NEG) — a `(mod- priv)`
+// private submodule's symbol MUST NOT appear as a `/search` row nor carry an
+// `(import …)` hint (surfacing it as importable is exactly the reference §8.2.3
+// forbids). RED today: the raw module-scan surfaces the private submodule symbol.
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs (search indexer scans child files without consulting `mod-` privacy) found=S108 owner=/dev
+#[test]
+fn mod_dash_submodule_symbols_absent_from_search_neg() {
+    let out = mod_dash_search_session("/search secret-priv-sym\n");
+    assert!(
+        !out.stdout.contains("secret-priv-sym"),
+        "a `(mod- priv)` private submodule's symbol MUST NOT surface in /search \
+         (§8.2.3); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("import [host.priv"),
+        "a private submodule MUST NOT be advertised with an (import …) hint; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/08-modules.md §8.2.5 (control) — a PUBLIC `(mod pub)` sibling's
+// symbol DOES appear in /search (proves MV-1 asserts privacy, not a dead index).
+#[test]
+fn bare_mod_submodule_symbols_present_in_search() {
+    let out = mod_dash_search_session("/search public-pub-sym\n");
+    out.assert_stdout_contains("public-pub-sym");
+}
+
+// spec: repl/spec.md §17.19.2a (0569) — a macro's /search row primary line is the
+// canonical macro envelope (`:{mod}/{name} ; defmacro …`), NEVER a placeholder
+// scalar `:primitives/Int {name}`. RED today: a user-defined macro's row does not
+// carry the `; defmacro` classification (macros are not surfaced with a macro
+// envelope in the index).
+// defect: class=display-envelope-mirror locus=src/session_v4/index_worker.rs (macro search row omits `; defmacro`, risks a scalar :Type) found=S108 owner=/dev
+#[test]
+fn search_macro_row_shows_defmacro_not_scalar_type_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/macx.cl",
+            "(import [primitives [Int add-i64]])\n\
+             (defmacro twice [x] `(add-i64 ~x ~x))\n",
+        )
+        .lib_dir("lib")
+        .stdin("/search twice\n")
+        .output();
+    // The wrong scalar type MUST NOT appear …
+    assert!(
+        !out.stdout.contains(":primitives/Int twice"),
+        "a macro row MUST NOT render a placeholder scalar `:primitives/Int` \
+         (§17.19.2a, 0569); got:\n{}",
+        out.stdout
+    );
+    // … and the macro MUST be surfaced with its `; defmacro` classification.
+    assert!(
+        out.stdout.contains("twice") && out.stdout.contains("; defmacro"),
+        "a macro's /search row MUST carry the `; defmacro` classification \
+         (§17.19.2a); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.1 one-envelope + §17.19.2 — a symbol's /search row
+// primary line carries the SAME type signature as its bare lookup (one canonical
+// envelope, §1.1). The signature envelope agrees byte-for-byte for `gcd2`.
+#[test]
+fn search_row_primary_line_byte_identical_to_bare_lookup() {
+    let sig = ":(Fn [primitives/Int primitives/Int] primitives/Int)";
+    // /search leg.
+    let search = search_session("/search gcd2\n");
+    assert!(
+        search.stdout.contains(sig),
+        "the /search row MUST carry the canonical signature envelope; got:\n{}",
+        search.stdout
+    );
+    // bare-lookup leg (after import).
+    let bare = search_session("(import [mathx [gcd2]])\ngcd2\n");
+    assert!(
+        bare.stdout.contains(sig),
+        "the bare lookup MUST carry the SAME signature envelope (§1.1 one-envelope); \
+         got:\n{}",
+        bare.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.2b — a constructor is listed in /search ONCE, under
+// its canonical `Type.Ctor` form; the bare alias is never a second row. RED
+// today: the row shows the bare ctor name, not the canonical `Gadget.Widget`.
+// defect: class=display-envelope-mirror locus=src/session_v4/index_worker.rs (ctor search row uses the bare alias, not the canonical Type.Ctor form) found=S108 owner=/dev
+#[test]
+fn search_lists_constructor_once_canonical_form() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/gadget.cl",
+            "(import [primitives [Int]])\n(deftype Gadget (Widget [:Int n]))\n",
+        )
+        .lib_dir("lib")
+        .stdin("/search Widget\n")
+        .output();
+    assert!(
+        out.stdout.contains("Gadget.Widget"),
+        "a constructor's /search row MUST use the canonical `Type.Ctor` form \
+         (§17.19.2b); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.2b (NEG) — the bare alias is never a second /search
+// row for the same constructor. Fail-on-revert guard for the two-entry (canonical
+// + bare alias) dotted-ctor change: `Widget` is surfaced by exactly one module
+// import hint, not duplicated.
+#[test]
+fn search_neg_no_bare_duplicate_ctor_row() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/gadget.cl",
+            "(import [primitives [Int]])\n(deftype Gadget (Widget [:Int n]))\n",
+        )
+        .lib_dir("lib")
+        .stdin("/search Widget\n")
+        .output();
+    assert_eq!(
+        out.stdout.matches("in gadget").count(),
+        1,
+        "the constructor MUST NOT be listed twice (canonical + bare-alias) in \
+         /search (§17.19.2b, E4); got:\n{}",
+        out.stdout
+    );
+}

@@ -15,7 +15,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -552,4 +552,273 @@ fn match_qualified_constructor_pattern_resolves() {
     )
     .assert_stdout_contains(":primitives/Int 1")
     .assert_stdout_does_not_contain("user/user/");
+}
+
+// =============================================================================
+// Sprint 109 — dotted-`Type.Ctor` pattern position (DC-4/DC-5) + the
+// exhaustiveness `.`-strip blast-radius guard (BR-1, arch-pre-flagged) +
+// qualified-ctor pattern auto-load (M2-P). Plan: tests/plan/PLAN.md §S109 §D/§H.
+// Fixtures are stdlib-free (own modules; --run mode for module resolution).
+// =============================================================================
+
+fn combined(out: &helpers::e2e::CrOutput) -> String {
+    format!("{}\n{}", out.stdout, out.stderr)
+}
+
+// spec: spec/06-pattern-matching.md §6.2.1/§6.2.2 — the DOTTED constructor
+// pattern always resolves REGARDLESS of scrutinee type: `(Maybe.Some x)` binds
+// positionally and the dotted nullary `Maybe.Nil` arm matches; field-binding
+// arity and exhaustiveness are computed against the type the dotted ctor names.
+// Never scrutinee-contingent (contrast DC-11/DC-5). Fixture uses concrete
+// construction only — no free-type-var param annotation (W1 fixture constraint).
+// Mode-relevant DC twin: run through REPL/--run/--link.
+// defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev
+#[test]
+fn same_named_ctors_dotted_pattern_position_disambiguates() {
+    run_through_all_modes(
+        "(import [primitives [Pure add-i64]])\n\
+         (deftype (Maybe a) Nil (Some [:a v]))\n\
+         (deftype (Option a) Nil (Some [:a v]))\n\
+         (defn main [] (Pure\n\
+           (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.Nil 0])\n\
+                    (match Maybe.Nil [(Maybe.Some x) x Maybe.Nil 3]))))\n",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(10);
+}
+
+// spec: spec/06-pattern-matching.md §6.2.1/§6.2.2 — scrutinee-directed (W1
+// re-ruling, landed): a contested BARE constructor pattern RESOLVES against a
+// DETERMINED scrutinee type. Here the scrutinee is determined via a unique ctor
+// `(MOnly 7)` (concrete construction — no free-type-var annotation); the bare
+// `(Some x)` arm resolves to `Maybe.Some` and the bare `None` arm to `Maybe.None`
+// (data + nullary legs). REPLACES the pre-re-ruling "requires dotted" expectation.
+// RED today: the bare contested pattern is not scrutinee-directed — it picks the
+// wrong type, producing `type mismatch: Maybe vs Option`.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck (contested bare ctor pattern not resolved against the determined scrutinee type) found=S109 owner=/dev
+#[test]
+fn contested_bare_pattern_resolves_against_determined_scrutinee() {
+    run_through_all_modes(
+        "(import [primitives [Pure]])\n\
+         (deftype (Maybe a) None (Some [:a v]) (MOnly [:a w]))\n\
+         (deftype (Option a) None (Some [:a v]))\n\
+         (defn main [] (Pure\n\
+           (match (MOnly 7) [(Some x) x None 0 (MOnly w) w])))\n",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(7);
+}
+
+// spec: spec/06-pattern-matching.md §6.2.1 + §8.6.5 (NEG) — a contested bare
+// constructor pattern is poisoned ONLY when the scrutinee type cannot
+// disambiguate it. Here the scrutinee is an unannotated defn parameter with no
+// other constraint (the §6.2.1 "indeterminate scrutinee" case): bare `(Some x)`
+// MUST be a compile error listing the canonical alternatives. In-test control:
+// the SAME match written dotted compiles. The negative targets the indeterminate
+// case ONLY — a determined-scrutinee bare pattern is DC-11's positive.
+// RED today: the indeterminate bare pattern silently compiles (poison absent).
+// defect: class=silent-accept locus=crates/cranelisp-typecheck (indeterminate-scrutinee contested bare pattern silently resolves instead of poisoning) found=S109 owner=/dev
+#[test]
+fn contested_bare_pattern_indeterminate_scrutinee_poisoned_neg() {
+    // Neg: indeterminate scrutinee (unannotated param) ⇒ poison.
+    let neg = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype (Maybe a) None (Some [:a v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
+             (defn f [m] (match m [(Some x) x None 0]))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&neg);
+    assert!(
+        !neg.status.success(),
+        "an INDETERMINATE-scrutinee contested bare pattern MUST poison (§6.2.1), \
+         not silently resolve; {text}"
+    );
+    assert!(
+        text.contains("Maybe.Some") && text.contains("Option.Some"),
+        "the poison error MUST list the canonical alternatives; {text}"
+    );
+    assert!(
+        !text.contains("__expr"),
+        "the diagnostic MUST NOT leak the internal `__expr` binder (0568); {text}"
+    );
+    // Control: the SAME match written dotted disambiguates and compiles.
+    Cranelisp::new()
+        .file(
+            "ctrl.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype (Maybe a) None (Some [:a v]))\n\
+             (deftype (Option a) None (Some [:a v]))\n\
+             (defn f [m] (match m [(Maybe.Some x) x Maybe.None 0]))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .run("ctrl.cl")
+        .output()
+        .assert_ok();
+}
+
+// spec: spec/06-pattern-matching.md §6.5 exhaustiveness × the `.`-strip (design
+// §4.1 — ARCH-PRE-FLAGGED blast radius). A TOTAL match written with dotted arms
+// compiles with NO "non-exhaustive" diagnostic — the covered-set normalizer must
+// `.`-strip dotted arms to recognise them as covering the type's constructors.
+// Fixture uses concrete construction only — no free-type-var param annotation
+// (W1 fixture constraint). RED until dotted patterns resolve; permanent
+// fail-on-revert guard after.
+#[test]
+fn match_over_dotted_covered_ctor_not_false_nonexhaustive_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Int]])\n\
+             (deftype (Maybe a) Nil (Some [:a v]))\n\
+             (defn main [] (Pure\n\
+               (match (Maybe.Some 5) [(Maybe.Some x) x Maybe.Nil 0])))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert!(
+        !text.contains("non-exhaustive") && !text.contains("not exhaustive"),
+        "a TOTAL match with dotted arms MUST NOT be flagged non-exhaustive \
+         (BR-1 `.`-strip); {text}"
+    );
+    out.assert_exit(5);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (pattern position, M2-P) — a qualified
+// constructor pattern `(shapes/Circle r)` auto-loads its defining module and
+// resolves in pattern position, matching value-position auto-load.
+#[test]
+fn fq_ctor_pattern_position_autoloads() {
+    let aux = "(import [primitives [Int]])\n(deftype Circle [:Int r])\n";
+    let entry = "(import [primitives [Pure Int]])\n\
+                 (defn area [:shapes/Circle c] :Int (match c [(shapes/Circle r) r]))\n\
+                 (defn main [] (Pure (area (shapes/Circle 8))))\n";
+    Cranelisp::new()
+        .file("shapes.cl", aux)
+        .file("main.cl", entry)
+        .run("main.cl")
+        .output()
+        .assert_exit(8);
+    Cranelisp::new()
+        .file("shapes.cl", aux)
+        .file("main.cl", entry)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(8);
+}
+
+// =============================================================================
+// Sprint 109 W1.2 — DC-11-Blocker: the tag-order class (arch §10.9). The
+// committed DC-11/DC-6 greens are tag-layout coincidences; these differing-
+// layout twins expose the silent wrong-ctor soundness Blocker (typecheck records
+// the scrutinee-directed resolution in `pattern_ctors`, but the backend
+// re-resolves the bare name context-free via a DashMap in arbitrary order → wrong
+// module's same-named ctor, wrong tag/arity, runtime `match failed`, run-to-run
+// nondeterminism). Plan: tests/plan/PLAN.md §S109 §D.3.
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.2.1 scrutinee-directed + arch §10.9 —
+// DC-12 (the decisive rows): two in-scope types share a ctor name with DIFFERENT
+// tags AND arities — `(Maybe a) None (Some [:a v])` (Some = tag 1, arity 1) vs
+// `Opt2 (Some [:Int a :Int b]) None2` (Some = tag 0, arity 2). Scrutinee-directed
+// bare `(Some …)` matched over BOTH types in ONE program, both directions. The
+// two `deftype`s are authored in BOTH source orders (two legs, identical
+// assertions) — the DashMap-arbitrary-iteration failure mode means both orders
+// MUST give the correct, identical result (order-invariance IS the negative).
+// Concrete `:Int` fields only (clear of the W6 poly-annotation defect). REPL +
+// --run + --link parity. RED today: the backend picks the wrong same-named ctor,
+// producing an arity mismatch ("constructor 'Some' has 1 fields but pattern has 2
+// bindings") / wrong value instead of 35.
+// defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/match_codegen.rs::compile_constructor_pattern (context-free re-resolution ignores typecheck's pattern_ctors — differing tag/arity twin resolves to the wrong candidate) found=S109 owner=/dev
+#[test]
+fn contested_bare_pattern_differing_layout_twins_both_orders() {
+    let body = "(defn main [] (Pure\n\
+                  (add-i64 (match (Maybe.Some 5) [(Some x) x None 0])\n\
+                           (match (Opt2.Some 10 20) [(Some x y) (add-i64 x y) None2 0]))))\n";
+    // Leg 1 — source order: Maybe then Opt2.
+    run_through_all_modes(
+        &format!(
+            "(import [primitives [Pure add-i64 Int]])\n\
+             (deftype (Maybe a) None (Some [:a v]))\n\
+             (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
+             {body}"
+        ),
+        PreludeVariant::None,
+    )
+    .assert_all_equal(35);
+    // Leg 2 — source order swapped: Opt2 then Maybe. Order-invariance: identical.
+    run_through_all_modes(
+        &format!(
+            "(import [primitives [Pure add-i64 Int]])\n\
+             (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
+             (deftype (Maybe a) None (Some [:a v]))\n\
+             {body}"
+        ),
+        PreludeVariant::None,
+    )
+    .assert_all_equal(35);
+}
+
+// spec: spec/06-pattern-matching.md §6.3 + arch §10.9 — DC-13 cross-module
+// nondeterminism regression guard. The `/review` `xmod.cl` repro: the same ctor
+// name `Some` across TWO imported modules with differing tag orders
+// (`maybemod`: Some = tag 0; `optmod`: Some = tag 1). A scrutinee-directed bare
+// `(Some x)` on a `Maybe.Some` scrutinee MUST resolve to `maybemod`'s Some.
+// THREE consecutive `--run` invocations MUST give the SAME correct value 7.
+// RED today: nondeterministic (observed exit 1/7/7) — the backend re-resolves the
+// bare name context-free, sometimes picking `optmod`'s `Some` (wrong tag) →
+// `runtime panic: match failed`. Per the forbidden-disposition rule, 1-in-3 wrong
+// is a real bug, never "flaky".
+// defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/match_codegen.rs::compile_constructor_pattern (context-free re-resolution; the pattern_ctors sidecar never consumed — typecheck and backend disagree, one seam up from AN-2) found=S109 owner=/dev
+#[test]
+fn xmod_same_named_ctor_pattern_deterministic_across_runs() {
+    // Each iteration is an independent fresh `--run` process (fresh tmpdir +
+    // fresh cache) so the DashMap-order nondeterminism is maximally exposed.
+    fn run_once() -> (Option<i32>, String) {
+        let out = Cranelisp::new()
+            .file(
+                "maybemod.cl",
+                "(import [primitives [Int]])\n(deftype (Maybe a) (Some [:a v]) MNone)\n",
+            )
+            .file(
+                "optmod.cl",
+                "(import [primitives [Int]])\n(deftype (Option a) ONone (Some [:a v]))\n",
+            )
+            .file(
+                "xmod.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [maybemod [Maybe]])\n\
+                 (import [optmod [Option]])\n\
+                 (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+            )
+            .run("xmod.cl")
+            .output();
+        (out.status.code(), format!("{}\n{}", out.stdout, out.stderr))
+    }
+    let mut codes = Vec::new();
+    for i in 0..3 {
+        let (code, text) = run_once();
+        assert!(
+            !text.contains("match failed"),
+            "run {i}: cross-module same-named ctor resolved to the WRONG candidate \
+             (runtime `match failed`) — the resolver-mirror Blocker; {text}"
+        );
+        assert_eq!(
+            code,
+            Some(7),
+            "run {i}: MUST deterministically return 7 (scrutinee-directed \
+             `Maybe.Some`); a differing value is the nondeterministic wrong-ctor \
+             bug (never flaky); {text}"
+        );
+        codes.push(code);
+    }
+    assert!(
+        codes.iter().all(|c| *c == Some(7)),
+        "three consecutive --run invocations MUST agree on 7; got {codes:?}"
+    );
 }

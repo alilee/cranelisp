@@ -4039,3 +4039,140 @@ fn list_layout_l3_neg_boundary_no_straddle() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Sprint 109 — EV-1 (named fn value shows FQ name, not <closure>, 0572), FQ-D2
+// (bare FQ display parity with imported introspection), DC-10 (constructor
+// listed once — /list + /exports twins). Plan: tests/plan/PLAN.md §S109 §G/§B/§D.
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — a named function value carries its FULLY-QUALIFIED
+// name in the value slot, NEVER `<closure>` (0572). `<closure>` is reserved for
+// genuinely anonymous values (§1.5, guarded by the existing counter-control
+// `closure_value_display_shows_closure_token`, EV-2). RED today: `vec-len`
+// displays `<closure>` where `primitives/vec-len` belongs.
+// defect: class=display-envelope-mirror locus=src/repl.rs::format_eval_result (named fn value shows <closure> instead of the qualified name) found=S108 owner=/dev
+#[test]
+fn named_function_value_displays_fq_name_not_closure() {
+    let out = repl("primitives/vec-len\n");
+    assert!(
+        out.stdout.contains("primitives/vec-len"),
+        "a named function value MUST show its qualified name in the value slot \
+         (§1.5, 0572); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("<closure>"),
+        "a named function value MUST NOT show `<closure>` (§1.5, 0572); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5/§1.5.1 + spec/08-modules.md §8.5.4 — a bare REPL FQ
+// reference displays via the SAME introspection path a bare imported name uses;
+// no codegen is forced. Twin: `mathx/gcount` bare vs `(import [mathx [gcount]])`
+// + `gcount` bare — same envelope. RED today: the bare FQ ref leaks a codegen
+// error instead of displaying the introspection envelope.
+// defect: class=check-gate-leak locus=src/eval.rs (bare FQ symbol display forces codegen instead of introspection) found=S108 owner=/dev
+#[test]
+fn fq_bare_display_parity_with_imported_introspection() {
+    let mathx = "(import [primitives [Int Vec vec-len]])\n(defn gcount [v] :Int (vec-len v))\n";
+    // Leg A — bare FQ reference; MUST display the introspection envelope.
+    let a = Cranelisp::new()
+        .repl()
+        .file("mathx.cl", mathx)
+        .stdin("mathx/gcount\n")
+        .output();
+    assert!(
+        !a.stdout.contains("codegen") && !a.stderr.contains("codegen"),
+        "a bare FQ display MUST NOT force codegen (§1.5); got:\n{}\n{}",
+        a.stdout, a.stderr
+    );
+    assert!(
+        a.stdout.contains("mathx/gcount") && a.stdout.contains("; defn"),
+        "the bare FQ display MUST show the introspection envelope with the \
+         qualified name; got:\n{}",
+        a.stdout
+    );
+    // Leg B (control) — imported then bare; the reference envelope.
+    let b = Cranelisp::new()
+        .repl()
+        .file("mathx.cl", mathx)
+        .stdin("(import [mathx [gcount]])\ngcount\n")
+        .output();
+    assert!(
+        b.stdout.contains("mathx/gcount") && b.stdout.contains("; defn"),
+        "the imported-then-bare control MUST show the same envelope; got:\n{}",
+        b.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.2b / spec §8.5.2 — /list lists a constructor ONCE
+// under its canonical form; the bare alias is never a second row. Fail-on-revert
+// guard for the two-entry (canonical `Type.Ctor` + bare alias) dotted-ctor change
+// (couples 0572/E4): the constructor `Some` must not be duplicated in /list.
+#[test]
+fn list_shows_ctor_once_canonical() {
+    let out = repl_prims(
+        "(deftype (Maybe a) Nil (Some [:a v]))\n/list\n",
+    );
+    assert_eq!(
+        out.stdout.matches("Some").count(),
+        1,
+        "the constructor `Some` MUST be listed ONCE in /list, never duplicated as \
+         a bare-alias second row (§17.19.2b, E4); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.2b / spec §8.5.2 — /exports lists a constructor ONCE
+// under its canonical form; the bare alias is never a second row.
+#[test]
+fn exports_show_ctor_once_canonical() {
+    let out = repl_prims(
+        "(deftype (Maybe a) Nil (Some [:a v]))\n/exports user\n",
+    );
+    // Isolate the /exports listing body (after the module header) so the
+    // definition echo's own `Some` is excluded from the count.
+    let body = out
+        .stdout
+        .split("Module '")
+        .nth(1)
+        .unwrap_or("");
+    assert_eq!(
+        body.matches("Some").count(),
+        1,
+        "the constructor `Some` MUST be listed ONCE in /exports, never duplicated \
+         as a bare-alias second row (§17.19.2b, E4); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 (data ctor display row) — AN-3: a data constructor
+// VALUE renders WITH its fields (`(Lst.Cons 5 Lst.Nil)`-form), never as a bare
+// ctor name with fields DROPPED. GREEN today; invariance pin (guards the
+// canonical-aware `display.rs::ctor_field_types` probe through the W1 flip).
+// Plan: tests/plan/PLAN.md §S109 §D.1 AN-3.
+#[test]
+fn data_ctor_value_displays_with_fields_not_bare_name_neg() {
+    let out = repl(
+        "(deftype Lst (Cons [:primitives/Int h :Lst t]) Nil)\n\
+         (Cons 5 Nil)\n",
+    );
+    // The value renders WITH fields (the head 5 and the Nil tail are present).
+    assert!(
+        out.stdout.contains("(Lst.Cons 5") && out.stdout.contains("Lst.Nil"),
+        "a data ctor value MUST render WITH its fields, not a bare ctor name \
+         (§1.5, AN-3); got:\n{}",
+        out.stdout
+    );
+    // Neg: the fields-dropped bare render `:user/Lst Lst.Cons` (no fields,
+    // no parens) MUST be absent.
+    assert!(
+        !out.stdout.contains(":user/Lst Lst.Cons\n")
+            && !out.stdout.contains(":user/Lst Cons\n"),
+        "the fields-dropped bare-ctor-name render MUST be absent (§1.5, AN-3); \
+         got:\n{}",
+        out.stdout
+    );
+}

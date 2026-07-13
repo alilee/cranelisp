@@ -1561,3 +1561,29 @@ fn auto_io_par_branch_panic_no_slot_pollution_neg() {
         // evaluates to 42 (no spurious error attached to it).
         .assert_stdout_contains_all(&["division by zero", ":primitives/Int 42"]);
 }
+
+// =============================================================================
+// Sprint 109 — BR-2: IO internal-ctor exclusion from exhaustiveness
+// (arch-pre-flagged blast radius, design §4.2). A user `match` over an IO-typed
+// value covering only its public surface (`Pure`/`Effect`) MUST compile WITHOUT
+// "non-exhaustive: missing Bind" — the internal `Bind` ctor stays excluded from
+// exhaustiveness. This is a PERMANENT fail-on-revert guard: when the bare ctor
+// key becomes an alias under the dotted-`Type.Ctor` change, the per-ctor
+// `internal` flag must chain-follow the bare alias to the terminal ctor `Def`,
+// keeping `Bind` internal. It is GREEN today (the exclusion holds) and FAILS if
+// the registration change regresses the exclusion.
+// Plan: tests/plan/PLAN.md §S109 §D BR-2. The e2e idiom IS expressible
+// (verified this pass); the enumerated /dev unit fallback (assert `internal ==
+// true` for Bind/Pure/Effect AFTER the bare key becomes an alias) is the
+// deterministic complement in cranelisp-typecheck.
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.5 × spec/10-io.md §10.1 — internal-ctor
+// exclusion: a Pure+Effect match compiles without demanding the internal `Bind`.
+#[test]
+fn io_internal_ctors_stay_excluded_from_exhaustiveness_neg() {
+    let out = repl("(match (Pure 5) [(Pure x) x (Effect e) 0])\n");
+    // The match must be accepted and evaluate — no "missing Bind" flag.
+    out.assert_stdout_contains(":primitives/Int 5")
+        .assert_stdout_does_not_contain("Bind");
+}

@@ -372,6 +372,21 @@ user> +
 
 Not every symbol class has related symbols. Functions, constructors, literals, and primitives have only the primary line (plus optional docstring). Types, traits, macros, and modules have related symbol sections.
 
+**The one canonical envelope — `:Type {subject} ; {metadata}` (S109).** This universal format is not
+merely a shared *convention*; it is a **single canonical envelope** that every "what is this symbol,
+and what is its type" surface renders through — **bare-symbol lookup** (§4.1), **`/sig`** (§3.8),
+**`/info`** (§3.6), and **`/search` result rows** (§17.19.2). These surfaces differ **only** in
+verbosity — which drawers they expand (a `/search` row adds an originating-module column and an
+import-how-to; `/info` adds the source form and code-size drawer; bare lookup and `/sig` show the
+primary line plus the classification/related-symbol drawers) — **never** in the shape of the `:Type
+{subject} ; {metadata}` primary line itself. They are **one envelope constructor with different
+drawer sets**, not four independently-formatted renderers (FIXME 0572). This is the experience
+contract; the mechanism is the shared envelope constructor of the E4 styling seam
+(`design/arch/repl-styling-seam.md` §4 — "one envelope constructor that both route through"), so the
+`:`-prefix, spacing, and metadata grammar are single-sourced. A surface that grows its own
+`:Type`-line shape (e.g. the bogus `:primitives/Int` a `/search` macro row once showed, §17.19.2;
+0569) is a conformance defect against this envelope, not a stylistic variation. [S109]
+
 ### 1.2 Expression Results [Tested]
 
 An expression evaluation MUST display the result in the format:
@@ -391,7 +406,8 @@ Examples:
 | `:primitives/Float 3.14` | [Tested tests/repl_introspection::display_float_result] |
 | `:user/Color Color.Red` | [Tested tests/repl_introspection::display_int_result] |
 | `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [a] a) <closure>` | [Tested tests/repl_introspection::display_int_result] |
+| `:(Fn [a] a) <closure>` (anonymous — no bound name) | [Tested tests/repl_introspection::display_int_result] |
+| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (named function value — qualified name, never `<closure>`; §1.5, 0572) | [S109 — FIXME repro owed] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -474,12 +490,27 @@ Values are runtime results and have no module scope. They are displayed bare.
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
 | Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Closure | `<closure>` | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
+| Named function value | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — never `<closure>` | 1 | [S109 — 0572; FIXME repro owed] |
+| Anonymous closure value | `<closure>` — only when the value has **no** bound name | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
 | List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
 | Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
+
+**A function value carries its qualified name, not `<closure>` (S109 — FIXME 0572).** When a
+function *value* the REPL displays has a **known bound name** — a module-qualified function
+referenced as a value, e.g. evaluating `primitives/vec-len` or `user/double` bare — the value slot
+MUST show that value's **fully-qualified name** (`primitives/vec-len`), in the same qualified form
+every other name-bearing display uses (§1.4, the self-documenting-REPL rule that names are always
+fully qualified). The opaque token `<closure>` is a **placeholder for the absence of a name** and is
+reserved **only** for a genuinely anonymous function value — the result of a literal `(fn [x] …)` or
+a captured closure that was never bound to a name. Showing `<closure>` where a qualified name is
+available (the reported `:(Fn [(primitives/Vec a)] primitives/Int) <closure>` for `primitives/vec-len`)
+violates the self-documenting contract: the value slot should carry a meaningful identity when one
+exists. This is the value-display facet of the 0572 unification — a bare-symbol value lookup and a
+`/search`/`/info` row of the same function agree on the qualified name because they render through
+the one canonical envelope (§1.1). [S109]
 
 > **Aspirational** (not currently required): A future revision MAY introduce a type-directed pretty-printer that recognises `List` and `Seq` and renders them as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)` (forcing up to a small bound). This would require either (a) a display protocol/trait the stdlib opts into per type, or (b) compiler-seeded recognition of named types from a known stdlib path. No such protocol exists today, so the generic ADT form is normative. These forms are promoted to MUST only once the display-protocol mechanism lands — tracked by `design/arch/fixmes/0050-*.md` (owner `/int`, with `/arch` on the protocol and `/stdlib` on List/Seq opt-in).
 
@@ -644,6 +675,23 @@ Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitte
 
 The **bare** field name (e.g. `v`) is a **convenience alias** to the canonical accessor — it resolves when unambiguous and is an ambiguity error when two in-scope types share the field name. The bare alias is **NOT separately listed** by `/list` (option A — show canonical only): listing both `Box.v` and a bare `v` would double-count every field, and the bare alias is import-class (an alias into the current scope), so it falls under the existing "imported/alias names MUST NOT appear on `/list`" scope rule above. `/list` shows the canonical accessor exactly once, under its `Type.field` name. [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
 
+**Constructors — canonical qualified `Type.Ctor` form, listed once (S109).** With the
+dotted-`Type.Ctor` constructor capability (`sprints/SPRINT.md` bucket 2 — same-named constructors
+coexisting across in-scope types, e.g. `Maybe.Some`/`Option.Some`), each constructor has a
+**canonical** `Type.Ctor` key (`Maybe.Some`) and a **bare-name alias** (`Some`) — exactly the
+inverted model of field accessors above. `/list` MUST therefore treat constructors the **same way**
+it treats field accessors (mirroring FIXME 0438 and the E4 seam): the canonical `Type.Ctor` entry is
+the real definition and is listed **once** under its qualified `Type.Ctor` name in the **Types**
+category; the bare ctor name (`Some`) is a **convenience alias** (import-class, an ambiguity error
+when two in-scope types share it) and is **NOT separately listed**. `/list` MUST NOT double-list a
+constructor as both `Maybe.Some` **and** a separate bare `Some` — that would double-count every
+constructor exactly as bare+canonical field accessors would. A constructor appears in `/list`
+exactly once, under its `Type.Ctor` name. (The per-type `; match:` related-symbol drawer of a bare
+**type** lookup, §1.1, is a different surface — it lists that one type's own constructors and is
+unambiguous within the type; this rule governs the flat category listing where cross-type
+same-named ctors would otherwise collide.) [S109 — couples with the bucket-2 RED guard; `/testing`
+twin owed]
+
 **Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/repl_introspection::list_empty_session] This distinguishes "command worked on empty module" from a failed command.
 
 **Negative requirements** (what MUST NOT appear): [Tested+Neg]
@@ -653,6 +701,7 @@ The **bare** field name (e.g. `v`) is a **convenience alias** to the canonical a
 - No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names) [R4 S15]
 - Constructors MUST appear in Types, not in Fns [Tested+Neg tests/repl_introspection::list_empty_session]
 - A field accessor MUST appear only once, under its canonical `Type.field` name; the bare-field alias (`v`) MUST NOT appear as a second, separate accessor entry [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
+- A constructor MUST appear only once, under its canonical `Type.Ctor` name; the bare-ctor alias (`Some` for `Maybe.Some`) MUST NOT appear as a second, separate constructor entry [S109 — `/testing` twin owed]
 
 **Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
@@ -769,6 +818,15 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 **What counts as public:** Definitions with public visibility — `Def`, `Constructor`, `TraitDecl`, `TypeDef`, `Macro`. Import and Reexport entries in the target module are NOT shown (those are the module's own imports, not its exports).
 
 **Field accessors in `/exports`.** A module's field accessors are public definitions and MUST be listed by `/exports` under their **canonical qualified `Type.field`** form (e.g. `Box.v`) — the same canonical/alias rule as `/list` (§3.3, "Field accessors — canonical qualified form"): the canonical accessor is the real Public `Def` shown by `/exports`; the bare-field name (`v`) is a convenience alias (import-class) and is NOT separately listed (option A — show canonical only), consistent with the "Import and Reexport entries are NOT shown" rule above. A field accessor appears in a module's exports exactly once, under its `Type.field` name. [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
+
+**Constructors in `/exports`.** A module's constructors follow the **same canonical/alias rule**
+(S109; mirroring the field-accessor rule above and §3.3's "Constructors — canonical qualified
+`Type.Ctor` form"): with the dotted-`Type.Ctor` capability (bucket 2), the canonical `Type.Ctor`
+entry (`Maybe.Some`) is the real Public definition `/exports` lists, **once**, under its qualified
+`Type.Ctor` name; the bare-ctor alias (`Some`) is a convenience alias (import-class) and is **NOT**
+separately listed. A constructor appears in a module's exports exactly once, under its `Type.Ctor`
+name — never double-listed as both `Maybe.Some` and a separate bare `Some`. [S109 — `/testing` twin
+owed]
 
 **Empty module:** If the module has no public symbols, print `Module '<name>' has no public symbols`. [R4 S15]
 
@@ -2294,6 +2352,56 @@ A turn therefore reads on screen as an interleaving of framed prose, un-guttered
 
 **Guards this touches (for `/qa`).** Revising the code-line framing changes the bytes `render_agent_prose` emits for any fixture containing a ```lisp fence: the non-TTY byte-identical golden for agent output (the `--no-color` no-literal-escape transcript, §17.13.3) and the design-side §14.6 leaf-styling guard (`design/int/agent.md` §14.6) MUST be re-baselined to the un-guttered code shape when this lands. The change is agent-feature-gated (`#[cfg(feature = "agent")]`); the default REPL render path is untouched. [S107]
 
+#### 17.2.1 The Probe Channel — The Agent's Self-Checks Are Private Reasoning, Not the User Session [S109]
+
+§17.2 item 2 renders an agent-issued read as a normal echoed REPL line, on the premise that the
+user learns the introspection vocabulary by watching the agent reach for it. In practice a
+build-a-function turn issues **many** self-directed probes — *does `fn` take multi-arity?* (§17.17;
+0575), *do multi-arity `defn` clauses share inference?* (0576), *what is this symbol's type?* — and
+echoing each `agent> /type …` command and its result **line after line** floods the user's session
+with the agent's private search, burying the one thing the user asked for (the finished function).
+The observed session (`design/arch/fixmes/0577`) scrolled dozens of such probes and then hit the
+step budget without ever delivering the definition. This section carves the agent's **probe
+traffic** off the user session. [S109]
+
+**The probe set.** A **probe** is a read/introspection **pull** the agent issues to **check**
+something before it writes — the syntax/type/introspection tools it uses to verify the language or
+its own draft: `/type`, `/syntax`, `/sig`, `/info`, `/source`, `/doc`, `/exports`, `/list`,
+`/search`, `/refs`, and the pre-flight validator's repair probes (§17.14.3). These are exactly the
+pulls the §17.20.3a `question`/`error_class` fields instrument. (The precise tool membership is a
+`/dev` detail; the default is the whole read/pull class above — a pull is the agent checking
+itself, not answering the user. A tool that ever mutates session state is **not** a probe and stays
+on its own consent path, §17.3.) [S109]
+
+**Where probe traffic goes (MUST).** A probe MUST NOT scroll the user session as an
+`agent> {command}` echo followed by its result. Probe traffic routes to the **private working
+channel** — it is recorded in the §17.20 activity log (with the F1 `question` and F2 `error_class`
+fields) and the §17.21 full-content trace, the tuning substrate — and is **not** rendered inline in
+the transcript. This **revises §17.2 item 2 for the probe subclass**: the "watch every pull echo"
+behaviour is replaced, because the flooding it caused defeated the very readability it was meant to
+serve. The user learns the vocabulary from the agent's **conclusions**, not from watching it grind. [S109]
+
+**What the user DOES see (MUST).** The user session carries the **outcome**, not the search for it:
+
+1. the agent's **conclusions** — its framed prose (§17.2 item 1, the `▌` gutter), which MAY
+   *summarise* what a probe established (*"`fn` is single-arity, so I used `defn`"*), and
+2. the agent's **landed or proposed definitions** — the finished `(defn …)`/`(deftype …)` shown as
+   a normal, un-guttered, copy-clean definition echo (§17.2 item 3) or submitted under the consent
+   gate (§17.3.1, §17.14) — the thing the user actually asked for.
+
+**Arch constraint — the probe channel is an E4 agent-gutter PRODUCER, not a bespoke renderer
+(P2).** Where a probe's finding **does** surface to the user (a prose summary, per item 1 above), it
+renders as **agent prose through the one styling seam** (`design/arch/repl-styling-seam.md` — the
+`AgentGutter` producer, §10.3 R14), exactly like every other line of framed prose. There is **no
+new probe-summary renderer**: a probe summary is prose, styled by the single formatter, degrading
+`--no-color`/non-TTY byte-clean like all agent prose (§17.13.3). The private working channel itself
+is not a screen surface at all — it is the log/trace sinks (§17.20/§17.21), which are already silent
+(§17.20.1). [S109]
+
+This is agent-feature-gated; feature-off there is no agent and no probe traffic. The change is a
+render/experience change only — the agent still auto-runs its reads (§17.3 Reads row is unchanged:
+reads need no consent); it just stops **echoing** its self-checks into the user's view. [S109]
+
 ### 17.3 Consent Model [S88]
 
 The agent's actions are gated by **what they touch**, not by which "mode" the user selected. The S88 MVP is **read-only Advise**: it reads and shows, and it MAY *propose* code (shown, never submitted), but it performs no writes. The fuller consent model (Build and Document writes) is specified here as the **target** for the agentic-Phase-2 work (S89); the S88 MVP implements only the read-only row. **S89 realizes the Build and Document write rows** — the Build confirm-gate UX is §17.14, the Document consultative-edit UX is §17.15; both extend (never relax) the "auto-approve reads only" floor.
@@ -3030,12 +3138,26 @@ testing (§17.19.5 determinism). [S106]
 
 #### 17.19.2 The Result Row — Name, Signature, Module, How-To-Import [S90 re-pin]
 
-Each result row MUST show enough for the reader to **decide and act** — four facets:
+**The row renders through the one canonical envelope (§1.1) — same shape as bare lookup / `/sig`
+/ `/info` (S109, FIXME 0572).** A `/search` result row's **primary line** is the canonical
+`:Type {name} ; {classification} - {docstring}` envelope (§1.1) — **byte-identical in shape** to
+what a bare lookup, `/sig`, or `/info` of that symbol prints — followed by the search-specific
+drawer lines (module column + import how-to). The row is **not** a fourth, independently-formatted
+render of "what is this symbol"; it is the shared envelope constructor (E4 seam,
+`design/arch/repl-styling-seam.md` §4) with the search drawers added. A row whose primary line
+diverges from the envelope — a `name :: (Fn …)` shape, or the **bogus `:primitives/Int` a macro row
+once showed** (0569, below) — is a conformance defect against §1.1, not a stylistic choice. [S109]
 
-1. **symbol name** — the importable symbol; [S90 re-pin]
+Each result row MUST show enough for the reader to **decide and act** — these facets:
+
+1. **symbol name** — the importable symbol, in the canonical envelope's subject slot (a
+   module-qualified NAME for a macro, per §1.1 / §11.2, e.g. `:control/when`); [S90 re-pin]
 2. **type signature** — its full `:Type` signature (canonical cranelisp notation, FQ type
-   names, §4.1) — the same grain Pillar 2 surfaces for in-scope symbols, so search results and
-   in-scope listings read identically; [S90 re-pin]
+   names, §4.1) occupying the envelope's `:Type` slot — the same grain Pillar 2 surfaces for
+   in-scope symbols, so search results and in-scope listings read identically. **For a symbol with
+   no meaningful function type — a macro, a nullary constructor, a type — the `:Type` slot holds
+   what bare lookup holds** (the qualified name for a macro, the ADT type for a constructor, per
+   §1.1/§4.1), **never a placeholder scalar** (§17.19.2a, 0569); [S90 re-pin] [S109]
 3. **originating module** — the module the symbol lives in (its full path), so the reader knows
    *where it comes from*; [S90 re-pin]
 4. **how to import it** — the exact `(import …)` form that would bring it into scope (e.g.
@@ -3053,34 +3175,79 @@ Each result row MUST show enough for the reader to **decide and act** — four f
    appears **only** on docstring-only rows — a name/scheme hit does not need it (the name or
    signature already shows the reason it matched). [S106, FIXME 0540]
 
-Conceptually (rendering `/dev`-owned; this pins the facets):
+Conceptually (rendering `/dev`-owned; this pins the facets and the canonical-envelope primary
+line, §1.1):
 
 ```
 user> /search (Fn [Int Int] Int)
-grid-get :: (Fn [primitives/Int primitives/Int] primitives/Int)
+:(Fn [primitives/Int primitives/Int] primitives/Int) grid-get ; defn - Read a cell
   in solver.grid   — (import [solver.grid [grid-get]])
-gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
+:(Fn [primitives/Int primitives/Int] primitives/Int) gcd ; defn
   in math.number   — (import [math.number [gcd]])
 
 user> /search show
-show :: (Fn [:Display a] primitives/String)
+:(Fn [:Display a] primitives/String) show ; defn - Format as string
   in text.display   — already in scope — no import needed
-trace-show :: (Fn [primitives/Trace] primitives/String)
+:(Fn [primitives/Trace] primitives/String) trace-show ; defn
   in core.trace   — (import [core.trace [trace-show]])
 
+user> /search when
+:control/when ; defmacro - Conditional with implicit None else branch
+  in control   — already in scope — no import needed
+
 user> /search "greatest common"
-gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
+:(Fn [primitives/Int primitives/Int] primitives/Int) gcd ; defn
   in math.number   — (import [math.number [gcd]])
   ; doc: … computes the greatest common divisor of two integers …
 ```
 
 The first example shows scheme matches; the second shows the exact-name match `show` surfaced
-**marked** as already in scope (R13), ranked above the partial `trace-show` (§17.19.1a); the
-third shows a docstring-only hit (`gcd`'s name and signature contain neither word) carrying its
-excerpt facet. Results use the **existing §10.3 palette roles** (the `/list` family) — the
-docstring excerpt line uses the **dim `; ` metadata role** (the classification-comment / metadata role, §10.3 R6 — a `; doc:` excerpt is REPL-emitted structure, not user source, so dim not italic)
-— and **degrade under `--no-color`/non-TTY** (§10.1) to clean plain text, same rule as `/syntax`
-(§17.17.2) and every other deterministic command. [S90 re-pin] [S106]
+**marked** as already in scope (R13), ranked above the partial `trace-show` (§17.19.1a); the third
+shows a **macro** row carrying its `; defmacro` classification in the canonical envelope (§17.19.2a,
+0569) — **not** a bogus `:primitives/Int`; the fourth shows a docstring-only hit (`gcd`'s name and
+signature contain neither word) carrying its excerpt facet. Results use the **existing §10.3 palette
+roles** (the `/list` family) — the docstring excerpt line uses the **dim `; ` metadata role** (the
+classification-comment / metadata role, §10.3 R6 — a `; doc:` excerpt is REPL-emitted structure, not
+user source, so dim not italic) — and **degrade under `--no-color`/non-TTY** (§10.1) to clean plain
+text, same rule as `/syntax` (§17.17.2) and every other deterministic command. [S90 re-pin] [S106]
+
+##### 17.19.2a A Macro Row Shows `; defmacro`, Never a Placeholder Type [S109 — FIXME 0569]
+
+A macro has **no function type**. Its `/search` row's primary line MUST therefore be the
+canonical **macro envelope** (§1.1, §11.2) — the module-qualified **name** in the subject slot with
+the `; defmacro` classification (and docstring when present) — exactly as a bare lookup of that
+macro prints it:
+
+```
+:control/when ; defmacro - Conditional with implicit None else branch
+```
+
+It MUST NOT render a meaningful-looking but wrong **scalar type** in the `:Type` slot. The reported
+defect — every macro row (`when`, `cond`, `do`, …) showing `:primitives/Int` — actively misinforms
+(a macro is not an `Int`), violating the self-documenting contract that the type column helps a user
+judge what a name is. The correct classification is already available on the entry (bare lookup and
+`/info` show `; defmacro`); the row renderer MUST consult the entry's **classification**, not emit a
+placeholder type. This is the `/search`-row facet of the 0572 unification: because the row renders
+through the one canonical envelope (§1.1), a macro's search row and its bare lookup agree by
+construction. [S109 — repro owed: a macro's `/search` row MUST NOT show a scalar `:Type`; colour-off
+byte assertion `:primitives/Int when` (wrong) vs `:control/when ; defmacro …` (right)]
+
+##### 17.19.2b A Constructor Is Listed Once, Under Its Canonical `Type.Ctor` Form [S109]
+
+With the dotted-`Type.Ctor` constructor capability (`sprints/SPRINT.md` bucket 2 — same-named
+constructors coexisting across types, minting a canonical `Type.Ctor` key plus a bare-name alias),
+a constructor now has **two** symbol-table entries: the canonical `Maybe.Some` and the bare alias
+`Some`. `/search` MUST surface a constructor **exactly once**, under its **canonical qualified
+`Type.Ctor` form** (`Maybe.Some`, `Color.Red`) — **never** as two rows (`Maybe.Some` *and* a
+separate bare `Some`). This **mirrors the field-accessor rule** (§3.3 / §3.5 — canonical
+`Type.field` shown once, bare alias not separately listed; FIXME 0438) and the same rule now
+applies to `/list` (§3.3) and `/exports` (§3.5): the bare ctor name is a **convenience alias** (import
+class), not a second importable definition, so it is not a second search row. The row's import
+how-to targets the constructor's home type/module as usual. A search that double-lists a
+constructor once canonically and once bare is a conformance defect against this rule. This couples
+with the value-display side (§1.5): the value `Maybe.Some 3` renders `(Maybe.Some 3)` in the
+canonical dotted form, and its `/search`/`/list` rows name it the same canonical way — one identity,
+one listing. [S109 — couples with the bucket-2 RED guard; `/testing` twin owed]
 
 #### 17.19.3 Eager Background Index — Partial Results While Indexing [S90 re-pin]
 
@@ -3251,11 +3418,104 @@ operational: **`grep`/`jq` over the file extracts the repair events and explorat
 their triggering symbols/errors** (`SPRINT.md §Pillar 4 acceptance`). [S90]
 
 The log **stays the compact index** — it carries *metadata-only* keys (event/symbol/error_class/
-iteration/module/`turn`) and **no content** (no form text, no error message, no model prose). It is
+iteration/module/`turn`, plus the six explanatory fields pinned in §17.20.3a) and **no content**
+(no form text, no error message, no model prose). It is
 the **greppable index** that tells you *where* the agent struggled; the full **content** of each
 exchange lives in the companion trace sink (§17.21), joined by the shared `turn` key (§17.21.3). Do
 **not** thicken the log with content fields — its grain is deliberately thin so a one-line `grep`/`jq`
-stays fast and the file stays scannable. [S90]
+stays fast and the file stays scannable. The §17.20.3a fields do **not** violate this: each is a
+short **structured** value (a tool argument, an error-class enum, a cause enum, a hash, a length,
+an env tag, an integer counter) — the *subject* of an event, never the *content* of the exchange,
+which stays in the trace. [S90]
+
+##### 17.20.3a Explanatory Fields — Each Derived From a Harness-Visible Event, Each Feeding a Named Metric [S109]
+
+The §17.20.3 keys record **that** the agent struggled; the six fields below record **why the
+context did or did not serve it**, so the log closes a **tuning loop** rather than only marking
+trouble spots (`design/arch/fixmes/0577`). The governing constraints:
+
+- **Derived, never narrated.** Every field is computed from state the **harness already sees** —
+  a tool name and its arguments, a result's error class, the step counter, the assembled request,
+  a configuration env — **not** from new model narration. Adding a field MUST NOT add a model
+  round-trip, a prompt instruction, or any REPL output; it reads what the rig already holds.
+- **Each field earns its place by feeding a named metric.** The acceptance coupling is the
+  field→metric mapping table below: a field that feeds no metric in
+  `tests/plan/agent-context-tuning.md §4` (owned by `/qa`) does not belong in the schema, and a
+  metric with no feeding field cannot be computed. `/qa` checks this two-sided match at review.
+- **The §17.20 contract is preserved unchanged.** Every field is written under the same
+  **silent / env-opt-in / graceful / feature-gated** rules (§17.20.1, §17.20.2): no new REPL
+  output, an unwritable-path failure is swallowed, and the fields are absent on a non-`agent`
+  build. The keys stay **stable and greppable** so a one-line `grep`/`jq` extracts each metric.
+
+**The six fields (normative schema additions to the §27 `LogEvent`):**
+
+| # | Field | On event(s) | Derived from (harness-visible) |
+|---|---|---|---|
+| F1 | `question` — the specific thing the probe wanted to learn (e.g. `"does fn take multi-arity"`) | `pull` | a **required** `question` argument on every probe/pull tool (§17.20.3b); stamped verbatim |
+| F2 | `error_class` — the compiler-error class of a **failed** probe result (today `repair`-only) | `pull` result | `classify_error` over the pull's result — the same classifier the `repair` path already runs |
+| F3 | `cause` + dominant `error_class` — *why* the agent stopped (`step_budget` / `model_declined`) and the class it was looping on | `give_up` | the terminal condition the harness raises + the most-frequent `error_class` in the run-up |
+| F4 | `primer_hash` + `harvest_len` — the **context-version stamp** (optionally a per-harvest-section digest) | session-start (or first `exchange`) | a hash of the assembled primer + the harvest character count — the same figures the trace header already prints |
+| F5 | `scenario` — the assistance-scenario tag, stamped on **every** record | all events | the `CRANELISP_AGENT_SCENARIO` env (§17.20.3b) |
+| F6 | step accounting — `step` (running counter), `steps_at_submit`, `steps_at_give_up` | `submit`, `give_up` | the harness's own step counter at the event |
+
+**Field → metric mapping (the acceptance coupling `/qa` checks).** Each field feeds at least one
+named metric in `tests/plan/agent-context-tuning.md §4` (cited, not restated — that doc is
+`/qa`'s):
+
+| Field | Feeds metric (`agent-context-tuning.md §4`) | How |
+|---|---|---|
+| F1 `question` | **Unresolved-question list** | dedupe + frequency-rank `question` across `pull` events → the direct per-sprint primer-gap worklist (thread D, §17.20.3c) |
+| F2 `error_class` on `pull` | **Error-class histogram** | frequency of `error_class` across `repair` **and** `pull` results → the highest-value tuning targets |
+| F2 (also) | **First-submit-typecheck rate** | a `submit` with no preceding failed `pull`/`repair` for the same `symbol` is a first-time-clean submit |
+| F3 `cause` + dominant class | **Give-up rate + cause histogram** | `give_up` events bucketed by `cause` and dominant `error_class` |
+| F4 `primer_hash` + `harvest_len` | **Comparable-runs discipline** (§5) — the key **every** metric delta is validated against | a metric delta is only valid between runs whose stamps differ ONLY in the edited artifact |
+| F5 `scenario` | **Per-scenario slicing** — the tag **every** metric is computed *per* | the flat JSONL slices into a comparable dataset per assistance scenario |
+| F6 step accounting | **Probes-per-submit** (§4) + the step-count facet of the **Give-up rate + cause histogram** (§4) | `pull` count per `submit` proves a context edit cut probes-per-submit (e.g. 6→1); total-steps-at-give-up sharpens the give-up analysis |
+
+The efficiency metrics (probes-per-submit, first-submit rate) prove a context edit **worked**; the
+diagnostic fields (`question`, `error_class`, give-up `cause`) say **what to edit**; the stamp
+(F4) and tag (F5) make the before/after **rigorous** rather than eyeballed. [S109]
+
+##### 17.20.3b Probe Tools Carry a `question` Argument; the Scenario Tag Is an Env [S109]
+
+Two harness-surface requirements the F1/F5 fields depend on:
+
+- **`question` is a required argument on every probe/pull tool.** A pull tool the agent reaches
+  for (§17.2.1 enumerates the probe set) MUST accept — and the harness MUST record (F1) — a
+  short `question` string naming *what the agent wanted to learn* by issuing it. A probe records
+  `tool:"type"`; the `question` turns *"agent was unsure"* into *"agent was unsure **of X**"* —
+  the exact context gap. This is the single highest-value tuning field, so the argument is
+  **required**, not optional; a probe with no `question` is a tool-schema non-conformance. The
+  wording is the agent's own (model-supplied as a tool argument) — this is the one place a field
+  originates in the model, and it is an **argument to a deterministic tool call**, not narration
+  bolted onto the log. [S109]
+- **`CRANELISP_AGENT_SCENARIO` tags the session (F5).** An env, set per run (e.g.
+  `CRANELISP_AGENT_SCENARIO=safe-dial`), whose value is stamped on **every** log record — the
+  sibling of `CRANELISP_AGENT_LOG`/`CRANELISP_AGENT_TRACE` (§17.20.2), same silent/opt-in/graceful
+  contract. Unset ⇒ the field is absent (or a neutral default); it never gates logging, only
+  slices it. [S109]
+
+##### 17.20.3c The Primer-Gap Loop — `question` Log Is the Per-Sprint Worklist [S109]
+
+The F1 `question` log is a **standing signal for primer completeness** (thread D of
+`design/arch/fixmes/0577`). Recurring questions across scenarios are the primer's **uncovered
+rows**: a syntax/semantics question the agent had to probe for is a question the static primer
+(`src/agent/primer.txt` + the `/syntax` cheatsheet, §17.17) should have pre-answered. Each sprint,
+`/repl` reviews the deduped-and-ranked unresolved-question list (§4 of the `/qa` eval doc) and
+folds the recurring **static** ones back into the primer — static syntax/semantics belongs in the
+primer (it never changes per session); **session-dependent** facts (what is in scope, prelude
+status, existing-defn style) belong in the harvest (§17.18), never the primer. This is the
+`/repl`-owned half of the tuning loop; `/qa` owns the scenario suite + metric definitions
+(`tests/plan/agent-context-tuning.md`). The probe set the loop mines is enumerated in §17.2.1 (the
+probe *channel* — where probe traffic goes on screen); this section (§17.20.3c) is the *loop* that
+reads the resulting `question` log.
+
+> **Sequencing (user, S108, recorded for the reader).** Observability (this section, thread A)
+> ships **first** — it is the substrate the eval process reads. Driving the primer to ~99%
+> coverage (thread C) and running the gap loop above at scale (thread D) **defer with the scenario
+> testing**: the primer is tuned from mined signal, not blind. The `question`/`error_class` fields
+> are built **now**, against the `/qa` metric definitions, so the signal exists to mine later.
+> [S109]
 
 This log is the **passive recording** half only. The **automated curation/push loop** that would
 read it back to curate the primer/cheat-sheet — plus the §4.7/U4 push-transparency header — is

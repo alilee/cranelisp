@@ -1,3 +1,5 @@
+> **HISTORICAL — sprint-scoped working doc (macro-deps step assessment).** A completed assessment, retained for the audit trail; NOT a durable subsystem reference. The durable design lives in `typecheck.md`. Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+
 # Step 4 Macro Dependencies: Typecheck Assessment
 
 Sprint 42, Wave 1 assessment for `/typecheck`. Revised to incorporate Decision 21 (TC-sourced call graph).

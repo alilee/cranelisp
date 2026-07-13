@@ -808,3 +808,102 @@ fn non_tty_repl_output_byte_identical_line_editor_off() {
     let prompt_re = regex::Regex::new(r"\d+\+\d+ms; \w+> ").unwrap();
     out.assert_golden_masked("non_tty_repl_line_editor_off", &[&prompt_re]);
 }
+
+// =============================================================================
+// Sprint 109 — 0573: deftype-shape × persistence matrix ("coverage by
+// definition variants" made flesh). Plan: tests/plan/PLAN.md §S109 §E.
+// A SUM deftype persists to the backing `user.cl`; a PRODUCT deftype does NOT
+// (silent data loss — the 0573 defect). Both are pinned here + a no-double-emit
+// negative for the post-fix `type_def_info()`-keyed change.
+// =============================================================================
+
+// spec: repl/spec.md §15.2 — a SUM deftype is persisted to the backing `user.cl`.
+#[test]
+fn sum_deftype_persisted_to_backing_file() {
+    let out = Cranelisp::new()
+        .repl()
+        .stdin("(deftype Shape (Circle [:primitives/Int r]) (Sq [:primitives/Int s]))\n/quit\n")
+        .output();
+    assert!(
+        out.tmp_exists("user.cl") && out.read_tmp("user.cl").contains("deftype Shape"),
+        "a sum deftype MUST persist to backing user.cl; got user.cl exists={}, \
+         stdout={}",
+        out.tmp_exists("user.cl"),
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §15.2 — a persisted SUM deftype's type + constructors
+// survive a restart (reload from user.cl).
+#[test]
+fn sum_deftype_reload_retains_type_and_ctors() {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin("(deftype Shape (Circle [:primitives/Int r]) (Sq [:primitives/Int s]))\n/quit\n")
+        .output();
+    first
+        .run_again()
+        .repl()
+        .stdin("(match (Circle 5) [(Circle r) r (Sq s) s])\n")
+        .output()
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: repl/spec.md §15.2 — a PRODUCT deftype MUST persist to the backing
+// `user.cl`, exactly as a sum deftype does. RED today: the product type is not
+// written (silent data loss).
+// defect: class=enumeration-miss locus=src/session_v4/save.rs::generate_types (matches ModuleEntry::TypeDef only; product facet is Def{Constructor{type_def:Some}}) found=S108 owner=/dev
+#[test]
+fn product_deftype_persisted_to_backing_file() {
+    let out = Cranelisp::new()
+        .repl()
+        .stdin("(deftype Point [:primitives/Int x :primitives/Int y])\n/quit\n")
+        .output();
+    assert!(
+        out.tmp_exists("user.cl") && out.read_tmp("user.cl").contains("deftype Point"),
+        "a product deftype MUST persist to backing user.cl (0573 — silent data \
+         loss); got user.cl exists={}, stdout={}",
+        out.tmp_exists("user.cl"),
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §15.2 — a persisted PRODUCT deftype's type + generated
+// accessor survive a restart. RED today (the product is not persisted, so the
+// reloaded session does not know `Point`).
+// defect: class=enumeration-miss locus=src/session_v4/save.rs::generate_types found=S108 owner=/dev
+#[test]
+fn product_deftype_reload_retains_type_and_accessor() {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin("(deftype Point [:primitives/Int x :primitives/Int y])\n/quit\n")
+        .output();
+    first
+        .run_again()
+        .repl()
+        .stdin("(Point.x (Point 3 4))\n")
+        .output()
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: repl/spec.md §15.2 (NEG) — the post-fix `type_def_info()`-keyed emit MUST
+// NOT emit a SUM deftype twice (sum ctor `Def`s carry `type_def: None`). Guard:
+// the sum deftype appears exactly once in the backing file.
+#[test]
+fn sum_deftype_not_double_emitted_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .stdin("(deftype Shape (Circle [:primitives/Int r]) (Sq [:primitives/Int s]))\n/quit\n")
+        .output();
+    let user_cl = if out.tmp_exists("user.cl") {
+        out.read_tmp("user.cl")
+    } else {
+        String::new()
+    };
+    assert_eq!(
+        user_cl.matches("deftype Shape").count(),
+        1,
+        "a sum deftype MUST be emitted ONCE, not doubled (0573 fix guard); \
+         got user.cl:\n{user_cl}"
+    );
+}
