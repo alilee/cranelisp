@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use cranelisp_types::{ErrorLocation,
     ConstructorDef, CranelispError, DefKind, DefnVariant, Expr, FQTypeName, FieldInfo,
     ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName,
-    Visibility,
+    Visibility, member_key,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -379,6 +379,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(doc) = doc {
                 builder = builder.docstring(doc);
             }
+            // COMMIT 1 (reader-widening) keeps the CURRENT bare keying — the
+            // canonical-key writer flip (gated on `is_product_ctor`) lands in
+            // commit 2 (design §4).
             self.current_symbol_table_mut(state).insert(ctor.name.clone(), builder.build());
 
             // **Field accessors (S83, FIXME 0351(a), spec §5.2.6).** For each
@@ -596,7 +599,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // canonical field accessor (FIXME 0365 Item 1 / spec §8.5.2, INVERTED
         // model §1.6). `Box.v` is ALWAYS the real, uniformly-Public compiled
         // accessor `Def`; bare `field` (`v`) is a CONVENIENCE ALIAS onto it.
-        let qualified_key = Symbol::from(format!("{}.{}", fqtn.name, accessor_name).as_str());
+        let qualified_key = member_key(&fqtn.name, accessor_name.as_ref());
 
         // The CANONICAL accessor `Def` (`Box.v`) is minted UNCONDITIONALLY (in
         // every arm — fresh, contested, or over a non-accessor bare binding): it
@@ -773,14 +776,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Vec<FQTypeName> {
         let mut owners: Vec<FQTypeName> = Vec::new();
         self.for_each_in_module(&state.current_module, |key, entry| {
-            // The canonical accessor key is `Type.field`; its terminal segment
-            // (after the last `.`) is the bare field name. A defensively bare-keyed
-            // accessor (no `.`) contributes its whole key.
-            let field = key.as_ref().rsplit('.').next().unwrap_or(key.as_ref());
-            if field != name {
+            // The canonical member key is `Type.member` (a field accessor `Box.v`
+            // OR a sum constructor `Maybe.Some`, S109); its terminal segment
+            // (after the last `.`) is the bare member name. A defensively
+            // bare-keyed member (no `.`) contributes its whole key.
+            let member = key.as_ref().rsplit('.').next().unwrap_or(key.as_ref());
+            if member != name {
                 return;
             }
-            if let CommittedAccessor::Concrete(owner) = committed_accessor_kind(entry)
+            if let Some(owner) = committed_member_owner(entry)
                 && !owners.contains(&owner)
             {
                 owners.push(owner);
@@ -839,6 +843,34 @@ pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
         }
         _ => CommittedAccessor::NotAccessor,
     }
+}
+
+/// The owning type of a canonical dotted MEMBER `Def` — either a synthesised
+/// field accessor (`Box.v`, owner read from its `(Fn [ADT] _)` scheme) OR a sum
+/// constructor (`Maybe.Some`, owner read directly from `DefKind::Constructor
+/// .type_name`) (S109, design §1.2/§3.1). The single "owning type of the member
+/// under this key" recognizer both the dotted resolver (`resolve_dotted_member
+/// _entry`) and the registration collision classifier share, so accessor and
+/// ctor members resolve + poison through ONE shape (Principle 7). Returns `None`
+/// for a non-member entry (a plain user `defn`, an `Ambiguous` sentinel, a
+/// non-`Constructor` `Def`, an `Import`/`Reexport` edge, …).
+pub(crate) fn committed_member_owner<C: cranelisp_types::CodeStore>(
+    entry: &ModuleEntry<C>,
+) -> Option<FQTypeName> {
+    // Field accessor?
+    if let CommittedAccessor::Concrete(owner) = committed_accessor_kind(entry) {
+        return Some(owner);
+    }
+    // Sum constructor? (The product ctor also carries a `type_name` but is keyed
+    // at the type name, never probed as a canonical dotted member — so reading
+    // its `type_name` here is harmless; the resolver's degenerate-key miss and
+    // the registration product gate keep products out of this path.)
+    if let ModuleEntry::Def { kind, .. } = entry
+        && let DefKind::Constructor { type_name, .. } = kind.as_ref()
+    {
+        return Some(type_name.clone());
+    }
+    None
 }
 
 /// The kind of pre-existing binding an accessor synthesis collides with.
@@ -938,8 +970,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .constructors
             .iter()
             .map(|ctor_sym| {
+                // **BR-2 (S109 blast radius, design §4.2).** Post the dotted-ctor
+                // keying change the bare key is an `Import` alias (or `Ambiguous`),
+                // so a raw bare probe no longer lands on the `Constructor` `Def`
+                // and every ctor would default `internal: false` — silently
+                // admitting `IO`'s internal `Bind`/`Pure`/`Effect` into user
+                // exhaustiveness. Probe the CANONICAL `member_key(Type, Ctor)`
+                // first (where a sum ctor's real `Def` now lives), then fall back
+                // to a chain-follow of the bare name (covers a hand-seeded internal
+                // ctor like `Bind` that kept its bare storage key, and the product
+                // dual-facet at the type-name key).
                 let internal = self
-                    .probe_module_entry_owned(&fq_type_name.module, ctor_sym.as_ref())
+                    .probe_module_entry_owned(
+                        &fq_type_name.module,
+                        member_key(&fq_type_name.name, ctor_sym.as_ref()).as_ref(),
+                    )
+                    .or_else(|| {
+                        self.resolve_terminal_entry_and_home(
+                            &fq_type_name.module,
+                            ctor_sym.as_ref(),
+                        )
+                        .map(|(e, _)| e)
+                    })
                     .and_then(|e| match e {
                         ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                             DefKind::Constructor { internal, .. } => Some(*internal),
@@ -957,15 +1009,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .map(|(name, _)| name.as_ref().to_string())
             .collect();
 
-        // Strip optional module prefix from covered constructor names so FQ
-        // pattern names (`macros/SCons`) compare equal to type_def's bare
-        // constructor names (`SCons`). FQ constructor references are valid
-        // under Principle 17 cross-module navigation.
+        // Normalise covered constructor names to their bare terminal segment so
+        // both FQ pattern names (`macros/SCons` — module-qualified, Principle 17)
+        // AND dotted canonical names (`Maybe.Some` — the S109 dotted-ctor form,
+        // design §4.1 / BR-1) compare equal to `type_def`'s bare constructor
+        // names (`SCons`, `Some`). Strip after BOTH separators: the `/` module
+        // prefix first, then the `.` type prefix of the terminal segment. Without
+        // the `.`-strip a TOTAL match written with dotted arms is falsely reported
+        // non-exhaustive.
         let covered: std::collections::HashSet<String> = covered_ctors
             .iter()
             .map(|c| {
                 let s = c.as_ref();
-                s.rsplit('/').next().unwrap_or(s).to_string()
+                let after_slash = s.rsplit('/').next().unwrap_or(s);
+                after_slash.rsplit('.').next().unwrap_or(after_slash).to_string()
             })
             .collect();
 

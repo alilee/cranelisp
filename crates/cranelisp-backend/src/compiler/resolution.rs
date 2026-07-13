@@ -120,7 +120,7 @@ where
 /// perform (it has no knowledge of the alias table). The global fallback (3)
 /// handles names that weren't import-linked (e.g. mangled trait methods, or
 /// primitives in the synthetic `primitives` module referenced without an import).
-fn resolve_driven<C, L, T>(
+pub(crate) fn resolve_driven<C, L, T>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
     current_module: &ModuleFullPath,

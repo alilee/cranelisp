@@ -144,54 +144,25 @@ where
     /// returned `CtorMeta` reconstructs field names (from `param_names`) and
     /// field types (from the `Def.scheme`'s `Type::Fn` params).
     pub(crate) fn lookup_constructor(&self, name: &str) -> Option<(FQTypeName, CtorMeta)> {
-        // Determine which module to search and the bare name within it.
-        let (search_module, bare_name) = if let Some(slash_pos) = name.find('/') {
-            let module_str = &name[..slash_pos];
-            let bare = &name[slash_pos + 1..];
-            (ModuleFullPath::from(module_str), bare)
-        } else {
-            (self.current_module.clone(), name)
-        };
-
-        // 1. Direct lookup in the target module.
-        if let Some(table) = self.symbol_tables.get(&search_module) {
-            if let Some(entry) = table.get(bare_name)
-                && let Some(result) = Self::extract_constructor(entry)
-            {
-                return Some(result);
-            }
-
-            // Follow import chain.
-            if let Some(ModuleEntry::Import { source, .. }) = table.get(bare_name) {
-                let source_mod = source.module.clone();
-                let source_name = source.symbol.clone();
-                drop(table); // Drop guard before getting another
-                if let Some(source_table) = self.symbol_tables.get(&source_mod)
-                    && let Some(entry) = source_table.get(source_name.as_ref())
-                    && let Some(result) = Self::extract_constructor(entry)
-                {
-                    return Some(result);
-                }
-            }
-        }
-
-        // 2. Global fallback: search all modules for an unqualified name.
-        //    This handles cases where constructors from synthetic modules
-        //    (primitives, macros) are used without an explicit import.
-        if !name.contains('/') {
-            for guard in self.symbol_tables.iter() {
-                if *guard.key() == self.current_module {
-                    continue; // Already searched above
-                }
-                if let Some(entry) = guard.get(bare_name)
-                    && let Some(result) = Self::extract_constructor(entry)
-                {
-                    return Some(result);
-                }
-            }
-        }
-
-        None
+        // Collapsed onto the ONE backend resolution driver (S109 W1 commit 1,
+        // `dotted-ctor-canonical-keys.md` §3.1) — its `resolve_chain` walks the
+        // import chain MULTI-hop (up to `MAX_IMPORT_DEPTH`), so an imported bare
+        // ctor whose home aliases the canonical `Type.Ctor` key
+        // (`user.Nil → home.Nil-alias → home."Lst.Nil"`, 2 hops) resolves; the
+        // former one-hop copy here missed it, producing BOTH the `unknown
+        // constructor` prelude cascade AND the silent nullary-ctor-as-closure
+        // wrong-value class (the P7 divergent-duplication defect — two resolvers,
+        // one name). The `read` closure stops at the first entry that extracts as
+        // a constructor; on a non-ctor entry (`Import` alias) the driver follows
+        // the edge. Precedence (current → qualified+alias → global) is
+        // single-sourced in `resolve_driven`.
+        crate::compiler::resolution::resolve_driven(
+            self.symbol_tables,
+            self.module_aliases,
+            &self.current_module,
+            &Symbol::from(name),
+            |_module, _bare, entry| Self::extract_constructor(entry),
+        )
     }
 
     /// Extract constructor metadata from a module entry.

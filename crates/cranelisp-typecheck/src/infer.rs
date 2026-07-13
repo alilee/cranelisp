@@ -159,8 +159,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             symbol: ctor_sym.clone(),
         };
         // Look up the ctor's scheme via its Def in the type's defining module.
+        // **S109 dotted-ctor keying.** `TypeDefInfo.constructors` carries the bare
+        // display name, but a sum ctor's real got-slotted `Def` now lives under
+        // the canonical `member_key(Type, Ctor)` key (`Maybe.Some`) — the bare key
+        // is a poison-able `Import` alias (or `Ambiguous` under contest). Probe the
+        // canonical key first, falling back to the bare key for the product
+        // dual-facet (kept at the type-name key) and for hand-seeded internal ctors
+        // (`Bind`) that retain their bare storage key.
         let scheme = self
-            .probe_module_entry_owned(&type_name.module, ctor_sym.as_ref())
+            .probe_module_entry_owned(
+                &type_name.module,
+                cranelisp_types::member_key(&type_name.name, ctor_sym.as_ref()).as_ref(),
+            )
+            .or_else(|| self.probe_module_entry_owned(&type_name.module, ctor_sym.as_ref()))
             .and_then(|e| match e {
                 cranelisp_types::ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
                 _ => None,
@@ -232,9 +243,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 let alts: Vec<String> = owners
                     .iter()
-                    .map(|t| format!("{}.{}", t.name, name))
+                    .map(|t| cranelisp_types::member_key(&t.name, name).as_ref().to_string())
                     .collect();
-                format!(" — use a qualified accessor ({})", alts.join(" or "))
+                format!(" — use a qualified member ({})", alts.join(" or "))
             };
             return Err(CranelispError::TypeError {
                 message: format!("ambiguous bare name '{name}'{hint}"),
@@ -980,6 +991,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot match on internal type constructor '{name}'"
+                ),
+                location: ErrorLocation::from_span(span),
+            });
+        }
+
+        // A BARE constructor pattern whose name is poisoned (two in-scope types
+        // share it, §8.6.5) is a compile-time error listing the canonical
+        // alternatives — value and pattern agree (spec §6.2.1). The dotted form
+        // `(Maybe.Some x)` disambiguates and is never poisoned; a `/`-qualified
+        // name bypasses local scope. Without this arm the `Ambiguous` sentinel
+        // yields no `Constructor` `Def` below and mis-reports as "unknown
+        // constructor in pattern".
+        if !name.as_ref().contains('.')
+            && !name.as_ref().contains('/')
+            && matches!(
+                self.resolve_entry_in_current_module(state, name.as_ref()),
+                Some(ModuleEntry::Ambiguous { .. })
+            )
+        {
+            let owners = self.reconstruct_accessor_alternatives(state, name.as_ref());
+            let hint = if owners.is_empty() {
+                String::new()
+            } else {
+                let alts: Vec<String> = owners
+                    .iter()
+                    .map(|t| cranelisp_types::member_key(&t.name, name.as_ref()).as_ref().to_string())
+                    .collect();
+                format!(" — use a qualified constructor ({})", alts.join(" or "))
+            };
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "ambiguous constructor '{name}' in pattern{hint}"
                 ),
                 location: ErrorLocation::from_span(span),
             });

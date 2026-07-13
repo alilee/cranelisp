@@ -1212,13 +1212,14 @@ where
             return (Some(scheme), None);
         }
 
-        // Try the dotted `Type.member` field-accessor form (FIXME 0365 / spec
-        // §8.5.2). `Box.v` resolves the field accessor `v` of `Box` directly,
-        // bypassing the (possibly poisoned) bare-name lookup. The accessor is
-        // an ordinary concrete `Def`; typing it is plain value-position scheme
-        // instantiation (the read here returns its `Scheme`; the caller
-        // instantiates with fresh vars).
-        if let Some(scheme) = self.resolve_dotted_field_accessor(state, name) {
+        // Try the dotted `Type.member` form (FIXME 0365 / spec §8.5.2). `Box.v`
+        // resolves the field accessor `v` of `Box`; `Maybe.Some` resolves the
+        // constructor `Some` of `Maybe` (S109) — both directly and
+        // unconditionally, bypassing the (possibly poisoned) bare-name lookup.
+        // The member is an ordinary concrete `Def`; typing it is plain
+        // value-position scheme instantiation (the read here returns its
+        // `Scheme`; the caller instantiates with fresh vars).
+        if let Some(scheme) = self.resolve_dotted_member(state, name) {
             return (Some(scheme), None);
         }
 
@@ -1401,14 +1402,38 @@ where
     /// Returns `None` when `name` is not a `Type.member` form, the head does not
     /// name a type in scope, or `member` is not a field accessor of that type
     /// (the caller then proceeds to the `/`-split / undefined-variable path).
-    fn resolve_dotted_field_accessor(
+    fn resolve_dotted_member(
         &self,
         state: &CheckState,
         name: &str,
     ) -> Option<Scheme> {
+        let entry = self.resolve_dotted_member_entry(state, name)?;
+        self.extract_scheme_from_entry_owned(&entry, 0)
+    }
+
+    /// Resolve a dotted `Type.member` reference to the terminal `ModuleEntry` of
+    /// the member it names — a field accessor (`Box.v`) OR a constructor
+    /// (`Maybe.Some`, S109). This is the ONE member-resolution core both value
+    /// position (`resolve_dotted_member` → scheme, via `lookup`) and pattern
+    /// position (`resolve_constructor_entry`'s dotted arm) consume, so the two
+    /// agree by construction (spec §6.2.1 "mirrors value position exactly";
+    /// `design/typecheck/dotted-ctor-registration.md` §3.1).
+    ///
+    /// The head (`Type`) resolves to its `FQTypeName` in bare scope, and the
+    /// member is probed under the canonical `member_key(Type, member)` in the
+    /// type's HOME module — rooting the probe there (not the current module) is
+    /// what makes the dotted form work cross-module. Accepted only when the
+    /// terminal is a member OWNED BY THAT EXACT type (accessor of `fqtn` or ctor
+    /// of `fqtn`), so a degenerate product form (`Point.Point`, no such key) and
+    /// a non-member head both yield `None`.
+    pub(crate) fn resolve_dotted_member_entry(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<ModuleEntry<C>> {
         // A `Type.member` form: exactly one `.`, both sides non-empty. A
         // module-qualified `m/Type` head carries a `/`, which the `/`-split
-        // path owns — restrict the dotted accessor to a bare type head here.
+        // path owns — restrict the dotted member to a bare type head here.
         let dot = name.find('.')?;
         let type_part = &name[..dot];
         let member_part = &name[dot + 1..];
@@ -1419,24 +1444,20 @@ where
         }
 
         // Resolve the head to its `FQTypeName` (current-module-or-prelude). A
-        // non-type head (a value `Var`, an unknown name) yields `None` — not an
-        // accessor reference.
+        // non-type head (a value `Var`, an unknown name) yields `None` — not a
+        // member reference.
         let resolved = self
             .scope_resolve(state, type_part, Span::default())
             .ok()?;
         let fqtn = type_def_view_of(&resolved.entry)?.name.clone();
 
-        // Probe the CANONICAL key `Type.field` directly (the real Public accessor
-        // `Def`, inverted model §1.6.1) in the type's home module, union-view
-        // (staging then live). Accept it only when `committed_accessor_kind`
-        // classifies it `Concrete(fqtn)` (a synthesised accessor owned by this
-        // exact type), then read its scheme.
-        let qualified_key = format!("{}.{member_part}", fqtn.name);
-        let entry = self.probe_module_entry_owned(&fqtn.module, &qualified_key)?;
-        match crate::adt::committed_accessor_kind(&entry) {
-            crate::adt::CommittedAccessor::Concrete(owner) if owner == fqtn => {
-                self.extract_scheme_from_entry_owned(&entry, 0)
-            }
+        // Probe the CANONICAL key `Type.member` directly (the real Public member
+        // `Def`, inverted model) in the type's home module, union-view (staging
+        // then live). Accept it only when it is a member owned by this exact type.
+        let key = cranelisp_types::member_key(&fqtn.name, member_part);
+        let entry = self.probe_module_entry_owned(&fqtn.module, key.as_ref())?;
+        match crate::adt::committed_member_owner(&entry) {
+            Some(owner) if owner == fqtn => Some(entry),
             _ => None,
         }
     }
@@ -1570,6 +1591,10 @@ where
     /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
         // Terminal-entry projection over the single scope resolve (S108 Wave-G).
+        // The same-cluster same-module member-alias hop (bare ctor/field-accessor
+        // → canonical `Type.member`) is handled at the resolution PRIMITIVE
+        // (`cranelisp_types::resolve::chain_follow_committed`, staging-view hop,
+        // W1 commit 1 / `dotted-ctor-canonical-keys.md` §3.5), not here.
         self.scope_resolve(state, name, Span::default()).ok().map(|resolved| resolved.entry)
     }
 
@@ -1595,6 +1620,16 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
+        // **Dotted `Type.Ctor` (S109, design §3.3).** A dotted head (`.` and no
+        // `/`) is a canonical constructor reference — resolve it through the SAME
+        // member core the value seam uses, so value and pattern agree by
+        // construction. `(Maybe.Some x)` and dotted nullary `Maybe.Nil` resolve
+        // to the canonical ctor `Def` for both same-module and imported types
+        // (the current-module literal-key hit worked only same-module). The caller
+        // filters the returned entry to `DefKind::Constructor`.
+        if name.contains('.') && !name.contains('/') {
+            return self.resolve_dotted_member_entry(state, name);
+        }
         if let Some(slash_pos) = name.find('/') {
             let module_str = &name[..slash_pos];
             let bare_name = &name[slash_pos + 1..];

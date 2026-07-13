@@ -530,7 +530,15 @@ where
     let Some(table) = symbol_tables.get(&fqtn.module) else {
         return Vec::new();
     };
-    let scheme_ty = match table.get(ctor_name) {
+    // Probe the canonical `member_key(Type, Ctor)` key FIRST (S109 W1 — a sum
+    // ctor's real `Def` lives under `Maybe.Some`, the bare name being a poison-able
+    // `Import` alias that carries no `scheme`), falling back to the bare key for
+    // the product dual-facet (kept at the type-name key) and for pre-flip bare
+    // keying (commit 1 — behaviour-invariant, the canonical key does not yet
+    // exist so the bare fallback serves). Without the canonical probe a data ctor
+    // renders with its fields dropped (`(Cons 2 …)` → `Lst.Cons`).
+    let canonical = cranelisp_types::member_key(&fqtn.name, ctor_name);
+    let scheme_ty = match table.get(canonical.as_ref()).or_else(|| table.get(ctor_name)) {
         // Every constructor — sum, enum, and single-ctor product — is now a
         // got-slotted `Def`; field types come off its `scheme`.
         Some(ModuleEntry::Def { scheme, .. }) => Some(&scheme.ty),

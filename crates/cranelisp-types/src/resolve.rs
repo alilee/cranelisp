@@ -448,8 +448,9 @@ where
         .cloned()
         .ok_or_else(|| not_found(name, current_module, span))?;
 
-    let (entry, home) = chain_follow_committed(symbol_tables, head, current_module.clone())
-        .ok_or_else(|| not_found(name, current_module, span))?;
+    let (entry, home) =
+        chain_follow_committed(symbol_tables, first_hop, current_module, head, current_module.clone())
+            .ok_or_else(|| not_found(name, current_module, span))?;
 
     visibility_check(&entry, &home, current_module, name, span)?;
 
@@ -704,10 +705,26 @@ fn split_qualified(name: &str) -> Option<(ModuleFullPath, String)> {
         .map(|(m, s)| (ModuleFullPath::from(m), s.to_string()))
 }
 
-/// Chain-follow `head` to its canonical home reading committed tables. The
-/// first hop already came from the caller's view; this walks the rest.
+/// Chain-follow `head` to its canonical home. The first hop already came from
+/// the caller's view; this walks the rest.
+///
+/// **Same-module alias hop through the caller's VIEW (S109, W1 commit 1;
+/// `design/arch/dotted-ctor-canonical-keys.md` §3.5/§6).** The S76 premise that
+/// "beyond the first hop the walk always lands in other, already-committed
+/// modules" is FALSE for a SAME-MODULE member alias: a bare constructor /
+/// field-accessor name is an `Import` edge onto its canonical `Type.member`
+/// `Def` in the SAME module, and within one typecheck cluster that canonical
+/// `Def` lives in the caller's STAGING, not the committed live table. When an
+/// `Import` edge's `source.module == current_module`, take the hop through the
+/// caller's first-hop VIEW (staging∪live) rather than the live-only committed
+/// primitive — otherwise a same-cluster bare→canonical alias misses (the
+/// `undefined variable: v` field-accessor same-cluster `--run` defect, AN-5,
+/// and the S109 ctor alias). Cross-module hops stay on the committed primitive
+/// (dependencies are always committed).
 fn chain_follow_committed<C, L>(
     symbol_tables: &SymbolTables<C, L>,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
     head: ModuleEntry<C>,
     home: ModuleFullPath,
 ) -> Option<(ModuleEntry<C>, ModuleFullPath)>
@@ -716,6 +733,13 @@ where
     L: LinkerStore,
 {
     match &head {
+        ModuleEntry::Import { source, .. } if source.module == *current_module => {
+            // Same-module member alias — follow through the caller's view so a
+            // same-cluster staged canonical `Def` is visible. The alias and its
+            // canonical target are both in `current_module`, so `home` is unchanged.
+            let next = first_hop.lookup(&source.symbol)?.clone();
+            chain_follow_committed(symbol_tables, first_hop, current_module, next, home)
+        }
         ModuleEntry::Import { source, .. } => {
             // Delegate the cross-module remainder to the existing committed
             // chain-follow primitive — single source of truth for the walk.

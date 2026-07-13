@@ -455,6 +455,26 @@ fn collect_member_glob(
                     visibility,
                 },
             ));
+            // S109 W1 (dotted-ctor-canonical-keys.md §3.3): under the canonical
+            // keying a matched constructor `Def` is keyed `Type.Ctor` (`Lst.Cons`);
+            // a member-glob importer wants the BARE ctor reference too, so also
+            // install a bare-alias edge (`Cons → source/Lst.Cons`) alongside the
+            // canonical import. On pre-flip bare keying the name has no `.`, so
+            // this is inert (commit 1 behaviour-invariant). A cross-type bare
+            // collision at the importer is handled by `insert_detecting_ambiguity`
+            // (§8.6.5), unchanged.
+            if let Some((_, bare)) = name.as_ref().rsplit_once('.') {
+                result.push((
+                    Symbol::from(bare),
+                    ModuleEntry::Import {
+                        source: FQSymbol {
+                            module: module_path.clone(),
+                            symbol: name.clone(),
+                        },
+                        visibility,
+                    },
+                ));
+            }
         }
     }
     result
