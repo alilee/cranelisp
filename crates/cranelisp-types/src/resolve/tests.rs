@@ -495,6 +495,60 @@ fn member_key_is_local_not_module_qualified() {
     );
 }
 
+#[test]
+fn same_module_alias_cycle_is_a_miss_not_a_stack_overflow() {
+    // S109 review MINOR: the same-module alias arm of `chain_follow_committed`
+    // recurses through the caller's view; a degenerate alias CYCLE (self-alias,
+    // or a→b→a within one module — constructible by a registration bug) must
+    // bottom out at CHAIN_FOLLOW_DEPTH_LIMIT and read as a not-found miss,
+    // never recurse unboundedly (the backend twin carries an import-depth cap).
+    let tables = tables_with(&[
+        // Self-alias: user.loop → user.loop (same module).
+        ("user", "loop", import("user", "loop", Visibility::Public)),
+        // Two-step same-module cycle: a → b → a.
+        ("user", "a", import("user", "b", Visibility::Public)),
+        ("user", "b", import("user", "a", Visibility::Public)),
+    ]);
+    let aliases: ModuleAliases = dashmap::DashMap::new();
+    let user = ModuleFullPath::from("user");
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &user, None);
+    assert!(
+        scope.resolve("loop", Span::SYNTHETIC).is_err(),
+        "self-alias cycle reads as a miss"
+    );
+    assert!(
+        scope.resolve("a", Span::SYNTHETIC).is_err(),
+        "two-step same-module alias cycle reads as a miss"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bare_member_name — the projection inverse of `member_key` (one grammar).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_member_name_projects_terminal_segment() {
+    // Storage keys and written forms all project to the bare member name.
+    assert_eq!(bare_member_name("Maybe.Some"), "Some");
+    assert_eq!(bare_member_name("macros/SCons"), "SCons");
+    assert_eq!(bare_member_name("m/Maybe.Some"), "Some");
+    assert_eq!(bare_member_name("Some"), "Some");
+}
+
+#[test]
+fn bare_member_name_leaves_punctuation_operators_literal() {
+    // Principle 16 — mirror `split_qualified`/`canonical_symbol`'s non-empty
+    // guards: bare punctuation operators and empty-part shapes are literal.
+    assert_eq!(bare_member_name("/"), "/");
+    assert_eq!(bare_member_name("//"), "//");
+    assert_eq!(bare_member_name("."), ".");
+    assert_eq!(bare_member_name("foo."), "foo.");
+    assert_eq!(bare_member_name(".foo"), ".foo");
+    assert_eq!(bare_member_name("->"), "->");
+}
+
 // ---------------------------------------------------------------------------
 // reject_def_over_binding — the §8.6.4 seam derived from the SAME scope walk.
 // Provenance matrix: {Definition, Import, Export, Prelude} × {allowed, rejected}.

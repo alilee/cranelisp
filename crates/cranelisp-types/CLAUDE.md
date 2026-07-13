@@ -101,7 +101,17 @@ Fields that LOOK optional but are contractually required downstream:
   for the canonical dotted `Type.member` key (§8.5.2 inverted member model:
   field accessors `Box.v`; ctor keys `Maybe.Some` from S109). Never
   hand-roll `format!("{}.{}", ..)` for a member key — per-site copies are
-  how the key grammar drifts.
+  how the key grammar drifts. Its projection INVERSE is
+  `bare_member_name(&str) -> &str` (`Maybe.Some`→`Some`, `m/Type.Ctor`→`Ctor`;
+  Principle-16 guards keep `/`, `.`, `foo.` literal) — the ONE terminal-segment
+  grammar for comparing written forms / storage keys against bare display
+  names (typecheck exhaustiveness normaliser, backend sparkability exclusion).
+  Never hand-roll the `rsplit` pair either — the two sides of such a
+  comparison drifting was the S109 I-1 finding.
+- `chain_follow_committed`'s same-module alias arm carries a
+  `CHAIN_FOLLOW_DEPTH_LIMIT` cap: a degenerate same-module alias cycle reads
+  as a not-found miss, never a stack overflow (pin:
+  `resolve/tests.rs::same_module_alias_cycle_is_a_miss_not_a_stack_overflow`).
 - The bare primitive's generic miss is `TypeNotFound`-shaped regardless of
   kind (`not_found`, `resolve.rs:803`) — never infer entry kind from the
   error variant.

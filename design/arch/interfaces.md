@@ -1725,6 +1725,24 @@ shape change ⇒ no `CACHE_SCHEMA_VERSION` bump.
   because the dotted member key is the local-key half of the reference
   grammar the resolver splits (`/` = module separator, `.` = member
   separator).
+- **`pub fn bare_member_name(&str) -> &str` (+1 baseline line, additive; S109
+  W1 review follow-up).** The projection INVERSE of `member_key` — the ONE
+  terminal-segment grammar (`Maybe.Some`→`Some`, `macros/SCons`→`SCons`,
+  `m/Type.Ctor`→`Ctor`; Principle-16 non-empty guards keep punctuation
+  operators and empty-part shapes literal) for every site that compares a
+  written form or storage key against a bare display name: typecheck's
+  exhaustiveness covered-set normaliser (the S109 BR-1 `.`-strip) and backend
+  sparkability's ctor-exclusion comparison (the S109 I-1 finding — the two
+  sides of that comparison each hand-rolled half the grammar and drifted:
+  `collect_module_constructors` yields storage keys, `is_worth_sparking`
+  compares source-written callee names). Pins: `resolve/tests.rs::
+  bare_member_name_*`.
+- **Same-module alias-chain depth cap (S109 W1 review MINOR, zero API
+  delta).** `chain_follow_committed`'s same-module VIEW hop (the S109
+  staging-aware arm) now bottoms out at `CHAIN_FOLLOW_DEPTH_LIMIT`, mirroring
+  `resolve_terminal_entry_and_home`'s cap — a degenerate same-module alias
+  cycle reads as a not-found miss, never a stack overflow. Pin:
+  `resolve/tests.rs::same_module_alias_cycle_is_a_miss_not_a_stack_overflow`.
 
 ---
 

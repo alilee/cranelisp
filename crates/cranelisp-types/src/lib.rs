@@ -332,7 +332,7 @@ pub use pipeline::{
 pub use view::View;
 pub use resolve::{
     BindingProvenance, ResolutionScope, Resolved, ResolveError, check_binding_addition,
-    member_key, reject_def_over_binding, substitute_module_alias,
+    bare_member_name, member_key, reject_def_over_binding, substitute_module_alias,
 };
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{

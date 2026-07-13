@@ -63,7 +63,7 @@
 
 use crate::error::{CranelispError, ErrorLocation};
 use crate::module::{
-    CodeStore, LinkerStore, ModuleAliases, ModuleEntry, SymbolTables,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, LinkerStore, ModuleAliases, ModuleEntry, SymbolTables,
     resolve_terminal_entry_and_home,
 };
 use crate::newtype::{FQSymbol, ModuleFullPath, Symbol, TraitName, TypeName};
@@ -732,17 +732,44 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
+    chain_follow_committed_depth(symbol_tables, first_hop, current_module, head, home, 0)
+}
+
+/// [`chain_follow_committed`]'s recursive body with the same-module-arm depth
+/// counter. A degenerate same-module alias CYCLE (self-alias, or a→b→a — only
+/// constructible by a registration bug, but a stack overflow is the wrong
+/// failure for it) bottoms out at [`CHAIN_FOLLOW_DEPTH_LIMIT`] and reads as a
+/// not-found miss, mirroring the committed primitive's own depth cap
+/// (`resolve_terminal_entry_and_home`).
+fn chain_follow_committed_depth<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    head: ModuleEntry<C>,
+    home: ModuleFullPath,
+    depth: usize,
+) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    if depth > CHAIN_FOLLOW_DEPTH_LIMIT {
+        return None;
+    }
     match &head {
         ModuleEntry::Import { source, .. } if source.module == *current_module => {
             // Same-module member alias — follow through the caller's view so a
             // same-cluster staged canonical `Def` is visible. The alias and its
             // canonical target are both in `current_module`, so `home` is unchanged.
             let next = first_hop.lookup(&source.symbol)?.clone();
-            chain_follow_committed(symbol_tables, first_hop, current_module, next, home)
+            chain_follow_committed_depth(
+                symbol_tables, first_hop, current_module, next, home, depth + 1,
+            )
         }
         ModuleEntry::Import { source, .. } => {
             // Delegate the cross-module remainder to the existing committed
-            // chain-follow primitive — single source of truth for the walk.
+            // chain-follow primitive — single source of truth for the walk
+            // (it carries its own depth cap).
             resolve_terminal_entry_and_home(symbol_tables, &source.module, source.symbol.as_ref())
         }
         _ => Some((head, home)),
@@ -848,6 +875,36 @@ fn in_subtree(accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
 /// and `TypeName` (a ctor name) deref in.
 pub fn member_key(type_name: &TypeName, member: &str) -> Symbol {
     Symbol::from(format!("{}.{}", type_name, member).as_str())
+}
+
+/// The projection **inverse of [`member_key`]** — the bare member name of a
+/// (possibly `/`-qualified, possibly `.`-dotted) constructor / member
+/// reference or storage key: `Maybe.Some` → `Some`, `macros/SCons` → `SCons`,
+/// `m/Maybe.Some` → `Some`, bare `Some` → `Some`.
+///
+/// The ONE home for the terminal-segment grammar (Principle 7) shared by
+/// every site that compares a *written form or storage key* against a *bare
+/// display name* — typecheck's exhaustiveness covered-set normaliser
+/// (`adt.rs`, the S109 BR-1 `.`-strip) and backend sparkability's
+/// ctor-exclusion comparison (`sparkability.rs` vs
+/// `collect_module_constructors`'s storage keys, the S109 I-1 finding). A
+/// per-site `rsplit` copy is how the two sides of that comparison drift.
+///
+/// Mirrors `split_qualified`/`canonical_symbol`'s Principle-16 guards: a
+/// segment is stripped only when BOTH sides of its separator are non-empty,
+/// so bare punctuation operators (`/`, `//`, `.`, `->`) and empty-part shapes
+/// (`foo.`, `.foo`) stay literal.
+pub fn bare_member_name(name: &str) -> &str {
+    let after_slash = name
+        .rsplit_once('/')
+        .filter(|(m, s)| !m.is_empty() && !s.is_empty())
+        .map(|(_, s)| s)
+        .unwrap_or(name);
+    after_slash
+        .rsplit_once('.')
+        .filter(|(t, m)| !t.is_empty() && !m.is_empty())
+        .map(|(_, m)| m)
+        .unwrap_or(after_slash)
 }
 
 /// The canonical local symbol for a (possibly qualified) name — the part
