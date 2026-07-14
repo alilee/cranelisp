@@ -2271,9 +2271,26 @@ where
         if !matches!(terminal, ModuleEntry::TraitDecl { .. }) {
             return false;
         }
-        // Scan the trait's home only (Principle 17 shape 3). Staging-aware.
+        self.has_impl_in_home(&trait_home, trait_name, impl_type)
+    }
+
+    /// Does the trait's ALREADY-RESOLVED home module carry an impl of
+    /// `trait_name` for `impl_type`? The home-rooted core of
+    /// [`Self::has_impl_with_state`]: a caller that already holds the trait's
+    /// defining module — e.g. `infer_annotate`'s value-position satisfaction
+    /// check, which resolves a QUALIFIED constraint's module directly (mirroring
+    /// `resolve_bound_param`) — checks the impl here without a second bare-name
+    /// resolution. Impls are written to the trait's defining module (Decision
+    /// 45), so scanning the home only is complete (Principle 17 shape 3).
+    /// Staging-aware.
+    pub(crate) fn has_impl_in_home(
+        &self,
+        trait_home: &ModuleFullPath,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> bool {
         let mut found = false;
-        self.for_each_in_module(&trait_home, |_key, entry| {
+        self.for_each_in_module(trait_home, |_key, entry| {
             if found {
                 return;
             }
@@ -2443,14 +2460,16 @@ where
     /// is REUSED (not re-minted), so it is absent from the returned list; only
     /// genuinely fresh names appear.
     ///
-    /// **Rigidity is the caller's decision, keyed on the returned ids.** A
-    /// `defn`/`fn` **parameter** or a **body/value annotation** marks its fresh
-    /// ids RIGID (`CheckState::rigid_vars`); a **standalone/nested `fn`
-    /// parameter** leaves its fresh ids flexible (a lambda is not a
-    /// generalization boundary in rank-1 — it is quantified at the enclosing
-    /// definition, so its own fresh vars stay flexible and are instantiated at
-    /// application). Co-referring names carry whatever rigidity they were minted
-    /// with, automatically (they are not re-minted).
+    /// **A minted bare var is FLEXIBLE — it carries only a display name (spec
+    /// §3.3.1 [S109 W6.3]).** Rigidity is NOT a property of the written var; it
+    /// lives on the CONSTRAINT path (`check_defn_body` seeds
+    /// `CheckState::rigid_vars` from asserted-constraint param vars only). A
+    /// `defn`/`fn` parameter, a body/value annotation, and a nested-`fn`
+    /// parameter all mint flexible ids — the body MAY pin one to a concrete type
+    /// (never an error, §3.3.1 MUST (a)). The returned id list lets the caller
+    /// track which names are genuinely NEW (e.g. a nested `fn`'s own written
+    /// param, for the §3.10 poly-as-value check); a co-referring name is REUSED,
+    /// not re-minted, so it is absent from the list.
     pub(crate) fn resolve_annotation_type_expr_in_module(
         &self,
         texpr: &cranelisp_types::TypeExpr,

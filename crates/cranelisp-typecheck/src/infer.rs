@@ -494,17 +494,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Type, CranelispError> {
         self.push_scope(state);
 
-        // SHARE the enclosing definition's written-var scope (spec §3.3 SCOPE-5):
-        // a nested `fn`'s `:a` CO-REFERS to the enclosing rigid `a` (FV-20),
-        // never a fresh shadow (the 0588 seam). A standalone lambda (no enclosing
-        // scope) gets a fresh one via `unwrap_or_default`. A lambda's OWN fresh
-        // param vars are FLEXIBLE — a lambda is NOT a generalization boundary in
-        // rank-1; its written var is quantified at the enclosing definition and
-        // instantiated at application, so leaving it flexible is the faithful
-        // realization (FV-15: `((fn [:a x] x) 3)` → 3). Only a name that
-        // co-refers to an already-rigid enclosing var stays rigid (it is reused,
-        // not re-minted). So the minted ids from THIS call are deliberately NOT
-        // added to `state.rigid_vars`.
+        // SHARE the enclosing definition's written-var scope (spec §3.3.1
+        // co-reference [S109 W6.3]): a nested `fn`'s `:a` CO-REFERS to the
+        // enclosing `a`, never a fresh shadow (the 0588 seam). A standalone
+        // lambda (no enclosing scope) gets a fresh one via `unwrap_or_default`. A
+        // lambda's OWN fresh param vars are FLEXIBLE — a lambda is NOT a
+        // generalization boundary in rank-1; its written var is quantified at the
+        // enclosing definition and instantiated at application, so leaving it
+        // flexible is the faithful realization (`((fn [:a x] x) 3)` → 3). No
+        // bare-path id is ever rigid: rigidity lives on the constraint path, so
+        // the minted ids from THIS call are never added to `state.rigid_vars`.
+        // They ARE recorded in `lambda_written_vars` for the §3.10 poly-as-value
+        // check (below).
         let mut var_map = state.written_var_scope.take().unwrap_or_default();
         let mut param_types = Vec::new();
         for (param_name, annotation) in params.iter() {
@@ -1296,34 +1297,70 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // so a residual var is left for the §3.11 gate.
             Err(type_err) => {
                 state.written_var_scope = Some(var_map);
-                if let Some(tref) = crate::program::single_trait_bound_from_annotation(annotation)
-                    && self.resolve_trait(state, tref.name.as_ref(), span).is_ok()
-                {
-                    let expr_ty = self.infer_expr(state, expr)?;
-                    let resolved = self.apply_subst(state, &expr_ty);
-                    // Satisfaction check: when the expr's type is CONCRETE it MUST
-                    // implement the trait (row 12 pos accepts `:Num2 5`; the neg
-                    // rejects `:Num2 "s"`). When it is still a type var (an
-                    // unresolved return-type dispatch, `:Zeroable (zed)`), the
-                    // constraint does NOT resolve it — leave the residual var for
-                    // the §3.11 ambiguity gate (row 17).
-                    if let Some(impl_ty) = crate::traits::concrete_type_name(&resolved) {
+                if let Some(tref) = crate::program::single_trait_bound_from_annotation(annotation) {
+                    // Resolve the trait's HOME, honouring a qualified module ref
+                    // (`:fmt/Display`) DIRECTLY — mirroring `resolve_bound_param`,
+                    // so a value-position constraint and a parameter constraint
+                    // (the two entrances to the same constraint shape) resolve
+                    // identically (0597 secondary; the §L consistency lens). A
+                    // bare ref resolves via current-module-or-prelude.
+                    let trait_home = match &tref.module {
+                        Some(m) => Some(m.clone()),
+                        None => self.resolve_trait(state, tref.name.as_ref(), span).ok(),
+                    };
+                    if let Some(home) = trait_home {
+                        let expr_ty = self.infer_expr(state, expr)?;
+                        let resolved = self.apply_subst(state, &expr_ty);
                         let tn = cranelisp_types::TraitName::from(tref.name.as_ref());
-                        if !self.has_impl_with_state(state, &tn, &impl_ty) {
-                            return Err(CranelispError::TypeError {
-                                message: format!(
-                                    "type {impl_ty} does not implement trait {} — a \
-                                     value-position constraint is a satisfaction check \
-                                     (spec §3.3.3)",
-                                    tref.name
-                                ),
-                                location: ErrorLocation::from_span(span),
-                            });
+                        // Satisfaction check (§3.3.3 MUST (c), "accepted IFF the
+                        // expression's type implements the trait"). Three cases on
+                        // the resolved expr type:
+                        //
+                        //  - NOMINAL concrete (`concrete_type_name` = Some): it
+                        //    MUST implement the trait (row 12 pos accepts
+                        //    `:Num2 5`; the neg rejects `:Num2 "s"`).
+                        //  - CONCRETE but NON-NOMINAL (`Fn`, …): impls are keyed
+                        //    by TYPE NAME, so a function type implements NOTHING —
+                        //    it MUST be rejected, not silently accepted. `None`
+                        //    from `concrete_type_name` on a concrete type was the
+                        //    0596-sibling false accept (`(defn g1 [] :NumT
+                        //    (fn [:Int y] y))`), FIXME 0597.
+                        //  - still a `Type::Var` (unresolved return-type dispatch,
+                        //    `:Zeroable (zed)`): the constraint does NOT resolve it
+                        //    — leave the residual var for the §3.11 ambiguity gate
+                        //    (row 17).
+                        match crate::traits::concrete_type_name(&resolved) {
+                            Some(impl_ty) => {
+                                if !self.has_impl_in_home(&home, &tn, &impl_ty) {
+                                    return Err(CranelispError::TypeError {
+                                        message: format!(
+                                            "type {impl_ty} does not implement trait {} \
+                                             — a value-position constraint is a \
+                                             satisfaction check (spec §3.3.3)",
+                                            tref.name
+                                        ),
+                                        location: ErrorLocation::from_span(span),
+                                    });
+                                }
+                            }
+                            None if resolved.is_concrete() => {
+                                return Err(CranelispError::TypeError {
+                                    message: format!(
+                                        "type {resolved} does not implement trait {} — a \
+                                         value-position constraint is a satisfaction \
+                                         check (spec §3.3.3); a function type implements \
+                                         no trait",
+                                        tref.name
+                                    ),
+                                    location: ErrorLocation::from_span(span),
+                                });
+                            }
+                            None => {}
                         }
+                        // The type is UNCHANGED (satisfaction check only).
+                        self.record_expr_type(state, span, resolved.clone());
+                        return Ok(resolved);
                     }
-                    // The type is UNCHANGED (satisfaction check only).
-                    self.record_expr_type(state, span, resolved.clone());
-                    return Ok(resolved);
                 }
                 Err(type_err.into())
             }

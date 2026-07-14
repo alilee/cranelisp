@@ -1495,6 +1495,96 @@
             .expect("a polymorphic `fn` APPLIED in place MUST be accepted (row 9)");
     }
 
+    // spec: 03-types §3.3.4 / §3.10 [S109 W6.3] (U7 / B-1, FIXME 0596) — the
+    // poly-as-value discriminator at the {applied-in-place × GENERIC-arg} cell.
+    // The old "still a `Var` after body inference" reading over-fired: it flagged
+    // a nested-`fn` written var that had MERGED into the enclosing definition's
+    // own quantified param var (also a `Var`), wrongly rejecting a lambda applied
+    // in place at a generic argument. The correct discriminator is
+    // enclosing-param-var MEMBERSHIP: a var that resolves INTO the enclosing
+    // params is caller-instantiable (accept, §3.10); a DISTINCT free var escaped
+    // as a value (reject, row 10). This cell pins the applied-in-place-at-generic
+    // accept AND the held-as-value reject at the seam — a revert to the "still a
+    // Var" reading fails the accept leg.
+    #[test]
+    fn u7_applied_in_place_at_generic_arg_accepted_held_as_value_rejected() {
+        // B-1 accept — `(defn f1 [x] ((fn [:b y] y) x))`: the inner `:b` merges
+        // into `x`'s (enclosing, generic) param var, so no value stays
+        // polymorphic. Scheme MUST be `∀a. (Fn [a] a)` — ONE quantified var.
+        let mut tc = tc_with_prims();
+        let sexps =
+            cranelisp_frontend::parse("(defn f1 [x] ((fn [:b y] y) x))").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).expect(
+            "a lambda APPLIED IN PLACE at a generic arg is instantiation-at-use \
+             (§3.10) — MUST be accepted (B-1, the 0596 over-fire)",
+        );
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("f1") else {
+            panic!("f1 not found");
+        };
+        assert_eq!(
+            scheme.type_vars.len(),
+            1,
+            "f1 MUST generalize to ONE quantified var (∀a. (Fn [a] a)); got {:?}",
+            scheme
+        );
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    params[0], **ret,
+                    "f1 param and return MUST be the SAME var (identity); got {:?}",
+                    scheme.ty
+                );
+            }
+            _ => panic!("f1 MUST be a Fn type; got {:?}", scheme.ty),
+        }
+
+        // Held-as-value reject — `(defn mk3 [] (let [g (fn [:b y] y)] g))`: `g`
+        // is stored then RETURNED, so `:b` stays a DISTINCT free var (mk3 has NO
+        // enclosing params) → poly-as-value, rejected (row 10 sibling).
+        let mut tc2 = tc_with_prims();
+        let sexps2 = cranelisp_frontend::parse("(defn mk3 [] (let [g (fn [:b y] y)] g))")
+            .expect("parse");
+        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
+        let err = tc2
+            .check_program_self(&program2)
+            .expect_err("a let-stored-and-RETURNED polymorphic `fn` MUST be rejected (row 10)");
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("codegen") && !msg.contains("__expr"),
+            "the poly-as-value rejection MUST be a clean type error, never a codegen \
+             frame; got: {msg}"
+        );
+    }
+
+    // spec: 03-types §3.3.3 [S109 W6.3] (U4 / R12 neg, FIXME 0597) — the
+    // value-position satisfaction check MUST reject a CONCRETE but NON-NOMINAL
+    // expr type. `concrete_type_name` returns `None` for a `Fn` type; treating
+    // `None` as "skip the check" silently ACCEPTED `(defn g1 [] :NumT (fn [:Int
+    // y] y))` — a function type implements NO trait (impls are keyed by type
+    // name), so MUST (c)'s "iff" requires rejection. The `Type::Var` skip
+    // (row 17) is correct; the concrete-non-nominal skip was the false accept.
+    #[test]
+    fn u4_value_position_constraint_rejects_non_nominal_fn_type() {
+        const NUMT: &str = "(deftrait NumT (nadd [a b] self))\n\
+             (impl NumT Int (defn nadd [a b] (add-i64 a b)))\n";
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(&format!("{NUMT}(defn g1 [] :NumT (fn [:Int y] y))"))
+            .expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        let err = tc.check_program_self(&program).expect_err(
+            "a value-position `:NumT` on a `(Fn [Int] Int)` MUST be rejected — a \
+             function type implements no trait (§3.3.3 MUST (c), FIXME 0597)",
+        );
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("unknown type"),
+            "the failed satisfaction check MUST name the trait, never `unknown type`; got: {msg}"
+        );
+    }
+
     // spec: 03-types §3.3.3 [S109 W6.3] (U4) — a value-position CONSTRAINT is a
     // pure SATISFACTION CHECK (`infer_annotate` trait arm): accepted iff the
     // expr's concrete type implements the trait, and it changes NOTHING. R12 pos:

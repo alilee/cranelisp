@@ -527,13 +527,16 @@ pub(crate) struct ModuleCheckAccumulator {
     /// Needed by pass 2 to check bodies against registered signatures.
     pub(crate) defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
     /// **Written-var lexical scope from Pass-1 signature registration** (spec
-    /// §3.3 [S109]), keyed by the same defn name (multi-arity clauses under
-    /// their `{name}__v{i}` internal name). Each maps the written type-var names
-    /// in the parameter annotations (`:a`, `:(Box a)`) to the ONE rigid `TypeId`
-    /// they minted. Pass-2 `check_defn_body` installs it as the definition's
-    /// `written_var_scope` + seeds `rigid_vars`, so a body/nested-`fn`
-    /// occurrence of the same name co-refers to the same rigid var (the 0588
-    /// cross-pass threading; empty for a signature with no written type vars).
+    /// §3.3.1 [S109 W6.3]), keyed by the same defn name (multi-arity clauses
+    /// under their `{name}__v{i}` internal name). Each maps the written type-var
+    /// names in the parameter annotations (`:a`, `:(Box a)`) to the ONE flexible
+    /// `TypeId` they minted. Pass-2 `check_defn_body` installs it as the
+    /// definition's `written_var_scope`, so a body/nested-`fn` occurrence of the
+    /// same name CO-REFERS to the same var (the 0588 cross-pass threading; empty
+    /// for a signature with no written type vars). A bare written var carries
+    /// only a name — rigidity lives on the CONSTRAINT path (`check_defn_body`
+    /// seeds `rigid_vars` from asserted-constraint param vars, NOT from this
+    /// map).
     pub(crate) defn_var_scopes: HashMap<Symbol, HashMap<Symbol, TypeId>>,
     /// **Redefinition slot carry-forward (S83, FIXME 0356/0357, Principle 20).**
     /// With deferred GOT-slot allocation, Pass-1 `register_defn_signature`
@@ -3133,19 +3136,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // ONE var scope for the whole signature (spec §3.3 [S109]): a free
-        // lowercase type var the author writes in a param annotation mints a
-        // fresh RIGID var, and a repeated name (`[:a x :a y]`) resolves to the
-        // SAME var so x and y unify. This map is built fresh PER CALL —
-        // multi-arity clauses each go through a separate `register_defn_signature`
-        // (via their own `{name}__vN` internal defn, see
-        // `check_form_register_multi_sig`), so `:a` in one clause is independent
-        // of `:a` in another (fresh scope per clause). It is RETURNED to the
-        // caller and threaded (via `accumulator.defn_var_scopes`) into Pass-2
-        // body checking so a body/nested-`fn` `:a` co-refers to the param's
-        // rigid var (SCOPE-5 lexical co-reference; 0588). Every entry here is a
-        // written PARAMETER var and therefore RIGID — `check_defn_body` seeds
-        // `rigid_vars` from `var_map.values()`.
+        // ONE var scope for the whole signature (spec §3.3.1 [S109 W6.3]): a
+        // free lowercase type var the author writes in a param annotation mints a
+        // fresh FLEXIBLE var carrying that display name, and a repeated name
+        // (`[:a x :a y]`) resolves to the SAME var so x and y unify. This map is
+        // built fresh PER CALL — multi-arity clauses each go through a separate
+        // `register_defn_signature` (via their own `{name}__vN` internal defn,
+        // see `check_form_register_multi_sig`), so `:a` in one clause is
+        // independent of `:a` in another (fresh scope per clause). It is RETURNED
+        // to the caller and threaded (via `accumulator.defn_var_scopes`) into
+        // Pass-2 body checking so a body/nested-`fn` `:a` CO-REFERS to the param's
+        // var (§3.3.1 co-reference; 0588). A bare written var carries ONLY a name
+        // — it is NOT rigid; rigidity lives on the constraint path, and
+        // `check_defn_body` seeds `rigid_vars` from asserted-constraint param
+        // vars, NOT from this map's values.
         let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let mut param_types = Vec::new();
         for (_name, ann) in defn.params().iter() {
@@ -3166,10 +3170,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     match self.resolve_annotation_type_expr_in_module(
                         ann, &mut var_map, &state.current_module, defn.span,
                     ) {
-                        // Fresh param-annotation vars are RIGID; the shared scope
-                        // (`var_map`) is threaded to Pass-2 where `check_defn_body`
-                        // seeds `rigid_vars` from it. `_minted` is redundant with
-                        // `var_map.values()` for the param case.
+                        // A bare param-annotation var is FLEXIBLE and carries only
+                        // its display name (§3.3.1 [S109 W6.3]); the shared scope
+                        // (`var_map`) threads it to Pass-2 for CO-REFERENCE, not
+                        // rigidity — `check_defn_body` seeds `rigid_vars` from
+                        // asserted-constraint param vars, not from `var_map`. The
+                        // returned `_minted` ids are unused here.
                         Ok((ty, _minted)) => ty,
                         // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE
                         // annotation `:Eq a` is ambiguous between a concrete-type
@@ -3286,14 +3292,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Check a single function definition body.
     ///
     /// `written_var_scope` is the definition's Pass-1 written-type-var scope
-    /// (name → rigid `TypeId`, spec §3.3 [S109]); it is installed as the active
-    /// `state.written_var_scope` and seeds `state.rigid_vars` for the duration
-    /// of this body so that (a) a body/nested-`fn` `:a` co-refers to the param's
-    /// rigid var (SCOPE-5), and (b) a body that would force a rigid var concrete
-    /// — by ascription (`:a "hello"`) or by use (`(add-i64 x 1)`) — is a
-    /// skolem-escape type error (MUST-3/MUST-4). Both are torn down on return so
-    /// a forward-referencing sibling instantiates the (now quantified) var
-    /// flexibly (MUST-1).
+    /// (name → flexible `TypeId`, spec §3.3.1 [S109]); it is installed as the
+    /// active `state.written_var_scope` for the duration of this body so a
+    /// body/nested-`fn` `:a` CO-REFERS to the param's var (§3.3.1 co-reference,
+    /// the 0588 seam). A bare written var is otherwise an ORDINARY FLEXIBLE
+    /// inference var: the body MAY pin it to a concrete type (never an error —
+    /// §3.3.1 MUST (a), rows 2/4/11). Rigidity lives ONLY on the CONSTRAINT
+    /// path: `state.rigid_vars` is seeded (per body) from the param vars that
+    /// ALREADY carry an asserted constraint at Pass-2 entry (`:C x`, recorded by
+    /// `resolve_bound_param` in Pass-1), so the body narrowing such a var to a
+    /// concrete type is a skolem escape (§3.3.2 MUST (b), row 6). All per-body
+    /// inference state (scope, rigid set, lambda-written-var accumulator, scope
+    /// frame) is torn down on EVERY exit — success or error — so a
+    /// forward-referencing sibling instantiates the (now quantified) var freshly
+    /// and no state bleeds across a failed body-check (the error-safe
+    /// save/restore discipline, mirroring `recheck_body_for_mono`; FIXME 0599).
     fn check_defn_body(
         &self,
         state: &mut CheckState,
@@ -3325,8 +3338,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         //   that merely ACCRUES a constraint from body use (row 7) is NOT here —
         //   its var carries no constraint until body inference runs, after this
         //   seeding, so it stays flexible (inferred-not-asserted).
+        //
+        // Every piece is SAVED here and restored on every exit below.
         let prev_rigid = std::mem::take(&mut state.rigid_vars);
         let prev_scope = state.written_var_scope.take();
+        let prev_lambda = std::mem::take(&mut state.lambda_written_vars);
         let mut rigid: HashSet<TypeId> = HashSet::new();
         for pt in param_types {
             if let Type::Var(id) = self.apply_subst(state, pt)
@@ -3337,70 +3353,98 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         state.rigid_vars = rigid;
         state.written_var_scope = Some(written_var_scope);
-        // Fresh per-body accumulator for nested-`fn` written-param vars (§3.10
-        // poly-as-value check below).
-        let prev_lambda = std::mem::take(&mut state.lambda_written_vars);
 
-        // Bind parameters
-        for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
-            self.bind_local(state, param_name.clone(), mono(param_ty.clone()));
-        }
+        // The fallible body runs inside one closure so the per-body state is
+        // torn down at ONE restore point regardless of how it exits (FIXME
+        // 0599 — the pre-existing `?` exits, and the poly-as-value early
+        // return, previously leaked `rigid_vars`/`written_var_scope`/the scope
+        // frame, so a failed body-check left a stale `written_var_scope`
+        // installed for the next top-level annotation).
+        let result = (|| {
+            // Bind parameters.
+            for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
+                self.bind_local(state, param_name.clone(), mono(param_ty.clone()));
+            }
 
-        // Bind the function name for recursion
-        let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
-        self.bind_local(state, defn.name.clone(), mono(fn_type));
+            // Bind the function name for recursion.
+            let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
+            self.bind_local(state, defn.name.clone(), mono(fn_type));
 
-        // Infer body type
-        let body_ty = self.infer_expr(state, defn.body())?;
+            // Infer body type.
+            let body_ty = self.infer_expr(state, defn.body())?;
 
-        // Unify body type with return type variable
-        self.unify(state, &body_ty, ret_ty, defn.span)?;
+            // Unify body type with return type variable.
+            self.unify(state, &body_ty, ret_ty, defn.span)?;
 
-        // **Poly-as-value rejection (spec §3.3.4 / §3.10 rank-1, MUST (f), row
-        // 10).** A written parameter var freshly introduced by a nested `fn`
-        // (`(fn [:b y] …)`) that remains FREE after body inference means the
-        // polymorphic function was RETURNED/STORED rather than applied in place
-        // (`(defn mk [] (fn [:b y] y))` → `∀b. (Fn [] (Fn [b] b))`). Cranelisp is
-        // rank-1: a `∀` held uninstantiated in a value position is unsupported.
-        // When the lambda is applied in place (row 9: `((fn [:b y] y) 3)`) the
-        // var unifies to the argument type and is not free, so it is not flagged.
-        // A co-referring inner `:a` (row 8: `(fn [:a y] y)` under `[:a x]`) is
-        // NOT freshly minted here, so it never enters `lambda_written_vars`.
-        let escaped_poly_fn = state
-            .lambda_written_vars
-            .iter()
-            .any(|&id| matches!(self.apply_subst(state, &Type::Var(id)), Type::Var(_)));
-        state.lambda_written_vars = prev_lambda;
-        if escaped_poly_fn {
-            return Err(CranelispError::TypeError {
-                message: "a polymorphic function cannot be returned or stored as a \
-                          value: a written type variable would leave the returned \
-                          `fn` polymorphic (rank-2). Apply it in place, or make the \
-                          returned function concrete (spec §3.3.4/§3.10)"
-                    .to_string(),
-                location: ErrorLocation::from_span(defn.span),
+            // **Poly-as-value rejection (spec §3.3.4 / §3.10 rank-1, MUST (f)/(h),
+            // rows 10 vs 9, B-1).** `lambda_written_vars` holds the vars freshly
+            // minted for a nested `fn`'s WRITTEN param annotation (`(fn [:b y]
+            // …)`); a co-referring inner `:a` is reused-not-minted, so it never
+            // enters the set. A written var still `Type::Var` after body
+            // inference means the polymorphic `fn` was NOT pinned to a concrete
+            // type — but that alone does NOT distinguish the two §3.10 cases:
+            //
+            //  - APPLIED IN PLACE at a GENERIC argument (`(defn f1 [x]
+            //    ((fn [:b y] y) x))`): application MERGES `b` into the enclosing
+            //    definition's own quantified param var (here `x`'s var). No
+            //    function value stays polymorphic anywhere — the enclosing scheme
+            //    carries the `∀`, and every call to THIS definition instantiates
+            //    it (§3.10, instantiation-at-use is always sound). ACCEPT.
+            //  - HELD AS A VALUE (`(defn mk [] (fn [:b y] y))`, let-stored-and-
+            //    returned, passed uninstantiated): `b` stays a DISTINCT free var
+            //    that never merges into an enclosing param — the returned/stored
+            //    value itself is polymorphic (rank-2, unsupported). REJECT (row
+            //    10).
+            //
+            // The discriminator is therefore "the resolved var is NOT one of the
+            // enclosing definition's own parameter vars" — a merge-with-an-
+            // enclosing-param-var is caller-instantiable (accept); a distinct
+            // free var escaped as a value (reject). (`(fn [:b y] y) 3` — applied
+            // at a CONCRETE arg — resolves `b` to `Int`, not a var, so it is not
+            // flagged by either reading. FIXME 0596: the old "still a `Var`"
+            // reading over-fired on the generic-arg cell, which no prior test
+            // exercised.)
+            let enclosing_param_vars: HashSet<TypeId> = param_types
+                .iter()
+                .flat_map(|pt| cranelisp_types::free_vars(&self.apply_subst(state, pt)))
+                .collect();
+            let escaped_poly_fn = state.lambda_written_vars.iter().any(|&id| {
+                match self.apply_subst(state, &Type::Var(id)) {
+                    Type::Var(resolved) => !enclosing_param_vars.contains(&resolved),
+                    _ => false,
+                }
             });
-        }
+            if escaped_poly_fn {
+                return Err(CranelispError::TypeError {
+                    message: "a polymorphic function cannot be returned or stored as a \
+                              value: a written type variable would leave the returned \
+                              `fn` polymorphic (rank-2). Apply it in place, or make the \
+                              returned function concrete (spec §3.3.4/§3.10)"
+                        .to_string(),
+                    location: ErrorLocation::from_span(defn.span),
+                });
+            }
 
-        // Deactivate the rigid written-var scope before the post-passes /
-        // generalization run (MUST-1: outside its own body the written var is an
-        // ordinary quantified var).
+            // Record the defn's Fn type in expr_types so the backend can look up
+            // authoritative parameter types. Without this, unused params (e.g.,
+            // `_s` in `(defn f [:String _s] 42)`) have no type recorded and
+            // scope cleanup skips their RC dec, causing leaks.
+            let resolved_fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
+            );
+            self.record_expr_type(state, defn.span, resolved_fn_type);
+            Ok(())
+        })();
+
+        // Tear down ALL per-body inference state on every exit (§3.3.1 MUST (a):
+        // outside its own body a written var is an ordinary quantified var).
         state.rigid_vars = prev_rigid;
         state.written_var_scope = prev_scope;
-
+        state.lambda_written_vars = prev_lambda;
         self.pop_scope(state);
 
-        // Record the defn's Fn type in expr_types so the backend can look up
-        // authoritative parameter types. Without this, unused params (e.g.,
-        // `_s` in `(defn f [:String _s] 42)`) have no type recorded and
-        // scope cleanup skips their RC dec, causing leaks.
-        let resolved_fn_type = Type::Fn(
-            param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
-            Box::new(self.apply_subst(state, ret_ty)),
-        );
-        self.record_expr_type(state, defn.span, resolved_fn_type);
-
-        Ok(())
+        result
     }
 
     // --- Monomorphisation passes ---

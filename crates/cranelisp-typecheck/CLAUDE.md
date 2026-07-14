@@ -49,15 +49,37 @@ The pieces:
    annotation (`:a "hello"`, `:Int (zed)`) is a FLEXIBLE unify (the value's type
    unifies with the annotation — pins freely / resolves dispatch). A single bare
    name that resolves as a TRAIT (`:Num2 5`) is a **satisfaction check** ONLY:
-   accepted iff the expr's concrete type implements the trait, changing nothing
-   (no unify, no held-abstract). It does NOT disambiguate return-type dispatch.
+   accepted **iff** the expr's type implements the trait, changing nothing (no
+   unify, no held-abstract). It does NOT disambiguate return-type dispatch. The
+   check discriminates THREE cases on the resolved expr type (0597, MUST (c)'s
+   "iff"): NOMINAL concrete → `has_impl_in_home`; CONCRETE but non-nominal (a
+   `Fn` type — implements NOTHING, impls are keyed by type name) → **REJECT**
+   (`concrete_type_name` = `None` must NOT silently accept a concrete type);
+   still a `Type::Var` → leave the residual for the §3.11 gate. The trait's home
+   is resolved honouring a QUALIFIED module ref (`:fmt/Display`) directly,
+   mirroring `resolve_bound_param` (the two entrances to a constraint resolve
+   identically).
 
 5. **Poly-as-value (§3.3.4/§3.10, rank-1).** `state.lambda_written_vars`
    collects the vars FRESHLY minted for a nested `fn`'s WRITTEN param annotation
-   (a co-referring inner name is reused, not minted, so it is absent). If such a
-   var remains FREE after body inference, the polymorphic `fn` was
-   returned/stored rather than applied — `check_defn_body` rejects it (row 10);
-   applied-in-place instantiates the var away (row 9, accepted).
+   (a co-referring inner name is reused, not minted, so it is absent). After body
+   inference, `check_defn_body` flags such a var as an escape **iff it resolves
+   to a var that is NOT one of the enclosing definition's own parameter vars**
+   (0596). The axis is {applied-in-place, held-as-value} × {concrete, generic
+   arg}, and ONLY held-as-a-value is the §3.3.4 violation:
+   - **applied in place** MERGES the written var into the enclosing scheme —
+     either to a concrete type (row 9: `((fn [:b y] y) 3)` → `b := Int`, not a
+     var) or to an enclosing quantified PARAM var (B-1: `(defn f1 [x] ((fn [:b y]
+     y) x))` → `b := x`'s var, in `param_types`). Caller-instantiable at each
+     call of the enclosing defn (§3.10 instantiation-at-use) — **accepted**;
+   - **held as a value** (returned `(defn mk [] (fn [:b y] y))`, let-stored-and-
+     returned, passed uninstantiated) keeps `b` a DISTINCT free var NOT in the
+     enclosing params — the value itself stays polymorphic (rank-2) — **rejected**
+     (row 10).
+   The old "still a `Var` after inference" reading OVER-FIRED on the generic-arg
+   applied cell (a var merged to a still-generic enclosing param is also a `Var`)
+   — do NOT revert to it. The discriminator is the enclosing-param-var membership
+   test (`cranelisp_types::free_vars` over the resolved `param_types`).
 
 **Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
 caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type
