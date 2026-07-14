@@ -809,14 +809,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // This body is re-checked against ALREADY-CONCRETE param/ret types (a
         // monomorphisation instance or a trait-impl method): the caller has
-        // chosen the types, so a written-var annotation in the body is FLEXIBLE,
-        // not a rigid skolem (spec §3.3 [S109] MUST-1 — re-minting a rigid var
-        // and pinning it to the instance's concrete type would be a spurious
-        // skolem-escape). Save/restore so the flag never leaks past this body.
-        let saved_suppress = state.suppress_rigid_annotations;
+        // chosen the types. Under W6.3 (spec §3.3.1–§3.3.2) rigidity lives only
+        // on the constraint path and is seeded from constraint-carrying param
+        // VARS — here the params are already concrete, so no rigid var arises.
+        // Save/clear/restore the per-body inference sets so nothing leaks past
+        // this body.
         let saved_rigid = std::mem::take(&mut state.rigid_vars);
         let saved_scope = state.written_var_scope.take();
-        state.suppress_rigid_annotations = true;
+        let saved_lambda = std::mem::take(&mut state.lambda_written_vars);
 
         for ((param_name, _), param_ty) in
             defn.params().iter().zip(param_types.iter())
@@ -836,9 +836,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Ok(())
         })();
 
-        state.suppress_rigid_annotations = saved_suppress;
         state.rigid_vars = saved_rigid;
         state.written_var_scope = saved_scope;
+        state.lambda_written_vars = saved_lambda;
 
         self.pop_scope(state);
         result

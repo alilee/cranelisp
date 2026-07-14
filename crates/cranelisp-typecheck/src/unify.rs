@@ -10,22 +10,25 @@ use cranelisp_types::{
     free_vars, render_type,
 };
 
-/// Unify two types honouring the **rigid written-type-variable** asymmetry
-/// (spec §3.3 [S109]).
+/// Unify two types honouring the **constraint-abstract (rigid) type-variable**
+/// asymmetry (spec §3.3.2 [S109] W6.3).
 ///
-/// `rigid` is the set of `TypeId`s that are RIGID skolems — written free type
-/// variables that are *fixed-but-unknown* within the definition body currently
-/// being checked (see `CheckState::rigid_vars`). The asymmetry the checker MUST
-/// honour, realized entirely in [`unify_var`]:
+/// `rigid` is the set of `TypeId`s held ABSTRACT for the definition body being
+/// checked — under W6.3 these are ONLY the ASSERTED-constraint parameter vars
+/// (`:C x`), NOT bare written vars (a bare `:a` is an ordinary flexible
+/// inference var; W6.3 backs out the W6.2 rigid-bare model). See
+/// `CheckState::rigid_vars`. The asymmetry, realized entirely in [`unify_var`]:
 ///
 /// - a **flexible** inference variable (any `TypeId` NOT in `rigid`) MAY unify
-///   with a rigid one — the flexible side binds to the rigid var (this is how an
-///   unannotated parameter *acquires* a written type);
-/// - a **rigid** variable MUST NOT unify with a concrete type (**skolem-escape**)
-///   nor with a *distinct* rigid variable; only with the *same* rigid var.
+///   with a rigid one — the flexible side binds to the rigid var (how a use
+///   acquires the constraint-abstract type);
+/// - a **rigid** variable MUST NOT unify with a **concrete type** — the body
+///   narrowing a held-abstract constraint var is a **skolem escape** (row 6);
+/// - two **rigid** variables MERGE (both stay abstract — `(defn assert-eq
+///   [:Eq a :Eq b] (= a b))` is a constraint-polymorphic scheme, not an error).
 ///
 /// The set is threaded through every recursive arm so the guard reaches into
-/// `Fn`/`ADT` arguments (e.g. `(Box a)` with rigid `a`).
+/// `Fn`/`ADT` arguments (e.g. `(Box a)` with a constraint-abstract `a`).
 pub fn unify_with_rigid(
     subst: &mut Subst,
     rigid: &HashSet<TypeId>,
@@ -153,17 +156,17 @@ pub fn unify_with_rigid(
 }
 
 /// Unify a type variable `id` (already substitution-resolved to an unbound
-/// `Var`) with `other` (already substitution-resolved), honouring the rigid
-/// asymmetry (spec §3.3 [S109], MUST-4).
+/// `Var`) with `other` (already substitution-resolved), honouring the
+/// constraint-abstract asymmetry (spec §3.3.2 [S109] W6.3).
 ///
 /// - If `id` is FLEXIBLE (not in `rigid`): ordinary [`bind_var`] — binds `id` to
 ///   `other`. When `other` is itself a rigid var, this binds the flexible side to
-///   the rigid one, which is exactly how a parameter *acquires* a written type.
-/// - If `id` is RIGID: it may unify only with the *same* rigid var. Unifying it
-///   with a concrete type, or with a *distinct* rigid var, is a **skolem-escape**
-///   type error (the body may not choose what a written variable is). When
-///   `other` is a *flexible* var, the flexible side binds to this rigid var
-///   (again the acquisition direction — never binding the rigid var itself).
+///   the rigid one, exactly how a use *acquires* the constraint-abstract type.
+/// - If `id` is RIGID (a constraint-abstract param var): unifying it with a
+///   **concrete type** is a **skolem escape** (the body may not narrow a
+///   held-abstract constraint to a concrete type, row 6). Another rigid var
+///   MERGES (both stay abstract); a *flexible* var binds to this rigid var (the
+///   acquisition direction — the rigid var itself is never bound to a concrete).
 fn unify_var(
     subst: &mut Subst,
     rigid: &HashSet<TypeId>,
@@ -174,17 +177,24 @@ fn unify_var(
         match other {
             // Same rigid variable — trivially unifies.
             Type::Var(other_id) if *other_id == id => Ok(()),
-            // A DISTINCT rigid variable — skolem-escape (two written variables
-            // are independent fixed-but-unknowns; unifying them would collapse
-            // `(Fn [a b] …)` to `(Fn [a a] …)`).
+            // Another rigid (constraint-abstract) variable — MERGE, not escape.
+            // Two held-abstract constraint params unifying (`(defn assert-eq
+            // [:Eq a :Eq b] (= a b))`) stay abstract: binding one to the other
+            // keeps a constraint-polymorphic scheme. (W6.3 removes the W6.2
+            // distinct-rigid-escape rule, which existed only to keep BARE
+            // written vars distinct — bare vars are no longer rigid, and two
+            // bare vars tied by the body now MERGE too, spec §3.3.1 C-1.)
             Type::Var(other_id) if rigid.contains(other_id) => {
-                Err(skolem_escape_distinct_rigid())
+                bind_var(subst, id, &Type::Var(*other_id))
             }
             // A FLEXIBLE variable — bind the flexible side to this rigid var (the
             // parameter-acquisition direction; the rigid var itself is never bound).
             Type::Var(other_id) => bind_var(subst, *other_id, &Type::Var(id)),
-            // A concrete type — skolem-escape (the body may not pin the written
-            // variable to a concrete type, by ascription OR by use).
+            // A concrete type — skolem-escape (spec §3.3.2 MUST (b), row 6): a
+            // constraint at a parameter position is held abstract over its trait
+            // for the body-check, so the body narrowing it to a concrete type
+            // (by ascription OR by use) is rejected — the caller relies on the
+            // CONSTRAINT, not a concrete choice made by the body.
             other => Err(skolem_escape_concrete(other)),
         }
     } else {
@@ -203,17 +213,6 @@ fn skolem_escape_concrete(other: &Type) -> CranelispError {
              chosen only by the caller at each use site (spec §3.3)",
             render_type(other, PrimitiveNaming::Qualified, VarNaming::Numbered),
         ),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    }
-}
-
-/// Skolem-escape error: two *distinct* rigid written type variables were forced
-/// to unify. A plain type error, never "unknown type" (§3.3 MUST-2/MUST-4).
-fn skolem_escape_distinct_rigid() -> CranelispError {
-    CranelispError::TypeError {
-        message: "type mismatch: two distinct rigid written type variables cannot \
-                  be unified — each is an independent rigid skolem (spec §3.3)"
-            .to_string(),
         location: ErrorLocation::from_span(Span::SYNTHETIC),
     }
 }

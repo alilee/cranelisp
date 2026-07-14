@@ -203,34 +203,33 @@ pub struct CheckState {
     /// inference var MAY acquire a rigid one.
     ///
     /// **Scoped to the owning body, NOT global.** Installed by `check_defn_body`
-    /// from the definition's Pass-1 written-var scope, extended by
-    /// `infer_annotate` for body/value annotations, and torn down when the body
-    /// check completes. Outside its own body a written variable is an ordinary
-    /// quantified var (MUST-1: "universally quantified at the definition
-    /// boundary, exactly as an inference-generated variable"), so a
-    /// forward-referencing caller instantiates it flexibly — the rigid guard
-    /// must NOT fire there. A nested `fn`'s own *fresh* parameter vars are NOT
-    /// added (they are flexible, generalized at the enclosing boundary — FV-15);
-    /// only names that CO-REFER to an already-rigid enclosing var stay rigid.
+    /// from the definition's ASSERTED-constraint param vars (`:C x`), and torn
+    /// down when the body check completes. Under W6.3 (spec §3.3.1–§3.3.2) ONLY a
+    /// constraint at a parameter position is rigid (held abstract over `C`); a
+    /// bare written var is an ordinary flexible inference var (co-reference only,
+    /// via `written_var_scope`). Outside its own body the set is empty so a
+    /// forward-referencing caller instantiates every var flexibly.
     pub(crate) rigid_vars: HashSet<TypeId>,
     /// The current definition's **written-var lexical scope** — name → the one
     /// `TypeId` that name resolves to across the whole definition body,
-    /// **including nested `fn` closures** (spec §3.3 SCOPE-5 lexical
-    /// co-reference). Threaded from Pass-1 signature registration through Pass-2
-    /// body checking; `infer_annotate`/`infer_lambda` resolve written vars
-    /// against it (never a fresh per-occurrence map — the 0588 seam). `None`
-    /// outside a definition body; a top-level value annotation gets a transient
-    /// per-annotation scope.
+    /// **including nested `fn` closures** (spec §3.3.1 lexical co-reference).
+    /// Threaded from Pass-1 signature registration through Pass-2 body checking;
+    /// `infer_annotate`/`infer_lambda` resolve written vars against it (never a
+    /// fresh per-occurrence map — the 0588 seam). `None` outside a definition
+    /// body; a top-level value annotation gets a transient per-annotation scope.
+    /// This is ALL a bare written var carries — a name for relating occurrences,
+    /// never rigidity (W6.3 backs out the W6.2 rigid-bare model).
     pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
-    /// When set, a written type-var annotation in a body is resolved FLEXIBLY —
-    /// it does NOT mint a rigid skolem (spec §3.3 [S109]). Active while
-    /// re-checking a body against **already-concrete** types (a
-    /// monomorphisation instance or a trait-impl method —
-    /// `check_defn_body_with_types`): the caller has already CHOSEN the concrete
-    /// types, which is exactly MUST-1's "chosen by the caller at each use site".
-    /// Re-minting a rigid var and pinning it to the instance's concrete type
-    /// would be a spurious skolem-escape.
-    pub(crate) suppress_rigid_annotations: bool,
+    /// **`TypeId`s freshly minted for a nested `fn`'s WRITTEN parameter
+    /// annotation** during the current definition body (spec §3.3.4 / §3.10
+    /// rank-1). A written lambda-param var (`(fn [:b y] …)`) that is NOT a
+    /// co-reference to an enclosing scope name is genuinely introduced by the
+    /// lambda. If such a var remains FREE after the enclosing body is inferred,
+    /// the polymorphic `fn` was RETURNED/STORED rather than applied-in-place — a
+    /// poly-as-value (rank-2), which `check_defn_body` rejects (row 10). When the
+    /// lambda is applied in place (row 9), the var unifies away and is not free,
+    /// so it is not flagged. Reset per definition body.
+    pub(crate) lambda_written_vars: Vec<TypeId>,
 }
 
 impl CheckState {
@@ -256,7 +255,7 @@ impl CheckState {
             current_module: module,
             rigid_vars: HashSet::new(),
             written_var_scope: None,
-            suppress_rigid_annotations: false,
+            lambda_written_vars: Vec::new(),
         }
     }
 

@@ -509,9 +509,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut param_types = Vec::new();
         for (param_name, annotation) in params.iter() {
             let param_ty = if let Some(annotation) = annotation {
-                let (ty, _minted) = self.resolve_annotation_type_expr_in_module(
+                let (ty, minted) = self.resolve_annotation_type_expr_in_module(
                     annotation, &mut var_map, &state.current_module, span,
                 )?;
+                // Record the vars FRESHLY minted by THIS lambda's param
+                // annotation — a written var (`:b`) genuinely introduced by the
+                // nested `fn` (a co-referring name is reused, not re-minted, so
+                // `minted` is empty for it — spec §3.3.4 / §3.10). If such a var
+                // survives free into the enclosing defn's scheme, the polymorphic
+                // `fn` was returned/stored rather than applied — a poly-as-value
+                // rejected by `check_defn_body` (row 10 vs applied-in-place row 9).
+                state.lambda_written_vars.extend(minted);
                 ty
             } else {
                 self.fresh_var()
@@ -1255,35 +1263,71 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        // A value annotation `:a form` (body/"return" position, §3.9/§4.9)
+        // A value annotation `:T form` (body/"return"/value position, §3.9/§4.9)
         // resolves against the definition's SHARED written-var scope (spec §3.3
-        // SCOPE-5): a body `:a` CO-REFERS to the param's rigid `a` (FV-6/FV-16),
-        // never a fresh per-`Annotate` shadow (the 0588 seam). A body-annotation
-        // FRESH var is RIGID (MUST-3 assert-not-acquire): the annotation ASSERTS
-        // the type, it does not acquire it — so ascribing a concrete-typed
-        // (`:a "hello"`) or distinct-rigid expr to a bare written var is a
-        // skolem-escape type error via the `unify` below, NOT a spurious
-        // "unknown type". A legitimately-polymorphic residual (`:(Vec a) []`)
-        // still flows into the §3.11 ambiguity machinery.
+        // co-reference): a body `:a` CO-REFERS to the param's `a` (FV-6), never a
+        // fresh per-`Annotate` shadow. Three W6.3 cases (spec §3.3.1/§3.3.3):
         let mut var_map = state.written_var_scope.take().unwrap_or_default();
-        let (ann_type, minted) = self.resolve_annotation_type_expr_in_module(
+        match self.resolve_annotation_type_expr_in_module(
             annotation, &mut var_map, &state.current_module, span,
-        )?;
-        // Body/value-annotation fresh vars are RIGID (unlike a lambda param) —
-        // UNLESS we are re-checking against already-concrete types (a mono
-        // instance / trait-impl method), where the caller has chosen the types
-        // (MUST-1) and the annotation is flexible (`suppress_rigid_annotations`).
-        if !state.suppress_rigid_annotations {
-            state.rigid_vars.extend(minted);
+        ) {
+            // (1) The annotation is a bare type VARIABLE or a concrete TYPE. It
+            // is a FLEXIBLE annotation — the annotated value's type unifies with
+            // `ann_type` (W6.3 removes the W6.2 rigid marking: a bare `:a` in
+            // value position pins FREELY to the expr's type, §3.3.1 MUST (a) rows
+            // 4/11; a concrete `:Int`/`:Float` resolves an otherwise-ambiguous
+            // type incl. return-type dispatch, §3.3.3 MUST (d) rows 13–15). A
+            // legitimately-polymorphic residual (`:(Vec a) []`) still flows into
+            // the §3.11 ambiguity machinery.
+            Ok((ann_type, _minted)) => {
+                state.written_var_scope = Some(var_map);
+                let expr_ty = self.infer_expr(state, expr)?;
+                self.unify(state, &expr_ty, &ann_type, span)?;
+                let resolved = self.apply_subst(state, &ann_type);
+                self.record_expr_type(state, span, resolved.clone());
+                Ok(resolved)
+            }
+            // (2)/(3) No such TYPE. If the annotation is a single bare name that
+            // resolves as a TRAIT, this is a value-position CONSTRAINT — a pure
+            // SATISFACTION CHECK (spec §3.3.3 MUST (c)/(e)): it verifies the
+            // expr's already-known type implements the trait and changes NOTHING
+            // (no unification, no held-abstract). It does NOT disambiguate a
+            // return-type-polymorphic form — only a concrete type does (row 17),
+            // so a residual var is left for the §3.11 gate.
+            Err(type_err) => {
+                state.written_var_scope = Some(var_map);
+                if let Some(tref) = crate::program::single_trait_bound_from_annotation(annotation)
+                    && self.resolve_trait(state, tref.name.as_ref(), span).is_ok()
+                {
+                    let expr_ty = self.infer_expr(state, expr)?;
+                    let resolved = self.apply_subst(state, &expr_ty);
+                    // Satisfaction check: when the expr's type is CONCRETE it MUST
+                    // implement the trait (row 12 pos accepts `:Num2 5`; the neg
+                    // rejects `:Num2 "s"`). When it is still a type var (an
+                    // unresolved return-type dispatch, `:Zeroable (zed)`), the
+                    // constraint does NOT resolve it — leave the residual var for
+                    // the §3.11 ambiguity gate (row 17).
+                    if let Some(impl_ty) = crate::traits::concrete_type_name(&resolved) {
+                        let tn = cranelisp_types::TraitName::from(tref.name.as_ref());
+                        if !self.has_impl_with_state(state, &tn, &impl_ty) {
+                            return Err(CranelispError::TypeError {
+                                message: format!(
+                                    "type {impl_ty} does not implement trait {} — a \
+                                     value-position constraint is a satisfaction check \
+                                     (spec §3.3.3)",
+                                    tref.name
+                                ),
+                                location: ErrorLocation::from_span(span),
+                            });
+                        }
+                    }
+                    // The type is UNCHANGED (satisfaction check only).
+                    self.record_expr_type(state, span, resolved.clone());
+                    return Ok(resolved);
+                }
+                Err(type_err.into())
+            }
         }
-        state.written_var_scope = Some(var_map);
-
-        let expr_ty = self.infer_expr(state, expr)?;
-        self.unify(state, &expr_ty, &ann_type, span)?;
-
-        let resolved = self.apply_subst(state, &ann_type);
-        self.record_expr_type(state, span, resolved.clone());
-        Ok(resolved)
     }
 }
 

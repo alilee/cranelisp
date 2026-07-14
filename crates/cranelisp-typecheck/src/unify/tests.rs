@@ -195,22 +195,24 @@
         assert!(unify(&mut subst, &fn1, &fn2).is_err());
     }
 
-    // spec: 03-types §3.3 [S109] (u6) — the MUST-4 unification asymmetry, ALL
-    // THREE arms at the unify seam. A rigid written type variable is a
-    // fixed-but-unknown skolem: (a) a FLEXIBLE var MAY acquire a rigid one (the
-    // param-acquisition direction) — the flexible side binds; (b) a rigid var
-    // MUST NOT unify with a concrete type (skolem-escape by ascription OR use);
-    // (c) a rigid var MUST NOT unify with a DISTINCT rigid var. Same rigid ~
-    // same rigid trivially succeeds. A unify that is SYMMETRIC in flexibility is
-    // the defect (the W6 flexible-acquire model).
+    // spec: 03-types §3.3.2 [S109 W6.3] (U3-unify) — the constraint-abstract
+    // unification asymmetry at the unify seam. Under W6.3 the `rigid` set holds
+    // ONLY asserted-constraint parameter vars (`:C x`), held abstract over their
+    // trait for the body-check: (a) a FLEXIBLE var MAY acquire a rigid one (the
+    // use-acquisition direction) — the flexible side binds; (b) a rigid var MUST
+    // NOT unify with a concrete type (skolem escape by ascription OR use, row 6);
+    // (c) two rigid vars MERGE (both stay abstract — `(defn assert-eq [:Eq a :Eq
+    // b] (= a b))` is a constraint-polymorphic scheme, NOT an error; W6.3 removes
+    // the W6.2 distinct-rigid-escape, which existed only to keep BARE vars
+    // distinct — bare vars are no longer rigid). Same rigid ~ itself succeeds.
     #[test]
-    fn u6_rigid_unification_asymmetry_all_three_arms() {
-        // Rigid set: id 10 is the rigid written var; 11 is a SECOND rigid var.
-        // Ids 20/21 are ordinary flexible inference vars.
+    fn u3_constraint_abstract_unification_asymmetry() {
+        // Rigid set: ids 10 and 11 are two asserted-constraint (held-abstract)
+        // param vars. Ids 20/21 are ordinary flexible inference vars.
         let rigid: HashSet<TypeId> = [10u32, 11u32].into_iter().collect();
 
         // (a) flexible ~ rigid SUCCEEDS, and the FLEXIBLE side binds to the rigid
-        //     var (never the other way) — a parameter *acquiring* a written type.
+        //     var (never the other way) — a use *acquiring* the abstract type.
         //     Order-independent: the rigid var may be on either side.
         let mut subst = Subst::new();
         unify_with_rigid(&mut subst, &rigid, &Type::Var(20), &Type::Var(10)).unwrap();
@@ -225,7 +227,7 @@
             "flexible 21 must acquire rigid 10 with the rigid var on the LEFT too");
 
         // (b) rigid ~ concrete FAILS as skolem-escape — both orders — and never
-        //     binds the rigid var. Never renders as "unknown type" (MUST-2).
+        //     binds the rigid var. Never renders as "unknown type".
         for (l, r) in [
             (Type::Var(10), Type::Int),
             (Type::Int, Type::Var(10)),
@@ -239,11 +241,13 @@
                 "a failed rigid~concrete unify must NOT bind the rigid var");
         }
 
-        // (c) rigid ~ DISTINCT rigid FAILS (would collapse `(Fn [a b] …)` to
-        //     `(Fn [a a] …)`); the SAME rigid ~ itself trivially succeeds.
+        // (c) two DISTINCT rigid vars MERGE (both stay abstract) — assert-eq; the
+        //     SAME rigid ~ itself trivially succeeds.
         let mut subst = Subst::new();
-        assert!(unify_with_rigid(&mut subst, &rigid, &Type::Var(10), &Type::Var(11)).is_err(),
-            "two distinct rigid vars must not unify");
+        unify_with_rigid(&mut subst, &rigid, &Type::Var(10), &Type::Var(11))
+            .expect("two held-abstract constraint vars MUST merge (assert-eq), not escape");
+        assert_eq!(apply(&subst, &Type::Var(10)), apply(&subst, &Type::Var(11)),
+            "the two merged rigid vars must resolve to one another");
         let mut subst = Subst::new();
         unify_with_rigid(&mut subst, &rigid, &Type::Var(10), &Type::Var(10)).unwrap();
     }

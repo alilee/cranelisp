@@ -4,54 +4,77 @@ The voice of the code: API gotchas, data-structure invariants, debugging hooks
 for the inference engine, traits, monomorphisation, and module-locality
 resolution. Owned by `/dev` when narrow-deployed to this crate.
 
-## Rigid written type variables (spec §3.3 [S109], S109 W6.2)
+## Written type variables — the settled model (spec §3.3.1–§3.3.5 [S109 W6.3])
 
-A **written free lowercase type variable** (`:a`, or one nested in `:(Box a)`)
-is a RIGID skolem — a *fixed-but-unknown* type within its definition body. The
-body may not choose what it is (assert-not-acquire); it is quantified at the
-definition boundary and instantiated at the call site. Three coupled pieces
-realize this; break any one and the model silently reverts to the flexible
-"acquire" bug (F1/0588):
+**One line:** a **bare** written type var (`:a`, or one nested in `:(Box a)`)
+is an ORDINARY FLEXIBLE inference variable carrying a display NAME — it relates
+same-named occurrences and documents, and the body MAY pin it to a concrete
+type (never an error). Rigidity lives ONLY on the **constraint** path: a
+constraint `:C x` at a **parameter** position is held abstract over `C` for the
+body-check, so the body narrowing it to a concrete type is a skolem escape.
 
-1. **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var`** are the ONE
-   unification seam (the free 3-arg `unify` is a test-only helper). The `rigid`
-   set is `CheckState::rigid_vars`. Asymmetry (MUST-4): a flexible var MAY bind
-   to a rigid one (param acquisition); a rigid var MUST NOT unify with a
-   concrete type nor a *distinct* rigid var (skolem-escape). `self.unify` always
-   threads `state.rigid_vars`. **Do not add a unify path that ignores the rigid
-   set** — a symmetric-in-flexibility unify is the defect.
+> W6.3 (this model) REVERSES the rigid-BARE half of W6.2 (`b2bfb760`) while
+> KEEPING lexical co-reference. Do NOT re-add rigidity to the bare path.
 
-2. **`rigid_vars` is scoped to the OWNING body, never global.** `check_defn_body`
-   seeds it from the definition's Pass-1 written-var scope and tears it down on
-   return. This is load-bearing: outside its own body a written var must behave
-   as an ordinary *quantifiable* var (MUST-1) so a forward-referencing sibling
-   instantiates it flexibly. A global rigid set would skolem-escape every
-   forward call.
+The pieces:
 
-3. **`written_var_scope` threads the name→rigid-`TypeId` map** from Pass-1
-   (`register_defn_signature`, returned via `accumulator.defn_var_scopes`)
-   through Pass-2 body checking and INTO nested `fn` closures (`infer_lambda`
-   SHARES it, never resets — SCOPE-5 co-reference). `infer_annotate` extends
-   `rigid_vars` for body/value annotations (rigid); `infer_lambda` does NOT (a
-   lambda's own fresh param vars are flexible — a lambda is not a rank-1
-   generalization boundary; only names co-referring to an already-rigid
-   enclosing var stay rigid — FV-15 vs FV-20).
+1. **`written_var_scope` (name → `TypeId`) threads LEXICAL CO-REFERENCE only.**
+   From Pass-1 (`register_defn_signature` → `accumulator.defn_var_scopes`)
+   through Pass-2 and INTO nested `fn` closures (`infer_lambda` SHARES it, never
+   resets — §3.3.1 co-reference, 0588). Every occurrence of one bare name within
+   a definition resolves to the SAME var (`[:a x :a y]` ties x/y; a body `:a`
+   co-refers to a param `:a`; an inner `(fn [:a y] …)` co-refers to the
+   enclosing `a`). This is ALL a bare written var carries — a name, never
+   rigidity. A bare var is otherwise an ordinary flexible var: the body pinning
+   it is fine (rows 2/4/11); two bare vars tied by the body MERGE (C-1).
 
-**`suppress_rigid_annotations`** turns rigidity OFF while re-checking a body
-against ALREADY-CONCRETE types (`check_defn_body_with_types` — mono instances +
-trait-impl methods): the caller has chosen the types (MUST-1), so re-minting a
-rigid var and pinning it to the instance's concrete type would be a spurious
-skolem-escape. This flag is why a body annotation (`(defn id [:a x] :a x)`) did
-not break monomorphisation.
+2. **`rigid_vars` holds ONLY asserted-constraint param vars.** `check_defn_body`
+   seeds it, per body, from the param `Type::Var`s that ALREADY carry a
+   constraint at Pass-2 entry — i.e. `resolve_bound_param` recorded the
+   assertion (`:C x`) into `state.active_constraints` during Pass-1. A BARE `:a`
+   param that merely ACCRUES a constraint from body use (row 7) is NOT seeded
+   (its var has no constraint until body inference runs, after the seeding), so
+   it stays flexible — inferred-not-asserted. Scoped to the owning body,
+   torn down on return.
+
+3. **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var`** are the ONE
+   unification seam (the free 3-arg `unify` is a test-only helper). Asymmetry:
+   a flexible var MAY bind to a rigid one (use-acquisition); a rigid var MUST
+   NOT unify with a **concrete type** (skolem escape — row 6); two rigid vars
+   **MERGE** (both stay abstract — `(defn assert-eq [:Eq a :Eq b] (= a b))` is a
+   constraint-polymorphic scheme, NOT an error — the W6.2 distinct-rigid-escape
+   rule is REMOVED). `self.unify` always threads `state.rigid_vars`.
+
+4. **`infer_annotate` — value-position annotations (§3.3.3).** A bare/concrete
+   annotation (`:a "hello"`, `:Int (zed)`) is a FLEXIBLE unify (the value's type
+   unifies with the annotation — pins freely / resolves dispatch). A single bare
+   name that resolves as a TRAIT (`:Num2 5`) is a **satisfaction check** ONLY:
+   accepted iff the expr's concrete type implements the trait, changing nothing
+   (no unify, no held-abstract). It does NOT disambiguate return-type dispatch.
+
+5. **Poly-as-value (§3.3.4/§3.10, rank-1).** `state.lambda_written_vars`
+   collects the vars FRESHLY minted for a nested `fn`'s WRITTEN param annotation
+   (a co-referring inner name is reused, not minted, so it is absent). If such a
+   var remains FREE after body inference, the polymorphic `fn` was
+   returned/stored rather than applied — `check_defn_body` rejects it (row 10);
+   applied-in-place instantiates the var away (row 9, accepted).
 
 **Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
 caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type
-var is a BARE lowercase identifier). The frontend still mis-tags `:user/int` as
-a `TypeVar` carrying the qualified string; the in-crate `!contains('/')` guard
-is the backstop — the frontend routing half is a separate `/dev`-on-frontend
-item. FIXME 0590 records four MIRROR resolvers (`traits/type_resolve.rs` ×3 +
-`form.rs`) that hand-roll their own mint-on-miss; the S110 convergence folds
-them onto this canonical resolver.
+var is a BARE lowercase identifier); the in-crate `!contains('/')` guard is the
+backstop. FIXME 0590 records four MIRROR resolvers (`traits/type_resolve.rs` ×3
++ `form.rs`) that hand-roll their own mint-on-miss — STILL OPEN: the W6.3
+constraint-rigidity landed via `resolve_bound_param`/`active_constraints` (defn
+params), NOT by converging the mirrors, so 0590's P7 single-source refactor is
+independent of this model.
+
+**Not yet landed (reported to `/sprint` as a coordinated seam):** the §3.11
+ambiguity gate for an UNRESOLVED return-type-polymorphic dispatch (`(zed)` with
+no context — rows 16/17). It cannot be caught by a "result type non-concrete"
+check (a dispatch resolved on its args, `(add2 3 4)`, is non-concrete-typed yet
+computable — a false positive); it needs a "dispatch selected NO impl" signal,
+and the `--run`/`--link` entry (`main`) leg additionally needs the int
+entry-validation seam (typecheck carries no entry designation, Principle 19).
 
 ## Concrete-boundary `codegen_view` population (S84 Phase-3, FIXME 0392)
 

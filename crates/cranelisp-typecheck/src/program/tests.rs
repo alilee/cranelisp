@@ -1376,16 +1376,16 @@
         }
     }
 
-    // spec: 03-types §3.3 [S109] (u1) — a written PARAMETER type var is RIGID, not
-    // a flexible inference var. Proven by CONTRAST at the program seam (the resolve
-    // layer only mints — u1-resolve-half): `(defn id [:a x] x)` type-checks and
-    // stays polymorphic (the body never constrains `a`), but `(defn f [:a x]
-    // (add-i64 x 1))` is a TYPE ERROR — the body USE forces the rigid `a ~ Int`
-    // (MUST-1/MUST-4). Under the FLEXIBLE (W6) model the second would silently
-    // narrow to `(Fn [Int] Int)` and compile — so acceptance of `f` is exactly
-    // the F1/0588 regression this cell guards.
+    // spec: 03-types §3.3.1 [S109 W6.3] (U1) — a BARE written parameter type var
+    // is an ORDINARY FLEXIBLE inference variable carrying a display name, NOT a
+    // rigid skolem (W6.3 backs out the W6.2 rigid-bare model). Two facets at the
+    // program seam: (a) unconstrained → stays polymorphic (`(defn id [:a x] x)` →
+    // `∀a. a→a`); (b) a body USE that pins it is ACCEPTED and the scheme reflects
+    // the concrete type (`(defn f [:a x] (add-i64 1 x))` → `(Fn [Int] Int)`, row
+    // 2) — the defining contrast with the superseded rigid model (which rejected
+    // (b) as a skolem escape). Fails on a revert to rigid-bare.
     #[test]
-    fn u1_written_param_var_is_rigid_body_use_cannot_pin() {
+    fn u1_bare_written_param_var_is_flexible_body_may_pin() {
         // (a) a written var the body does not constrain stays polymorphic.
         let mut tc = tc_with_prims();
         let sexps = cranelisp_frontend::parse("(defn id [:a x] x)").expect("parse");
@@ -1398,31 +1398,177 @@
             panic!("id not found");
         }
 
-        // (b) a body USE that would force the rigid `a` concrete is a type error —
-        //     the defining proof that the param var is RIGID, not flexible.
+        // (b) a body USE that pins the bare var to a concrete type is ACCEPTED,
+        //     and the inferred scheme reflects the pin `(Fn [Int] Int)` (row 2).
         let mut tc2 = tc_with_prims();
         let sexps2 =
-            cranelisp_frontend::parse("(defn f [:a x] (add-i64 x 1))").expect("parse");
+            cranelisp_frontend::parse("(defn f [:a x] (add-i64 1 x))").expect("parse");
         let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
-        let err = tc2.check_program_self(&program2).unwrap_err();
-        let msg = format!("{err:?}");
+        tc2.check_program_self(&program2)
+            .expect("a bare `:a` pinned by the body MUST be accepted (§3.3.1 MUST (a))");
+        let table = tc2.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("f") else {
+            panic!("f not found");
+        };
         assert!(
-            !msg.contains("unknown type"),
-            "the rigid-by-use rejection MUST be a type error, never `unknown type` \
-             (§3.3 MUST-2); got: {msg}"
+            scheme.ty.is_concrete() && scheme.type_vars.is_empty(),
+            "the body pin MUST narrow `a := Int` → concrete `(Fn [Int] Int)`; got {:?}",
+            scheme.ty
         );
     }
 
-    // spec: 03-types §3.3 [S109] SCOPE-5 (u7) — nested-`fn` lexical co-reference:
-    // the enclosing definition's written-var scope THREADS into the nested `fn`
-    // (`infer_lambda` shares `written_var_scope`, does not reset it), so an inner
-    // `:a` resolves to the SAME rigid `TypeId` as the enclosing `defn`'s `:a`.
-    // `(defn g [:a x] (fn [:a y] y))` MUST have scheme `∀a. (Fn [a] (Fn [a] a))` —
-    // ONE quantified var appearing in all three positions. Under the superseded
-    // SHADOW reading the inner `:a` would mint a SECOND var (`∀a b. (Fn [a] (Fn
-    // [b] b))`), which this cell rejects (the 0588 non-threaded per-`fn` map).
+    // spec: 03-types §3.3.2 [S109 W6.3] (U3) — a CONSTRAINT at a parameter
+    // position (`:C x`) is held ABSTRACT over `C` for the body-check, at the
+    // program seam. R5 (accepted): `(defn f5 [:Num2 x] (nadd x x))` uses only the
+    // trait interface → stays constrained-polymorphic. R6 (rejected): `(defn f6
+    // [:Num2 x] (add-i64 1 x))` narrows the held-abstract var to Int → a skolem
+    // escape type error (never `unknown type`). This is the 0590-convergence
+    // guard: the constraint path is the rigid-aware one. Fails on a revert that
+    // stops seeding `rigid_vars` from asserted-constraint param vars.
     #[test]
-    fn u7_nested_fn_written_var_corefers_enclosing_rigid_same_typeid() {
+    fn u3_constraint_param_held_abstract_body_narrow_is_skolem_escape() {
+        const NUM2: &str = "(deftrait Num2 (nadd [a b] self))\n\
+             (impl Num2 Int (defn nadd [a b] (add-i64 a b)))\n";
+        // R5 accepted — interface-only use keeps a constrained polymorphic scheme.
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(&format!("{NUM2}(defn f5 [:Num2 x] (nadd x x))"))
+            .expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .expect("interface-only use of a `:Num2` param MUST be accepted (row 5)");
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("f5") else {
+            panic!("f5 not found");
+        };
+        assert!(
+            !scheme.constraints.is_empty() && !scheme.type_vars.is_empty(),
+            "f5 MUST stay constrained-polymorphic `∀a. Num2 a => (Fn [a] a)`; got {:?} / {:?}",
+            scheme.ty, scheme.constraints
+        );
+
+        // R6 rejected — the body narrows the held-abstract `:Num2` var to Int.
+        let mut tc2 = tc_with_prims();
+        let sexps2 =
+            cranelisp_frontend::parse(&format!("{NUM2}(defn f6 [:Num2 x] (add-i64 1 x))"))
+                .expect("parse");
+        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
+        let err = tc2
+            .check_program_self(&program2)
+            .expect_err("a `:Num2` param narrowed to Int by its body MUST be rejected (row 6)");
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("unknown type"),
+            "the skolem-escape rejection MUST be a type error, never `unknown type` \
+             (§3.3.2 MUST (b)); got: {msg}"
+        );
+    }
+
+    // spec: 03-types §3.3.4 / §3.10 [S109 W6.3] (U7) — poly-as-value rejection at
+    // the generalization boundary. A written parameter var freshly introduced by
+    // a nested `fn` that remains FREE after body inference means the polymorphic
+    // `fn` was RETURNED/STORED, not applied — rank-2, unsupported. R10 (rejected):
+    // `(defn mk [] (fn [:b y] y))`. R9 (accepted): `(defn h [x] ((fn [:b y] y) 3))`
+    // — applied in place, so `b` unifies to Int and is not free. The discriminator
+    // is instantiated-at-a-use vs held-as-a-value. Fails on a revert of the check.
+    #[test]
+    fn u7_returned_polymorphic_fn_rejected_applied_in_place_accepted() {
+        // R10 — a RETURNED still-polymorphic fn is rejected.
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse("(defn mk [] (fn [:b y] y))").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        let err = tc
+            .check_program_self(&program)
+            .expect_err("a returned still-polymorphic `fn` MUST be rejected (row 10, §3.10)");
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("codegen") && !msg.contains("__expr"),
+            "the poly-as-value rejection MUST be a clean type error, never a codegen \
+             frame; got: {msg}"
+        );
+
+        // R9(ii) — the same lambda APPLIED IN PLACE instantiates `b` and compiles.
+        let mut tc2 = tc_with_prims();
+        let sexps2 =
+            cranelisp_frontend::parse("(defn h [x] ((fn [:b y] y) 3))").expect("parse");
+        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
+        tc2.check_program_self(&program2)
+            .expect("a polymorphic `fn` APPLIED in place MUST be accepted (row 9)");
+    }
+
+    // spec: 03-types §3.3.3 [S109 W6.3] (U4) — a value-position CONSTRAINT is a
+    // pure SATISFACTION CHECK (`infer_annotate` trait arm): accepted iff the
+    // expr's concrete type implements the trait, and it changes NOTHING. R12 pos:
+    // `(defn f12 [] :Num2 5)` → `(Fn [] Int)` (Int satisfies Num2; the type of `5`
+    // is unchanged). R12 neg: `(defn f12b [] :Num2 "s")` → rejected (String has no
+    // Num2 impl), and NEVER `unknown type` (the trait is recognised as a
+    // constraint, not resolved as a missing type).
+    #[test]
+    fn u4_value_position_constraint_is_a_satisfaction_check() {
+        const NUM2: &str = "(deftrait Num2 (nadd [a b] self))\n\
+             (impl Num2 Int (defn nadd [a b] (add-i64 a b)))\n";
+        // R12 pos — Int satisfies Num2; the type of `5` is unchanged.
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(&format!("{NUM2}(defn f12 [] :Num2 5)"))
+            .expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .expect("a value-position `:Num2 5` MUST be an accepted satisfaction check (row 12)");
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("f12") else {
+            panic!("f12 not found");
+        };
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(vec![], Box::new(Type::Int)),
+            "`:Num2 5` MUST NOT change the type of `5` — f12 is `(Fn [] Int)`; got {:?}",
+            scheme.ty
+        );
+
+        // R12 neg — String has no Num2 impl; the satisfaction check rejects it,
+        // never `unknown type`.
+        let mut tc2 = tc_with_prims();
+        let sexps2 = cranelisp_frontend::parse(&format!("{NUM2}(defn f12b [] :Num2 \"s\")"))
+            .expect("parse");
+        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
+        let err = tc2
+            .check_program_self(&program2)
+            .expect_err("`:Num2 \"s\"` (no String impl) MUST fail the satisfaction check (row 12)");
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("unknown type"),
+            "the failed satisfaction check MUST name the trait, never `unknown type`; got: {msg}"
+        );
+    }
+
+    // spec: 03-types §3.3.1 × 05-definitions §5.1.2 [S109 W6.3] (U9) — sibling
+    // multi-arity clauses are DISJOINT lexical scopes: each clause's bare `:a` is
+    // pinned INDEPENDENTLY by its OWN body (co-reference merges NESTED scopes
+    // only, never sibling clauses). `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n]
+    // (str-concat x x)))` — clause 1 pins `a := Int` → `(Fn [Int] Int)`, clause 2
+    // pins `a := String` → `(Fn [String Int] String)`; the DIFFERENT pins are the
+    // clause-independence guard (C-4). The whole defn type-checks (no cross-clause
+    // skolem-escape from the two different pins).
+    #[test]
+    fn u9_multi_arity_clauses_pin_written_var_independently() {
+        let mut tc = tc_with_prims();
+        let src = "(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).expect(
+            "each clause's bare `:a` pinned by its OWN body MUST be accepted \
+             (§3.3.1 MUST (a), §5.1.2 clause independence)",
+        );
+    }
+
+    // spec: 03-types §3.3.1 [S109 W6.3] (U2) — nested-`fn` lexical CO-REFERENCE
+    // SURVIVES the W6.3 backout: the enclosing definition's written-var scope
+    // THREADS into the nested `fn` (`infer_lambda` shares `written_var_scope`), so
+    // an inner `:a` resolves to the SAME `TypeId` as the enclosing `defn`'s `:a`.
+    // `(defn g [:a x] (fn [:a y] y))` MUST have scheme `∀a. (Fn [a] (Fn [a] a))` —
+    // ONE quantified var in all three positions (row 8). Under a SHADOW reading
+    // the inner `:a` would mint a SECOND var, which this cell rejects (0588).
+    #[test]
+    fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
         let mut tc = tc_with_prims();
         let sexps =
             cranelisp_frontend::parse("(defn g [:a x] (fn [:a y] y))").expect("parse");

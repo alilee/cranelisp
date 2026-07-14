@@ -635,7 +635,7 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
 /// (e.g. `(Option Int)`) carries type arguments and is a concrete type, never a
 /// single trait bound; `TypeVar`/`SelfType`/`FnType`/`Bounds` are not bare
 /// names. The as-written module qualification is preserved (`:fmt/Display`).
-fn single_trait_bound_from_annotation(
+pub(crate) fn single_trait_bound_from_annotation(
     ann: &cranelisp_types::TypeExpr,
 ) -> Option<cranelisp_types::TraitRef> {
     match ann {
@@ -2027,6 +2027,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         !ty.is_concrete()
     }
 
+
     /// Returns the span of the first codegen-reaching value position carrying a
     /// free-at-root `Type::Var`, plus the offending binder NAME when that
     /// position is a bare `Expr::Var` (a param/`let` use) — so the diagnostic can
@@ -3303,15 +3304,42 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         self.push_scope(state);
 
-        // Activate the definition's RIGID written-var scope (spec §3.3 [S109]).
-        // Every Pass-1 param-annotation var is rigid; `infer_annotate` extends
-        // `rigid_vars` for body/value annotations. Saved/restored so nothing
-        // leaks past this body (a forward-ref caller must see the var as an
-        // ordinary quantifiable one — MUST-1).
+        // Activate the definition's written-var scope + the constraint-abstract
+        // rigid set (spec §3.3.1–§3.3.2 [S109]). Two independent pieces:
+        //
+        // - `written_var_scope` (name → `TypeId`) threads LEXICAL CO-REFERENCE:
+        //   every occurrence of one bare written name within the definition —
+        //   including inside nested `fn` closures (`infer_lambda` shares it) —
+        //   resolves to the SAME var (`[:a x :a y]` ties x/y; a body `:a`
+        //   co-refers to a param `:a`). This is ALL a bare written var does; it
+        //   is an ordinary FLEXIBLE inference var otherwise, and the body MAY pin
+        //   it to a concrete type (never an error — §3.3.1 MUST (a), rows 2/4/11).
+        //
+        // - `rigid_vars` holds ONLY the ASSERTED-constraint param vars (`:C x`):
+        //   a constraint at a parameter position is held abstract over `C` for
+        //   the body-check, so the body narrowing it to a concrete type — by
+        //   ascription or by use — is a skolem escape (§3.3.2 MUST (b), row 6).
+        //   These are exactly the param `Type::Var`s that ALREADY carry a
+        //   constraint at Pass-2 entry: `resolve_bound_param` recorded the
+        //   assertion during Pass-1 signature registration. A BARE `:a` param
+        //   that merely ACCRUES a constraint from body use (row 7) is NOT here —
+        //   its var carries no constraint until body inference runs, after this
+        //   seeding, so it stays flexible (inferred-not-asserted).
         let prev_rigid = std::mem::take(&mut state.rigid_vars);
         let prev_scope = state.written_var_scope.take();
-        state.rigid_vars = written_var_scope.values().copied().collect();
+        let mut rigid: HashSet<TypeId> = HashSet::new();
+        for pt in param_types {
+            if let Type::Var(id) = self.apply_subst(state, pt)
+                && state.active_constraints.get(id).is_some()
+            {
+                rigid.insert(id);
+            }
+        }
+        state.rigid_vars = rigid;
         state.written_var_scope = Some(written_var_scope);
+        // Fresh per-body accumulator for nested-`fn` written-param vars (§3.10
+        // poly-as-value check below).
+        let prev_lambda = std::mem::take(&mut state.lambda_written_vars);
 
         // Bind parameters
         for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
@@ -3327,6 +3355,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Unify body type with return type variable
         self.unify(state, &body_ty, ret_ty, defn.span)?;
+
+        // **Poly-as-value rejection (spec §3.3.4 / §3.10 rank-1, MUST (f), row
+        // 10).** A written parameter var freshly introduced by a nested `fn`
+        // (`(fn [:b y] …)`) that remains FREE after body inference means the
+        // polymorphic function was RETURNED/STORED rather than applied in place
+        // (`(defn mk [] (fn [:b y] y))` → `∀b. (Fn [] (Fn [b] b))`). Cranelisp is
+        // rank-1: a `∀` held uninstantiated in a value position is unsupported.
+        // When the lambda is applied in place (row 9: `((fn [:b y] y) 3)`) the
+        // var unifies to the argument type and is not free, so it is not flagged.
+        // A co-referring inner `:a` (row 8: `(fn [:a y] y)` under `[:a x]`) is
+        // NOT freshly minted here, so it never enters `lambda_written_vars`.
+        let escaped_poly_fn = state
+            .lambda_written_vars
+            .iter()
+            .any(|&id| matches!(self.apply_subst(state, &Type::Var(id)), Type::Var(_)));
+        state.lambda_written_vars = prev_lambda;
+        if escaped_poly_fn {
+            return Err(CranelispError::TypeError {
+                message: "a polymorphic function cannot be returned or stored as a \
+                          value: a written type variable would leave the returned \
+                          `fn` polymorphic (rank-2). Apply it in place, or make the \
+                          returned function concrete (spec §3.3.4/§3.10)"
+                    .to_string(),
+                location: ErrorLocation::from_span(defn.span),
+            });
+        }
 
         // Deactivate the rigid written-var scope before the post-passes /
         // generalization run (MUST-1: outside its own body the written var is an
