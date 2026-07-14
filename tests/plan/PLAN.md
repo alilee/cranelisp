@@ -2360,262 +2360,288 @@ Inc3 §B byte-identity strategy):
   annotation-band citation the move breaks (annotation band is `/qa`'s, edited
   in place).
 
-### L. W6/W6.2 — annotation-resolution variant × {pos, neg} matrix (the poly-annotation defect's own coverage; rigid model as of 2026-07-14)
+### L. W6/W6.3 — written-type-var semantics acceptance matrix (spec §3.3 rows 1–17, SETTLED 2026-07-14; supersedes the W6.2 rigid-everywhere matrix)
 
-The coverage-gap finding from the W1 re-ruling pass: a **free type variable in
-a `defn`/`fn` parameter annotation** fails `unknown type 'a'` (verified live)
-— and no cell in the suite would have caught it, because annotation-resolution
-coverage grew per whichever position an implementer exercised. The matrix
-below is the missing family. **Re-examined W6.2 (2026-07-14)** after the user
-ruled written vars RIGID/definition-scoped — the reclassifications and the
-skolem-escape rows the first pass lacked are marked inline.
+**Three generations run through this matrix** (kept because each generation's
+tests are in the tree and carry `// defect:` records):
 
-**Spec stance RESOLVED (2026-07-14; SPRINT.md §"W6 spec-stance gate") —
-REVISED W6.2 (2026-07-14, user ruling; SPRINT.md §"W6.2 RIGID/DEFINITION-SCOPED
-RULING").** The W6 `/dev` pass (`e401cce9`) shipped the FLEXIBLE/acquire model
-— a written var minted an ordinary inference variable, so an in-body ascription
-or use silently SET it (`:a "hello"` → `(Fn [a] String)`; F1/0588). The user
-ruled the opposite: a written type variable is **definition-scoped and RIGID**
-— annotations ASSERT, they do not acquire. `/spec` rescribed §3.3; this matrix
-was re-examined against it 2026-07-14 (reclassifications marked per-row). Every
-row cites the §3.3 MUST band:
+- **W6 (`unknown type 'a'`, FIXED at `e401cce9`):** a free lowercase annotation
+  identifier took the named-type lookup path. The original FV-1..FV-15 rows
+  were authored GREEN at `e401cce9` under the flexible model.
+- **W6.2 (rigid-everywhere, IMPLEMENTED at `b2bfb760` = current HEAD, now
+  SUPERSEDED):** the user first ruled written vars rigid/definition-scoped;
+  `/testing` authored the FV-16..FV-21 REDs + the FV-11 rewrite (`fb6e84c6`)
+  and `/dev` landed rigid bare vars + lexical co-reference (`b2bfb760`).
+- **W6.3 (SETTLED — user-ruled rows 1–17, empirically grounded; SPRINT.md
+  §"W6.3 SETTLED PRINCIPLE"; scribed as spec §3.3.1–3.3.5 + the §3.10
+  poly-as-value clause):** REVERSES the rigid-BARE half of W6.2 while KEEPING
+  lexical co-reference; rigidity moves onto the CONSTRAINT path. This matrix.
 
-> **MUST-1 (type variable, boundary-quantified, call-site-instantiated):** "a
-> lowercase identifier appearing free in an annotation — whether standing alone
-> (`(defn id [:a x] :a x)`) or nested inside an applied type (`:(Maybe a)`) —
-> is a type variable in exactly the sense above" + §3.3 property 1: "MUST be
-> treated as implicitly universally quantified at the definition boundary …
-> Which concrete type it becomes is chosen by the **caller** at each use site
-> (instantiation-at-use, §3.10) — **never** by the definition's own body."
->
-> **MUST-2 (not-unknown-type):** "A written free lowercase variable MUST NOT
-> be treated as a reference to an unknown named type; it is a genuine type
-> variable."
->
-> **MUST-3 (rigid; assert-not-acquire; skolem-escape):** §3.3 property 2: "an
-> annotation `:a e` **asserts, it does not acquire**: it is a *checking
-> obligation* that MUST be discharged by `e` **already** having type `a` (e.g.
-> `e` is a parameter declared `:a`…). Ascribing a **concrete-typed** expression
-> — or one carrying a *distinct* rigid variable — to a bare quantified variable
-> MUST be rejected as a type error (**skolem-escape**); it MUST NOT silently
-> acquire the concrete type."
->
-> **MUST-4 (unification asymmetry):** "a **flexible** inference variable (for
-> example, the type of an unannotated parameter) MAY unify with a rigid written
-> variable — this is precisely how a parameter *acquires* a written type — but
-> a **rigid** written variable MUST NOT be unified with a concrete type, nor
-> with a *distinct* rigid variable."
->
-> **SCOPE-5 (definition-scoped = lexical co-reference; CORRECTED 2026-07-14
-> within W6.2 — the earlier "nested shadow" reading was ruled the OPPOSITE):**
-> a written var "is introduced at the **outermost binder where its name first
-> appears** in a definition, universally quantified at that enclosing
-> definition's boundary … and every occurrence of the same name within that
-> lexical scope — **including inside nested `fn` closures** — MUST co-refer
-> to that same one rigid variable. A nested `fn`/`defn` does **NOT** open a
-> fresh quantification boundary: a name becomes a *distinct* rigid variable
-> only when it is not already in scope, and a fresh identifier first appearing
-> in an inner `fn` is still quantified at the enclosing definition's
-> boundary." At the **top level**, a `def` binding is itself the
-> generalization boundary (bare `:a 5` / `(def y :a 5)` → skolem-escape).
-> Worked (normative): `(defn id [:a x] :a x)` → `∀a.(Fn [a] a)` checks;
-> `(defn g [:a x] (fn [:a y] y))` → `∀a. (Fn [a] (Fn [a] a))` — `x` and `y`
-> the **SAME** rigid `a` (the inner `:a` co-refers, it does NOT shadow);
-> `(defn f [:a x] :a "hello")` → **type error** (skolem-escape), it does NOT
-> yield `(Fn [a] String)`.
+**The settled model (one line):** bare `:a` = a named inference variable — it
+relates same-named occurrences (incl. into nested `fn`, lexically) and
+documents; the body MAY pin it, never an error. A constraint `:C x` is a
+checkable claim ONLY at a quantified (parameter / generalizable) position —
+held abstract over `C` for the body-check; body-narrowing = skolem escape
+(body-only; caller instantiation is always sound). A value-position constraint
+is a satisfaction check; a concrete-type value annotation resolves ambiguity
+including return-type-polymorphic trait dispatch; an unresolved return-type
+poly in a codegen-reaching position is the §3.11 ambiguity error; polymorphic
+functions as values (rank-2) are unsupported.
 
-Rigidity binds ALL unification with the var inside its definition, not only
-explicit ascriptions: a body *use* that would force the rigid var concrete
-(`(add-i64 x 1)` on `x : a`) is the same skolem-escape rejection (MUST-4 has
-no by-use exemption). This is what reclassifies FV-11.
+**The §3.3 MUST band (a)–(h)** — every row below cites it (the retired W6.2
+MUST-1..MUST-4/SCOPE-5 band is superseded; `// spec:` comments citing it are
+swept in the same `/testing` pass):
 
-The family sweep table stays as the position × shape map — its free-var cells
-are REALIZED by the FV rows (pointers in the cells).
+- **(a)** §3.3.1 — a bare written variable pins freely; body narrowing is
+  never an error (rows 2, 4, 11)
+- **(b)** §3.3.2 — a constraint at a quantified position is held abstract;
+  body narrowing is a skolem escape, arising from the body ONLY (rows 5–7)
+- **(c)** §3.3.3 — a value-position constraint is a satisfaction check (row 12)
+- **(d)** §3.3.3 — a concrete-type ascription resolves ambiguity, including
+  return-type-polymorphic dispatch; context resolves the same way (rows 13–15)
+- **(e)** §3.3.3 — an unresolved return-type polymorphism is the §3.11
+  ambiguity error; a value-position constraint does NOT disambiguate
+  (rows 16–17)
+- **(f)** §3.3.4 + §3.10 — a polymorphic function as a value is unsupported
+  (row 10)
+- **(g)** §3.3.1 — lexical co-reference, including into nested `fn`; no fresh
+  quantification boundary at a nested `fn` (rows 3, 8)
+- **(h)** §3.3.1 — caller instantiation is never an error; a lambda-owned var
+  applied in place is instantiation-at-use (row 9)
 
-**Fixture syntax notes (binding for `/testing`):**
+**Empirical grounding at `b2bfb760`** (SPRINT.md, 2026-07-14 REPL probes):
+rows 13/14/15 PASS; row 16 leaks `codegen error … __expr entry has no GOT
+slot` instead of the §3.11 message; row 2 ERRORS (bare rigid) while row 6
+PASSES (trait constraint not rigid) — the current implementation is exactly
+INVERTED from the settled model on the rigidity axis.
 
-- **Annotation precedes the parameter name** — `[:a x]`, `[:(Box a) b]` — per
-  §5.1.1 EBNF (`annotated_param = colon_prefix symbol`) and §3.9 (`:Type form`
-  binds the immediately-following form in ALL positions). The 0587 example-order
-  typo was RESOLVED in the W6.2 `/spec` rescribe — §3.3's worked examples now
-  read `(defn id [:a x] :a x)`, matching the EBNF order fixtures already use.
-- **Body-annotation parse gaps (F4/0591, CARRIED):** annotations do not parse
-  in four body positions (multi-arity clause body, `fn`/match-arm/`if` bodies)
-  — a pre-existing frontend limitation, FIXME 0591 open. New W6.2 fixtures
-  place body annotations ONLY in the single-arity `defn` body position (which
-  parses — the 0588 live repro is exactly that shape); cells whose natural
-  fixture needs a gapped position route to the unit tier (noted per-row).
-- **There is no return-annotation syntax** (§5.1.1: "The return type is always
-  inferred"). The "return position" cells are realized as the BODY expression
-  annotation (`:Type form`, §3.9/§4.9): `(defn id [:a x] :a x)`'s second `:a`
-  annotates the body `x`.
-- Free-standing fixtures only (no stdlib): `(deftype (Box a) [:a v])`,
+**Coverage-by-definition-variants axis family** (the standing lens this matrix
+realizes; root `CLAUDE.md` §Testing, `tests/CLAUDE.md` §Coverage by definition
+variants): **{bare var, trait constraint, concrete type} × {quantified/parameter
+position, value position} × {body pins it, body uses only the interface, left
+unresolved}** — ONE uniform rule per cell, holding across every annotation
+position (`defn` param / `fn` param / body ascription / `let` / `deftype`
+field / trait & impl sigs) and every mint site (the 0590 four-way mirror). A
+missing cell is where a variant grows its own codepath.
+
+The family map (shape × position; cells point at realizing rows):
+
+| Shape \ position | quantified (param / generalizable binding) | value position (concrete expression) |
+|---|---|---|
+| bare `:a` | names + relates (R1/R3/R8, FV-4..FV-7 applied forms); body MAY pin (R2, C-1..C-4) | pins to the expression's type (R4/R11); a still-unresolved var stays §3.11-governed (FV-10) |
+| constraint `:C` | held abstract; body-narrow = skolem escape (R5 pos / R6 neg); inferred-from-use is NOT asserted (R7) | satisfaction check only (R12 pos+neg); does NOT disambiguate (R17) |
+| concrete type | pins the param (§3.9.1; existing concrete-app coverage) | resolves ambiguity incl. return-type dispatch (R13/R14/R15); mismatch still rejected (FV-9 neg) |
+
+Boundary rows outside the 3×2 grid: R16 (unresolved return-type poly = §3.11
+error, mode-uniform), R10 (poly-as-value), R9 (caller instantiation), and the
+name-discrimination guards FV-13 (uppercase) / FV-21 (qualified lowercase).
+
+**Fixture notes (binding for `/testing`):**
+
+- Annotation precedes the parameter name — `[:a x]`, `[:(Box a) b]` — per
+  §5.1.1 EBNF and §3.9 (`:Type form` binds the following form).
+- **Trait fixtures are free-standing** (no stdlib; `PreludeVariant::None` or
+  `PrimitivesOnly`): `zed : ∀a. Zeroable a => (Fn [] a)` — a `Zeroable`
+  deftrait with nullary method `zed`, `Int` impl → `0`, `Float` impl → `0.0`
+  (the SPRINT.md empirical fixture, so the syntax is known-good); and
+  `nadd : (Fn [a a] a)` — a `Num`-style deftrait (pick a non-colliding name,
+  e.g. `Num2`, if the prelude variant binds `Num`) with an `Int` impl via
+  `add-i64`. Exact `deftrait`/`impl` syntax per §7 is `/testing`'s.
+- **Body-annotation parse gaps (F4/0591) still bind:** body ascriptions parse
+  only in the single-arity `defn` body position; cells whose natural fixture
+  needs a gapped position route to the unit tier (noted per-row). C-4's
+  multi-arity fixture uses PARAM annotations only, which parse.
+- There is no return-annotation syntax (§5.1.1); "return position" cells are
+  realized as the body ascription.
+- Free-standing ADTs as before: `(deftype (Box a) [:a v])`,
   `(deftype (Pair2 a b) [:a x :b y])`, primitives `add-i64`/`str-concat`.
 
-Annotation shape × position (the family map; free-type-var cells realized by
-§L.1 FV rows):
+#### L.1 W6.3 acceptance rows (R1–R17 = spec rows 1–17, + derived corollaries C-1..C-4, + retained guards)
 
-| Position \ annotation shape | concrete app (`:(Box Int)`) | free type var (`:(Box a)`) | bare var (`:a`) |
-|---|---|---|---|
-| `defn` param | pos pin (`defn_param_concrete_app_annotation`) | **FV-4/FV-5**; rigid-by-use neg **FV-19** | **FV-1/FV-2/FV-3**; distinct-rigid neg **FV-17** |
-| `fn` (lambda) param | pos pin | FV-15 (nested facet) | **FV-15**; nested co-reference **FV-20** |
-| `deftype` field | pos pin (likely existing — verify-first) | GREEN control (works today: `(deftype (Box a) [:a v])` is the language's bread and butter — cite existing; the header BINDS `a`, so it is not free — unaffected by W6.2) | GREEN control |
-| body/return expression annotation (`:Type form`) | pos pin (§4.9 existing) | FV-6 (co-reference facet); applied skolem-escape **FV-18** | **FV-6**; assert-not-acquire neg **FV-16**; boundary: **FV-10** (§3.11 discrimination) |
-| `let` binding annotation | pos pin | sweep item (verify-first: may share the defn-param seam) | sweep item — rigid re-read: a concrete initializer under a free `:a` is now a skolem-escape NEGATIVE (see sweep) |
+**Status legend** (all verdicts read against HEAD `b2bfb760`, the rigid-bare
+tree): **PIN** = GREEN today, verdict unchanged under W6.3, MUST HOLD through
+the `/dev` pass (a regression is over-broadening). **RED** = expected
+failing-not-ignored at authoring; flips green at the W6.3 `/dev` pass.
+**REWRITE→RED** = an authored W6.2 test currently GREEN whose assertions pin
+the SUPERSEDED rigid model — `/testing` inverts it per its row, after which it
+is RED until `/dev` lands. **verify-first** = expected verdict stated; observed
+state at `b2bfb760` recorded at authoring.
 
-Name-discrimination guards sit beside the map (they are not shape cells):
-uppercase unknown **FV-13** (PIN), trait path **FV-14** (PIN), qualified
-lowercase `:user/int` **FV-21** (F2/0589 — a qualified name is a named-type
-reference, never a var).
+**`// defect:` lines for the REDs:**
 
-#### L.1 W6/W6.2 — written free-var annotation resolution: acceptance rows (rigid model)
+- **The six rewritten flips (R2, R4, C-1..C-4) + R11:**
+  `class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev`
+  (vocabulary addition `wrong-reject` recorded in `tests/CLAUDE.md` §Defect-repro
+  notation, /qa 2026-07-14)
+- **R6:** `class=silent-accept locus=crates/cranelisp-typecheck constraint path (0590 mirror sites: traits/type_resolve.rs x3 + form.rs — a :C x parameter is never held abstract, so the body narrows the claimed-abstract type silently) found=S109 owner=/dev`
+- **R10:** `class=silent-accept locus=crates/cranelisp-typecheck generalization boundary (the §3.10 rank-1 gate is absent for a RETURNED still-polymorphic fn) found=S109 owner=/dev` — verify the observed failure shape at authoring and adjust the class to the evidence.
+- **R16/R17:** `class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (unresolved return-type-poly trait dispatch reaches the backend as an __expr-has-no-GOT-slot codegen error instead of the check-side ambiguous-type rejection; message-quality sibling FIXME 0568) found=S109 owner=/dev`
 
-Every row cites the §3.3 MUST band (MUST-1..MUST-4/SCOPE-5, quoted above) plus
-the listed section. **Two defect generations run through this matrix:**
+**Table 1 — the seventeen settled rows:**
 
-- **W6 (`unknown type 'a'`, fixed):** the original defect — a free lowercase
-  annotation ident took the named-type lookup path. Fixed at `e401cce9`; the
-  13 W6 REDs are GREEN there (SPRINT.md §W6.2). Their `// defect:` line
-  (already on the authored tests, past-tense once W6.2 confirms no wording
-  churn): `class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map fell to TypeNotFound instead of minting a quantified var) found=S109 owner=/dev`
-- **W6.2 (flexible-acquire, OPEN — the current REDs):** `e401cce9` minted
-  FLEXIBLE vars, so ascription/use silently acquires (F1/0588) and qualified
-  lowercase names mint (F2/0589). `// defect:` lines for the new REDs:
-  - FV-11/FV-16..FV-19 (+FV-20 both facets — same 0588 per-Annotate/non-threaded var_map seam): `class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — ascription/use ACQUIRES instead of asserting; no rigid skolem, per-Annotate fresh var_map instead of definition-scoped — F1/0588) found=S109 owner=/dev`
-  - FV-21: `class=silent-accept locus=crates/cranelisp-typecheck (type-var minting keyed on lowercase-ness without excluding QUALIFIED names; four mirror mint sites per 0590 — traits/type_resolve.rs ×3 + form.rs — F2/0589) found=S109 owner=/dev`
+| Row | Spec row + MUST | Fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
+|---|---|---|---|---|---|---|---|
+| R1 | row 1, (a) | `(defn id [:a x] x)` → `∀a.(Fn [a] a)`, used at Int AND String in one program | existing `defn_param_bare_free_var_quantifies_and_uses_at_two_types` (ex-FV-1) | tests/spec_03_types.rs | e2e all-modes | PIN | pos |
+| R2 | row 2, (a) | `(defn f [:a x] (add-i64 1 x))` → `(Fn [Int] Int)`, `(f 5)` → 6 — the body pin is NOT an error; the scheme reflects the pinned type | REWRITE of `written_var_body_use_cannot_pin_rigid_neg` (ex-FV-19) → `written_var_body_use_pins_freely` | tests/spec_03_types.rs | e2e all-modes + unit U1 | **REWRITE→RED** (b2bfb760 rejects) | pos (was neg) |
+| R3 | row 3, (a)/(g) | `[:a x :a y]` ties the two params — realized by the existing eq2 pair: pos `(eq2 1 2)` → 1; neg `(eq2 1 "two")` = call-site unification error | existing `defn_param_same_free_var_reused_unifies` + `_neg_mismatch` (ex-FV-8) | tests/spec_03_types.rs | e2e + unit U2 | PIN | pos+neg |
+| R4 | row 4, (a) | `(defn f [:a x] :a "hello")` → `(Fn [String] String)`; `(f "x")` → "x" — the value-position bare ascription relates `a` → String, never an error | REWRITE of `written_var_concrete_ascription_skolem_escape_neg` (ex-FV-16) → `written_var_concrete_ascription_pins` | tests/spec_03_types.rs | e2e all-modes + unit U1 | **REWRITE→RED** | pos (was neg) |
+| R5 | row 5, (b) | free-standing `Num2`/`nadd` fixture; `(defn f [:Num2 x] (nadd x x))` → `∀a. Num2 a => (Fn [a] a)` (constrained scheme per §3.4.1 display; result is `self` = `a`, NOT Int) + `(f 3)` → 6 — interface-only use keeps the constrained polymorphic scheme | NEW `constraint_param_interface_use_keeps_constrained_scheme` (absorbs ex-FV-14's substance; FV-14's thin pin retained as control) | tests/spec_03_types.rs | e2e | verify-first PIN (constraint path is non-rigid today → expected GREEN) | pos |
+| R6 | row 6, (b) | `(defn f [:Num2 x] (add-i64 1 x))` → **skolem-escape type error** (the body narrows the held-abstract var to Int). Facets: (i) the error is a type error — never `unknown type`, never a codegen frame; (ii) the defn is REJECTED, so a follow-on `(f 3)` errors unresolved | NEW `constraint_param_body_narrow_skolem_escape_neg` | tests/spec_03_types.rs | e2e all-modes + unit U3 | **RED** (t4 evidence: PASSES today — the 0590-mirror-class gap) | neg |
+| R7 | row 7, (b) | `(defn f [:a x] (nadd x x))` → `∀a. Num2 a => (Fn [a] a)`, no error — the constraint is INFERRED from use, not asserted; nothing is held abstract | NEW `bare_var_inferred_constraint_not_held_abstract` | tests/spec_03_types.rs | e2e | verify-first pos (b2bfb760's rigid bare may reject constraint accrual → possibly RED today; record observed) | pos |
+| R8 | row 8, (g) | `(defn g [:a x] (fn [:a y] y))` → `∀a.(Fn [a] (Fn [a] a))` — inner `:a` co-refers, one var both layers. Call facet: `((g 3) 4)` → 4 AND `((g 3) "t")` errors (co-reference observable) | existing `nested_fn_written_var_corefers_enclosing_rigid` (ex-FV-20 pos facet) — KEEP; co-reference survives W6.3 (name-sweep of the `_rigid` suffix optional) | tests/spec_04_expressions.rs | e2e + unit U2 | PIN | pos |
+| R9 | row 9, (h) | (i) `((fn [:a x] x) 3)` → 3 — standalone lambda applied in place (existing ex-FV-15); (ii) NEW in-defn shape: `(defn h [x] ((fn [:b y] y) 3))` accepted — `b` is lambda-owned, quantified at `h`'s boundary, and `3` is caller-instantiation, never an error | existing `fn_lambda_param_free_var_annotation` + NEW `lambda_owned_var_instantiated_in_place` | tests/spec_04_expressions.rs | e2e | (i) PIN; (ii) verify-first pos (the rigid tree may reject the in-place instantiation) | pos |
+| R10 | row 10, (f)/§3.10 | `(defn mk [] (fn [:b y] y))` → **type error** — a returned still-polymorphic `fn` is poly-as-value (rank-2), unsupported; a CLEAR error, not silent mis-inference, not a codegen frame. Contrast facet with R9(ii): applied-in-place accepted, returned rejected | NEW `returned_polymorphic_fn_rejected_neg` | tests/spec_03_types.rs | e2e + unit U7 | **RED** (verify today's failure shape at authoring — expected silently accepted or mis-inferred) | neg |
+| R11 | row 11, (a) | `(defn f [] :a 5)` → `(Fn [] Int)`; `(f)` → 5 — a bare value-position ascription pins to the concrete type, no error | NEW `bare_var_value_position_pins_to_concrete` | tests/spec_03_types.rs | e2e all-modes | **RED** (b2bfb760 rejects as skolem-escape — the wrong-reject flip-to-pass) | pos |
+| R12 | row 12, (c) | `(defn f [] :Num2 5)` → no error, `(f)` → 5 — Int satisfies Num2; the check changes nothing. NEG twin: `:Num2 "s"` with no String impl → satisfaction-check error naming the trait (accepted IFF the type implements the trait) | NEW `value_position_constraint_satisfaction_check` + `_neg` sibling | tests/spec_03_types.rs | e2e + unit U4 | verify-first (pos expected GREEN today; neg verdict recorded at authoring) | pos+neg |
+| R13 | row 13, (d) | Zeroable fixture; `:Int (zed)` → `:primitives/Int 0` — the concrete-type ascription selects the Int impl of return-type-polymorphic dispatch | NEW `concrete_ascription_resolves_return_type_dispatch_int` | tests/spec_03_types.rs (cross-cite §7) | e2e all-modes | PIN (empirically GREEN 2026-07-14) | pos |
+| R14 | row 14, (d) | `:Float (zed)` → `:primitives/Float 0.0` — same method, other impl, chosen by the annotation | NEW `concrete_ascription_resolves_return_type_dispatch_float` | tests/spec_03_types.rs | e2e all-modes | PIN (empirically GREEN) | pos |
+| R15 | row 15, (d) | `(add-i64 (zed) 5)` → `:primitives/Int 5` — surrounding CONTEXT resolves the dispatch, no annotation needed | NEW `context_resolves_return_type_dispatch` | tests/spec_03_types.rs | e2e all-modes | PIN (empirically GREEN) | pos |
+| R16 | row 16, (e) | bare `(zed)` in a codegen-reaching position → the **§3.11 ambiguous-type error** ("ambiguous … add an annotation" class), **MODE-UNIFORM across REPL/`--run`/`--link`** — the sibling disposition of unpinned `[]`. Output MUST NOT contain `GOT slot` / `codegen error` / the `__expr` internal binder (0568). Discrimination facet: bare `zed` (the NAME, no call) at the REPL is disposition-3 introspection display (§3.11.4), not an error | NEW `unresolved_return_type_dispatch_ambiguity_error_neg` (per-mode assertions) | tests/spec_03_types.rs | e2e per-mode | **RED** (leaks `codegen error … __expr has no GOT slot` today — check-gate-leak) | neg |
+| R17 | row 17, (e) | `:Zeroable (zed)` → STILL the §3.11 ambiguous-type error — a value-position CONSTRAINT does not disambiguate; only a concrete type does | NEW `value_position_constraint_does_not_disambiguate_neg` | tests/spec_03_types.rs | e2e | **RED** (verify today's shape at authoring — expected the same codegen leak) | neg |
 
-**Status legend:** "PIN (W6)" = authored in W6, GREEN at `e401cce9`, and MUST
-HOLD through the W6.2 rigid re-fix — the rigid model changes none of these
-verdicts, so a W6.2 regression on any of them is over-broadening. "RED (W6.2)"
-= expected failing-not-ignored at authoring against `e401cce9` (the flexible
-model accepts what MUST-3/MUST-4 reject); flips green at the `/dev` rigid pass.
-**RECLASSIFIED W6.2** rows are explicitly marked with what moved and why.
+**Table 2 — derived corollaries** (rewrites of W6.2 negatives whose fixtures
+are NOT verbatim rows 1–17; each verdict DERIVES from MUST (a) — a bare
+variable imposes no checking obligation — plus (g) where noted. If `/dev`
+finds a contrary reading, escalate via `/spec`, do not improvise):
 
-| Row | Citation + fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
-|---|---|---|---|---|---|---|
-| FV-1 | §3.3 MUST-1, standalone bare var — `(defn id [:a x] x)` → scheme `(Fn [a] a)`; genuine quantification proven by use at TWO types in one program: `(id 3)` → `:primitives/Int 3` AND `(id "s")` → `:primitives/String "s"`. Rigid re-read: unchanged — the body never constrains `a`; the two-type use is MUST-1's caller-side instantiation made observable | `defn_param_bare_free_var_quantifies_and_uses_at_two_types` | tests/spec_03_types.rs | e2e all-modes | [S109] — PIN (W6) | pos |
-| FV-2 | §3.3 MUST-2, same fixture as FV-1 — output MUST NOT contain `unknown type`; MUST NOT contain a codegen-layer frame (the error class, if the fix regresses, must never be a named-type miss) | `defn_param_bare_free_var_not_unknown_type_neg` | tests/spec_03_types.rs | e2e | [S109] — PIN (W6) | neg |
-| FV-3 | §3.3 MUST-1 (written quantifies exactly as inference-generated) — TWIN: `(defn idw [:a x] x)` vs `(defn idi [x] x)` — introspection displays the SAME scheme for both; both evaluate at the same two types. W6.2 SCOPE NOTE: the parity claim is SCHEME/display + call-site only — under the rigid model the two are NOT interchangeable in-body (idw's `a` is rigid, idi's param var flexible); the in-body contrast is FV-16/FV-19's, and this twin must not be read (or extended) as licensing body-behaviour parity | `written_var_vs_inferred_var_identical_scheme_twin` | tests/spec_03_types.rs | e2e (REPL introspection + all-modes call) | [S109] — PIN (W6) | pos (parity) |
-| FV-4 | §3.3 MUST-1, nested in applied type — `(deftype (Box a) [:a v])` + `(defn unbox [:(Box a) b] (v b))` → `(Fn [(Box a)] a)`; `(unbox (Box 7))` → 7 and a String leg. The verified-live W6 failing shape. Neg facet: no `unknown type 'a'`. Rigid re-read: checks via MUST-4's allowed direction — the accessor's instantiated FLEXIBLE var unifies with rigid `a`; the body never forces `a` concrete | `defn_param_free_var_nested_in_applied_type` | tests/spec_03_types.rs | e2e all-modes | [S109] — PIN (W6) | pos + neg facet |
-| FV-5 | §3.3 MUST-1, multi-var applied + deeper nesting — `(deftype (Pair2 a b) [:a x :b y])` + `(defn get-x [:(Pair2 k v) p] (x p))` → `(Fn [(Pair2 k v)] k)`; deeper facet `:(Box (Pair2 k v))` | `defn_param_multi_var_applied_annotation` | tests/spec_03_types.rs | e2e | [S109] — PIN (W6) | pos |
-| FV-6 | §3.3 MUST-1/MUST-3/MUST-4 + §3.9/§4.9 (body/"return" position — no return syntax exists per §5.1.1) — (a) the §3.3 worked POSITIVE `(defn id [:a x] :a x)`: the SAME written var in param annotation and body annotation co-refer within one definition boundary → `(Fn [a] a)`, not `(Fn [a] b)`. Rigid re-read: this is MUST-3's discharge case — the assertion `:a x` checks because the annotated expr IS the param already typed `a`; (b) var only in the body annotation `(defn id2 [x] :a x)` → `(Fn [a] a)` — discharges via MUST-4's allowed direction (the unannotated param's FLEXIBLE var unifies with rigid `a`: acquisition by the flexible side, never by the rigid one). Co-reference NOT rescued by incidental unification (0588's per-`Annotate` fresh-map seam) is **unit u2** | `written_var_param_and_body_annotation_corefer` | tests/spec_03_types.rs | e2e + **unit u2** | [S109] — PIN (W6) | pos |
-| FV-7 | §3.3 MUST-1, multiple distinct vars — `(defn fst2 [:a x :b y] x)` → `(Fn [a b] a)`; `(fst2 1 "s")` → 1. The success at MIXED argument types IS the guard that `a`/`b` are independent (not wrongly unified). The in-body face of the same property — ascribing a `b`-typed param to `:a` MUST error — is FV-17 (MUST-4's distinct-rigid clause) | `defn_param_two_distinct_free_vars_independent` | tests/spec_03_types.rs | e2e all-modes | [S109] — PIN (W6) | pos + neg (no cross-var unify) |
-| FV-8 | §3.3 SCOPE-5 (one definition boundary = one rigid var per identifier; within-signature co-reference) — `(defn eq2 [:a x :a y] x)` → `(Fn [a a] a)`; pos: `(eq2 1 2)` → 1; neg: `(eq2 1 "two")` → TYPE-MISMATCH error (both args instantiate ONE quantified `a`), and the error is a CALL-SITE instantiation/unification failure — not skolem-escape (the definition itself is well-typed), never `unknown type` | `defn_param_same_free_var_reused_unifies` (+ `_neg` sibling) | tests/spec_03_types.rs | e2e + **unit u2** | [S109] — PIN (W6) | pos + neg |
-| FV-9 | §3.3 + §3.9.1, free + concrete mixed — `(defn tag [:a x :Int n] x)` → `(Fn [a Int] a)`; `(tag "s" 3)` → "s"; neg facet: `(tag "s" "t")` rejected (the concrete cell still constrains) | `defn_param_free_var_and_concrete_mixed` | tests/spec_03_types.rs | e2e | [S109] — PIN (W6) | pos + neg |
-| FV-10 | §3.11 boundary discrimination — a free-var annotation on a CODEGEN-REACHING bare value (`:(Vec a) []` consumed at runtime in `--run`/`--link`) is the §3.11 AMBIGUOUS-type error ("add an annotation"), and at the REPL a bare polymorphic value is disposition-3 introspection display (§3.11.4) — in NO mode is the verdict `unknown type 'a'`. Rigid re-read: verdict unchanged — `[]`'s flexible elem var unifies with the written var (MUST-4 allowed direction) and the value stays polymorphic into the §3.11 machinery; what "the definition boundary" is for a TOP-LEVEL written var stays the sweep's verify-first item | `free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg` | tests/spec_03_types.rs | e2e per-mode verdicts | [S109] — PIN (W6) | neg |
-| FV-11 | **RECLASSIFIED W6.2: was positive-acquire, now negative-skolem-escape.** The W6 row (and its authored GREEN test) expected each clause's BODY to pin its own `:a` concretely — `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))` compiling with `(h 5)` → 6, `(h "ab" 0)` → "abab". That is the flexible/acquire model §3.3 now REJECTS: MUST-1 ("never by the definition's own body") + MUST-4 (a rigid var MUST NOT unify with a concrete type — by use just as by ascription). SAME fixture, INVERTED verdict: each clause is a TYPE ERROR (its body forces its rigid `a` concrete — skolem-escape). Facets: (i) the error is skolem-escape/type-mismatch, never `unknown type` (MUST-2); (ii) cross-clause independence (§5.1.2, UNCHANGED property, now observed in the error shape): each clause errors against ITS OWN rigid var (`a` vs Int in clause 1, `a` vs String in clause 2) — the diagnostic MUST NOT be an Int-vs-String CROSS-CLAUSE conflict, which would betray a shared var. `/testing`: REWRITE the authored test (its success assertions now assert spec-violating behaviour); per-clause freshness beyond the error-shape observable is **unit u3** | `multi_arity_written_var_body_pin_skolem_escape_per_clause_neg` (replaces `multi_arity_same_written_var_independent_per_clause`) | tests/spec_05_definitions.rs | e2e + **unit u3** | [S109] — RED (W6.2): GREEN-as-positive at `e401cce9`, which is the F1/0588 defect visible | neg (was pos) |
-| FV-12 | §5.1.2 (polymorphic variant = ambiguous error) × §3.3 — a free-var annotation does NOT rescue multi-arity ambiguity: the delegating clause `([:a p :a rot] (rp p rot 0))` errors NAMING the clause (couples SS-3's diagnostic row), never `unknown type 'a'`, and the sibling's `:Int` types never back-flow. **W6.2 re-read (verdict UNCHANGED — not a reclassification):** under the rigid model the rejection is doubly grounded — the body could not pin the rigid `a` even in principle (MUST-3/MUST-4: the delegating call unifying `a` with the sibling's `:Int` params is itself skolem-escape), and an unpinned variant is §5.1.2's poly-variant error. Error-CLASS facet stays soft: ambiguous-variant OR skolem-escape/no-matching-variant are both conforming classes; `unknown type` and silent acquisition are not. `/testing`: comment wording update only | `multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg` | tests/spec_05_definitions.rs | e2e | [S109] — PIN (W6); wording re-read W6.2 | neg |
-| FV-13 | §3.9.3 (neither type nor trait ⇒ error) — the critical over-broadening guard: UPPERCASE unknowns still error. (a) `(defn f [:Foo x] x)` → `unknown type` naming `Foo`; (b) nested `(defn g [:(Box Foo) b] b)` (Box defined) → same. The fix MUST key on the §3.3 bare-lowercase rule, not swallow real unknown-type errors. Qualified-lowercase sibling: FV-21 (F2/0589) | `unknown_uppercase_type_annotation_still_errors_neg` (+ nested sibling) | tests/spec_03_types.rs | e2e + **unit u4** | [S109] — **PIN** (GREEN today; MUST HOLD through W6.2) | neg (invariance) |
-| FV-14 | §3.9.2 invariance — `(defn show2 [:Num x] x)`-shape trait-constraint annotation still yields the CONSTRAINED polymorphic scheme (§3.4.1 display), not a free var, not unknown-type. Cite existing coverage if a `[Tested …]` row exists; else thin pin | `trait_constraint_annotation_unaffected_by_free_var_rule` | tests/spec_03_types.rs (or cite spec_07) | e2e cite-or-pin + **unit u5** | [S109] — **PIN** (GREEN today; MUST HOLD through W6.2) | pos (invariance) |
-| FV-15 | §3.3 MUST-1 × §4.5 (`fn` param position) — `((fn [:a x] x) 3)` → 3; parity facet: `(let [f (fn [:a x] x)] …)` behaves identically to the unannotated `let_polymorphism_identity_two_types` twin. Rigid re-read (corrected SCOPE-5): with NO enclosing definition, the standalone `fn` is itself the outermost binder — the written var is quantified at that (sole) definition boundary and instantiated at each application (the immediate call chooses `a := Int`); the annotation adds NO new generalization boundary beyond that. Nested facet `(fn [:(Box a) b] …)`. The nested CO-REFERENCE cell (inner `:a` under an enclosing defn's `:a` = the SAME rigid var) is FV-20 | `fn_lambda_param_free_var_annotation` | tests/spec_04_expressions.rs | e2e all-modes | [S109] — PIN (W6) | pos + parity |
+| Row | MUST | Fixture → expected verdict | Test (rewrite) | File | Tier | Status | Polarity |
+|---|---|---|---|---|---|---|---|
+| C-1 | (a) | ex-FV-17: `(defn g [:a x :b y] :a y)` — two bare names TIED by the body MERGE (ordinary HM unification of two inference vars): accepted; scheme collapses to `(Fn [a a] a)` | REWRITE of `written_var_distinct_rigid_ascription_skolem_escape_neg` → `bare_vars_tied_by_body_merge` | tests/spec_03_types.rs | e2e | **REWRITE→RED** | pos (was neg) |
+| C-2 | (a), applied form | ex-FV-18 neg leg: `(defn h [:(Box Int) b] :(Box a) b)` — accepted; `a := Int` pins through the constructor → `(Fn [(Box Int)] (Box Int))`. The pos control `applied_annotation_rigid_var_corefers_param` is UNCHANGED (name/comment sweep only) | REWRITE of `applied_annotation_rigid_var_concrete_mismatch_neg` → `applied_annotation_bare_var_pins_through_ctor` | tests/spec_03_types.rs | e2e | **REWRITE→RED** | pos (was neg) |
+| C-3 | (a)+(g) | ex-FV-20 neg leg: `(defn outer [:a x] ((fn [:a y] y) "s"))` — the inner `:a` CO-REFERS (one var, per (g)) AND the body application pins it (per (a)): accepted, `(Fn [String] String)`, `(outer "x")` → "s". Co-reference stays observable via R8's `((g 3) "t")` error facet | REWRITE of `nested_fn_written_var_corefers_enclosing_rigid_neg` → `nested_fn_corefering_var_pinned_by_body` | tests/spec_04_expressions.rs | e2e + unit U2 | **REWRITE→RED** | pos (was neg) |
+| C-4 | (a) per clause + §5.1.2 clause independence | ex-FV-11 — RESTORES the original W6 positive: `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))` — each clause's bare `:a` is pinned by ITS OWN body: `(h 5)` → 6, `(h "ab" 0)` → "abab"; the two different pins ARE the observable clause-independence guard | REWRITE of `multi_arity_written_var_body_pin_skolem_escape_per_clause_neg` → restore `multi_arity_same_written_var_independent_per_clause` | tests/spec_05_definitions.rs | e2e + unit U9 | **REWRITE→RED** | pos (was neg) |
 
-**W6.2 additions — the rigid/skolem-escape rows the first pass lacked
-(ADDED 2026-07-14):**
+**Table 3 — retained guards** (verdicts UNCHANGED under W6.3; GREEN at
+`b2bfb760` unless noted; `// spec:` comment-band sweep to (a)–(h) only):
 
-| Row | Citation + fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
-|---|---|---|---|---|---|---|
-| FV-16 | §3.3 MUST-3 — THE worked negative, verbatim from the spec: `(defn f [:a x] :a "hello")` → **type error** (skolem-escape: `"hello"` is concrete `String`, the assertion `:a "hello"` cannot be discharged); it MUST NOT yield `(Fn [a] String)` (silent acquisition). Facets: (i) a follow-on `(f 3)` errors as undefined/unresolved — the defn was REJECTED, so the acquired-type world never arises; (ii) the error class is a type error, never `unknown type` (MUST-2), never a codegen frame. Body-annotation position parses (0588's live-repro shape) | `written_var_concrete_ascription_skolem_escape_neg` | tests/spec_03_types.rs | e2e all-modes + **unit u6** | [S109] — RED (W6.2): `e401cce9` silently acquires (F1/0588) | neg |
-| FV-17 | §3.3 MUST-3/MUST-4 (distinct-rigid clause) — ascribing a `b`-typed value to `:a` errors: `(defn g [:a x :b y] :a y)` → type error (rigid `b` is a *distinct* rigid variable; the assertion cannot be discharged); MUST NOT unify the two vars (which would collapse `(Fn [a b] …)` to `(Fn [a a] …)`); never `unknown type`. FV-7's in-body negative face | `written_var_distinct_rigid_ascription_skolem_escape_neg` | tests/spec_03_types.rs | e2e + **unit u6** | [S109] — RED (W6.2) expected: flexible model unifies the two silently | neg |
-| FV-18 | §3.3 MUST-3 nested in an applied type — TWIN pair (free-standing `Box` per fixture notes; the ruling's `(Maybe a)` shape): (neg) `(defn h [:(Box Int) b] :(Box a) b)` → type error (rigid `a` ≠ `Int` under the constructor — skolem-escape reaches through applied types); (pos control) `(defn h2 [:(Box a) b] :(Box a) b)` → checks, `(Fn [(Box a)] (Box a))` — the annotated expr already HAS the asserted type via its param (MUST-3's discharge case, applied form) | `applied_annotation_rigid_var_concrete_mismatch_neg` + `applied_annotation_rigid_var_corefers_param` | tests/spec_03_types.rs | e2e | [S109] — neg RED (W6.2; flexible model acquires `a := Int`); pos GREEN today (control) | pos + neg twin |
-| FV-19 | §3.3 MUST-1 ("never by the definition's own body") + MUST-4 — rigidity binds unification BY USE, not only by explicit ascription: `(defn f2 [:a x] (add-i64 x 1))` → type error (the body forces rigid `a` ~ `Int`); MUST NOT compile as `(Fn [Int] Int)` (the flexible model's silent narrowing — the defn would then LIE about its written polymorphism). Never `unknown type`. FV-11's single-clause core | `written_var_body_use_cannot_pin_rigid_neg` | tests/spec_03_types.rs | e2e + **unit u6** | [S109] — RED (W6.2): compiles-as-narrowed at `e401cce9` | neg |
-| FV-20 | §3.3 SCOPE-5 (lexical CO-REFERENCE — a nested `fn` does NOT open a fresh quantification boundary; **CORRECTED 2026-07-14**: this row previously specced the OPPOSITE, shadow) — pos (e2e), the §3.3 worked example verbatim: `(defn g [:a x] (fn [:a y] y))` → `∀a. (Fn [a] (Fn [a] a))` — `x` and `y` are the SAME rigid `a`, quantified once at `g`'s boundary (introspection shows the scheme). Call facet proves co-reference observably: `(g 3)` instantiates `a := Int` for BOTH layers, so `((g 3) 4)` → `:primitives/Int 4` and `((g 3) "t")` MUST error — under the superseded shadow reading `(g 3)` would stay polymorphic in `y` and accept `"t"`. Companion pos facet: `(defn g2 [:a x] ((fn [:a y] y) x))` checks trivially (same rigid `a` both sides). Neg facet (e2e — the discriminating cell, INVERTED from this row's previous pos fixture): `(defn outer [:a x] ((fn [:a y] y) "s"))` MUST be a skolem-escape type error — the inner `:a` co-refers to outer's rigid `a`, so the application forces rigid `a` ~ `String` (MUST-4); the shadow reading expected this to COMPILE to `"s"`. Both facets parse (param annotations + application only). Annotation-form neg (inner-body assertion `:a "hello"` inside the `fn` body) still cannot parse (0591) — that facet stays UNIT-ONLY — **u7** | `nested_fn_written_var_corefers_enclosing_rigid` (+ `_neg` sibling; replaces the never-authored `nested_fn_written_var_is_fresh_rigid_shadow`) | tests/spec_04_expressions.rs | e2e (pos+neg) + **unit u7** | [S109] — RED-or-GREEN verify-first at `e401cce9` (co-reference needs the definition-scoped var_map to THREAD into nested `fn`; the W6 per-Annotate fresh-map seam — F1/0588 — predicts RED on both facets); expected verdict per corrected SCOPE-5 regardless | pos + neg |
-| FV-21 | §3.3 ¶[S109] (the var rule is for a BARE lowercase identifier) + §3.9.3 (neither type nor trait ⇒ error) — F2/0589: a QUALIFIED lowercase annotation is a named-type reference, never a var: `(defn f [:user/int x] x)` → `unknown type` error naming `user/int`; MUST NOT mint a type variable (today it mints silently and the defn typechecks polymorphic). The qualified sibling of FV-13's uppercase guard — together they fence the minting rule to exactly bare-lowercase | `qualified_lowercase_annotation_unknown_type_not_minted_neg` | tests/spec_03_types.rs | e2e + **unit u8** | [S109] — RED (W6.2): F2/0589 verified live by `/review` | neg |
+| Row | Test | W6.3 disposition |
+|---|---|---|
+| FV-2 | `defn_param_bare_free_var_not_unknown_type_neg` | PIN — §3.3 ¶[S109]: a written free lowercase var is never a named-type miss |
+| FV-3 | `written_var_vs_inferred_var_identical_scheme_twin` | PIN — and the W6.2 "scheme-parity ONLY" scope note is DELETED: under W6.3 a bare written var IS an ordinary inference var + name, so written/inferred parity is TOTAL (in-body too). Optional extension facet once R2 lands: `(defn fw [:a x] (add-i64 1 x))` and `(defn fi [x] (add-i64 1 x))` both → `(Fn [Int] Int)` |
+| FV-4 | `defn_param_free_var_nested_in_applied_type` | PIN (unbox; MUST (a) discharge via ordinary unification) |
+| FV-5 | `defn_param_multi_var_applied_annotation` | PIN |
+| FV-6 | `written_var_param_and_body_annotation_corefer` | PIN — `(defn id [:a x] :a x)` → `(Fn [a] a)`; discharge is now trivial co-reference unification; (g)-adjacent |
+| FV-7 | `defn_param_two_distinct_free_vars_independent` | PIN — call-site mixed types prove independence when the body does NOT tie the vars; the in-body tie case moved to C-1 (merge, not error) |
+| FV-9 | `defn_param_free_var_and_concrete_mixed` + `_neg` | PIN — concrete param cells still constrain |
+| FV-10 | `free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg` | PIN — the §3.11 per-mode dispositions; now also R16's sibling under MUST (e) |
+| FV-12 | `multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg` | PIN with RE-GROUNDING: the W6.2 skolem-escape grounding is REMOVED — the row stands on §5.1.2's poly-variant rule alone. Under W6.3 the delegating clause's `:a` is in-principle pinnable by delegation (R2 logic + arity-unique dispatch); whether cross-clause delegation MUST pin (making the fixture compile) is FIXME 0576's open question. HARD assertions kept: never `unknown type`, never silent acquisition of the sibling's `:Int`s; the accept-vs-ambiguous-variant disposition stays SOFT pending 0576 |
+| FV-13 | `unknown_uppercase_type_annotation_still_errors_neg` + `_nested_` sibling | PIN — the minting rule keys on bare-LOWERCASE exactly; uppercase unknowns still error (§3.9.3) |
+| FV-14 | `trait_constraint_annotation_unaffected_by_free_var_rule` | PIN as thin control; substance upgraded by R5 (pos) + R6 (neg) |
+| FV-21 | `qualified_lowercase_annotation_unknown_type_not_minted_neg` | Verdict unchanged under W6.3 (a QUALIFIED lowercase name is a named-type reference, never a var — F2/0589). Verify-first at `b2bfb760`: the W6.2 `/dev` pass may have closed the mint sites; record observed state |
 
-**Row count: 21** (was 15). Polarity: 6 positive (FV-1/3/5/6/14/15), 9 negative
-(FV-2/10/11/12/13/16/17/19/21), 6 dual pos+neg (FV-4/7/8/9/18/20).
-**W6.2 disposition of the 15 W6 rows:** 1 RECLASSIFIED positive→negative
-(FV-11 — the acquire expectation inverted to skolem-escape; test rewrite);
-1 verdict-unchanged re-read (FV-12 — wording only); 13 carried as PINs
-(FV-1..FV-10/FV-13/FV-14/FV-15 — GREEN at `e401cce9`, MUST HOLD through the
-rigid re-fix; FV-3 gains an explicit scheme-parity-only scope note).
-**W6.2 additions: 6 rows** (FV-16..FV-21): 5 RED-expected negatives + 1
-verify-first pos/neg pair — the assert-not-acquire (FV-16), distinct-rigid
-(FV-17), applied-type skolem-escape twin (FV-18), rigid-by-use (FV-19),
-nested co-reference (FV-20; corrected 2026-07-14 from its initial shadow
-spec), and qualified-lowercase mint-guard (FV-21) cells.
+**Row accounting: 33 rows** — 17 settled rows (R1–R17; R1/R3/R8/R9(i) realized
+by existing ex-FV tests), 4 derived corollaries (C-1..C-4), 12 retained guards.
 
-**Unit-tier enumeration (the S108-Inc2 deferral discipline — `/dev` pins these
-at the annotation-resolution seam in the SAME change-set as the fix; a bare
-"unit-pinned" without these named cases is a hole):**
+**W6.2 → W6.3 reclassification summary (what `/testing` flips):**
 
-- **u1** — a free BARE-lowercase identifier in an annotation mints a fresh
-  **RIGID (skolem)** type variable — never the named-type/trait lookup of
-  §3.9.3, and never a FLEXIBLE inference variable (the F1/0588 regression:
-  flexible minting is exactly what made ascription acquire);
-- **u2** — same identifier within ONE definition boundary ⇒ SAME rigid
-  variable, definition-scoped, not per-occurrence (param↔param FV-8,
-  param↔body FV-6, and body↔body — two `Annotate` nodes in one body share the
-  var; body↔body is unit-only within 0591's parse limits. The 0588 seam:
-  `infer_annotate`'s per-`Annotate` fresh `var_map` vs the definition-scoped
-  map the fix must install);
-- **u3** — fresh identifier scope per multi-arity clause (FV-11's seam):
-  clause 1's rigid `a` and clause 2's rigid `a` are distinct skolems.
-  (UNAFFECTED by the 2026-07-14 co-reference correction: sibling clauses are
-  DISJOINT lexical scopes — neither clause's `a` is "already in scope" in the
-  other — the corrected SCOPE-5 merges NESTED scopes only, per §5.1.2
-  clause independence);
-- **u4** — case discrimination: uppercase unknown still takes the §3.9.3
-  error path (FV-13's seam);
-- **u5** — a known TRAIT name annotation still takes the §3.9.2 constraint
-  path (FV-14's seam);
-- **u6** — the MUST-4 unification asymmetry, ALL THREE arms at the unify
-  seam: (a) flexible ~ rigid SUCCEEDS (the param-acquisition direction);
-  (b) rigid ~ concrete FAILS as skolem-escape (FV-16/FV-19's seam — by
-  ascription AND by use); (c) rigid ~ distinct-rigid FAILS (FV-17's seam).
-  A unify that is symmetric in flexibility is the defect;
-- **u7** — nested CO-REFERENCE (corrected 2026-07-14; was "nested shadow +
-  restore"): the same `var_map` threads INTO the nested `fn` — the enclosing
-  definition's var scope is SHARED into `infer_lambda`, not freshly allocated
-  and NOT reset at the lambda boundary; an inner `:a` resolves to the SAME
-  rigid TypeId as the enclosing `defn`'s `:a`, and a fresh identifier first
-  appearing in the inner `fn` still registers in (and is quantified at) the
-  enclosing definition's scope (corrected §3.3 SCOPE-5 co-reference MUST).
-  FV-20's seam; includes the e2e-unreachable neg — an inner-body ASSERTION
-  forcing the co-referring rigid concrete (`:a "hello"` inside the `fn` body)
-  errors as skolem-escape — which 0591's parse gap keeps out of the e2e tier;
-- **u8** — a QUALIFIED lowercase annotation (`:user/int`) takes the §3.9.3
-  unknown-type error path, never mints (FV-21's seam; F2/0589 — the guard
-  must land at ALL FOUR mirror mint sites per 0590, or the discrimination
-  diverges per-site).
+- **6 authored tests INVERT** (currently GREEN pinning the superseded rigid
+  model; each rewrite lands RED until `/dev`): ex-FV-19 → R2 (`(Fn [Int] Int)`,
+  was skolem-escape); ex-FV-16 → R4 (`(Fn [String] String)`, was skolem-escape);
+  ex-FV-17 → C-1 (vars merge, was distinct-rigid error); ex-FV-18 neg leg → C-2
+  (`a := Int` pins through the ctor, was error); ex-FV-20 neg leg → C-3
+  (co-referring var pinned by body, was skolem-escape); ex-FV-11 → C-4
+  (per-clause body pins restored, was per-clause skolem-escape).
+- **4 NEW REDs fail on the current tree:** R6 (constraint not held abstract —
+  passes today, MUST error), R10 (returned poly fn), R16 (bare `(zed)` leaks a
+  codegen GOT-slot error, MUST be the §3.11 message, mode-uniform), R17
+  (value-position constraint does not disambiguate).
+- **1 flip-to-pass RED:** R11 (bare value-position `:a 5` — rejected today,
+  MUST be accepted).
+- **New positives:** R5, R7, R9(ii), R12(+neg), R13, R14, R15 (R13/R14/R15
+  empirically GREEN — land as PINs).
+- **PINs carried:** R1, R3, R8, R9(i) + the 12 Table-3 guards.
 
-Sweep for further cells in the family (enumerated so none falls through;
-`/testing` probes each and adds the cell with its observed polarity):
+**Unit-tier enumeration for `/dev`** (the S108-Inc2 deferral discipline: each
+named cell gets a guard that FAILS on revert of its fix, in the SAME change-set;
+a bare "unit-pinned" without these is a hole):
 
-- `let` binding annotation with a free var (verify-first: may share the
-  defn-param seam — if a distinct codepath, it gets its own FV row). **W6.2
-  re-read:** the polarity flips with the model — a CONCRETE initializer under
-  a free `:a` let annotation (`(let [:a x 5] …)` inside a defn) is now a
-  skolem-escape NEGATIVE per MUST-3 (under the old flexible reading it would
-  have acquired); the positive is an `a`-typed initializer (a param);
-- higher-order param (`:(Fn [a] a) f`) — free vars inside an `Fn` annotation.
-  **W6.2 re-read:** a body use that concretizes the var (`(f 3)` with
-  `f : (Fn [a] a)`) is now skolem-escape (MUST-4); the usable pattern is the
-  `a`-generic pass-through, and the CALL SITE instantiates `a` per MUST-1.
-  Verify-first, then row it with both polarities;
-- top-level expression annotation `:a form` / `:(Box a) form` outside any
-  definition (§1.4.5/§2.3.8/§4.9) — FV-10 covers the codegen-reaching arm.
-  **W6.2 re-read:** the old pinned-by-context arm ("`:a 5` → unifies to
-  Int?") is now expected to be the MUST-3 REJECTION (a concrete literal
-  cannot discharge a bare quantified var); the top-level boundary question is
-  SETTLED by the 2026-07-14 §3.3 co-reference rescribe — "a top-level `def`
-  binding is itself the generalization boundary", so bare `:a 5` and
-  `(def y :a 5)` are normatively skolem-escape errors (no `/spec` FIXME
-  needed); verify-first is now only the observed-vs-spec probe;
-- `deftrait` method signature (GREEN control — type vars are normative there)
-  and `impl` target/method sigs;
-- written CONSTRAINED-var display syntax as input (`[:Num a]` parses as a
-  param NAMED `a` constrained by Num per §5.1.1 EBNF — confirm no fixture
-  accidentally relies on it reading as "var a with constraint").
+- **U1 — bare mints an ORDINARY inference variable carrying a display name** —
+  NOT rigid (the `b2bfb760` rigid flag comes OFF the bare path), NOT the §3.9.3
+  named-type lookup. Seam: `crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr`
+  (the mint site). Guards R1/R2/R4.
+- **U2 — co-reference threading SURVIVES:** the definition-scoped `var_map`
+  threads into `infer_lambda` and across param/body `Annotate` nodes — same
+  name ⇒ same TypeId within one definition boundary; a lambda-first-minted name
+  later ascribed outside is STILL the same var (0592's keying seam — under
+  W6.3 the acquire itself is correct behaviour; the per-mint-site keying
+  consistency is what to pin). Guards R3/R8/C-3, FV-6.
+- **U3 — a constraint at a quantified position enters the held-abstract
+  (skolem) set for the body-check:** unify(held-abstract var, concrete) FAILS
+  as skolem escape — by ascription AND by use; unify(flexible, held-abstract)
+  succeeds (param acquisition); the caller-instantiation path is untouched.
+  Seam: `unify.rs::unify_with_rigid` REPURPOSED (rigid set = constraint-annotated
+  vars, not bare) + the 0590 four mirror mint sites (`traits/type_resolve.rs`
+  ×3, `form.rs`) MUST route through the ONE mint capability so the
+  constraint-rigid rule lands at every site at once — this IS the 0590
+  convergence. Guards R5/R6/R7.
+- **U4 — a value-position constraint is a satisfaction check only:**
+  impl-exists check against the expression's already-known type; NO unification
+  into the type, NO skolem, NO type change. Seam:
+  `infer.rs::infer_annotate` constraint arm. Guards R12/R17 (R17: satisfaction
+  alone must NOT count as disambiguation for §3.11).
+- **U5 — a concrete-type value ascription resolves return-type dispatch:** the
+  ascribed type flows into trait-method instance selection / mono collection
+  (§3.6.3). Seam: `infer_annotate` + the dispatch/mono-collection seam. Guards
+  R13/R14/R15.
+- **U6 — the §3.11 gate catches unresolved return-type poly:** the residual-var
+  detector at the post-inference finalization boundary fires for a
+  `(zed)`-shaped codegen-reaching application with no pinning context; the
+  error is raised CHECK-side ("ambiguous type; add an annotation"), never
+  reaches the backend GOT path, and carries no `__expr` internal binder (0568).
+  Seam: the §3.11.1 enforcement seam (program finalization). Guards R16.
+- **U7 — poly-as-value rejection:** a generalized `fn` escaping as a
+  returned/stored VALUE with residual quantified vars is rejected at the
+  generalization boundary (§3.10 rank-1); applied-in-place instantiation (R9)
+  MUST remain accepted — the discriminator is instantiated-at-a-use vs
+  held-as-a-value. Guards R10 vs R9.
+- **U8 — name-discrimination guards retained:** uppercase unknown → §3.9.3
+  error path (FV-13); qualified lowercase NEVER mints, at ALL 0590 mirror
+  sites (FV-21).
+- **U9 — multi-arity clause scoping:** sibling clauses are DISJOINT lexical
+  scopes — clause-local bare vars pin independently (C-4's seam; unchanged by
+  co-reference, which merges NESTED scopes only).
 
-Consistency negative (the uniformity lens this matrix exists for): the SAME
-annotation shape must behave identically across positions (`defn` param vs
-`fn` param vs body annotation vs `let`) — a per-position divergence is the
-codepath-duplication smell; FV-3/FV-15's twin-parity facets are its guards.
-**W6.2 extends the lens to the model itself:** assert-not-acquire (MUST-3)
-and the MUST-4 asymmetry must hold UNIFORMLY at every annotation position
-and every mint site (the 0590 four-way mirror is the standing risk — a site
-that keeps minting flexible, or keeps minting for qualified names, diverges
-exactly where the matrix has no cell; FV-16..FV-21 are the cells).
+**Open-FIXME interactions** (dispositions are the owners'/`/sprint`'s; recorded
+so the wave gate sees them): 0590 becomes the CARRIER of the constraint-rigid
+path (R6's fix = the convergence); 0588's co-reference half landed at
+`b2bfb760` and survives, its rigid-bare half is reversed; 0592's
+ascription-acquire face STOPS being a defect under W6.3 (bare acquire is
+correct) — its residual is per-mint-site keying consistency (U2); 0593
+(`suppress_rigid_annotations`) re-scopes to the constraint-skolem model; 0595's
+`unify_with_rigid` hardening survives repurposed (U3); 0568 is R16's
+message-quality sibling; 0576 governs FV-12's soft disposition; 0591 keeps the
+body-ascription parse gaps that route cells to the unit tier.
+
+**Sweep items re-read under W6.3** (`/testing` probes each; polarity per the
+settled model):
+
+- `let` binding bare-var annotation + CONCRETE initializer → now POSITIVE
+  (bare pins freely; the W6.2 skolem-escape reading is superseded).
+  Verify-first whether `let` shares the defn-param seam; if distinct, it gets
+  its own row (0591 may gate the parse position → unit tier).
+- A CONSTRAINT on a GENERALIZABLE `let` binding → a quantified position per
+  §3.3.2 ("any binding generalized … so that a caller chooses") → held
+  abstract, R6 logic applies. Unit-tier if the position doesn't parse.
+- Higher-order param `:(Fn [a] a) f` with body `(f 3)` → now POSITIVE (pins
+  `a := Int` per MUST (a)); the pass-through-generic shape stays polymorphic.
+- Top-level `:a 5` / `(def y :a 5)` → now POSITIVE (`y : Int` — R11's logic;
+  the W6.2 "top-level def is a skolem boundary" reading is superseded).
+- `deftrait` method sigs / `impl` sigs → now part of the constraint-rigid path
+  PROPER (R5/R6's seam; 0590/0593) — a trait method's own vars are quantified
+  positions held abstract during impl-body checks.
+- Written constrained-var display syntax as input (`[:Num a]` parses as a
+  param NAMED `a` per §5.1.1) — confirm no fixture relies on a contrary
+  reading (unchanged item).
+
+**Consistency lens (what this matrix exists to force):** the SAME annotation
+shape must behave identically at every position (defn param / fn param / body
+ascription / let / trait & impl sigs) and every mint site — {bare, constraint,
+concrete} × {quantified, value} × {pins, uses-interface, unresolved} is ONE
+rule per cell, everywhere. A per-position or per-mint-site divergence (a site
+that keeps bare rigid, or holds a value-position constraint abstract, or lets
+a constraint disambiguate) is the codepath-duplication smell; the 0590 four-way
+mirror is the standing risk and U3's one-mint-capability convergence is the
+structural cure.
 
 #### L.2 W6 in-scope `/testing` execution items (recorded for wave-gate accounting)
 
@@ -2650,12 +2676,15 @@ fixture constraint — no free-var param annotations; note DC-12's differing
 arities keep it clear of the W6 defect by construction — concrete `:Int`
 fields) + AL edge set + DC-14; (3) observability + display rows
 (these depend on the `/repl`-specced surfaces and the agent harness;
-verify-first items marked above); (4) the §L.1 W6 matrix — W6.2 state: the
-15 W6 rows are AUTHORED (GREEN at `e401cce9`); the W6.2 work is (a) author
-the FV-16..FV-21 REDs FIRST (they pin the rigid model the `/dev` pass must
-implement), (b) REWRITE FV-11's test per its reclassified row (its current
-success assertions assert F1/0588's defect behaviour), (c) FV-12 comment
-wording only, then the L.2 execution items; (5) remaining GREEN
-pins/controls.
+verify-first items marked above); (4) the §L.1 matrix — W6.3 state: (a)
+author the four NEW REDs + the flip-to-pass RED FIRST (R6, R10, R16, R17,
+R11 — they pin the settled model the `/dev` pass must implement), (b)
+REWRITE the six inverted W6.2 tests (R2, R4, C-1..C-4 — their current GREEN
+assertions pin `b2bfb760`'s superseded rigid model; each lands RED until
+`/dev`), (c) author the new positives (R5, R7, R9(ii), R12, R13, R14, R15 —
+the zed/Num2 free-standing trait fixtures; R13/R14/R15 land as GREEN PINs),
+(d) sweep `// spec:`/`// defect:` comments from the retired
+MUST-1..MUST-4/SCOPE-5 band to the §3.3 (a)–(h) band + FV-12's re-grounding
+comment, then the L.2 execution items; (5) remaining GREEN pins/controls.
 Every RED lands failing-not-ignored with `// spec:` + (for defect rows) the
 `// defect:` line given in its row.

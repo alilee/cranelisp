@@ -1417,35 +1417,29 @@ fn defn_multi_arity_annotated_clauses_compile() {
 }
 
 // =============================================================================
-// §5.1.2 × §3.3 [S109] — Written free vars in multi-arity clauses (W6).
-// Plan: tests/plan/PLAN.md §S109 §L.1 (FV-11, FV-12).
+// §5.1.2 × §3.3 [S109 W6.3] — Written free vars in multi-arity clauses.
+// Plan: tests/plan/PLAN.md §L.1 (C-4, FV-12).
 //
-// §3.3 (S109) MUST-1/MUST-2 crossed with §5.1.2 "each variant type-checked
-// independently": matching `:a` identifiers across clauses are NO signal — each
-// clause scopes its own fresh var. And a free-var annotation does NOT rescue a
-// variant that stays unpinned by its own body — that is the §5.1.2 ambiguity
-// error naming the clause, NEVER `unknown type`.
+// §3.3.1 MUST (a) crossed with §5.1.2 "each variant type-checked independently":
+// each clause is a DISJOINT lexical scope, so its bare `:a` pins independently by
+// its OWN body — the two different pins are the observable clause-independence
+// guard. And a free-var annotation does NOT rescue a variant that stays unpinned
+// by its own body — that is the §5.1.2 ambiguity error naming the clause, NEVER
+// `unknown type`.
 // =============================================================================
 
-// spec: spec/03-types.md §3.3 — MUST-1 ("never by the definition's own body") +
-// MUST-4 (rigid, no by-use pin), RECLASSIFIED W6.2 (2026-07-14): was a
-// positive-acquire GREEN test asserting each clause's body pins its OWN `:a`
-// concretely; under the rigid ruling that body-pin is a per-clause
-// SKOLEM-ESCAPE error. SAME fixture, INVERTED verdict:
+// spec: spec/03-types.md §3.3.1 — MUST (a) per clause + §5.1.2 clause
+// independence (C-4, was FV-11; INVERTED under W6.3, restoring the original
+// W6 positive): each clause's bare `:a` is pinned by ITS OWN body.
 // `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))` — clause 1's
-// body USE `(add-i64 x 1)` forces its rigid `a ~ Int`, clause 2's `(str-concat x
-// x)` forces its rigid `a ~ String`; EACH clause is a type error against ITS OWN
-// rigid var. Facets: (i) never `unknown type` (MUST-2) and the defn does NOT
-// compile — `(h 5)`/`(h "ab" 0)` never evaluate to 6/"abab"; (ii) cross-clause
-// independence (§5.1.2, unchanged): each clause errors against its OWN rigid `a`
-// — the diagnostic MUST NOT be an Int-vs-String CROSS-CLAUSE conflict (which
-// would betray a shared var). Per-clause skolem freshness beyond the error-shape
-// observable is unit u3.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — each clause body ACQUIRES/narrows its `:a` instead of the rigid var rejecting; no rigid skolem — F1/0588) found=S109 owner=/dev
+// body pins `a := Int` (`(h 5)` → 6), clause 2's body pins `a := String`
+// (`(h "ab" 0)` → "abab"). The two DIFFERENT pins ARE the observable
+// clause-independence guard (disjoint lexical scopes; §5.1.2). This INVERTS the
+// superseded W6.2 per-clause skolem-escape reading. Never `unknown type`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid per-clause body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
 #[test]
-fn multi_arity_written_var_body_pin_skolem_escape_per_clause_neg() {
-    // REPL: neither clause may successfully evaluate — each body forces its own
-    // rigid `a` concrete (skolem-escape), so the defn is rejected.
+fn multi_arity_same_written_var_independent_per_clause() {
+    // REPL: each clause pins its own `:a` — clause 1 → Int, clause 2 → String.
     let out = repl_prims(
         "(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))\n\
          (h 5)\n\
@@ -1453,45 +1447,38 @@ fn multi_arity_written_var_body_pin_skolem_escape_per_clause_neg() {
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("unknown type"),
-        "a per-clause body-use skolem-escape MUST be a type error, never \
-         `unknown type` (§3.3 MUST-2); got:\n{combined}"
+        !combined.contains("unknown type") && !combined.to_lowercase().contains("rigid"),
+        "per-clause body pins MUST be ordinary unification, never a rigid/unknown \
+         error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":primitives/Int 6"),
-        "clause 1's body `(add-i64 x 1)` forces its rigid `a ~ Int` \
-         (skolem-escape); the defn MUST NOT compile, so `(h 5)` MUST NOT \
-         evaluate to 6 (§3.3 MUST-1/MUST-4); got:\n{}",
+        out.stdout.contains(":primitives/Int 6"),
+        "clause 1's body `(add-i64 x 1)` pins its own `a := Int` → `(h 5)` = 6 \
+         (§3.3.1 MUST (a), §5.1.2 clause independence); got:\n{}",
         out.stdout
     );
     assert!(
-        !out.stdout.contains(":primitives/String \"abab\""),
-        "clause 2's body `(str-concat x x)` forces its rigid `a ~ String` \
-         (skolem-escape); `(h \"ab\" 0)` MUST NOT evaluate to \"abab\" (§3.3 \
-         MUST-1/MUST-4); got:\n{}",
+        out.stdout.contains(":primitives/String \"abab\""),
+        "clause 2's body `(str-concat x x)` pins its own `a := String` → \
+         `(h \"ab\" 0)` = \"abab\" — the DIFFERENT pin is the clause-independence \
+         guard (§3.3.1 MUST (a), §5.1.2); got:\n{}",
         out.stdout
     );
 
-    // --run: the defn is rejected → non-zero exit; never unknown-type.
+    // --run: the multi-arity defn compiles and both clauses compute.
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
             "(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (Pure (h 5)))\n",
         )
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
-        !run.status.success(),
-        "--run: each clause's body forces its own rigid `a` concrete — the defn \
-         MUST be rejected as skolem-escape (§3.3 MUST-4, no by-use exemption); \
-         got success:\n{rcomb}"
-    );
-    assert!(
-        !rcomb.contains("unknown type"),
-        "--run: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{rcomb}"
+        run.status.success(),
+        "--run: each clause's bare `:a` pinned by its own body MUST be accepted \
+         (§3.3.1 MUST (a), §5.1.2); got failure:\n{rcomb}"
     );
 }
 
@@ -1502,13 +1489,14 @@ fn multi_arity_written_var_body_pin_skolem_escape_per_clause_neg() {
 // ambiguous-type error naming the clause — NEVER `unknown type `a``. Couples SS-3's
 // diagnostic-quality contract.
 //
-// W6.2 re-read (2026-07-14 — verdict UNCHANGED, not a reclassification): under
-// the rigid model the rejection is DOUBLY grounded — the body could not pin the
-// rigid `a` even in principle (MUST-3/MUST-4: the delegating call unifying `a`
-// with the sibling's `:Int` params is itself skolem-escape), and an unpinned
-// variant is §5.1.2's poly-variant error. Error-CLASS facet stays SOFT:
-// ambiguous-variant OR skolem-escape/no-matching-variant are both conforming;
-// only `unknown type` and silent acquisition are non-conforming.
+// W6.3 re-grounding (2026-07-14 — verdict UNCHANGED): the superseded W6.2
+// skolem-escape grounding is REMOVED — under W6.3 a bare `:a` pins freely, so the
+// delegating clause's `:a` is in-principle pinnable by delegation (R2 logic +
+// arity-unique dispatch). Whether cross-clause delegation MUST pin (making the
+// fixture compile) is FIXME 0576's open question; the row now stands on §5.1.2's
+// poly-variant rule ALONE. HARD assertions kept: never `unknown type`, never
+// silent acquisition of the sibling's `:Int`s. The accept-vs-ambiguous-variant
+// disposition stays SOFT pending 0576.
 // defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map fell to TypeNotFound instead of minting a fresh quantified var; W6 fix) found=S109 owner=/dev
 #[test]
 fn multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg() {
@@ -1527,7 +1515,7 @@ fn multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg() {
     assert!(
         !text.contains("unknown type"),
         "an unpinned free-var multi-arity clause MUST route to the §5.1.2 \
-         ambiguity path, NEVER `unknown type` (§3.3 MUST-2); got:\n{text}"
+         ambiguity path, NEVER `unknown type` (§3.3.1); got:\n{text}"
     );
     assert!(
         !out.status.success(),

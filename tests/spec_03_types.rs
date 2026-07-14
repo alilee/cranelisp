@@ -521,34 +521,35 @@ fn defn_call_with_too_many_args_arity_mismatch_neg() {
 }
 
 // =============================================================================
-// §3.3 [S109] — Written free-type-variable annotation resolution (W6).
-// Plan: tests/plan/PLAN.md §S109 §L.1 (FV-1 … FV-15).
+// §3.3.1 [S109 W6.3] — Written free-type-variable annotation resolution.
+// Plan: tests/plan/PLAN.md §L.1 (retained guards + R1/R3/R9(i) PINs).
 //
-// §3.3 (S109 clarification) MUSTs, cited by every row below:
-//   MUST-1 (positive): a lowercase identifier appearing free in an annotation
-//     — standing alone (`:a`) or nested in an applied type (`:(Box a)`) — is a
-//     type variable, implicitly universally quantified at the definition
-//     boundary, IDENTICALLY to an inference-generated variable.
-//   MUST-2 (negative): such an identifier MUST NOT be treated as a reference to
-//     an unknown named type.
+// §3.3.1 MUSTs cited by the rows below (the retired W6.2 MUST-1..MUST-4/SCOPE-5
+// band is superseded):
+//   (a) §3.3.1 — a BARE written variable (`:a`, or nested `:(Box a)`) is an
+//       inference variable WITH A NAME: it relates same-named occurrences and
+//       documents; inference determines it and the body MAY pin it. NOT a
+//       reference to an unknown named type.
+//   (g) §3.3.1 — lexical co-reference, including into nested `fn`.
+//   [S109] ¶ — a written free lowercase var is NEVER a named-type miss.
 //
-// The live defect (verified S109): a written free var fails
-// `unknown type `a` (from module ``)` because the annotation resolver treats a
-// free lowercase ident as a named-type lookup instead of minting a quantified
-// var. The `// defect:` line rides every RED row.
+// These guards were born from the W6 `unknown type 'a'` defect (fixed at
+// `e401cce9`); they remain GREEN repros — a written free var must never fall to
+// a named-type lookup. The `// defect:` lines ride them as class-frequency
+// signal.
 //
 // Fixture rules (§L preamble): annotation PRECEDES the param name (`[:a x]`,
 // §5.1.1 EBNF); there is no return-annotation syntax (§5.1.1 — the "return"
 // cell is the body-expression annotation `:Type form`); free-standing only
 // (no stdlib) — helpers are the PrimitivesOnly / TestStandard fixture preludes.
 //
-// Order: the two over-broadening PINs (FV-13/FV-14, GREEN today and MUST HOLD)
-// first, then the free-var REDs.
+// Order: the name-discrimination PINs (FV-13/FV-14, GREEN today, MUST HOLD)
+// first, then the bare-var PINs.
 // =============================================================================
 
 // --- FV-13 (PIN, GREEN today, MUST HOLD) — uppercase unknowns still error ----
 
-// spec: spec/03-types.md §3.3 — MUST-2 boundary (over-broadening guard): an
+// spec: spec/03-types.md §3.3.1 — MUST (a) boundary (over-broadening guard): an
 // UPPERCASE unknown named type in a parameter annotation is a genuine
 // unknown-type error (§3.9.3: neither type nor trait ⇒ error) and MUST stay one
 // through the free-var fix. The fix keys on the §3.3 LOWERCASE rule; it must not
@@ -564,7 +565,7 @@ fn unknown_uppercase_type_annotation_still_errors_neg() {
     );
 }
 
-// spec: spec/03-types.md §3.3 — MUST-2 boundary, nested facet: an uppercase
+// spec: spec/03-types.md §3.3.1 — MUST (a) boundary, nested facet: an uppercase
 // unknown INSIDE an applied type (`:(Box Foo)`, Box defined, Foo not) still
 // errors as an unknown type. Sibling of the standalone guard above.
 #[test]
@@ -580,7 +581,7 @@ fn unknown_uppercase_type_annotation_nested_still_errors_neg() {
 
 // --- FV-14 (PIN, GREEN today, MUST HOLD) — trait-constraint annotation --------
 
-// spec: spec/03-types.md §3.3 — MUST-2 invariance: a KNOWN trait-name annotation
+// spec: spec/03-types.md §3.3.2 — MUST (b) invariance: a KNOWN trait-name annotation
 // (`:Num x`, §3.9.2) still yields the CONSTRAINED polymorphic scheme (§3.4.1
 // display `:Num a`), not a bare free var and not an unknown-type error. The
 // free-var rule must not disturb the trait-constraint path.
@@ -603,7 +604,7 @@ fn trait_constraint_annotation_unaffected_by_free_var_rule() {
 
 // --- FV-1 (RED) — standalone bare free var, quantified, used at two types -----
 
-// spec: spec/03-types.md §3.3 — MUST-1: a bare free var `:a` is implicitly
+// spec: spec/03-types.md §3.3.1 — MUST (a): a bare free var `:a` is implicitly
 // universally quantified, identical to an inferred var. Proof of GENUINE
 // quantification: `id` is used at TWO types in one program — `(id 5)` at Int and
 // `(id "ab")` at String (via `str-len`) — summed to 7. A wrongly-monomorphic `a`
@@ -621,7 +622,7 @@ fn defn_param_bare_free_var_quantifies_and_uses_at_two_types() {
 
 // --- FV-2 (RED, neg) — same fixture, MUST NOT be an unknown-type error --------
 
-// spec: spec/03-types.md §3.3 — MUST-2: the written free var `:a` MUST NOT be
+// spec: spec/03-types.md §3.3.1 — MUST (a) / [S109] ¶: the written free var `:a` MUST NOT be
 // treated as a reference to an unknown named type, and MUST NOT surface a
 // codegen-layer frame (the class, if the fix regresses, must never be a
 // named-type miss). The defn typechecks and evaluates.
@@ -632,7 +633,7 @@ fn defn_param_bare_free_var_not_unknown_type_neg() {
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !combined.contains("unknown type"),
-        "a written free var `a` MUST NOT be an unknown-type error (§3.3 MUST-2); \
+        "a written free var `a` MUST NOT be an unknown-type error (§3.3.1); \
          got:\n{combined}"
     );
     assert!(
@@ -649,7 +650,7 @@ fn defn_param_bare_free_var_not_unknown_type_neg() {
 
 // --- FV-3 (RED, parity twin) — written var vs inferred var, identical scheme --
 
-// spec: spec/03-types.md §3.3 — MUST-1 "identically to an inference-generated
+// spec: spec/03-types.md §3.3.1 — MUST (a) "an inference variable with a name" —
 // variable": the written-var `idw` and the inferred-var `idi` MUST display the
 // SAME scheme `(Fn [a] a)` and evaluate at the same two types. The
 // twin-fixture shape (one invariant, two provenances, same assertion) — a
@@ -665,7 +666,7 @@ fn written_var_vs_inferred_var_identical_scheme_twin() {
     assert!(
         out.stdout.contains(":(Fn [a] a) user/idw"),
         "the written-var `idw` MUST display the same `(Fn [a] a)` scheme as an \
-         inferred var (§3.3 MUST-1 parity); got:\n{}",
+         inferred var (§3.3.1 MUST (a) parity); got:\n{}",
         out.stdout
     );
     assert!(
@@ -678,10 +679,10 @@ fn written_var_vs_inferred_var_identical_scheme_twin() {
 
 // --- FV-4 (RED, all-modes, pos+neg facet) — free var nested in applied type ---
 
-// spec: spec/03-types.md §3.3 — MUST-1 nested-in-applied-type: `:(Box a)` in a
+// spec: spec/03-types.md §3.3.1 — MUST (a) nested-in-applied-type: `:(Box a)` in a
 // param annotation quantifies `a`; `unbox` is used at Int and String across all
 // modes (summed to 7). Neg facet: the defn itself MUST NOT error `unknown type
-// `a`` (MUST-2). The verified-live failing shape.
+// `a`` ([S109] ¶). The verified-live failing shape.
 // defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
 #[test]
 fn defn_param_free_var_nested_in_applied_type() {
@@ -695,7 +696,7 @@ fn defn_param_free_var_nested_in_applied_type() {
     assert!(
         !combined.contains("unknown type"),
         "a free var nested in `:(Box a)` MUST NOT be an unknown-type error \
-         (§3.3 MUST-2); got:\n{combined}"
+         (§3.3.1); got:\n{combined}"
     );
     assert!(
         out.stdout.contains(":primitives/Int 7"),
@@ -714,7 +715,7 @@ fn defn_param_free_var_nested_in_applied_type() {
 
 // --- FV-5 (RED) — multiple type vars in an applied annotation ----------------
 
-// spec: spec/03-types.md §3.3 — MUST-1 multi-var applied: `:(Pair2 k v)` in a
+// spec: spec/03-types.md §3.3.1 — MUST (a) multi-var applied: `:(Pair2 k v)` in a
 // param annotation quantifies both `k` and `v`; `get-x` has scheme
 // `(Fn [(Pair2 k v)] k)` and `(get-x (Pair2 7 "s"))` returns 7. Neg facet: no
 // `unknown type` for either var.
@@ -730,7 +731,7 @@ fn defn_param_multi_var_applied_annotation() {
     assert!(
         !combined.contains("unknown type"),
         "free vars `k`/`v` nested in `:(Pair2 k v)` MUST NOT be unknown-type \
-         errors (§3.3 MUST-2); got:\n{combined}"
+         errors (§3.3.1); got:\n{combined}"
     );
     assert!(
         out.stdout.contains(":primitives/Int 7"),
@@ -741,7 +742,7 @@ fn defn_param_multi_var_applied_annotation() {
 
 // --- FV-6 (RED) — written var co-refers across param and body annotation ------
 
-// spec: spec/03-types.md §3.3 — MUST-1 with §3.9/§4.9 (body-position annotation;
+// spec: spec/03-types.md §3.3.1 — MUST (a)/(g) with §3.9/§4.9 (body-position annotation;
 // no return-annotation syntax per §5.1.1): (a) the SAME written var `:a` in a
 // param annotation and a body annotation `:a x` co-refer within one definition
 // boundary → `(Fn [a] a)` (one var); (b) a var appearing ONLY in the body
@@ -770,7 +771,7 @@ fn written_var_param_and_body_annotation_corefer() {
 
 // --- FV-7 (RED, all-modes, pos+neg) — two distinct vars stay independent ------
 
-// spec: spec/03-types.md §3.3 — MUST-1 with distinct vars: `(defn fst2 [:a x :b
+// spec: spec/03-types.md §3.3.1 — MUST (a) with distinct vars: `(defn fst2 [:a x :b
 // y] x)` has scheme `(Fn [a b] a)`. Success at MIXED argument types
 // (`(fst2 5 "hi")` → 5) is the guard that `a` and `b` are INDEPENDENT — a wrong
 // cross-var unification would reject the Int/String mix. All-modes.
@@ -795,7 +796,7 @@ fn defn_param_two_distinct_free_vars_independent() {
 
 // --- FV-8 (RED, pos) — same var reused within a boundary unifies --------------
 
-// spec: spec/03-types.md §3.3 — one definition boundary = one var per identifier:
+// spec: spec/03-types.md §3.3.1 — MUST (a)/(g): one definition boundary = one var per identifier:
 // `(defn eq2 [:a x :a y] x)` reuses `:a` → scheme `(Fn [a a] a)`; `(eq2 1 2)`
 // returns 1.
 // defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
@@ -812,7 +813,7 @@ fn defn_param_same_free_var_reused_unifies() {
 
 // --- FV-8 (RED, neg) — reused var forces unification, not unknown-type ---------
 
-// spec: spec/03-types.md §3.3 — the reused `:a` means x and y MUST unify:
+// spec: spec/03-types.md §3.3.1 — MUST (a)/(g): the reused `:a` means x and y MUST unify:
 // `(eq2 1 "two")` is a type-mismatch (unification failure), NEVER `unknown
 // type`. The negative confirms the var is a real, unifying type variable.
 // defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
@@ -822,8 +823,8 @@ fn defn_param_same_free_var_reused_neg_mismatch() {
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !combined.contains("unknown type"),
-        "a reused free var MUST unify, NOT be an unknown-type error (§3.3 \
-         MUST-2); got:\n{combined}"
+        "a reused free var MUST unify, NOT be an unknown-type error (§3.3.1 \
+         MUST (a)/(g)); got:\n{combined}"
     );
     assert!(
         combined.to_lowercase().contains("type")
@@ -835,7 +836,7 @@ fn defn_param_same_free_var_reused_neg_mismatch() {
 
 // --- FV-9 (RED, pos) — free var and concrete annotation mixed -----------------
 
-// spec: spec/03-types.md §3.3 + §3.9.1 — free `:a` and concrete `:Int` mixed:
+// spec: spec/03-types.md §3.3.1 + §3.9.1 — MUST (a): free `:a` and concrete `:Int` mixed:
 // `(defn tag [:a x :Int n] x)` → `(Fn [a Int] a)`; `(tag "s" 3)` returns "s".
 // defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
 #[test]
@@ -875,7 +876,7 @@ fn defn_param_free_var_and_concrete_mixed_neg() {
 
 // --- FV-10 (RED, neg) — codegen-reaching free var → ambiguity, not unknown ----
 
-// spec: spec/03-types.md §3.3 — MUST-2 boundary vs §3.11: a free-var annotation
+// spec: spec/03-types.md §3.3.1 — MUST (a) boundary vs §3.11 (MUST (e)): a free-var annotation
 // on a CODEGEN-REACHING bare value routes into the EXISTING §3.11 ambiguity /
 // disposition machinery, NEVER a `unknown type `a`` error. At the REPL a bare
 // polymorphic value is disposition-3 introspection display (§3.11.4); under
@@ -891,7 +892,7 @@ fn free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg() {
     assert!(
         !rcomb.contains("unknown type"),
         "REPL `:(Vec a) []` MUST NOT be an unknown-type error — it is a \
-         disposition-3 type display (§3.11.4 / §3.3 MUST-2); got:\n{rcomb}"
+         disposition-3 type display (§3.11.4 / §3.3.1); got:\n{rcomb}"
     );
 
     // --run: codegen-reaching — the §3.11.1 ambiguity error, NOT unknown-type.
@@ -904,7 +905,7 @@ fn free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg() {
     assert!(
         !runcomb.contains("unknown type"),
         "a codegen-reaching free-var annotation MUST route to the §3.11 \
-         ambiguity path, NOT an unknown-type error (§3.3 MUST-2); got:\n{runcomb}"
+         ambiguity path, NOT an unknown-type error (§3.3.1); got:\n{runcomb}"
     );
     assert!(
         !run.status.success(),
@@ -914,169 +915,158 @@ fn free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg() {
 }
 
 // =============================================================================
-// §3.3 [S109 W6.2] — Written vars are RIGID / definition-scoped (2026-07-14
-// user ruling; §3.3 "definition-scoped and rigid"). Plan: tests/plan/PLAN.md
-// §L.1 (FV-16 … FV-21). These invert the FLEXIBLE/acquire model shipped at
-// `e401cce9` (F1/0588): an annotation ASSERTS, it does not ACQUIRE.
+// §3.3.1–3.3.5 [S109 W6.3] — SETTLED written-type-var semantics (user ruling
+// 2026-07-14; spec §3.3.1–3.3.5 rows 1–17). Plan: tests/plan/PLAN.md §L.1.
+// This SUPERSEDES the W6.2 rigid-everywhere model shipped at `b2bfb760`: bare
+// written vars are NOT rigid — rigidity lives on the CONSTRAINT path only.
 //
-//   MUST-3 (assert-not-acquire; skolem-escape): `:a e` is a checking
-//     obligation discharged only when `e` ALREADY has type `a`. Ascribing a
-//     concrete-typed expr — or one carrying a DISTINCT rigid var — to a bare
-//     quantified var MUST be a type error; it MUST NOT silently acquire.
-//   MUST-4 (unification asymmetry): a FLEXIBLE var MAY unify with a rigid
-//     written var (param acquisition), but a RIGID written var MUST NOT unify
-//     with a concrete type nor a distinct rigid var — by USE just as by
-//     ascription.
-//   MUST-2 (not-unknown-type): the rejection is a TYPE error, never
-//     `unknown type` and never a codegen-layer frame.
+// The settled model (spec §3.3):
+//   (a) §3.3.1 — a BARE written var `:a` is an inference variable WITH A NAME:
+//       it relates same-named occurrences (incl. lexically into nested `fn`)
+//       and documents; the body MAY pin it to a concrete type — never an error.
+//   (b) §3.3.2 — a CONSTRAINT `:C x` is a checkable claim ONLY at a quantified
+//       (parameter / generalizable) position: held abstract over `C` for the
+//       body-check; the body narrowing it concrete is a skolem escape (error),
+//       arising from the BODY only — caller instantiation is always sound.
+//   (c) §3.3.3 — a value-position constraint is a pure satisfaction check.
+//   (d) §3.3.3 — a concrete-type value ascription resolves ambiguity, incl.
+//       return-type-polymorphic trait dispatch; context resolves the same way.
+//   (e) §3.3.3 — an unresolved return-type poly in a codegen-reaching position
+//       is the §3.11 ambiguity error; a value-position constraint does NOT
+//       disambiguate.
+//   (f) §3.3.4 + §3.10 — a polymorphic function as a value (rank-2) is
+//       unsupported.
+//   (g) §3.3.1 — lexical co-reference including into nested `fn`; no fresh
+//       quantification boundary at a nested `fn`.
+//   (h) §3.3.1 — caller instantiation is never an error.
 //
-// All rows are RED-not-ignored at `e401cce9` (the flexible impl ACCEPTS what
-// rigid MUST reject) and flip green at the `/dev` rigid re-fix. Fixtures are
-// free-standing (no stdlib); `[:a x]` annotation order (§5.1.1 EBNF); body
-// annotations sit in the single-arity `defn` body position (0588's live-repro
-// shape — the four gapped body positions of 0591 stay unit-only).
+// Observed at `b2bfb760` (rigid-bare): the model is INVERTED on the rigidity
+// axis — a bare `:a` narrowed by the body ERRORS ("a written type variable is
+// rigid within its definition"), while a `:C x` constraint is NOT held
+// abstract (body narrows it silently). The W6.3 REDs below flip that. Fixtures
+// are free-standing (no stdlib); `[:a x]` annotation order (§5.1.1 EBNF); body
+// annotations sit in the single-arity `defn` body position (0591 gaps stay
+// unit-only). Free-standing trait fixtures: `Zeroable`/`zed` (return-type
+// dispatch, Int→0 / Float→0.0) and `Num2`/`nadd` (`(Fn [a a] a)`, Int impl).
 // =============================================================================
 
-// --- FV-16 (RED, neg, all-modes) — assert-not-acquire: concrete ascription ----
+// --- R4 (RED→pass, was FV-16) — a bare var's value ascription PINS ------------
 
-// spec: spec/03-types.md §3.3 — MUST-3 (assert-not-acquire; skolem-escape), THE
-// worked negative verbatim: `(defn f [:a x] :a "hello")` is a TYPE ERROR —
-// `"hello"` is concrete `String`, so the assertion `:a "hello"` cannot be
-// discharged against the rigid quantified `a`. It MUST NOT yield `(Fn [a]
-// String)` (silent acquisition), MUST NOT be `unknown type` (MUST-2), and the
-// defn is REJECTED — so a follow-on `(f 3)` never returns the acquired-world
-// value "hello".
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — ascription ACQUIRES instead of asserting; no rigid skolem — F1/0588) found=S109 owner=/dev
+// spec: spec/03-types.md §3.3.1 — MUST (a), the worked row 4 verbatim:
+// `(defn f [:a x] :a "hello")` → `(Fn [String] String)`, `(f "x")` → "x". The
+// value-position bare ascription `:a "hello"` relates `a → String` exactly as
+// unifying an inference var with a concrete type would — it is NEVER an error.
+// This INVERTS the superseded W6.2 rigid reading (which rejected it as
+// assert-not-acquire skolem escape). Never `unknown type`, never `rigid`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
 #[test]
-fn written_var_concrete_ascription_skolem_escape_neg() {
-    // REPL: MUST NOT silently acquire `a := String`, and the follow-on call
-    // MUST NOT return the acquired-world value.
-    let out = repl_prims("(defn f [:a x] :a \"hello\")\n(f 3)\n");
+fn written_var_concrete_ascription_pins() {
+    let out = repl_prims("(defn f [:a x] :a \"hello\")\n(f \"x\")\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("unknown type"),
-        "a concrete ascription to rigid `:a` MUST be skolem-escape, never \
-         `unknown type` (§3.3 MUST-2); got:\n{combined}"
+        !combined.contains("unknown type") && !combined.to_lowercase().contains("rigid"),
+        "a value-position bare ascription MUST pin freely, never a rigid/unknown \
+         error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":(Fn [a] primitives/String)"),
-        "ascribing concrete `String` to rigid `a` MUST NOT silently acquire \
-         `(Fn [a] String)` (§3.3 MUST-3 assert-not-acquire); got:\n{}",
+        out.stdout.contains(":(Fn [primitives/String] primitives/String) user/f"),
+        "`:a \"hello\"` MUST relate `a := String` → `(Fn [String] String)` \
+         (§3.3.1 MUST (a), row 4); got:\n{}",
         out.stdout
     );
     assert!(
-        !out.stdout.contains(":primitives/String \"hello\""),
-        "the defn is a skolem-escape type error, so `(f 3)` MUST NOT return the \
-         acquired-world value \"hello\" (§3.3 MUST-3); got:\n{}",
+        out.stdout.contains(":primitives/String \"x\""),
+        "`(f \"x\")` MUST evaluate to \"x\"; got:\n{}",
         out.stdout
     );
 
-    // --run and --link: the defn is rejected → non-zero exit, never unknown-type.
+    // --run: the body-ascribed identity computes and the program succeeds.
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure 0))\n")
+        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure (str-len (f \"ab\"))))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
-        !run.status.success(),
-        "--run: ascribing concrete `String` to rigid `a` MUST be rejected \
-         (§3.3 MUST-3 skolem-escape); got success:\n{rcomb}"
+        run.status.success(),
+        "--run: the value-position bare ascription MUST be accepted (§3.3.1 \
+         MUST (a)); got failure:\n{rcomb}"
     );
     assert!(
-        !rcomb.contains("unknown type"),
-        "--run: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{rcomb}"
-    );
-
-    let link = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .link("user.cl")
-        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure 0))\n")
-        .output();
-    let lcomb = format!("{}{}", link.stdout, link.stderr);
-    assert!(
-        !link.status.success(),
-        "--link: the skolem-escape defn MUST fail typecheck before linking \
-         (§3.3 MUST-3); got success:\n{lcomb}"
-    );
-    assert!(
-        !lcomb.contains("unknown type"),
-        "--link: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{lcomb}"
+        !rcomb.contains("unknown type") && !rcomb.to_lowercase().contains("rigid"),
+        "--run: MUST NOT surface a rigid/unknown error; got:\n{rcomb}"
     );
 }
 
-// --- FV-17 (RED, neg) — distinct-rigid ascription -----------------------------
+// --- C-1 (RED→pass, was FV-17) — two bare vars TIED by the body MERGE ---------
 
-// spec: spec/03-types.md §3.3 — MUST-3/MUST-4 (distinct-rigid clause): ascribing
-// a `b`-typed value to `:a` is a type error. `(defn g [:a x :b y] :a y)` — `y`
-// carries the DISTINCT rigid `b`, so the assertion `:a y` cannot be discharged;
-// the two rigid vars MUST NOT unify (which would collapse `(Fn [a b] …)` to
-// `(Fn [a a] …)`), and the failure is never `unknown type`. FV-7's in-body
-// negative face.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — ascription unifies two distinct written vars instead of asserting; no rigid skolem — F1/0588) found=S109 owner=/dev
+// spec: spec/03-types.md §3.3.1 — MUST (a) derived corollary: two bare written
+// vars tied by the body are ordinary inference vars that UNIFY (merge), not
+// distinct rigid skolems. `(defn g [:a x :b y] :a y)` — the body `:a y` relates
+// `a` and `b`, so they collapse to one var → `(Fn [a a] a)`, accepted. This
+// INVERTS the superseded W6.2 "two distinct rigid vars cannot unify" reading.
+// Never `unknown type`, never `rigid`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
 #[test]
-fn written_var_distinct_rigid_ascription_skolem_escape_neg() {
-    // REPL: the defn MUST NOT be accepted (no successful `g` scheme line).
-    let out = repl_prims("(defn g [:a x :b y] :a y)\n");
+fn bare_vars_tied_by_body_merge() {
+    let out = repl_prims("(defn g [:a x :b y] :a y)\n(g 1 2)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("unknown type"),
-        "a distinct-rigid ascription MUST be skolem-escape, never `unknown \
-         type` (§3.3 MUST-2); got:\n{combined}"
+        !combined.contains("unknown type") && !combined.to_lowercase().contains("rigid"),
+        "tying two bare vars by the body MUST be ordinary unification, never a \
+         rigid/unknown error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains("user/g ; defn"),
-        "ascribing a `b`-typed value to rigid `:a` MUST be rejected, not a \
-         silently-accepted defn (§3.3 MUST-3/MUST-4); got:\n{}",
+        out.stdout.contains(":(Fn [a a] a) user/g"),
+        "the body `:a y` MUST merge `a` and `b` into one var → `(Fn [a a] a)` \
+         (§3.3.1 MUST (a)); got:\n{}",
+        out.stdout
+    );
+    // Merged: same var both positions ⇒ `(g 1 2)` type-checks (both Int) → 2.
+    assert!(
+        out.stdout.contains(":primitives/Int 2"),
+        "`(g 1 2)` returns `y` (the second arg) at Int → 2; got:\n{}",
         out.stdout
     );
 
-    // --run: rejected → non-zero exit.
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn g [:a x :b y] :a y)\n(defn main [] (Pure 0))\n")
+        .user("(defn g [:a x :b y] :a y)\n(defn main [] (Pure (g 1 2)))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
-        !run.status.success(),
-        "--run: two DISTINCT rigid vars MUST NOT unify (§3.3 MUST-4); the defn \
-         MUST be rejected; got success:\n{rcomb}"
-    );
-    assert!(
-        !rcomb.contains("unknown type"),
-        "--run: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{rcomb}"
+        run.status.success(),
+        "--run: two bare vars tied by the body MUST be accepted (merge, not \
+         error) (§3.3.1 MUST (a)); got failure:\n{rcomb}"
     );
 }
 
-// --- FV-18 (neg RED + pos GREEN control) — skolem-escape through applied type --
+// --- C-2 (RED→pass, was FV-18 neg) — bare var PINS THROUGH the constructor ----
 
-// spec: spec/03-types.md §3.3 — MUST-3 nested in an applied type: skolem-escape
-// reaches THROUGH a type constructor. `(defn h [:(Box Int) b] :(Box a) b)` is a
-// type error — the body annotation asserts `(Box a)` (rigid `a`) over `b` which
-// already has the concrete `(Box Int)`, and rigid `a ≠ Int` (MUST-4). MUST NOT
-// silently acquire `a := Int`; never `unknown type`.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — the applied-type var ACQUIRES `Int` under the constructor instead of asserting — F1/0588) found=S109 owner=/dev
+// spec: spec/03-types.md §3.3.1 — MUST (a), applied form: a bare var pins
+// through a type constructor by ordinary unification. `(defn h [:(Box Int) b]
+// :(Box a) b)` — the body annotation `:(Box a)` co-refers `a`, and `b` already
+// has `(Box Int)`, so `a := Int` pins through `Box` → `(Fn [(Box Int)] (Box
+// Int))`, accepted. This INVERTS the superseded W6.2 "rigid `a ≠ Int` under the
+// constructor" rejection. Never `unknown type`, never `rigid`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
 #[test]
-fn applied_annotation_rigid_var_concrete_mismatch_neg() {
+fn applied_annotation_bare_var_pins_through_ctor() {
     let out = repl_prims(
         "(deftype (Box a) [:a v])\n\
          (defn h [:(Box Int) b] :(Box a) b)\n",
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("unknown type"),
-        "an applied-type skolem-escape MUST be a type error, never `unknown \
-         type` (§3.3 MUST-2); got:\n{combined}"
+        !combined.contains("unknown type") && !combined.to_lowercase().contains("rigid"),
+        "pinning a bare var through a constructor MUST be ordinary unification, \
+         never a rigid/unknown error (§3.3.1 MUST (a)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":(Fn [(user/Box primitives/Int)] (user/Box primitives/Int)) user/h"),
-        "asserting `:(Box a)` (rigid `a`) over a `(Box Int)` param MUST NOT \
-         silently acquire `a := Int` (§3.3 MUST-3/MUST-4 through the \
-         constructor); got:\n{}",
+        out.stdout.contains(":(Fn [(user/Box primitives/Int)] (user/Box primitives/Int)) user/h"),
+        "asserting `:(Box a)` over a `(Box Int)` param MUST pin `a := Int` through \
+         the constructor → `(Fn [(Box Int)] (Box Int))` (§3.3.1 MUST (a)); got:\n{}",
         out.stdout
     );
 
@@ -1086,39 +1076,33 @@ fn applied_annotation_rigid_var_concrete_mismatch_neg() {
         .user(
             "(deftype (Box a) [:a v])\n\
              (defn h [:(Box Int) b] :(Box a) b)\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (Pure (v (h (Box 7)))))\n",
         )
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
-        !run.status.success(),
-        "--run: rigid `a ≠ Int` under the `Box` constructor MUST be rejected \
-         (§3.3 MUST-3 applied-type skolem-escape); got success:\n{rcomb}"
-    );
-    assert!(
-        !rcomb.contains("unknown type"),
-        "--run: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{rcomb}"
+        run.status.success(),
+        "--run: `a := Int` pinning through the `Box` constructor MUST be accepted \
+         (§3.3.1 MUST (a)); got failure:\n{rcomb}"
     );
 }
 
-// spec: spec/03-types.md §3.3 — MUST-3 DISCHARGE case (applied form; GREEN
-// control twin of the neg above): `(defn h2 [:(Box a) b] :(Box a) b)` checks —
-// the body annotation `:(Box a)` co-refers to the param's OWN rigid `(Box a)`,
-// so the assertion is already satisfied → `(Fn [(Box a)] (Box a))`. This is the
-// positive control that proves the neg rejects for the RIGHT reason (concrete
-// mismatch), not because applied-type body annotations are broken wholesale.
+// spec: spec/03-types.md §3.3.1 — MUST (a)/(g) DISCHARGE case (applied form; the
+// positive control twin, UNCHANGED under W6.3): `(defn h2 [:(Box a) b] :(Box a)
+// b)` checks — the body annotation `:(Box a)` co-refers to the param's own
+// `(Box a)`, so it discharges by lexical co-reference → `(Fn [(Box a)] (Box a))`.
+// The stable control alongside C-2's pin-through-ctor case.
 #[test]
-fn applied_annotation_rigid_var_corefers_param() {
+fn applied_annotation_bare_var_corefers_param() {
     let out = repl_prims(
         "(deftype (Box a) [:a v])\n\
          (defn h2 [:(Box a) b] :(Box a) b)\n",
     );
     assert!(
         out.stdout.contains(":(Fn [(user/Box a)] (user/Box a)) user/h2"),
-        "a body annotation `:(Box a)` co-referring to the param's rigid \
-         `(Box a)` MUST discharge → `(Fn [(Box a)] (Box a))` (§3.3 MUST-3 \
-         discharge case); got:\n{}",
+        "a body annotation `:(Box a)` co-referring to the param's own \
+         `(Box a)` MUST discharge → `(Fn [(Box a)] (Box a))` (§3.3.1 MUST \
+         (a)/(g) discharge case); got:\n{}",
         out.stdout
     );
     assert!(
@@ -1128,54 +1112,49 @@ fn applied_annotation_rigid_var_corefers_param() {
     );
 }
 
-// --- FV-19 (RED, neg) — rigid-by-USE (the key consequence) --------------------
+// --- R2 (RED→pass, was FV-19) — a bare var's body use PINS FREELY -------------
 
-// spec: spec/03-types.md §3.3 — MUST-1 ("never by the definition's own body") +
-// MUST-4: rigidity binds unification BY USE, not only by explicit ascription.
-// `(defn f2 [:a x] (add-i64 x 1))` is a type error — the body USE `(add-i64 x
-// 1)` forces the rigid `a ~ Int`. It MUST NOT compile as `(Fn [Int] Int)` (the
-// flexible model's silent narrowing — the defn would then LIE about its written
-// polymorphism); never `unknown type`. FV-11's single-clause core.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — a body use silently NARROWS the var instead of the rigid var rejecting — F1/0588) found=S109 owner=/dev
+// spec: spec/03-types.md §3.3.1 — MUST (a): a bare written variable pins freely;
+// the body narrowing it to a concrete type is NEVER an error. Row 2:
+// `(defn f [:a x] (add-i64 1 x))` → `(Fn [Int] Int)`, `(f 5)` → 6 — the body use
+// `(add-i64 1 x)` legitimately pins `a := Int` and the inferred scheme reflects
+// that concrete type. This INVERTS the superseded W6.2 rigid-bare reading (which
+// rejected the body pin as a skolem escape). Never `unknown type`, never a
+// codegen frame. FV-3's extension facet: written-var and inferred-var parity is
+// now TOTAL, in-body too.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
 #[test]
-fn written_var_body_use_cannot_pin_rigid_neg() {
-    let out = repl_prims("(defn f2 [:a x] (add-i64 x 1))\n(f2 5)\n");
+fn written_var_body_use_pins_freely() {
+    let out = repl_prims("(defn f [:a x] (add-i64 1 x))\n(f 5)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("unknown type"),
-        "a body-use rigid-escape MUST be a type error, never `unknown type` \
-         (§3.3 MUST-2); got:\n{combined}"
+        !combined.contains("unknown type") && !combined.contains("codegen"),
+        "a bare-var body pin MUST NOT be an unknown-type or codegen error (§3.3.1 \
+         MUST (a)); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f2"),
-        "a body USE `(add-i64 x 1)` MUST NOT silently narrow rigid `a` to \
-         `(Fn [Int] Int)` (§3.3 MUST-1/MUST-4 — rigid by use, not only by \
-         ascription); got:\n{}",
+        !combined.to_lowercase().contains("rigid"),
+        "a bare written var is NOT rigid — the body pin MUST NOT be rejected as a \
+         rigid skolem escape (§3.3.1 MUST (a)); got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f"),
+        "the body use `(add-i64 1 x)` MUST pin `a := Int` → scheme `(Fn [Int] Int)` \
+         (§3.3.1 MUST (a)); got:\n{}",
         out.stdout
     );
     assert!(
-        !out.stdout.contains(":primitives/Int 6"),
-        "the defn is rejected (skolem-escape by use), so `(f2 5)` MUST NOT \
-         evaluate to 6; got:\n{}",
+        out.stdout.contains(":primitives/Int 6"),
+        "`(f 5)` MUST evaluate to 6; got:\n{}",
         out.stdout
     );
 
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user("(defn f2 [:a x] (add-i64 x 1))\n(defn main [] (Pure 0))\n")
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        !run.status.success(),
-        "--run: a body use forcing rigid `a ~ Int` MUST be rejected (§3.3 \
-         MUST-4 — no by-use exemption); got success:\n{rcomb}"
-    );
-    assert!(
-        !rcomb.contains("unknown type"),
-        "--run: the rejection MUST be a type error, never `unknown type`; \
-         got:\n{rcomb}"
-    );
+    // All-modes value equivalence: the pinned identity computes end-to-end.
+    run_through_all_modes(
+        "(defn f [:a x] (add-i64 1 x))\n(defn main [] (Pure (f 5)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(6);
 }
 
 // --- FV-21 (RED, neg) — qualified-lowercase annotation is NOT a var -----------
@@ -1220,5 +1199,434 @@ fn qualified_lowercase_annotation_unknown_type_not_minted_neg() {
         rcomb.contains("unknown type"),
         "--run: the failure MUST be an unknown-type error naming `user/int`; \
          got:\n{rcomb}"
+    );
+}
+
+// =============================================================================
+// §3.3.2–3.3.5 [S109 W6.3] — constraint path + value-position rows (R5–R17).
+// Free-standing trait fixtures (no stdlib). Plan: tests/plan/PLAN.md §L.1.
+// =============================================================================
+
+// `nadd : (Fn [a a] a)` — a `Num`-style trait; bare params default to `self`
+// (§7.1.1), so both args and the result are the implementing type. Int impl.
+const NUM2_FIXTURE: &str = "(deftrait Num2 (nadd [a b] self))\n\
+     (impl Num2 Int (defn nadd [a b] (add-i64 a b)))\n";
+
+// `zed : ∀a. Zeroable a => (Fn [] a)` — return-type-polymorphic dispatch; Int
+// impl → 0, Float impl → 0.0 (the SPRINT.md empirical fixture).
+const ZEROABLE_FIXTURE: &str = "(deftrait Zeroable (zed [] self))\n\
+     (impl Zeroable Int (defn zed [] 0))\n\
+     (impl Zeroable Float (defn zed [] 0.0))\n";
+
+// --- R5 (PIN) — a constraint used only through its interface stays polymorphic -
+
+// spec: spec/03-types.md §3.3.2 — MUST (b) accepted side, row 5: a `:C x`
+// parameter whose body uses ONLY the trait interface keeps the constrained
+// polymorphic scheme. `(defn f5 [:Num2 x] (nadd x x))` → `∀a. Num2 a =>
+// (Fn [a] a)` (result is `self` = `a`, NOT Int) and `(f5 3)` → 6. The body never
+// narrows the held-abstract var, so no skolem escape.
+#[test]
+fn constraint_param_interface_use_keeps_constrained_scheme() {
+    let out = repl_prims(&format!(
+        "{NUM2_FIXTURE}(defn f5 [:Num2 x] (nadd x x))\n(f5 3)\n"
+    ));
+    assert!(
+        out.stdout.contains(":(Fn [:Num2 a] a) user/f5"),
+        "interface-only use of a `:Num2` param MUST keep the constrained \
+         polymorphic scheme `(Fn [:Num2 a] a)` (result = self = a) (§3.3.2 \
+         MUST (b)); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 6"),
+        "`(f5 3)` MUST evaluate to 6 (nadd 3 3); got:\n{}",
+        out.stdout
+    );
+}
+
+// --- R6 (RED, neg) — a constraint at a param is held abstract; body narrow errs -
+
+// spec: spec/03-types.md §3.3.2 — MUST (b), row 6 (the error): a `:C x`
+// parameter is held abstract over `C` for the body-check; the body narrowing it
+// to a concrete type is a skolem escape. `(defn f6 [:Num2 x] (add-i64 1 x))`
+// forces `x : Int`, narrowing the held-abstract `Num2` var → the defn MUST be
+// rejected as a type error. Contrast row 2 (a BARE `:a` narrowed by the body is
+// accepted) — the caller relies on the CONSTRAINT, not the name. Never `unknown
+// type`, never a codegen frame.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck constraint path (0590 mirror sites: traits/type_resolve.rs x3 + form.rs — a :C x parameter is never held abstract, so the body narrows the claimed-abstract type silently) found=S109 owner=/dev
+#[test]
+fn constraint_param_body_narrow_skolem_escape_neg() {
+    let out = repl_prims(&format!(
+        "{NUM2_FIXTURE}(defn f6 [:Num2 x] (add-i64 1 x))\n"
+    ));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type") && !combined.contains("codegen"),
+        "a held-abstract constraint narrowed by the body MUST be a type error, \
+         never `unknown type`/codegen (§3.3.2 MUST (b)); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f6"),
+        "the body `(add-i64 1 x)` narrows the held-abstract `:Num2` var to Int — \
+         the defn MUST be REJECTED as a skolem escape, NOT accepted as \
+         `(Fn [Int] Int)` (§3.3.2 MUST (b)); got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(&format!(
+            "{NUM2_FIXTURE}(defn f6 [:Num2 x] (add-i64 1 x))\n(defn main [] (Pure 0))\n"
+        ))
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: a `:Num2` param narrowed to Int by its body MUST be rejected \
+         (§3.3.2 MUST (b) skolem escape); got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+}
+
+// --- R7 (PIN) — a constraint INFERRED from use is not asserted, not held ------
+
+// spec: spec/03-types.md §3.3.2 — MUST (b), row 7: a bare `:a` param whose body
+// uses a trait method accrues the constraint by INFERENCE (not assertion), and
+// nothing is held abstract. `(defn f7 [:a x] (nadd x x))` → `∀a. Num2 a =>
+// (Fn [a] a)`, no error — the same constrained scheme as R5, reached via the
+// bare name rather than an explicit `:Num2`. This is the twin of R5 (one
+// invariant, two provenances: asserted vs inferred constraint).
+#[test]
+fn bare_var_inferred_constraint_not_held_abstract() {
+    let out = repl_prims(&format!("{NUM2_FIXTURE}(defn f7 [:a x] (nadd x x))\n"));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a bare `:a` accruing a constraint from use MUST NOT error (§3.3.2 \
+         MUST (b) inferred-not-asserted); got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":(Fn [:Num2 a] a) user/f7"),
+        "`(nadd x x)` on a bare `:a` MUST INFER the `Num2` constraint → \
+         `(Fn [:Num2 a] a)`, identical to the asserted R5 scheme (§3.3.2 \
+         MUST (b)); got:\n{}",
+        out.stdout
+    );
+}
+
+// --- R10 (RED, neg) — a returned polymorphic fn is poly-as-value, unsupported --
+
+// spec: spec/03-types.md §3.3.4 + §3.10 — MUST (f), row 10: a written var that
+// would leave a function polymorphic in a VALUE position (returned, stored) is
+// rank-2 polymorphism, which Cranelisp does not support. `(defn mk [] (fn [:b y]
+// y))` returns a still-polymorphic `∀b. (Fn [b] b)` → MUST be a clear type
+// error, not silent mis-inference. Contrast R9: a polymorphic `fn` APPLIED in
+// place is fine (application instantiates it). Never a codegen frame.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck generalization boundary (the §3.10 rank-1 gate is absent for a RETURNED still-polymorphic fn — the fn is accepted and displayed as `(Fn [] (Fn [a] a))`) found=S109 owner=/dev
+#[test]
+fn returned_polymorphic_fn_rejected_neg() {
+    let out = repl_prims("(defn mk [] (fn [:b y] y))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("codegen") && !combined.contains("__expr"),
+        "the poly-as-value rejection MUST be a clean type error, never a codegen \
+         frame (§3.3.4/§3.10 MUST (f)); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [] (Fn [a] a)) user/mk"),
+        "a RETURNED still-polymorphic `fn` MUST be rejected as poly-as-value, NOT \
+         silently accepted as `(Fn [] (Fn [a] a))` (§3.3.4/§3.10 MUST (f), \
+         rank-1); got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn mk [] (fn [:b y] y))\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: returning a still-polymorphic `fn` MUST be rejected (§3.10 \
+         rank-1, no first-class polymorphism); got success:\n{rcomb}"
+    );
+}
+
+// --- R11 (RED→pass) — a bare value-position `:a` pins to the concrete type -----
+
+// spec: spec/03-types.md §3.3.1 — MUST (a), row 11: a bare value-position
+// ascription pins to the concrete type. `(defn f [] :a 5)` → `(Fn [] Int)`,
+// `(f)` → 5 — the named var is simply pinned by the literal `5`, no error. This
+// INVERTS the superseded W6.2 rigid reading (which rejected it as a skolem
+// escape at a top-level definition boundary).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr + unify.rs::unify_with_rigid (W6.2 minted RIGID vars for BARE written names — spec-valid body pins rejected as skolem-escape; §3.3.1 puts rigidity on the constraint path only) found=S109 owner=/dev
+#[test]
+fn bare_var_value_position_pins_to_concrete() {
+    let out = repl_prims("(defn f [] :a 5)\n(f)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type") && !combined.to_lowercase().contains("rigid"),
+        "a bare value-position `:a 5` MUST pin freely, never a rigid/unknown \
+         error (§3.3.1 MUST (a)); got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":(Fn [] primitives/Int) user/f"),
+        "`(defn f [] :a 5)` MUST pin `a := Int` → `(Fn [] Int)` (§3.3.1 MUST (a), \
+         row 11); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "`(f)` MUST evaluate to 5; got:\n{}",
+        out.stdout
+    );
+
+    run_through_all_modes(
+        "(defn f [] :a 5)\n(defn main [] (Pure (f)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(5);
+}
+
+// --- R12 (RED, pos) — a value-position constraint is a satisfaction check ------
+
+// spec: spec/03-types.md §3.3.3 — MUST (c), row 12: a trait-constraint
+// annotation on a concrete value expression is a pure satisfaction check — it is
+// accepted iff the expression's type implements the trait and changes nothing.
+// `(defn f12 [] :Num2 5)` → no error (Int implements Num2), `(f12)` → 5. Observed
+// at b2bfb760: this REJECTS with `unknown type Num2` (value-position trait
+// constraints are unsupported) — RED-for-right-reason (wrong-reject). Never
+// `unknown type`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck value-position annotation path (a trait-name annotation on a concrete expression is resolved as a TYPE and errors `unknown type`, instead of a satisfaction check per §3.3.3) found=S109 owner=/dev
+#[test]
+fn value_position_constraint_satisfaction_check() {
+    let out = repl_prims(&format!("{NUM2_FIXTURE}(defn f12 [] :Num2 5)\n(f12)\n"));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a value-position trait constraint `:Num2 5` MUST be a satisfaction \
+         check, never an `unknown type` error (§3.3.3 MUST (c)); got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":(Fn [] primitives/Int) user/f12"),
+        "`:Num2 5` MUST NOT change the type of `5` — `(defn f12 [] :Num2 5)` is \
+         `(Fn [] Int)` (§3.3.3 MUST (c)); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "`(f12)` MUST evaluate to 5; got:\n{}",
+        out.stdout
+    );
+}
+
+// --- R12 (RED, neg) — the satisfaction check REJECTS a non-implementing type ---
+
+// spec: spec/03-types.md §3.3.3 — MUST (c), negative face: the satisfaction
+// check is accepted IFF the type implements the trait. `:Num2 "s"` (no String
+// impl of Num2) MUST be a satisfaction-check type error naming the trait — NOT
+// `unknown type Num2` (which is what b2bfb760 emits: the value-position
+// constraint isn't recognised as a constraint at all).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck value-position annotation path (a trait-name annotation on a concrete expression is resolved as a TYPE and errors `unknown type`, instead of a satisfaction check per §3.3.3) found=S109 owner=/dev
+#[test]
+fn value_position_constraint_satisfaction_check_neg() {
+    let out = repl_prims(&format!("{NUM2_FIXTURE}(defn f12b [] :Num2 \"s\")\n"));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "the failed satisfaction check MUST name the trait, NEVER `unknown type` \
+         (§3.3.3 MUST (c)); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [] primitives/String) user/f12b"),
+        "`:Num2 \"s\"` (String has no Num2 impl) MUST be rejected by the \
+         satisfaction check, NOT accepted (§3.3.3 MUST (c)); got:\n{}",
+        out.stdout
+    );
+}
+
+// --- R13 (PIN) — a concrete ascription resolves return-type dispatch (Int) -----
+
+// spec: spec/03-types.md §3.3.3 — MUST (d), row 13 (cross-cite §7 return-type
+// dispatch): a concrete-type value ascription selects the impl for
+// return-type-polymorphic trait dispatch. `:Int (zed)` → `:primitives/Int 0` —
+// the annotation picks the Int impl of `Zeroable`. Empirically GREEN at
+// b2bfb760; MUST HOLD.
+#[test]
+fn concrete_ascription_resolves_return_type_dispatch_int() {
+    let out = repl_prims(&format!("{ZEROABLE_FIXTURE}:Int (zed)\n"));
+    assert!(
+        out.stdout.contains(":primitives/Int 0"),
+        "`:Int (zed)` MUST select the Int impl of return-type dispatch → 0 \
+         (§3.3.3 MUST (d)); got:\n{}",
+        out.stdout
+    );
+    run_through_all_modes(
+        &format!("{ZEROABLE_FIXTURE}(defn main [] (Pure :Int (zed)))"),
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(0);
+}
+
+// --- R14 (PIN) — the same method, other impl, chosen by the annotation (Float) -
+
+// spec: spec/03-types.md §3.3.3 — MUST (d), row 14: `:Float (zed)` →
+// `:primitives/Float 0.0` — the same `zed` method, the Float impl, chosen by the
+// concrete ascription. Empirically GREEN at b2bfb760; MUST HOLD.
+#[test]
+fn concrete_ascription_resolves_return_type_dispatch_float() {
+    let out = repl_prims(&format!("{ZEROABLE_FIXTURE}:Float (zed)\n"));
+    assert!(
+        out.stdout.contains(":primitives/Float 0.0"),
+        "`:Float (zed)` MUST select the Float impl of return-type dispatch → 0.0 \
+         (§3.3.3 MUST (d)); got:\n{}",
+        out.stdout
+    );
+    // Cross-mode acceptance for the Float payload (the value is not an i32, so
+    // assert compilation succeeds in --run and --link rather than an i32 value).
+    for mode in ["run", "link"] {
+        let cl = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let built = if mode == "run" {
+            cl.run("user.cl")
+        } else {
+            cl.link("user.cl")
+        }
+        .user(&format!("{ZEROABLE_FIXTURE}(defn main [] (Pure :Float (zed)))\n"))
+        .output();
+        let c = format!("{}{}", built.stdout, built.stderr);
+        assert!(
+            built.status.success(),
+            "--{mode}: `:Float (zed)` MUST select the Float impl and compile \
+             (§3.3.3 MUST (d)); got failure:\n{c}"
+        );
+    }
+}
+
+// --- R15 (PIN) — surrounding CONTEXT resolves return-type dispatch -------------
+
+// spec: spec/03-types.md §3.3.3 — MUST (d), row 15: surrounding context resolves
+// the dispatch with no annotation needed. `(add-i64 (zed) 5)` fixes `(zed)` to
+// the Int impl → `:primitives/Int 5`. Empirically GREEN at b2bfb760; MUST HOLD.
+#[test]
+fn context_resolves_return_type_dispatch() {
+    let out = repl_prims(&format!("{ZEROABLE_FIXTURE}(add-i64 (zed) 5)\n"));
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "`(add-i64 (zed) 5)` MUST let the Int context resolve dispatch → 5 \
+         (§3.3.3 MUST (d)); got:\n{}",
+        out.stdout
+    );
+    run_through_all_modes(
+        &format!("{ZEROABLE_FIXTURE}(defn main [] (Pure (add-i64 (zed) 5)))"),
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(5);
+}
+
+// --- R16 (RED, neg) — unresolved return-type poly is the §3.11 ambiguity error -
+
+// spec: spec/03-types.md §3.3.3 — MUST (e), row 16: a return-type-polymorphic
+// form left unresolved in a codegen-reaching value position — no annotation, no
+// disambiguating context — MUST be the §3.11 ambiguous-type error ("ambiguous …
+// add an annotation"), the sibling disposition of an unpinned `[]`, and it MUST
+// be MODE-UNIFORM across REPL/--run/--link. The output MUST NOT contain a
+// backend leak (`GOT slot`, `codegen error`, the internal `__expr` binder — the
+// 0568 message-quality sibling). Discrimination facet: the bare NAME `zed` (no
+// call) is disposition-3 introspection display (§3.11.4), not an error.
+//
+// Observed at b2bfb760: bare `(zed)` leaks `codegen error … __expr entry has no
+// GOT slot` at the REPL; --run reports "entry module has no main function";
+// --link reports "main has no GOT slot" — none is the §3.11 message and they
+// diverge per mode. RED-for-right-reason (check-gate-leak + mode-divergence).
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (unresolved return-type-poly trait dispatch reaches the backend as an __expr-has-no-GOT-slot codegen error instead of the check-side ambiguous-type rejection; message-quality sibling FIXME 0568) found=S109 owner=/dev
+#[test]
+fn unresolved_return_type_dispatch_ambiguity_error_neg() {
+    // Discrimination facet (disposition-3): the bare NAME shows the scheme.
+    let name = repl_prims(&format!("{ZEROABLE_FIXTURE}zed\n"));
+    assert!(
+        name.stdout.contains("user/zed") && !name.stdout.contains("no GOT slot"),
+        "the bare name `zed` (no call) MUST be a disposition-3 introspection \
+         display, not an error (§3.11.4); got:\n{}",
+        name.stdout
+    );
+
+    // REPL: bare `(zed)` in a codegen-reaching position → §3.11 ambiguity.
+    let repl = repl_prims(&format!("{ZEROABLE_FIXTURE}(zed)\n"));
+    let rc = format!("{}{}", repl.stdout, repl.stderr);
+    assert!(
+        !rc.contains("GOT slot") && !rc.contains("__expr") && !rc.contains("codegen error"),
+        "REPL: unresolved `(zed)` MUST NOT leak a backend GOT-slot/__expr/codegen \
+         frame (§3.3.3 MUST (e), 0568); got:\n{rc}"
+    );
+    assert!(
+        rc.contains("ambiguous"),
+        "REPL: unresolved `(zed)` MUST be the §3.11 ambiguous-type error \
+         (§3.3.3 MUST (e)); got:\n{rc}"
+    );
+
+    // --run and --link: MODE-UNIFORM — the same §3.11 ambiguity, never a leak.
+    for mode in ["run", "link"] {
+        let cl = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let out = if mode == "run" {
+            cl.run("user.cl")
+        } else {
+            cl.link("user.cl")
+        }
+        .user(&format!("{ZEROABLE_FIXTURE}(defn main [] (Pure (zed)))\n"))
+        .output();
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            !out.status.success(),
+            "--{mode}: an unresolved return-type poly MUST be rejected (§3.3.3 \
+             MUST (e)); got success:\n{c}"
+        );
+        assert!(
+            !c.contains("GOT slot") && !c.contains("__expr") && !c.contains("has no `main`"),
+            "--{mode}: the rejection MUST NOT leak a backend/module frame — it \
+             MUST be the §3.11 ambiguity, mode-uniform (§3.3.3 MUST (e)); got:\n{c}"
+        );
+        assert!(
+            c.contains("ambiguous"),
+            "--{mode}: unresolved `(zed)` MUST be the §3.11 ambiguous-type error, \
+             identical across modes (§3.3.3 MUST (e)); got:\n{c}"
+        );
+    }
+}
+
+// --- R17 (RED, neg) — a value-position constraint does NOT disambiguate --------
+
+// spec: spec/03-types.md §3.3.3 — MUST (e), row 17: a value-position CONSTRAINT
+// does not disambiguate return-type dispatch — only a concrete TYPE does. So
+// `:Zeroable (zed)` remains the §3.11 ambiguous-type error (the constraint is a
+// satisfaction check, not a resolution). Observed at b2bfb760: it errors
+// `unknown type Zeroable` (the value-position constraint is unrecognised) — RED
+// for the settled reason. MUST NOT be `unknown type`, MUST NOT leak a GOT slot,
+// MUST be the §3.11 ambiguity.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (a value-position trait constraint neither disambiguates nor routes to the §3.11 gate — it errors `unknown type` instead of the ambiguous-type rejection) found=S109 owner=/dev
+#[test]
+fn value_position_constraint_does_not_disambiguate_neg() {
+    let out = repl_prims(&format!("{ZEROABLE_FIXTURE}:Zeroable (zed)\n"));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("unknown type"),
+        "`:Zeroable (zed)` MUST NOT be an `unknown type` error — a value-position \
+         constraint is a satisfaction check, not a type miss (§3.3.3 MUST (e)); \
+         got:\n{c}"
+    );
+    assert!(
+        !c.contains("GOT slot") && !c.contains("__expr"),
+        "`:Zeroable (zed)` MUST NOT leak a backend GOT-slot/__expr frame (§3.3.3 \
+         MUST (e)); got:\n{c}"
+    );
+    assert!(
+        c.contains("ambiguous"),
+        "a value-position constraint does NOT disambiguate — `:Zeroable (zed)` \
+         MUST remain the §3.11 ambiguous-type error (§3.3.3 MUST (e)); got:\n{c}"
     );
 }

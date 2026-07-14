@@ -173,19 +173,75 @@ Type variables are implicitly universally quantified at function definition boun
 
 This applies equally to a type variable the source author **writes** in a parameter or return **type annotation** and to one the inference engine generates: a lowercase identifier appearing free in an annotation -- whether standing alone (`(defn id [:a x] :a x)`) or nested inside an applied type (`:(Maybe a)`) -- is a type variable in exactly the sense above. A written free lowercase variable MUST NOT be treated as a reference to an unknown named type; it is a genuine type variable. [S109]
 
-A written type variable is **definition-scoped and rigid**. Two properties fix its meaning:
+Inference already provides maximal generality (Algorithm W, [§3.5](#35-type-inference-algorithm-w)); a written type variable does not add rigidity of its own. What a written annotation means depends on **which** of three things is written — a **bare** variable, a **constraint**, or a **concrete type** — and **where** it is written: a **quantified position** (a parameter, or a binding that is generalized so a *caller* picks the type) versus a **value position** (a concrete expression). The subsections below fix each case. [S109]
 
-1. **Universally quantified at the definition boundary; instantiated at the call site.** A written free variable MUST be treated as implicitly universally quantified at the definition boundary, exactly as an inference-generated variable that survives generalization is (see the generalization rule in [§3.5](#35-type-inference-algorithm-w)). Which concrete type it becomes is chosen by the **caller** at each use site (instantiation-at-use, [§3.10](#310-rank-1-hindley-milner)) -- **never** by the definition's own body. [S109]
+### 3.3.1 A bare type variable is an inference variable with a name [S109]
 
-2. **Rigid within the body.** For the extent of the definition the variable is a *fixed-but-unknown* type -- a rigid skolem, not a flexible inference variable. The body MUST NOT choose what it is. Consequently an annotation `:a e` **asserts, it does not acquire**: it is a *checking obligation* that MUST be discharged by `e` **already** having type `a` (e.g. `e` is a parameter declared `:a`, so the annotation co-refers to that parameter's type). Ascribing a **concrete-typed** expression -- or one carrying a *distinct* rigid variable -- to a bare quantified variable MUST be rejected as a type error (**skolem-escape**); it MUST NOT silently acquire the concrete type. [S109]
+A **bare** written type variable (a lowercase identifier standing alone, e.g. `:a x`) is an **inference variable with a name**. It is treated exactly as an inference-generated variable that survives generalization (see the generalization rule in [§3.5](#35-type-inference-algorithm-w)), except that it carries a display name. The name does two things and no more:
 
-The distinction rests on a **unification asymmetry** the typechecker MUST honour: a **flexible** inference variable (for example, the type of an unannotated parameter) MAY unify with a rigid written variable -- this is precisely how a parameter *acquires* a written type -- but a **rigid** written variable MUST NOT be unified with a concrete type, nor with a *distinct* rigid variable. [S109]
+1. **It relates same-named occurrences.** Every occurrence of one bare variable name within a single definition MUST denote **one and the same** variable — including occurrences inside **nested `fn` closures** (*lexical co-reference*). A nested `fn` MUST NOT open a fresh quantification boundary for a name already in scope; a fresh identifier first appearing in an inner `fn` is still quantified at the enclosing definition's boundary. This is how `[:a x :a y]` ties the two parameters and how an inner `(fn [:a y] …)` co-refers to the enclosing `a`. [S109]
+2. **It documents.** The name appears in the definition's displayed scheme.
 
-**Definition-scoped means lexical co-reference.** A written type variable is **lexically-scoped and rigid**: it is introduced at the **outermost binder where its name first appears** in a definition, universally quantified at that enclosing definition's boundary (and instantiated at the **call site**, per MUST 1 above), and every occurrence of the same name within that lexical scope -- **including inside nested `fn` closures** -- MUST co-refer to that same one rigid variable. A nested `fn`/`defn` does **NOT** open a fresh quantification boundary: a name becomes a *distinct* rigid variable only when it is not already in scope, and a fresh identifier first appearing in an inner `fn` is still quantified at the enclosing definition's boundary. At the **top level**, with no enclosing definition, the same rigid rule holds -- a top-level `def` binding is itself the generalization boundary, so ascribing a concrete-typed value to a bare quantified variable there (a bare `:a 5`, or `(def y :a 5)`) is likewise a **skolem-escape** type error. Worked consequences (EBNF `[:a x]` annotation order):
+A bare written variable is **NOT** held abstract, **NOT** a rigid skolem, and imposes **NO** checking obligation. Inference determines what it is, and the **body MAY narrow it to a concrete type — this is never an error**. Ascribing a concrete-typed expression to a bare `:a` (`:a "hello"`, `:a 5`) simply pins `a` to that concrete type, exactly as unifying any inference variable with a concrete type would.
 
-- `(defn id [:a x] :a x)` has type `∀a. (Fn [a] a)`. The body annotation `:a x` checks because `x` is already the rigid `a`.
-- `(defn g [:a x] (fn [:a y] y))` has type `∀a. (Fn [a] (Fn [a] a))`: `x` and `y` are the **same** rigid `a` -- the inner `:a` **co-refers** to `g`'s `a`, it does **not** shadow. The inner `fn` does not open a fresh quantification boundary. [S109]
-- `(defn f [:a x] :a "hello")` is a **type error**: `"hello"` has the concrete type `String`, which is not the rigid `a`, so the assertion `:a "hello"` cannot be discharged (skolem-escape). It does **not** yield `(Fn [a] String)` -- the body may not acquire `a := String`. [S109]
+> **MUST (a) — a bare written variable pins freely.** A bare written type variable MUST NOT constrain the definition's body. A definition whose body forces a bare-`:a` parameter (or a bare value-position `:a`) to a concrete type MUST be accepted, and its inferred scheme MUST reflect that concrete type. (Rows 2, 4, 11 below.) [S109]
+
+> **MUST (g) — lexical co-reference including nested `fn`.** Every occurrence of one bare variable name within a definition MUST co-refer to a single variable, including occurrences inside nested `fn` closures; a nested `fn` MUST NOT open a fresh quantification boundary for a name already in scope. (Row 8: `(defn g [:a x] (fn [:a y] y))` has type `∀a. (Fn [a] (Fn [a] a))`.) [S109]
+
+> **MUST (h) — caller instantiation is not an error.** A name introduced by an inner `fn` and **not** in the enclosing scope is that lambda's own variable, quantified at the enclosing definition's boundary. Instantiating it by application at a concrete argument MUST NOT be an error — instantiation-at-use ([§3.10](#310-rank-1-hindley-milner)) always sound. (Row 9: `(defn h [x] ((fn [:b y] y) 3))` is accepted — `b` is lambda-owned and `3` instantiates it.) [S109]
+
+### 3.3.2 A constraint is a checkable claim, at a quantified position [S109]
+
+A **constrained** written variable `:C x` — where `C` names a trait ([§3.9.2](#392-trait-constraint-annotations), [§7](07-traits.md)) — is a **claim the compiler checks**, not merely a name. At a **quantified position** (a parameter, or any binding generalized per [§3.5](#35-type-inference-algorithm-w) so that a **caller** chooses the concrete type) the type is **held abstract over `C`** while the body is checked: the body may use only the interface `C` provides. If the body narrows the held-abstract type to a **concrete** type, that is a **skolem escape** and MUST be rejected. The escape arises **only from the body** — never from a caller instantiating the variable at a concrete type, which is always sound (rank-1 instantiation-at-use, [§3.10](#310-rank-1-hindley-milner)). A constraint that the body merely *uses through its interface* keeps the scheme constrained-polymorphic (row 5); a `Num` that inference *derives* from the body's use — rather than the author *asserting* it — is likewise fine and is not held abstract (row 7).
+
+Note the asymmetry with a bare variable: a bare `:a` narrowed to `Int` by the body (row 2) is accepted, but a constrained `:Num x` narrowed to `Int` by the body (row 6) is an error — because the caller relies on the **constraint**, not the name.
+
+> **MUST (b) — a constraint at a quantified position is held abstract; body narrowing is a skolem escape (body-only).** At a quantified position a constrained written variable `:C x` MUST be held abstract over `C` for the body-check, and MUST be usable only through `C`'s interface. If the definition's own body narrows the variable to a concrete type, the definition MUST be rejected with a skolem-escape type error. The escape MUST arise **only** from the body; a **caller** instantiating the variable at a concrete type MUST NOT be an error. (Row 6 is the error; contrast row 5, accepted as a `Num`-constrained polymorphic scheme, and row 7, where `Num` is inferred from use, not asserted.) [S109]
+
+### 3.3.3 A value-position annotation is a check or a resolution, not an abstraction [S109]
+
+An annotation on a **concrete expression** (a value position, not a generalizable binding) is never held abstract. There are two cases:
+
+- A **constraint** in value position is a pure **satisfaction check**: it verifies that the expression's already-known type implements the trait and changes nothing. `:Num 5` checks that `Int` implements `Num`; it is accepted and does not alter the type of `5` (row 12).
+- A concrete **type** annotation in value position **resolves** an otherwise-ambiguous type — including **return-type-polymorphic** trait dispatch ([§7](07-traits.md)). For `zed : ∀a. Zeroable a => (Fn [] a)`, the annotation `:Int (zed)` selects the `Int` impl and yields `0`, while `:Float (zed)` selects the `Float` impl (rows 13–14). Surrounding **context** resolves the same way: `(add-i64 (zed) 5)` fixes the result to `Int` (row 15).
+
+If such a return-type-polymorphic form is left **unresolved** in a codegen-reaching value position — no annotation and no disambiguating context — it is the [§3.11](#311-ambiguous-types) ambiguous-type error, the same disposition as an unpinned empty vec-literal `[]`. A value-position **constraint** does **not** disambiguate — only a concrete **type** does — so `:Zeroable (zed)` remains ambiguous (row 17).
+
+> **MUST (c) — a value-position constraint is a satisfaction check.** A trait-constraint annotation on a concrete value-position expression MUST be a satisfaction check: it MUST be accepted iff the expression's type implements the trait, and it MUST NOT change the expression's type nor hold it abstract. (Row 12.) [S109]
+
+> **MUST (d) — a concrete-type ascription resolves ambiguity.** A concrete type annotation in value position MUST resolve an otherwise-ambiguous type, including selecting the impl for return-type-polymorphic trait dispatch ([§7](07-traits.md)). (Rows 13–15.) [S109]
+
+> **MUST (e) — an unresolved return-type polymorphism is the §3.11 ambiguity error.** A return-type-polymorphic form left unresolved in a codegen-reaching value position — no annotation, no disambiguating context — MUST be rejected as the [§3.11](#311-ambiguous-types) ambiguous-type error (the sibling disposition of an unpinned `[]`), NOT a codegen-level failure. A value-position constraint MUST NOT be treated as disambiguating; only a concrete type is. (Row 16 is the error; row 17 remains ambiguous.) [S109]
+
+### 3.3.4 Polymorphic functions as values are unsupported [S109]
+
+A written variable that would leave a **function polymorphic in a value position** — a `∀` held uninstantiated by being returned, stored, or passed rather than instantiated at a use — is rank-2 (first-class) polymorphism, which Cranelisp does **not** support (see [§3.10](#310-rank-1-hindley-milner)). Returning a still-polymorphic `fn` (`(defn mk [] (fn [:b y] y))`) MUST be a clear type error, not silent mis-inference (row 10). A polymorphic `fn` **applied in place** is admissible, because application instantiates it at one concrete type (the caller's, per [§3.10](#310-rank-1-hindley-milner)) — which is exactly why row 9 is accepted while row 10 is not.
+
+> **MUST (f) — a polymorphic function as a value is unsupported.** A written variable that would leave a function polymorphic in a value position — returned, stored, or otherwise held rather than instantiated at a use — MUST be rejected ([§3.10](#310-rank-1-hindley-milner), rank-1). (Row 10.) [S109]
+
+### 3.3.5 Worked examples [S109]
+
+The following table is normative (EBNF `[:a x]` annotation order; `zed : ∀a. Zeroable a => (Fn [] a)` with `Int` and `Float` impls of `Zeroable`; `nadd : (Fn [a a] a)` — numeric add returns `self`). Each row's verdict is a requirement.
+
+| # | Program | Verdict | Why |
+|---|---|---|---|
+| 1 | `(defn id [:a x] x)` | `∀a. (Fn [a] a)` | bare, never pinned |
+| 2 | `(defn f [:a x] (add-i64 1 x))` | `(Fn [Int] Int)`, no error | bare = name; body may pin |
+| 3 | `(defn f [:a x :a y] (pair x y))` | ties `x`, `y` | bare relates same-named positions |
+| 4 | `(defn f [:a x] :a "hello")` | `(Fn [String] String)`, no error | relate → `String` |
+| 5 | `(defn f [:Num x] (nadd x x))` | `∀a. Num a => (Fn [a] a)` | uses only the interface |
+| 6 | `(defn f [:Num x] (add-i64 1 x))` | **error** | constraint held abstract; body narrows to `Int` (skolem escape) |
+| 7 | `(defn f [:a x] (nadd x x))` | `∀a. Num a => …`, no error | `Num` inferred from use, not asserted |
+| 8 | `(defn g [:a x] (fn [:a y] y))` | `∀a. (Fn [a] (Fn [a] a))` | inner `:a` co-refers (lexical) |
+| 9 | `(defn h [x] ((fn [:b y] y) 3))` | fine | `b` lambda-owned; `3` is caller-instantiation |
+| 10 | `(defn mk [] (fn [:b y] y))` (returned) | **error** | polymorphic function as a value — unsupported ([§3.10](#310-rank-1-hindley-milner)) |
+| 11 | `(defn f [] :a 5)` | `(Fn [] Int)`, no error | bare value-position; named, pinned |
+| 12 | `(defn f [] :Num 5)` | no error | `Int` satisfies `Num` — value-position constraint = check |
+| 13 | `:Int (zed)` | `:Int 0` | value-position concrete type resolves return-type dispatch |
+| 14 | `:Float (zed)` | `:Float 0.0` | same method, other impl, chosen by the annotation |
+| 15 | `(add-i64 (zed) 5)` | `:Int 5` | surrounding context resolves dispatch |
+| 16 | `(zed)` alone | **[§3.11](#311-ambiguous-types) ambiguous-type error** | unresolved return-type poly; sibling of unpinned `[]` |
+| 17 | `:Zeroable (zed)` | still [§3.11](#311-ambiguous-types) ambiguous | a value-position constraint does not disambiguate; only a concrete type does |
 
 ## 3.4 Type Schemes [Tested tests/spec_03_types::let_polymorphism_identity_two_types]
 
@@ -695,7 +751,7 @@ When the annotation name is ambiguous (could be either a type or a trait), the t
 
 Cranelisp is a **rank-1** (prenex, predicative) Hindley-Milner language. Universal quantification appears only at the outermost level of a type scheme (see [§3.4](#34-type-schemes)) — never nested inside a function parameter, an ADT field, or any other position within a type. This is a normative property of the type system, and the following requirements MUST hold:
 
-- **No quantified types in value position.** A value never has a polytype. Every value, binding, parameter, and field carries a **monotype** at the point it is used. Type schemes exist only as the generalized signatures of top-level definitions (and other generalization boundaries per [§3.5](#35-type-inference-algorithm-w)); they are not first-class and cannot be stored, passed, or returned. There is no rank-2 (or higher) polymorphism: a function MUST NOT take a polymorphic function as an argument and use it at two different types within its body. [S84]
+- **No quantified types in value position.** A value never has a polytype. Every value, binding, parameter, and field carries a **monotype** at the point it is used. Type schemes exist only as the generalized signatures of top-level definitions (and other generalization boundaries per [§3.5](#35-type-inference-algorithm-w)); they are not first-class and cannot be stored, passed, or returned. There is no rank-2 (or higher) polymorphism: a function MUST NOT take a polymorphic function as an argument and use it at two different types within its body. Equivalently, a definition MUST NOT **return** (or store) a still-polymorphic function as a value: `(defn mk [] (fn [:b y] y))`, whose result would be the uninstantiated `∀b. (Fn [b] b)`, MUST be rejected — a polymorphic `fn` is admissible only where it is instantiated at a use (applied in place), never held as a value (see [§3.3.4](#334-polymorphic-functions-as-values-are-unsupported)). [S84]
 
 - **Instantiation at every use site.** Each reference to a polymorphic name instantiates its scheme with fresh unification variables (see the Variable Reference rule in [§3.5.3](#353-inference-rules)). Distinct uses of the same polymorphic name receive independent instantiations; this is the sole source of polymorphism in the language. [S84]
 

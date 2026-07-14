@@ -366,6 +366,8 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
 | W6.2 | /spec (resume) | §3.3 nested-scope correction (shadow→co-refer) | (shim §II.3) | (shim) | — DONE: "Definition-scoped means lexical co-reference" — introduced at outermost binder, co-refers across nested `fn` closures, nested `fn` does NOT open a fresh boundary; `(defn g …)` → `∀a.(Fn [a] (Fn [a] a))`; top-level `def`-is-boundary fall-out sentence. MUST-1..4/asymmetry/assert-not-acquire intact |
 | W6.2 | /qa (resume) | flip FV-20/u7 shadow→co-reference | (shim §II.3) | (shim) | — DONE: FV-20 now co-ref (pos `(Fn [a] (Fn [a] a))`, `((g 3) "t")` errors; neg `(defn outer [:a x] ((fn [:a y] y) "s"))` skolem-escape — both parse, both e2e); u7 = var_map THREADS into `infer_lambda` (shared, not reset). No other row assumed shadow (FV-11 clauses are disjoint scopes); top-level contingency now settled-not-open |
 | W6.2 | /testing (resume) | W6.2 rigid-semantics REDs | (shim §II.3) | (shim) | — **DONE `fb6e84c6`**: 8 REDs RED-for-right-reason at `e401cce9` (flexible accepts what rigid rejects — FV-16 acquires `(Fn [a] String)`, FV-20 pos shows shadow `(Fn [a] (Fn [b] b))` + accepts "t", FV-21 mints) + FV-11 rewrite; 13 PINs + FV-18 control GREEN. Suite 12 RED = 8 W6.2 + 2 vec-assoc + 2 carries. u1–u8 left to /dev |
+| W6.2 | /review | rigid-model soundness review (`b2bfb760`) | (shim §II.3) | (shim) | — **NOT CLEAN, 1 live acquire hole**: F1/0592 a written var FIRST minted at a nested-`fn` PARAM stays flexible (infer_lambda mints its own params flexible per FV-15) → later ascription ACQUIRES it — `(defn f [x] ((fn [:b y] y) :b "hello"))` accepted as `(Fn [a] String)`, `(f 3)`→"hello". Second face `((fn [:b y] y) 3)` = **open corner** (lambda-only written var: rigid-at-defn vs generalized-at-lambda) → USER ruling. Core verified sound: guards/teardown/suppress-flag/mirror-class/no-over-broadening all CLEAN. 0593/0594/0595 S110-foldable. Suite 4/4500 confirmed (+1 agent_flag parallelism flake) |
+| W6.2 | /dev (resume) | typecheck — rigid/co-reference impl | (shim §II.3) | (shim) | — **DONE `b2bfb760`**: NO skolem notion pre-existed → added minimal **transient** rigid rep (`HashSet<TypeId>` `rigid_vars` on CheckState, body-scoped, generalized away at boundary, never serialized) + 2 unify guards (`unify_var`: flexible MAY bind rigid = param acquisition; rigid↔concrete / rigid↔distinct-rigid = skolem-escape, worded to avoid "unknown type"). var_map THREADS into `infer_lambda` (shared take/restore, co-reference FV-20/SCOPE-5), lambda's own params stay flexible (FV-15). Caught mono/trait-impl recheck re-mint → `suppress_rigid_annotations` on already-concrete rechecks (fixed FV-6 PIN break). **F2/0589 in-crate `/`-guard** (frontend routing half STAYS OPEN — TypeVar carries qualified string), **F3/0590 rustdoc** fixed (convergence→S110). u1–u8 green. 8 REDs GREEN, 13 PINs+control HOLD, suite 4/4500, **zero pub-API / zero cranelisp-types**. Crate CLAUDE.md invariant recorded |
 
 ## Notes
 
@@ -464,6 +466,85 @@ mint-guard + **F3/0590** the wrong trait-sig rustdoc line) → `/review`.
 - **set-doc RED (untracked):** `set_doc_non_function_target_e2e_refused_not_recorded_neg`
   fails on the pre-W2 tree too (pre-existing set-doc resolution defect) → `/qa` triage
   + tracking record so it is not mistaken for a regression.
+
+## W6.3 SETTLED PRINCIPLE — written type-var semantics (user, 2026-07-14; the anti-loop table)
+
+Two `/review`-driven spec changes (flexible→rigid→hybrid) exposed that W6 was
+mis-scoped as a defect-fix when it is FOUNDATIONAL type-var semantics. Process
+lesson recorded: **semantics-touching work gets a user-ruled worked-example table in
+Phase 3, before build** (memory `feedback_settle_worked_examples_before_building_semantics`;
+METHOD-amendment candidate for close). The table below IS that artifact — every
+agent works from it; it is settled with the user and empirically grounded.
+
+**The principle (to scribe into §3.3):**
+Inference already provides maximal generality. A **bare** type variable is an
+inference variable WITH A NAME — it relates same-named occurrences (within a
+definition and into nested `fn` closures via lexical co-reference) and documents;
+inference determines it and the body MAY narrow it (no error). A **constraint**
+`:C x` is a checkable claim, but ONLY at a **quantified position** (a parameter /
+generalizable binding, where a caller picks the type): there the type is held
+abstract over `C` while the body is checked, and the body narrowing it to a concrete
+type (**skolem escape**) is an error — arising **only from the body**, never from a
+caller instantiating. A constraint in **value position** (on a concrete expression)
+is merely a **satisfaction check** (no held-abstract, no type change). A concrete
+**type** annotation in value position **resolves** an otherwise-ambiguous type —
+including **return-type-polymorphic** trait dispatch (`:Int (zed)`); an unresolved
+such type is the **§3.11 ambiguity** error. **Polymorphic functions as values**
+(rank-2 / a `∀` held uninstantiated) are **unsupported**.
+
+**The decision table (rows 1–17; `zed : ∀a. Zeroable a => (Fn [] a)`):**
+
+| # | Program | Verdict | Why |
+|---|---|---|---|
+| 1 | `(defn id [:a x] x)` | `∀a.(Fn [a] a)` | bare, never pinned |
+| 2 | `(defn f [:a x] (add-i64 1 x))` | `(Fn [Int] Int)`, no error | bare = name; body may pin |
+| 3 | `(defn f [:a x :a y] (pair x y))` | ties `x`,`y` | bare relates same-named positions |
+| 4 | `(defn f [:a x] :a "hello")` | `(Fn [String] String)`, no error | relate → `String` |
+| 5 | `(defn f [:Num x] (nadd x x))`, `nadd : (Fn [a a] a)` | `∀a.Num a => (Fn [a] a)` | uses only the interface; result is `self`=`a` (CORRECTED from `Int` — transcription slip, /spec S6.3) |
+| 6 | `(defn f [:Num x] (add-i64 1 x))` | **error** | constraint held abstract; body narrows to `Int` |
+| 7 | `(defn f [:a x] (nadd x x))` | `∀a.Num a => …`, no error | `Num` INFERRED from use, not asserted |
+| 8 | `(defn g [:a x] (fn [:a y] y))` | `∀a.(Fn [a] (Fn [a] a))` | inner `:a` co-refers (lexical) |
+| 9 | `(defn h [x] ((fn [:b y] y) 3))` | fine | `b` lambda-owned; `3` is caller-instantiation |
+| 10 | `(defn mk [] (fn [:b y] y))` (returned) | **error** | polymorphic function as value — unsupported |
+| 11 | `(defn f [] :a 5)` | `(Fn [] Int)`, no error | bare value-position; named, pinned |
+| 12 | `(defn f [] :Num 5)` | no error | `Int` satisfies `Num` — value-position constraint = check |
+| 13 | `:Int (zed)` | `:Int 0` | value-position CONCRETE TYPE resolves return-type dispatch |
+| 14 | `:Float (zed)` | `:Float 0.0` | same method, other impl, chosen by the annotation |
+| 15 | `(add-i64 (zed) 5)` | `:Int 5` | surrounding CONTEXT resolves dispatch |
+| 16 | `(zed)` alone | **§3.11 ambiguous-type error** | **DEFECT**: today leaks `codegen error … __expr has no GOT slot`; must be the clean §3.11 message (sibling of unpinned `[]`) |
+| 17 | `:Zeroable (zed)` | still §3.11 ambiguous | a value-position CONSTRAINT does not disambiguate; only a concrete type does |
+
+**Empirical grounding (2026-07-14, `./target/debug/cranelisp` REPL, `Zeroable`/`zed`
+Int+Float impls):** rows 13/14/15 CONFIRMED (`:Int (zed)`→`:primitives/Int 0`,
+`:Float (zed)`→`:primitives/Float 0.0`, `(add-i64 (zed) 5)`→`:primitives/Int 5`);
+row 16 CONFIRMED-DEFECTIVE (bare `(zed)` → `codegen error … __expr entry has no GOT
+slot`, not a §3.11 ambiguity). Row 2 vs 6 (bare pins freely / constraint over-spec
+errors) confirmed: t1 `(defn f [:a x] (add-i64 1 x))` errors, t4 `(defn f [:Num x]
+(add-i64 1 x))` PASSES — the current impl (`b2bfb760`) is INVERTED (bare rigid,
+trait flexible), which W6.3 corrects.
+
+**W6.3 implementation direction (`/dev`):**
+1. **Back OUT bare-var rigidity** from `b2bfb760` (bare `:a` becomes an ordinary
+   inference var + name; KEEP the co-reference `var_map` threading incl. into
+   `infer_lambda`). Rows 1–4/7–9/11.
+2. **Move rigidity ONTO the constraint path** — a `:C x` at a **parameter** position
+   is held abstract over `C` for the body-check; body-narrowing = skolem escape.
+   This is the same work as the **0590 mirror-class convergence** (the trait/impl-sig
+   resolvers become the rigid-aware path). Rows 5/6.
+3. **Value position**: constraint = satisfaction check (row 12); concrete-type
+   ascription resolves ambiguity incl. return-type dispatch (rows 13–15).
+4. **Row 16 defect**: an unresolved return-type-poly (or any unresolved ambiguous
+   value type) reaches the **§3.11 ambiguity gate** with the clean message, not the
+   codegen `__expr`-no-GOT-slot leak.
+5. **Poly-as-value unsupported** (row 10): a `∀` in argument/return position (a
+   returned/stored still-polymorphic function) is a clear error, not silent
+   mis-inference.
+
+**Wave sequence:** `/spec` scribe §3.3 from rows 1–17 → `/qa` matrix = rows 1–17
+(row 16 = the ambiguity-error RED) → `/testing` REDs (much of `b2bfb760`'s W6.2
+matrix RECLASSIFIES: the `:a`+concrete rows flip to PASS, trait-over-spec + row-16
+become the new REDs) → `/dev` (direction above) → `/review`. 0590 folds in (no
+longer an S110 carry — it's the constraint-rigidity path). File the row-16 defect.
 
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
