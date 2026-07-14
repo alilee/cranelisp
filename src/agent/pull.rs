@@ -130,6 +130,35 @@ fn is_allowed(name: &str) -> bool {
     ALLOWLIST.iter().any(|(n, _)| *n == name)
 }
 
+/// F2 (§17.20.3a) — classify a probe RESULT that FAILED. A read command surfaces
+/// a failure as a plain-text notice (`error: unknown symbol '…'`, `Module '…' not
+/// found`, or a compiler-error string). A failed result is bucketed via the same
+/// `classify_error` the repair path runs (so `/type` returning a real
+/// `type error …` buckets as `TypeError`; a bare not-found buckets as
+/// `OtherError`); a CLEAN result carries no class (`None`). The failure gate is a
+/// heuristic over the notice shape — this feeds a tuning histogram, not a
+/// correctness decision.
+fn pull_error_class(output: &str) -> Option<String> {
+    let t = output.trim_start();
+    let lower = t.to_lowercase();
+    let looks_failed = lower.starts_with("error")
+        || lower.contains("unknown symbol")
+        || lower.contains("not found")
+        || lower.contains("no such");
+    looks_failed.then(|| crate::agent::log::classify_error(t))
+}
+
+/// The terminal state of a give-up from the validate-and-repair loop (F3,
+/// §17.20.3a). Carries the trailing-unpaired `tool_use` id (wire-valid recording,
+/// Phase-6) AND the `cause` — `step_budget` (the repair iteration cap exhausted)
+/// or `model_declined` (the model produced no re-proposal). The `give_up` log
+/// record stamps the cause + the dominant `error_class` the turn looped on.
+#[derive(Debug)]
+struct GiveUp {
+    id: Option<String>,
+    cause: &'static str,
+}
+
 /// Synthesize a REPL command STRING from a model tool-call, enforcing the
 /// read-only allowlist (§4.2). Returns:
 ///   - `Ok(cmd_string)` — an allowed command, e.g. `"/source foo"`.
@@ -197,50 +226,58 @@ impl CompilerSession {
                 }
             }
             Ok(cmd) => {
-                // Echo the command behind the agent-input prompt glyph (§14.2)
-                // so the transcript reads honestly: who typed what. The command
-                // itself renders in NORMAL REPL style (§4.4, §3.5 — agent
-                // commands are not prose, so only the prompt is marked, not the
-                // body framed). One prefix fn (`render::agent_input_prefix`) is
-                // shared with the S89 Build-submit echo so they cannot diverge.
-                let _ = writeln!(stdout, "{}{cmd}", crate::agent::render::agent_input_prefix());
+                // §17.2.1 (OB-9 / Thread B) — probe traffic routes to the PRIVATE
+                // working channel, NOT the user session. NO `agent> {cmd}` echo and
+                // NO result echo scroll the transcript: the user sees the agent's
+                // conclusions (the Done prose, streamed in `mod.rs`) and the landed
+                // definitions, never the self-check probes. The command runs against
+                // a THROWAWAY sink so any internal writes stay off the transcript;
+                // its result is fed to the MODEL (returned below) and recorded in
+                // the §17.20 log — the tuning substrate — not on screen.
+                let mut sink: Vec<u8> = Vec::new();
                 // Run through the SAME path a keystroke uses. Read-only commands
                 // return `Final(text)` (or `Nothing`); a read can never reach the
                 // `Compile` arm (the allowlist excludes eval/write).
-                let result = self.process_commands(&cmd, stdout);
-                let output = match result {
+                let result = self.process_commands(&cmd, &mut sink);
+                // The MODEL-fed copy MUST be clean plain text (§14.6): shipping raw
+                // SGR to the provider leaks mangled `1m`/`0m` fragments. Strip ANSI.
+                // F2 (§17.20.3a) — classify a FAILED probe result via the same
+                // `classify_error` the repair path runs; a clean result has no class.
+                let (output, error_class) = match result {
                     CommandResult::Final(text) => {
-                        // §14.6 ANSI-leak fix (S89 Phase-6). A styled REPL command
-                        // (`/source` etc.) returns SGR-coloured text when colour is
-                        // on. The USER echo keeps that text verbatim — well-formed
-                        // colour on a TTY, plain under `--no-color` (the one global
-                        // `style::is_color_enabled` gate already decided it). But
-                        // the MODEL-fed copy MUST be clean plain text: shipping raw
-                        // SGR to the provider leaks mangled `1m`/`0m` fragments back
-                        // into the displayed reply (the ESC byte is dropped in
-                        // transport). So we strip ANSI from the fed-back `output`
-                        // ONLY — render once, feed clean.
-                        let _ = writeln!(stdout, "{text}");
-                        crate::style::strip_ansi(&text)
+                        let clean = crate::style::strip_ansi(&text);
+                        let ec = pull_error_class(&clean);
+                        (clean, ec)
                     }
-                    CommandResult::Nothing => String::new(),
+                    CommandResult::Nothing => (String::new(), None),
                     // A read-only command cannot produce these. Guard defensively
                     // so a future allowlist mistake fails closed (no eval).
                     CommandResult::Compile(_) | CommandResult::Quit => {
-                        let msg = "(command produced no readable result)".to_string();
-                        let _ = writeln!(stdout, "{msg}");
-                        msg
+                        ("(command produced no readable result)".to_string(), None)
                     }
                 };
-                // Pillar 4 (§27.1) — silent greppable log of this exploration pull
-                // (the read command word + its argument). Off unless
-                // `CRANELISP_AGENT_LOG` is set; never touches stdout.
+                // Pillar 4 (§27.1) — silent greppable log of this exploration pull:
+                // the read command word (`tool`) + its argument (`symbol`), the F1
+                // `question` (what the agent wanted to learn), and the F2
+                // `error_class` on a failed result. Off unless `CRANELISP_AGENT_LOG`
+                // is set; never touches stdout.
                 let pull_arg = call.argument.trim();
                 let mut ev = crate::agent::log::LogEvent::new("pull")
                     .turn(self.agent_current_turn())
                     .tool(tool);
                 if !pull_arg.is_empty() {
                     ev = ev.symbol(pull_arg);
+                }
+                if let Some(q) = call.question.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+                    ev = ev.question(q);
+                }
+                if let Some(ec) = error_class {
+                    // F3 dominant-class substrate: tally the failed-probe class into
+                    // the per-turn run-up so a later `give_up` can name what it looped on.
+                    if let Some(state) = self.agent.as_mut() {
+                        state.error_class_runup.push(ec.clone());
+                    }
+                    ev = ev.error_class(ec);
                 }
                 crate::agent::log::record(ev);
                 ToolCallResult {
@@ -285,7 +322,8 @@ impl CompilerSession {
         // — an unpaired tool_use → live 400 (Phase-6 defect).
         let (clean, final_tool_use_id) = match self.validate_and_repair(&call.argument, &call.id) {
             Ok(pair) => pair,
-            Err(give_up_id) => {
+            Err(give_up) => {
+                let give_up_id = give_up.id.clone();
                 // Give-up (§16.4): never submit broken code, never surface a raw
                 // compiler error. The MODEL receives an honest abort (the fed-back
                 // `tool_result` below) so it can adapt and re-submit, but the
@@ -299,14 +337,24 @@ impl CompilerSession {
                 if let Some(state) = self.agent.as_mut() {
                     state.submit_gave_up = true;
                 }
-                // Pillar 4 (§27.1) — silent greppable log of the submit give-up
-                // (the struggled-over symbol + module). Off unless the env is set.
+                // Pillar 4 (§27.1) — silent greppable log of the submit give-up:
+                // the struggled-over symbol + module, the F3 `cause`
+                // (`step_budget`/`model_declined`) + the dominant `error_class` the
+                // turn looped on, and the F6 `steps_at_give_up` counter. Off unless
+                // the env is set.
+                let dominant = self.agent.as_ref().and_then(|s| s.dominant_error_class());
+                let steps = self.agent_current_turn();
                 crate::agent::log::record({
                     let mut ev = crate::agent::log::LogEvent::new("give_up")
                         .turn(self.agent_current_turn())
-                        .module(self.current_module_path().as_ref());
+                        .module(self.current_module_path().as_ref())
+                        .cause(give_up.cause)
+                        .steps_at_give_up(steps);
                     if let Some(sym) = crate::agent::log::defined_symbol(&call.argument) {
                         ev = ev.symbol(sym);
+                    }
+                    if let Some(ec) = dominant {
+                        ev = ev.error_class(ec);
                     }
                     ev
                 });
@@ -417,11 +465,14 @@ impl CompilerSession {
                         state.submit_committed = true;
                     }
                     // Pillar 4 (§27.1) — silent greppable log of the committed
-                    // submit (the defined symbol + module). Off unless env is set.
+                    // submit (the defined symbol + module) + the F6 `steps_at_submit`
+                    // counter (probes-per-submit substrate). Off unless env is set.
+                    let steps = self.agent_current_turn();
                     crate::agent::log::record({
                         let mut ev = crate::agent::log::LogEvent::new("submit")
                             .turn(self.agent_current_turn())
-                            .module(self.current_module_path().as_ref());
+                            .module(self.current_module_path().as_ref())
+                            .steps_at_submit(steps);
                         if let Some(sym) = crate::agent::log::defined_symbol(clean) {
                             ev = ev.symbol(sym);
                         }
@@ -694,7 +745,7 @@ impl CompilerSession {
         &mut self,
         initial_form: &str,
         submit_id: &str,
-    ) -> Result<(String, Option<String>), Option<String>> {
+    ) -> Result<(String, Option<String>), GiveUp> {
         let mut form = initial_form.to_string();
         // The id of the tool_use whose form we are validating this iteration. When
         // `Some`, the next error-feedback is a PAIRED `tool_result`; when `None`
@@ -708,6 +759,13 @@ impl CompilerSession {
                 // ACTUAL submitted tool_use (the last repair, or the original).
                 Ok(()) => return Ok((form, pending_tool_use)),
                 Err(compiler_error) => {
+                    let ec = crate::agent::log::classify_error(&compiler_error);
+                    // F3 (§17.20.3a) dominant-class substrate: tally this repair's
+                    // class into the per-turn run-up so a later `give_up` can name
+                    // the class it was looping on.
+                    if let Some(state) = self.agent.as_mut() {
+                        state.error_class_runup.push(ec.clone());
+                    }
                     // Pillar 4 (§27.1) — the KEYSTONE struggle signal: a silent
                     // greppable `repair` record carrying the struggled-over symbol,
                     // its module, the triggering compiler `error_class`, and the
@@ -720,7 +778,7 @@ impl CompilerSession {
                         let mut ev = crate::agent::log::LogEvent::new("repair")
                             .turn(self.agent_current_turn())
                             .module(self.current_module_path().as_ref())
-                            .error_class(crate::agent::log::classify_error(&compiler_error))
+                            .error_class(ec)
                             .iteration(iteration + 1);
                         if let Some(sym) = crate::agent::log::defined_symbol(&form) {
                             ev = ev.symbol(sym);
@@ -760,6 +818,7 @@ impl CompilerSession {
                                     id: id.clone(),
                                     name: SUBMIT_TOOL.to_string(),
                                     argument: argument.clone(),
+                                    question: None,
                                 }]);
                             }
                             pending_tool_use = Some(id);
@@ -784,7 +843,14 @@ impl CompilerSession {
                         // decision off the live transcript tail (a paired tail ⇒ the
                         // give-up outcome is carried as a benign user turn, not a
                         // spurious second tool_result).
-                        None => return Err(pending_tool_use.clone()),
+                        // F3: the model produced no re-proposal (no tool call, no
+                        // extractable form) — it DECLINED to repair.
+                        None => {
+                            return Err(GiveUp {
+                                id: pending_tool_use.clone(),
+                                cause: "model_declined",
+                            });
+                        }
                     }
                 }
             }
@@ -795,7 +861,11 @@ impl CompilerSession {
         // so `pending_tool_use` is the TRAILING UNPAIRED tool_use. `run_submit`
         // returns the give-up result with this id; `record_pull_result` then closes
         // the pairing with exactly one `tool_result` (the current 400 fix).
-        Err(pending_tool_use.clone())
+        // F3: the repair loop hit its iteration cap — a STEP-BUDGET give-up.
+        Err(GiveUp {
+            id: pending_tool_use.clone(),
+            cause: "step_budget",
+        })
     }
 
     /// Validate one proposed form on staging (parse+expand half via
@@ -933,6 +1003,7 @@ mod tests {
             id: "c1".to_string(),
             name: name.to_string(),
             argument: arg.to_string(),
+            question: None,
         }
     }
 
@@ -1032,19 +1103,21 @@ mod tests {
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
         let result = s.run_pull(&call("source", "f"), &mut sink, &mut crate::agent::types::NoConsent);
-        // The fed-back content is non-empty and carries the source.
+        // The fed-back content is non-empty and carries the source (the MODEL
+        // still sees the probe result — it is fed back, just not shown on screen).
         assert!(!result.output.is_empty(), "tool_result content must not be empty");
         assert!(
             result.output.contains("(defn f [x] x)"),
             "tool_result content must carry the command output, got: {:?}",
             result.output
         );
-        // The same output is rendered as-typed to stdout (the transcript).
+        // §17.2.1 / OB-9 — probe traffic is PRIVATE: the command + its result are
+        // NOT rendered into the user session. The sink stays EMPTY (the user sees
+        // conclusions + landed defs, never the self-check probes).
         let rendered = String::from_utf8_lossy(&sink);
-        assert!(rendered.contains("/source f"), "the command is echoed as-typed: {rendered}");
         assert!(
-            rendered.contains("(defn f [x] x)"),
-            "the output is displayed in the transcript: {rendered}"
+            rendered.is_empty(),
+            "a probe MUST NOT echo to the user session (§17.2.1); sink={rendered:?}"
         );
     }
 
@@ -1103,19 +1176,15 @@ mod tests {
             result.output
         );
 
-        // (b) the USER echo: every ESC introduces a well-formed SGR (ESC '['),
-        // never an orphan ESC or a `\x1b[`-less `1m`/`0m` fragment.
+        // (b) §17.2.1 / OB-9 — the probe is PRIVATE: nothing is echoed to the user
+        // session, so the SGR-cleanliness concern for the user echo is moot (the
+        // model-fed copy in (a) is the surviving cleanliness contract). The sink
+        // stays EMPTY.
         let rendered = String::from_utf8_lossy(&sink);
-        for (i, _) in rendered.match_indices('\u{1b}') {
-            let after = &rendered[i + 1..];
-            assert!(
-                after.starts_with('['),
-                "every ESC in the user echo must introduce a well-formed SGR \
-                 (ESC '['); orphan at {i}: {rendered:?}"
-            );
-        }
-        // The user echo still shows the command + the source.
-        assert!(rendered.contains("/source f"), "command echoed: {rendered:?}");
+        assert!(
+            rendered.is_empty(),
+            "a probe MUST NOT echo to the user session (§17.2.1); sink={rendered:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1151,6 +1220,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
     }
@@ -1160,6 +1230,7 @@ mod tests {
             id: "s1".to_string(),
             name: "submit".to_string(),
             argument: form.to_string(),
+            question: None,
         }
     }
 
@@ -1168,6 +1239,7 @@ mod tests {
             id: id.to_string(),
             name: "submit".to_string(),
             argument: form.to_string(),
+            question: None,
         }
     }
 
@@ -1287,6 +1359,55 @@ mod tests {
         );
     }
 
+    // F3 (§17.20.3a) — ENUMERATED give-up cause (i): the repair loop exhausts its
+    // iteration cap on a persistently-broken submit ⇒ the give-up cause is
+    // `step_budget`. The `give_up` log record stamps this cause.
+    // spec: repl/spec.md §17.20.3a F3 — give-up cause enum.
+    #[test]
+    fn validate_and_repair_gives_up_step_budget_when_cap_exhausts() {
+        let broken = "(defn broken [x] (undefined-xyz x)"; // unbalanced ⇒ always fails
+        let mut s = repl_session();
+        session_with_agent(
+            &mut s,
+            vec![
+                ModelResponse::ToolCalls(vec![submit_call(broken)]),
+                ModelResponse::ToolCalls(vec![submit_call(broken)]),
+                ModelResponse::ToolCalls(vec![submit_call(broken)]),
+            ],
+            false,
+        );
+        if let Some(state) = s.agent.as_mut() {
+            state.record_assistant_tool_calls(vec![submit_call_with_id("outer", broken)]);
+        }
+        let give_up = s.validate_and_repair(broken, "outer").unwrap_err();
+        assert_eq!(
+            give_up.cause, "step_budget",
+            "a repair-cap exhaustion is a step_budget give-up (F3)"
+        );
+    }
+
+    // F3 (§17.20.3a) — ENUMERATED give-up cause (ii): the model replies with prose
+    // carrying NO re-proposable form ⇒ the give-up cause is `model_declined`.
+    // spec: repl/spec.md §17.20.3a F3 — give-up cause enum.
+    #[test]
+    fn validate_and_repair_gives_up_model_declined_on_formless_prose() {
+        let broken = "(defn broken [x] (undefined-xyz x)";
+        let mut s = repl_session();
+        session_with_agent(
+            &mut s,
+            vec![ModelResponse::Done("I'm not sure how to fix this.".to_string())],
+            false,
+        );
+        if let Some(state) = s.agent.as_mut() {
+            state.record_assistant_tool_calls(vec![submit_call_with_id("outer", broken)]);
+        }
+        let give_up = s.validate_and_repair(broken, "outer").unwrap_err();
+        assert_eq!(
+            give_up.cause, "model_declined",
+            "a formless-prose repair reply is a model_declined give-up (F3)"
+        );
+    }
+
     // §20.3 (CRITICAL) — `agent_auto_accept()` reads the field ONLY at the consent
     // site; the VALIDATOR takes no such param and behaves identically regardless
     // of the flag (proven by validating with auto_accept on).
@@ -1343,6 +1464,7 @@ mod tests {
             id: "d1".to_string(),
             name: "set-preamble".to_string(),
             argument: arg.to_string(),
+            question: None,
         }
     }
 
@@ -1491,6 +1613,7 @@ mod tests {
             id: "d2".to_string(),
             name: "set-doc".to_string(),
             argument: "solve Solve the grid.".to_string(),
+            question: None,
         };
         let _ = s.run_pull(&call, &mut sink, &mut consent);
         let rendered = String::from_utf8_lossy(&sink);
@@ -1526,6 +1649,7 @@ mod tests {
             id: "d3".to_string(),
             name: "set-doc".to_string(),
             argument: "ghost some docstring".to_string(),
+            question: None,
         };
         let result = s.run_pull(&call, &mut sink, &mut consent);
         assert!(

@@ -51,6 +51,12 @@ pub struct ToolCallRequest {
     pub name: String,
     /// The single string argument (a symbol name or expression).
     pub argument: String,
+    /// F1 (§17.20.3a/b) — the model-supplied `question`: what the agent wanted to
+    /// learn by issuing this probe. A REQUIRED argument on every probe/pull tool
+    /// (`tool_definitions`), recorded verbatim on the `pull` log record. `None`
+    /// when the model omitted it (a schema non-conformance; the harness degrades
+    /// gracefully — the field is simply absent from the record).
+    pub question: Option<String>,
 }
 
 /// The result of running a pulled command, fed back to the model as a tool
@@ -246,6 +252,12 @@ pub struct AgentState {
     /// `turn` param down four call chains (Principle 1). `assemble_request`
     /// copies it onto `AgentRequest.turn` for the trace side. `0` between turns.
     pub current_turn: usize,
+    /// F3 (§17.20.3a) dominant-error-class substrate — the ordered list of
+    /// `error_class`es the turn hit in its run-up (failed probes + repair
+    /// iterations). A `give_up` reads the MOST FREQUENT entry as the class it was
+    /// looping on. Reset at every `agent_turn` start (the give-up cause is about
+    /// THIS turn's struggle). Never rendered — a mining-only tally.
+    pub error_class_runup: Vec<String>,
     /// The bounded recent-errored-turn feed (E5, §5.5(4)) — one entry per REPL
     /// eval turn (`input` + the string the user saw), cap `TURN_RING_CAP`. Fed
     /// from the single per-turn display boundary in `main.rs`'s read loop via
@@ -261,6 +273,25 @@ impl AgentState {
     /// True when no provider is reachable (the dormant / "no key" state — §6.4).
     pub fn is_dormant(&self) -> bool {
         self.model.is_none()
+    }
+
+    /// F3 (§17.20.3a) — the MOST FREQUENT `error_class` in this turn's run-up
+    /// (failed probes + repair iterations), i.e. the class the turn was looping
+    /// on when it gave up. Ties break on first-seen order. `None` when the run-up
+    /// is empty (a give-up with no classified failure — e.g. `model_declined`).
+    pub fn dominant_error_class(&self) -> Option<String> {
+        let mut counts: Vec<(&str, usize)> = Vec::new();
+        for c in &self.error_class_runup {
+            if let Some(slot) = counts.iter_mut().find(|(k, _)| *k == c.as_str()) {
+                slot.1 += 1;
+            } else {
+                counts.push((c.as_str(), 1));
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(k, _)| k.to_string())
     }
 
     /// Record one REPL eval turn onto the bounded ring (E5, §5.5). Appends the
@@ -550,8 +581,30 @@ fn render_turn_for_debug(turn: &Turn) -> String {
 mod tests {
     use super::*;
 
+    // F3 (§17.20.3a) — ENUMERATED case (iii): the dominant-error-class computation
+    // over a give-up's run-up. The MOST FREQUENT class is returned; an empty
+    // run-up yields `None` (a give-up with no classified failure).
+    // spec: repl/spec.md §17.20.3a F3 — dominant error class.
+    #[test]
+    fn dominant_error_class_picks_most_frequent() {
+        let mut st = crate::agent::provider::build_agent_state(false);
+        assert_eq!(st.dominant_error_class(), None, "empty run-up ⇒ no dominant class");
+        st.error_class_runup = vec![
+            "ParseError".into(),
+            "TypeError".into(),
+            "TypeError".into(),
+            "ParseError".into(),
+            "TypeError".into(),
+        ];
+        assert_eq!(
+            st.dominant_error_class().as_deref(),
+            Some("TypeError"),
+            "the most frequent class (TypeError ×3 vs ParseError ×2) is dominant"
+        );
+    }
+
     fn tc(id: &str) -> ToolCallRequest {
-        ToolCallRequest { id: id.to_string(), name: "submit".to_string(), argument: "x".to_string() }
+        ToolCallRequest { id: id.to_string(), name: "submit".to_string(), argument: "x".to_string(), question: None }
     }
     fn tr(id: &str) -> ToolCallResult {
         ToolCallResult {

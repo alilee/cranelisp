@@ -172,12 +172,22 @@ pub fn parse_script(text: &str) -> Vec<ScriptStep> {
         } else if let Some(rest) = line.strip_prefix("tool:") {
             let mut parts = rest.trim().splitn(2, char::is_whitespace);
             let name = parts.next().unwrap_or("").trim().to_string();
-            let argument = parts.next().unwrap_or("").trim().to_string();
+            let arg_and_q = parts.next().unwrap_or("").trim();
+            // F1 (§17.20.3b): a probe carries a model-supplied `question`. The stub
+            // (the test "model") supplies one via an optional ` ?? <question>`
+            // suffix; absent ⇒ a derived default so a probe always carries one (the
+            // schema requires it). A `submit` form never contains ` ?? `, so its
+            // whole form stays the argument (the question is unused for submits).
+            let (argument, question) = match arg_and_q.split_once(" ?? ") {
+                Some((a, q)) => (a.trim().to_string(), q.trim().to_string()),
+                None => (arg_and_q.to_string(), format!("what is {arg_and_q}")),
+            };
             steps.push(ScriptStep {
                 response: ModelResponse::ToolCalls(vec![ToolCallRequest {
                     id: format!("stub-{}", steps.len()),
                     name,
                     argument,
+                    question: Some(question),
                 }]),
                 deltas: None,
             });

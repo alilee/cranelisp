@@ -229,6 +229,9 @@ impl CompilerSession {
             state.record_user(text);
             state.submit_gave_up = false;
             state.submit_committed = false;
+            // F3 (§17.20.3a) — the give-up cause is about THIS turn's struggle, so
+            // reset the dominant-error-class run-up tally at every turn start.
+            state.error_class_runup.clear();
         }
 
         for turn_step in 0..MAX_TURN_ITERATIONS {
@@ -250,8 +253,19 @@ impl CompilerSession {
             // §17.21 trace block at the same `turn=N`. Off unless
             // `CRANELISP_AGENT_LOG` is set; never touches stdout (the SILENT
             // contract — the transcript stays byte-identical).
+            // F4 (§17.20.3a) — the context-version stamp on the exchange: a hash of
+            // the assembled primer + the harvest char count (the same figures the
+            // trace header prints). Makes a before/after metric comparison rigorous
+            // (comparable-runs discipline): a delta is valid only between runs whose
+            // stamp differs in the edited artifact alone. Derived, never narrated —
+            // read straight off the assembled `req`.
             crate::agent::log::record(
-                crate::agent::log::LogEvent::new("exchange").turn(current_turn),
+                crate::agent::log::LogEvent::new("exchange")
+                    .turn(current_turn)
+                    .context_stamp(
+                        crate::agent::log::primer_hash(&req.primer),
+                        req.harvest.chars().count(),
+                    ),
             );
 
             // Run the model, STREAMING the terminal answer's prose LIVE (§14A.3 /
@@ -655,6 +669,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         (s, capture)
@@ -855,6 +870,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "source".to_string(),
                 argument: "f".to_string(),
+                question: None,
             }]),
             ModelResponse::Done("done".to_string()),
         ]);
@@ -868,6 +884,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         drive(&mut s, "show me the source of f");
@@ -904,6 +921,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "sh".to_string(),
                 argument: "rm -rf /".to_string(),
+                question: None,
             }]),
             ModelResponse::Done("ok".to_string()),
         ]);
@@ -1061,6 +1079,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         s
@@ -1071,6 +1090,7 @@ mod tests {
             id: format!("toolu-{}", form.len()),
             name: "submit".to_string(),
             argument: form.to_string(),
+            question: None,
         }])
     }
 

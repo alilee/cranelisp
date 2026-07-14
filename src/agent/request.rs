@@ -196,9 +196,18 @@ pub fn tool_definitions(req: &AgentRequest) -> Vec<ToolDefinition> {
                     "argument": {
                         "type": "string",
                         "description": "The symbol name or expression the command operates on."
+                    },
+                    // F1 (§17.20.3a/b) — REQUIRED on every probe/pull tool: the
+                    // specific thing the agent wanted to learn by issuing this
+                    // probe. Recorded verbatim (§17.20.3a F1) → the primer-gap
+                    // worklist. Required, not optional (§17.20.3b).
+                    "question": {
+                        "type": "string",
+                        "description": "The specific thing you want to learn by running this command \
+                                        (e.g. \"does fn take a multi-arity clause form\"). Required."
                     }
                 },
-                "required": ["argument"]
+                "required": ["argument", "question"]
             }),
         })
         .collect()
@@ -235,10 +244,20 @@ where
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     });
+                // F1 (§17.20.3a/b) — the required `question` argument (what the
+                // agent wanted to learn). Absent ⇒ `None` (graceful; a schema
+                // non-conformance the harness does not crash on).
+                let question = tc
+                    .function
+                    .arguments
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 calls.push(ToolCallRequest {
                     id: tc.id.clone(),
                     name: tc.function.name.clone(),
                     argument,
+                    question,
                 });
             }
             _ => {}
@@ -262,6 +281,47 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             argument: arg.to_string(),
+            question: None,
+        }
+    }
+
+    // OB-2 (§17.20.3b / repl/spec.md §17.2.1) — the ENUMERATED per-tool
+    // question-required obligation. `question` is a REQUIRED argument on EVERY
+    // probe/pull tool; a probe with no `question` is a tool-schema
+    // non-conformance. This pins one assertion per probe tool the §17.2.1 set
+    // names (fail-on-revert): each declares `question` in its schema `required`.
+    // spec: repl/spec.md §17.20.3b — probe tools carry a required `question`.
+    #[test]
+    fn every_probe_tool_schema_requires_a_question_argument() {
+        let req = AgentRequest {
+            tools: crate::agent::pull::tool_defs(),
+            ..Default::default()
+        };
+        let defs = tool_definitions(&req);
+        // The §17.2.1 probe set — one enumerated obligation per tool.
+        let probe_tools = [
+            "type", "syntax", "sig", "info", "source", "doc", "exports", "list",
+            "search", "refs",
+        ];
+        for probe in probe_tools {
+            let def = defs
+                .iter()
+                .find(|d| d.name == probe)
+                .unwrap_or_else(|| panic!("probe tool `{probe}` (§17.2.1) must be offered"));
+            let required = def.parameters["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{probe}` schema must have a `required` array"));
+            assert!(
+                required.iter().any(|v| v == "question"),
+                "OB-2: probe tool `{probe}` MUST declare `question` as a required \
+                 argument (§17.20.3b); required={required:?}"
+            );
+            assert!(
+                def.parameters["properties"].get("question").is_some(),
+                "OB-2: probe tool `{probe}` MUST declare a `question` property; \
+                 schema={:?}",
+                def.parameters
+            );
         }
     }
 

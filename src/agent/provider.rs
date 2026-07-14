@@ -92,6 +92,7 @@ fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool)
         submit_gave_up: false,
         submit_committed: false,
         current_turn: 0,
+        error_class_runup: Vec::new(),
         turn_ring: std::collections::VecDeque::new(),
     }
 }
@@ -613,6 +614,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
@@ -738,6 +740,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
@@ -954,6 +957,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         let mut sink: Vec<u8> = Vec::new();
@@ -1090,6 +1094,7 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 0,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         });
         s
@@ -1250,12 +1255,13 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 1,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         };
         let calls = vec![
-            ToolCallRequest { id: "toolu_a".into(), name: "source".into(), argument: "f".into() },
-            ToolCallRequest { id: "toolu_b".into(), name: "info".into(), argument: "g".into() },
-            ToolCallRequest { id: "toolu_c".into(), name: "sig".into(), argument: "h".into() },
+            ToolCallRequest { id: "toolu_a".into(), name: "source".into(), argument: "f".into(), question: None },
+            ToolCallRequest { id: "toolu_b".into(), name: "info".into(), argument: "g".into(), question: None },
+            ToolCallRequest { id: "toolu_c".into(), name: "sig".into(), argument: "h".into(), question: None },
         ];
         // One assistant turn opens the batch, then one result per call in order.
         state.record_assistant_tool_calls(calls.clone());
@@ -1370,12 +1376,13 @@ mod tests {
             submit_gave_up: false,
             submit_committed: false,
             current_turn: 1,
+            error_class_runup: Vec::new(),
             turn_ring: std::collections::VecDeque::new(),
         };
         // The batch: [a = submit (will repair), b = a read call]. submit NOT last.
         state.record_assistant_tool_calls(vec![
-            ToolCallRequest { id: "a".into(), name: "submit".into(), argument: "(defn x [".into() },
-            ToolCallRequest { id: "b".into(), name: "source".into(), argument: "f".into() },
+            ToolCallRequest { id: "a".into(), name: "submit".into(), argument: "(defn x [".into(), question: None },
+            ToolCallRequest { id: "b".into(), name: "source".into(), argument: "f".into(), question: None },
         ]);
         // run_submit(a)'s repair loop records its OWN paired ATC/TR onto the main
         // transcript (the essence of the interposition) before the outer result.
@@ -1383,6 +1390,7 @@ mod tests {
             id: "a-repair".into(),
             name: "submit".into(),
             argument: "(defn x [] 0)".into(),
+            question: None,
         }]);
         state.record_tool_result(ToolCallResult {
             id: "a-repair".into(),

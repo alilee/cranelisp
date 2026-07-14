@@ -210,7 +210,7 @@ mod tests {
     use crate::agent::types::{ToolCallResult, ToolDef};
 
     fn tc(id: &str, name: &str, arg: &str) -> ToolCallRequest {
-        ToolCallRequest { id: id.to_string(), name: name.to_string(), argument: arg.to_string() }
+        ToolCallRequest { id: id.to_string(), name: name.to_string(), argument: arg.to_string(), question: None }
     }
 
     // spec: repl/spec.md §17 — the request trace renders the full message

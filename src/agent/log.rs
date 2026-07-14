@@ -73,6 +73,36 @@ pub(crate) struct LogEvent {
     /// A pull's tool/command name (e.g. `source`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// F1 (§17.20.3a) — the natural-language question a `pull` probe wanted to
+    /// answer (the model-supplied `question` tool argument), stamped verbatim.
+    /// Feeds the **unresolved-question list** metric (the primer-gap worklist).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// F3 (§17.20.3a) — a `give_up`'s terminal cause (`step_budget` /
+    /// `model_declined`). The dominant `error_class` it was looping on rides the
+    /// existing `error_class` field. Feeds the **give-up rate + cause histogram**.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// F4 (§17.20.3a) — the context-version stamp: a hash of the assembled primer.
+    /// Feeds the **comparable-runs discipline** (a metric delta is valid only
+    /// between runs whose stamps differ in the edited artifact alone).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primer_hash: Option<String>,
+    /// F4 (§17.20.3a) — the harvest character count (the session-context size).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harvest_len: Option<usize>,
+    /// F5 (§17.20.3a/b) — the `CRANELISP_AGENT_SCENARIO` tag, stamped on EVERY
+    /// record (at the `record` chokepoint). Feeds **per-scenario slicing**.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scenario: Option<String>,
+    /// F6 (§17.20.3a) — the harness step counter at a `submit`. Feeds
+    /// **probes-per-submit**.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps_at_submit: Option<usize>,
+    /// F6 (§17.20.3a) — the harness step counter at a `give_up`. Feeds the
+    /// step-count facet of the **give-up rate** analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps_at_give_up: Option<usize>,
     /// A coarse wall-clock timestamp (unix seconds) — for ordering when mining.
     pub ts: u64,
 }
@@ -89,6 +119,13 @@ impl LogEvent {
             iteration: None,
             turn: None,
             tool: None,
+            question: None,
+            cause: None,
+            primer_hash: None,
+            harvest_len: None,
+            scenario: None,
+            steps_at_submit: None,
+            steps_at_give_up: None,
             ts: now_unix_secs(),
         }
     }
@@ -124,6 +161,48 @@ impl LogEvent {
         self.tool = Some(t.into());
         self
     }
+
+    /// F1 — stamp the probe's natural-language `question` (§17.20.3a).
+    pub(crate) fn question(mut self, q: impl Into<String>) -> Self {
+        self.question = Some(q.into());
+        self
+    }
+
+    /// F3 — stamp a `give_up`'s terminal `cause` (§17.20.3a).
+    pub(crate) fn cause(mut self, c: impl Into<String>) -> Self {
+        self.cause = Some(c.into());
+        self
+    }
+
+    /// F4 — stamp the context-version stamp (`primer_hash` + `harvest_len`,
+    /// §17.20.3a). Both together — the pair is the comparable-runs key.
+    pub(crate) fn context_stamp(mut self, primer_hash: impl Into<String>, harvest_len: usize) -> Self {
+        self.primer_hash = Some(primer_hash.into());
+        self.harvest_len = Some(harvest_len);
+        self
+    }
+
+    /// F6 — stamp the harness step counter at a `submit` (§17.20.3a).
+    pub(crate) fn steps_at_submit(mut self, n: usize) -> Self {
+        self.steps_at_submit = Some(n);
+        self
+    }
+
+    /// F6 — stamp the harness step counter at a `give_up` (§17.20.3a).
+    pub(crate) fn steps_at_give_up(mut self, n: usize) -> Self {
+        self.steps_at_give_up = Some(n);
+        self
+    }
+}
+
+/// The scenario tag env (F5, §17.20.3b) — the sibling of `CRANELISP_AGENT_LOG`,
+/// same silent/opt-in/graceful contract. Unset/empty ⇒ `None` (the field is
+/// absent, never a spurious value). Read at the `record` chokepoint so EVERY
+/// record carries it uniformly without threading it to every call site.
+const SCENARIO_VAR: &str = "CRANELISP_AGENT_SCENARIO";
+
+fn scenario_tag() -> Option<String> {
+    crate::agent::sink::env_path(SCENARIO_VAR)
 }
 
 /// Append one event to the log file IF logging is enabled (`CRANELISP_AGENT_LOG`
@@ -131,9 +210,14 @@ impl LogEvent {
 /// serialize, open, and write are ALL swallowed (`let _ = …`) — an unwritable path,
 /// a serialize failure, or anything else degrades silently. NEVER writes to stdout
 /// / the transcript (the SILENT contract, §27.1): the only side effect is the file.
-pub(crate) fn record(event: LogEvent) {
+pub(crate) fn record(mut event: LogEvent) {
     if log_path().is_none() {
         return; // off — no file created, no cost paid (early out before serialize).
+    }
+    // F5 (§17.20.3a/b) — stamp the scenario tag on EVERY record at the single
+    // chokepoint (so no call site can forget it). Unset env ⇒ field stays absent.
+    if event.scenario.is_none() {
+        event.scenario = scenario_tag();
     }
     // Serialize to a single JSON line. A serialize failure (should never happen for
     // this flat struct) is swallowed — logging never disturbs the session.
@@ -195,6 +279,18 @@ pub(crate) fn defined_symbol(form: &str) -> Option<String> {
     } else {
         Some(name.to_string())
     }
+}
+
+/// F4 (§17.20.3a) — a stable content hash of the assembled primer, for the
+/// context-version stamp. Deterministic within a build (`DefaultHasher` uses
+/// fixed keys), so two runs with the SAME primer produce the SAME stamp — the
+/// comparable-runs discipline needs exactly that (a metric delta is valid only
+/// between runs whose stamps differ in the edited artifact). Rendered as hex.
+pub(crate) fn primer_hash(primer: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    primer.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// Unix-seconds timestamp, best-effort (`0` if the clock is before the epoch —
