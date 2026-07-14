@@ -546,6 +546,79 @@ matrix RECLASSIFIES: the `:a`+concrete rows flip to PASS, trait-over-spec + row-
 become the new REDs) → `/dev` (direction above) → `/review`. 0590 folds in (no
 longer an S110 carry — it's the constraint-rigidity path). File the row-16 defect.
 
+## W6.3 EXECUTION OUTCOME (2026-07-14)
+
+**LANDED:** `/spec` §3.3.1–3.3.5 rewrite (+ §3.10 poly-as-value) → `/qa` 33-row
+matrix → `/testing` `7833cced` (13 REDs) → `/dev` `c3008d1f` (compiler model;
+resumed after a transient API stall — no logic loss).
+
+**Model landed + verified** (`c3008d1f`): bare-var rigidity BACKED OUT (bare =
+flexible named inference var); rigid-vars now **MERGE** not skolem-escape (required
+by stdlib `assert-eq [:Eq a :Eq b]` — 81 stdlib failures caught+fixed); **constraint-
+path rigidity** R5/R6 via `resolve_bound_param`/`active_constraints` (defn-param
+seam); **value-position satisfaction check** R12; **poly-as-value rejection** R10 via
+`lambda_written_vars`. U1–U9 (bar U6). Suite 4510p/11f. **6 REDs GREEN**
+(R2/R6/R10/R11/R12). PINs held. `public-api.txt` unchanged. Exit-code mechanism
+(`(Pure n)`→exit n) verified by `/sprint`.
+
+**REMAINING (the tail):**
+- **R16/R17 — return-type-poly ambiguity error quality — NOT landed; needs a
+  COORDINATED `cranelisp-typecheck`+`int` change-set** (a "dispatch-selected-NO-impl"
+  signal in the dispatch resolver + `src/exe.rs::validate_main` entry-ambiguity for
+  `--run`/`--link`). A naive `__expr` "result-type-non-concrete" gate false-positived
+  on arg-resolved dispatch (`(add2 3 4)` computes 7 but displays unpinned) — reverted
+  with evidence. **Error-quality defect** (dispatch WORKS, rows 13–15 green; only the
+  UNRESOLVED-case message leaks). SCOPE DECISION (user): fix now (cross-crate mini-
+  cycle) vs carry as tracked defect-guards.
+- **5 `/testing`-owned test-harness bugs** (evidenced, mechanism verified): `success()`
+  on a `(Pure n)`→exit-n `main`. Fixes: `assert_all_equal(n)`. R4 also: body `:a
+  "hello"` returns "hello" (spec row 4 asserts only the TYPE), so `(f "x")→"x"` is
+  wrong → `"hello"`. → `/testing`.
+- **C-4 — PRE-EXISTING multi-arity-fn-called-from-`main` batch defect** (independent
+  of W6.3; reproduces with CONCRETE `:Int`/`:String` params, zero written vars: `--run`
+  fails `entry module has no main function` while single-arity concrete control works).
+  → `/testing` minimal repro (known-defect guard) + attribution triage (likely
+  int/overload batch path). Carries.
+- **0590 stays OPEN** (`/design`): the four-mirror single-source refactor is real and
+  INDEPENDENT — R6 landed via a different seam; NOT done speculatively (P6). `/dev`
+  evidenced (grep `type_resolve.rs`). My W6.3 dispatch premise ("0590 folds in") was
+  WRONG — corrected.
+- **FIXME dispositions:** 0588 effectively resolved (co-reference half is the settled
+  mechanism); 0592 OBSOLETED (bare acquire is now correct); 0593 OBSOLETED (flag
+  removed, premise reversed); 0595 repurposed (constraint-abstract unify guard); 0589
+  unchanged (`/`-guard kept). 0592/0593 target `/design` → dispose.
+
+**Then `/review`** the `c3008d1f` change-set (scrutinise the merge-soundness,
+constraint-path, poly-as-value, value-position mechanisms + the escalation claims).
+
+**W6.3 REVIEW + FIX (2026-07-14):** `/review` of `c3008d1f` = **NOT CLEAN** but
+**model VERIFIED SOUND** — merge-soundness adversarially confirmed (`[:NumT x :ShowT
+y]` keeps both constraints; distinct-type errors not masked); both `/dev` escalations
+verified (0590 genuinely open — four mirrors untouched; R16/R17 genuinely cross-crate).
+1 Blocker + 2 Important + 1 Suggestion filed 0596–0600. `/qa` added matrix cells B-1
+(0596 over-fire) + B-2 (0600 fn-param known-limit, actioned+retired 0600). `/testing`
+`75e4a229` = B-1 RED + non-regression fence. `/dev` `750471ac` = **all four resolved**:
+**0596 correct-discriminator** (escape iff a `lambda_written_vars` id resolves to a
+`Var` ∉ `free_vars(param_types)` — merged-with-param ⇒ accept, distinct-free ⇒ reject;
+B-1 green, fence intact), 0597 (non-nominal `Fn`→reject + qualified module), 0598 (5
+stale W6.2 doc bands), 0599 (single-restore teardown), U7/U4 cells; FIXMEs 0596–0599
+deleted. Suite 4527/8f. **`/sprint` verified B-1 green + the merge/discriminator edge
+cases by hand.**
+
+**W6 SAGA CLOSE STATE (settled model LANDED):** bare = flexible named var; constraint
+= rigid checkable claim at quantified (param) positions; value-position satisfaction
+check + concrete-type ascription resolves dispatch; poly-as-value rejected; return-type
+dispatch works (rows 13–15). **Tracked carries (all failing-not-ignored REDs = the
+record):** R16/R17 (return-type-poly ambiguity error-quality — needs coordinated
+typecheck+int: dispatch-selected-no-impl signal + `src/exe.rs` entry-validation;
+CARRIED per `/sprint` default, user R16/R17 decision unanswered → reversible); C-4
+(pre-existing multi-arity-call-from-`main` batch defect, `lifecycle.rs::lookup_main_code_ptr`,
+owner /dev); 2 vec-assoc UAF (owner /backend); 0590 (four-mirror single-source refactor,
+`/design`); 0600→B-2 (fn-param constraint, rides 0590). **FIXME dispositions:** 0588
+resolved, 0592/0593 obsoleted (bare-acquire now correct) — `/design` to formally close;
+0589 unchanged; 0595 repurposed. **A focused `/review` of `750471ac` (Blocker-fix
+soundness) precedes W6 close.**
+
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
 `/dev` implemented the arch-ruled canonical-key-is-real/bare-alias model; mechanism

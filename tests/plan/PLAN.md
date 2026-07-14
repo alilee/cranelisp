@@ -2433,8 +2433,20 @@ The family map (shape × position; cells point at realizing rows):
 | concrete type | pins the param (§3.9.1; existing concrete-app coverage) | resolves ambiguity incl. return-type dispatch (R13/R14/R15); mismatch still rejected (FV-9 neg) |
 
 Boundary rows outside the 3×2 grid: R16 (unresolved return-type poly = §3.11
-error, mode-uniform), R10 (poly-as-value), R9 (caller instantiation), and the
-name-discrimination guards FV-13 (uppercase) / FV-21 (qualified lowercase).
+error, mode-uniform), R10 (poly-as-value), R9 (caller instantiation), the
+name-discrimination guards FV-13 (uppercase) / FV-21 (qualified lowercase),
+and the two review-found cells B-1/B-2 (Table 2b, added 2026-07-14).
+
+**The poly-as-value discriminator axis (0596 lesson):** the R9/R10 pair
+straddles a finer axis than the rows pinned — **{applied-in-place,
+held-as-value} × {concrete-arg, generic-arg}**. R9 covered applied-in-place ×
+concrete (`3`); R10 covered held-as-value (the arg axis is moot there — the
+value never reaches an application); the applied-in-place × **generic**-arg
+cell was MISSING from both the §L matrix and the unit tier, and that is
+exactly the cell the landed W6.3 discriminator (`c3008d1f`) breaks — "still a
+`Var` after body inference" is NOT the instantiated-at-a-use vs
+held-as-a-value discriminator, because a var instantiated at a still-generic
+type is also a `Var`. B-1 adds the cell.
 
 **Fixture notes (binding for `/testing`):**
 
@@ -2476,6 +2488,7 @@ state at `b2bfb760` recorded at authoring.
 - **R6:** `class=silent-accept locus=crates/cranelisp-typecheck constraint path (0590 mirror sites: traits/type_resolve.rs x3 + form.rs — a :C x parameter is never held abstract, so the body narrows the claimed-abstract type silently) found=S109 owner=/dev`
 - **R10:** `class=silent-accept locus=crates/cranelisp-typecheck generalization boundary (the §3.10 rank-1 gate is absent for a RETURNED still-polymorphic fn) found=S109 owner=/dev` — verify the observed failure shape at authoring and adjust the class to the evidence.
 - **R16/R17:** `class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (unresolved return-type-poly trait dispatch reaches the backend as an __expr-has-no-GOT-slot codegen error instead of the check-side ambiguous-type rejection; message-quality sibling FIXME 0568) found=S109 owner=/dev`
+- **B-1:** `class=wrong-reject locus=crates/cranelisp-typecheck/src/program.rs::check_defn_body (escaped_poly_fn) + infer.rs::infer_lambda (lambda_written_vars) (the landed W6.3 discriminator flags any written lambda var still Type::Var after body inference, conflating held-as-value with applied-in-place-at-a-GENERIC-type — §3.3.4's operative "held as a value" condition does not hold, §3.10 makes instantiation-at-use sound; FIXME 0596) found=S109 owner=/dev`
 
 **Table 1 — the seventeen settled rows:**
 
@@ -2511,6 +2524,21 @@ finds a contrary reading, escalate via `/spec`, do not improvise):
 | C-3 | (a)+(g) | ex-FV-20 neg leg: `(defn outer [:a x] ((fn [:a y] y) "s"))` — the inner `:a` CO-REFERS (one var, per (g)) AND the body application pins it (per (a)): accepted, `(Fn [String] String)`, `(outer "x")` → "s". Co-reference stays observable via R8's `((g 3) "t")` error facet | REWRITE of `nested_fn_written_var_corefers_enclosing_rigid_neg` → `nested_fn_corefering_var_pinned_by_body` | tests/spec_04_expressions.rs | e2e + unit U2 | **REWRITE→RED** | pos (was neg) |
 | C-4 | (a) per clause + §5.1.2 clause independence | ex-FV-11 — RESTORES the original W6 positive: `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))` — each clause's bare `:a` is pinned by ITS OWN body: `(h 5)` → 6, `(h "ab" 0)` → "abab"; the two different pins ARE the observable clause-independence guard | REWRITE of `multi_arity_written_var_body_pin_skolem_escape_per_clause_neg` → restore `multi_arity_same_written_var_independent_per_clause` | tests/spec_05_definitions.rs | e2e + unit U9 | **REWRITE→RED** | pos (was neg) |
 
+**Table 2b — review-found boundary cells** (added 2026-07-14 from the W6.3
+change-set review of `c3008d1f`; FIXMEs 0596 + 0600 — both cells were absent
+from the matrix, and their absence is where the landed discriminator grew its
+over-fire unobserved. Unlike Tables 1–2, verdicts here read against
+`c3008d1f`, the landed W6.3 tree):
+
+| Row | Spec + MUST | Fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
+|---|---|---|---|---|---|---|---|
+| B-1 | §3.3.4 + §3.10, (f)/(h) — applied-in-place × GENERIC-arg: the "held as a value" condition does NOT hold | `(defn f1 [x] ((fn [:b y] y) x))` AND `(defn f2 [:a x] ((fn [:b y] y) x))` — the annotated inner lambda is APPLIED IN PLACE to a generic-typed argument (the enclosing defn's own quantified var); application binds `b` to it and NO function value stays polymorphic anywhere (the returned value is `y`'s value, not a `fn`) → both ACCEPTED, `f1 : ∀a. (Fn [a] a)` (instantiation-at-use, always sound per §3.10) | NEW `lambda_applied_in_place_at_generic_arg_accepted` (both f1/f2 facets — bare-enclosing and co-annotated-enclosing) | tests/spec_03_types.rs | e2e + unit U7 (the two repros join the unit tier beside the existing U7 pair) | **RED at `c3008d1f`** — wrong-reject with the §3.3.4 message (0596, Blocker); the `/dev` 0596 fix flips it green. Adjacent legs MUST stay put through that fix: R10's held-as-value trio (mk / let-stored mk3 / passed-uninstantiated mk4) stays rejected, R9's legs + the pinned-by-use `(let [g (fn [:b y] y)] (g 3))` stay accepted — a fix regressing either side is mis-narrowing | pos |
+| B-2 | §3.3.2 × the **fn-param position** — a lambda param is a quantified position (quantified at the enclosing definition's boundary), so §3.3.2's "a parameter" reading naturally covers it | free-standing trait fixture; `(fn [:NumT y] (nadd y y))` → **CURRENT behaviour** at `c3008d1f`: `unknown type 'NumT' (from module '')` — the §3.9.3 try-type-then-trait fallback exists at the defn-param seam (`register_defn_signature` → `resolve_bound_param`) but NOT at `infer_lambda`'s param resolution; a trait constraint is inexpressible at the fn-param position. PRE-EXISTING (not introduced by `c3008d1f`) | none authored — recorded cell; test rows land when the closing effort picks it up | — | (unit-tier candidate at pickup) | **KNOWN-LIMITATION / scope caveat** — closing it is OUT of the W6.3 landed scope; it rides the open 0590 convergence (constraint rigidity reaches `defn` params ONLY today; fn params / let / trait-impl sigs untouched — `infer_lambda` is exactly a 0590 mirror site missing the ONE mint/fallback capability) or a future constraint-position-uniformity pass. NO fix verdict asserted here. **Desired end-state for the future record:** fn-param constraints behave IDENTICALLY to defn-param — held abstract for the enclosing body-check, R5/R6 logic per cell; if that derivation is contested at pickup, escalate via `/spec` (per the Table-2 note), do not improvise. Error-shape note: independent of when support lands, the R6/R12 band's "never `unknown type` for a recognised constraint shape" applies to this seam | n/a (recorded, no polarity until a verdict is owned) |
+
+(Related but NOT folded in: FIXME 0597's value-position satisfaction-check
+{non-nominal concrete} neg is a separate `/dev`-targeted defect in R12's neg
+family — it keeps its own FIXME and joins the matrix when triaged.)
+
 **Table 3 — retained guards** (verdicts UNCHANGED under W6.3; GREEN at
 `b2bfb760` unless noted; `// spec:` comment-band sweep to (a)–(h) only):
 
@@ -2529,8 +2557,9 @@ finds a contrary reading, escalate via `/spec`, do not improvise):
 | FV-14 | `trait_constraint_annotation_unaffected_by_free_var_rule` | PIN as thin control; substance upgraded by R5 (pos) + R6 (neg) |
 | FV-21 | `qualified_lowercase_annotation_unknown_type_not_minted_neg` | Verdict unchanged under W6.3 (a QUALIFIED lowercase name is a named-type reference, never a var — F2/0589). Verify-first at `b2bfb760`: the W6.2 `/dev` pass may have closed the mint sites; record observed state |
 
-**Row accounting: 33 rows** — 17 settled rows (R1–R17; R1/R3/R8/R9(i) realized
-by existing ex-FV tests), 4 derived corollaries (C-1..C-4), 12 retained guards.
+**Row accounting: 35 rows** — 17 settled rows (R1–R17; R1/R3/R8/R9(i) realized
+by existing ex-FV tests), 4 derived corollaries (C-1..C-4), 2 review-found
+boundary cells (B-1 RED, B-2 recorded known-limitation), 12 retained guards.
 
 **W6.2 → W6.3 reclassification summary (what `/testing` flips):**
 
@@ -2550,6 +2579,11 @@ by existing ex-FV tests), 4 derived corollaries (C-1..C-4), 12 retained guards.
 - **New positives:** R5, R7, R9(ii), R12(+neg), R13, R14, R15 (R13/R14/R15
   empirically GREEN — land as PINs).
 - **PINs carried:** R1, R3, R8, R9(i) + the 12 Table-3 guards.
+- **1 post-landing RED (W6.3 review, reads against `c3008d1f`):** B-1 —
+  applied-in-place at a GENERIC arg wrong-rejected by the landed
+  discriminator (0596 Blocker); flips green at the 0596 `/dev` fix.
+- **1 recorded known-limitation (no RED authored):** B-2 — {constraint ×
+  fn-param} inexpressible today (`unknown type`); rides 0590.
 
 **Unit-tier enumeration for `/dev`** (the S108-Inc2 deferral discipline: each
 named cell gets a guard that FAILS on revert of its fix, in the SAME change-set;
@@ -2593,7 +2627,12 @@ a bare "unit-pinned" without these is a hole):
   returned/stored VALUE with residual quantified vars is rejected at the
   generalization boundary (§3.10 rank-1); applied-in-place instantiation (R9)
   MUST remain accepted — the discriminator is instantiated-at-a-use vs
-  held-as-a-value. Guards R10 vs R9.
+  held-as-a-value, and per the 0596 lesson "still a `Var` after body
+  inference" is NOT it: a var instantiated at a still-generic type (the
+  enclosing definition's own quantified var) is also a `Var`. The full axis
+  is {applied-in-place, held-as-value} × {concrete-arg, generic-arg}; the
+  generic-arg cell's two repros (B-1) join this unit set beside the existing
+  pair. Guards R10 vs R9/B-1.
 - **U8 — name-discrimination guards retained:** uppercase unknown → §3.9.3
   error path (FV-13); qualified lowercase NEVER mints, at ALL 0590 mirror
   sites (FV-21).
@@ -2610,7 +2649,13 @@ correct) — its residual is per-mint-site keying consistency (U2); 0593
 (`suppress_rigid_annotations`) re-scopes to the constraint-skolem model; 0595's
 `unify_with_rigid` hardening survives repurposed (U3); 0568 is R16's
 message-quality sibling; 0576 governs FV-12's soft disposition; 0591 keeps the
-body-ascription parse gaps that route cells to the unit tier.
+body-ascription parse gaps that route cells to the unit tier; 0596 (Blocker,
+`target: /dev`) is B-1's carrier — the over-fire its fix removes; 0600
+(`target: /qa`) is ACTIONED into B-2 and deleted — its implementation half
+rides 0590 (the `infer_lambda` mint/fallback seam is a 0590 mirror site), and
+its verdict-derivation half is recorded on B-2 as the non-asserted desired
+end-state with the `/spec` escalation route; 0597 stays its own `/dev` FIXME
+(see the Table-2b trailing note).
 
 **Sweep items re-read under W6.3** (`/testing` probes each; polarity per the
 settled model):
@@ -2678,7 +2723,9 @@ fields) + AL edge set + DC-14; (3) observability + display rows
 (these depend on the `/repl`-specced surfaces and the agent harness;
 verify-first items marked above); (4) the §L.1 matrix — W6.3 state: (a)
 author the four NEW REDs + the flip-to-pass RED FIRST (R6, R10, R16, R17,
-R11 — they pin the settled model the `/dev` pass must implement), (b)
+R11 — they pin the settled model the `/dev` pass must implement; add B-1 to
+this batch — it pins the 0596 over-fire the follow-on `/dev` fix removes,
+RED against the landed `c3008d1f` tree), (b)
 REWRITE the six inverted W6.2 tests (R2, R4, C-1..C-4 — their current GREEN
 assertions pin `b2bfb760`'s superseded rigid model; each lands RED until
 `/dev`), (c) author the new positives (R5, R7, R9(ii), R12, R13, R14, R15 —
