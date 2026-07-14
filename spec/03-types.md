@@ -171,6 +171,8 @@ Type variables are created in two contexts:
 
 Type variables are implicitly universally quantified at function definition boundaries. There is no explicit `forall` syntax in the source language -- quantification is determined by the inference algorithm.
 
+This applies equally to a type variable the source author **writes** in a parameter or return **type annotation** and to one the inference engine generates: a lowercase identifier appearing free in an annotation -- whether standing alone (`(defn id [:a x] :a x)`) or nested inside an applied type (`:(Maybe a)`) -- is a type variable in exactly the sense above, and MUST be treated as implicitly universally quantified at the function definition boundary, identically to an inference-generated variable. Such an identifier MUST NOT be treated as a reference to an unknown named type. [S109]
+
 ## 3.4 Type Schemes [Tested tests/spec_03_types::let_polymorphism_identity_two_types]
 
 A **type scheme** (or **polytype**) is a type with universally quantified variables and optional trait constraints:

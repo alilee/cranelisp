@@ -2366,41 +2366,140 @@ The coverage-gap finding from the W1 re-ruling pass: a **free type variable in
 a `defn`/`fn` parameter annotation** fails `unknown type 'a'` (verified live)
 — and no cell in the suite would have caught it, because annotation-resolution
 coverage grew per whichever position an implementer exercised. The matrix
-below is the missing family. **Spec-stance verify-first (`/testing` before
-authoring, `/spec` if silent):** `deftype` field EBNF explicitly admits `:a`
-(§5.2, `field_def`), and `deftrait` method signatures use type vars
-normatively (§7); the `defn`/`fn`-param and let-binding cells cite §4.5.2 +
-§5.1.1 — if the spec is found silent on free-var annotations in those
-positions, that is a normative question routed via `/spec` to the user BEFORE
-the REDs land (a RED needs a MUST behind it; do not pin semantics the spec has
-not settled).
+below is the missing family.
 
-Annotation shape × position (each cell = one test; free-type-var cells are
-the expected REDs — the defect class):
+**Spec stance RESOLVED (2026-07-14; SPRINT.md §"W6 spec-stance gate").**
+`/spec` landed the clarification in spec/03-types.md §3.3 [S109]; every free-var
+RED below cites its two MUSTs:
 
-| Position \ annotation shape | concrete app (`:(Maybe Int)`) | free type var (`:(Maybe a)`) | bare var (`:a`) |
+> **MUST-1 (positive):** "a lowercase identifier appearing free in an
+> annotation — whether standing alone (…) or nested inside an applied type
+> (`:(Maybe a)`) — is a type variable in exactly the sense above, and MUST be
+> treated as implicitly universally quantified at the function definition
+> boundary, identically to an inference-generated variable."
+>
+> **MUST-2 (negative):** "Such an identifier MUST NOT be treated as a
+> reference to an unknown named type."
+
+The prior verify-first routing is discharged; the concrete acceptance rows are
+§L.1 below. The family sweep table stays as the position × shape map — its
+free-var cells are now REALIZED by the FV rows (pointers in the cells).
+
+**Fixture syntax notes (binding for `/testing`):**
+
+- **Annotation precedes the parameter name** — `[:a x]`, `[:(Box a) b]` — per
+  §5.1.1 EBNF (`annotated_param = colon_prefix symbol`) and §3.9 (`:Type form`
+  binds the immediately-following form in ALL positions). The §3.3 example
+  prose currently writes `(defn id [x :a] :a x)` (annotation AFTER the name)
+  — a prose typo inconsistent with §5.1.1/§3.9; FIXME 0587 filed to `/spec`.
+  Fixtures use the EBNF order; do NOT copy the example order.
+- **There is no return-annotation syntax** (§5.1.1: "The return type is always
+  inferred"). The "return position" cells are realized as the BODY expression
+  annotation (`:Type form`, §3.9/§4.9): `(defn id [:a x] :a x)`'s second `:a`
+  annotates the body `x`.
+- Free-standing fixtures only (no stdlib): `(deftype (Box a) [:a v])`,
+  `(deftype (Pair2 a b) [:a x :b y])`, primitives `add-i64`/`str-concat`.
+
+Annotation shape × position (the family map; free-type-var cells realized by
+§L.1 FV rows):
+
+| Position \ annotation shape | concrete app (`:(Box Int)`) | free type var (`:(Box a)`) | bare var (`:a`) |
 |---|---|---|---|
-| `defn` param | pos pin (`defn_param_concrete_app_annotation`) | **RED owed** (`defn_param_free_var_annotation`) | **RED owed** (`defn_param_bare_var_annotation`) |
-| `fn` (lambda) param | pos pin | **RED owed** | **RED owed** |
-| `deftype` field | pos pin (likely existing — verify-first) | GREEN control (works today: `(Some [:a v])` is the language's bread and butter — cite existing) | GREEN control |
-| `let` binding annotation | pos pin | **RED owed** (verify-first: may share the defn-param seam) | **RED owed** |
+| `defn` param | pos pin (`defn_param_concrete_app_annotation`) | **FV-4/FV-5** | **FV-1/FV-2/FV-3** |
+| `fn` (lambda) param | pos pin | FV-15 (nested facet) | **FV-15** |
+| `deftype` field | pos pin (likely existing — verify-first) | GREEN control (works today: `(deftype (Box a) [:a v])` is the language's bread and butter — cite existing) | GREEN control |
+| body/return expression annotation (`:Type form`) | pos pin (§4.9 existing) | FV-6 (co-reference facet) | **FV-6**; boundary: **FV-10** (§3.11 discrimination) |
+| `let` binding annotation | pos pin | sweep item (verify-first: may share the defn-param seam) | sweep item |
+
+#### L.1 W6 — written free-var annotation resolution: acceptance rows
+
+Every row cites §3.3 MUST-1/MUST-2 (quoted above) plus the listed section.
+"RED" = expected failing-not-ignored at authoring (the live defect:
+`unknown type 'a' (from module '')`, verified 2026-07-13). "PIN" = expected
+GREEN today and MUST HOLD through the W6 fix — the over-broadening guards.
+`// defect:` line for the RED rows:
+`class=wrong-scope-lookup locus=crates/cranelisp-typecheck (annotation resolver treats a free lowercase ident as a named-type lookup instead of minting a quantified var) found=S109 owner=/dev`
+(seam name to be sharpened by `/testing` at authoring if `/design`'s W6 note
+names the exact resolver fn).
+
+| Row | Citation + fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
+|---|---|---|---|---|---|---|
+| FV-1 | §3.3 MUST-1, standalone bare var — `(defn id [:a x] x)` → scheme `(Fn [a] a)`; genuine quantification proven by use at TWO types in one program: `(id 3)` → `:primitives/Int 3` AND `(id "s")` → `:primitives/String "s"` | `defn_param_bare_free_var_quantifies_and_uses_at_two_types` | tests/spec_03_types.rs | e2e all-modes | [S109] — RED | pos |
+| FV-2 | §3.3 MUST-2, same fixture as FV-1 — output MUST NOT contain `unknown type`; MUST NOT contain a codegen-layer frame (the error class, if the fix regresses, must never be a named-type miss) | `defn_param_bare_free_var_not_unknown_type_neg` | tests/spec_03_types.rs | e2e | [S109] — RED | neg |
+| FV-3 | §3.3 MUST-1 "identically to an inference-generated variable" — TWIN: `(defn idw [:a x] x)` vs `(defn idi [x] x)` — introspection displays the SAME scheme for both; both evaluate at the same two types. The §8.8.1-convergence twin shape applied to annotation provenance | `written_var_vs_inferred_var_identical_scheme_twin` | tests/spec_03_types.rs | e2e (REPL introspection + all-modes call) | [S109] — RED | pos (parity) |
+| FV-4 | §3.3 MUST-1, nested in applied type — `(deftype (Box a) [:a v])` + `(defn unbox [:(Box a) b] (v b))` → `(Fn [(Box a)] a)`; `(unbox (Box 7))` → 7 and a String leg. The verified-live failing shape. Neg facet: no `unknown type 'a'` | `defn_param_free_var_nested_in_applied_type` | tests/spec_03_types.rs | e2e all-modes | [S109] — RED | pos + neg facet |
+| FV-5 | §3.3 MUST-1, multi-var applied + deeper nesting — `(deftype (Pair2 a b) [:a x :b y])` + `(defn get-x [:(Pair2 k v) p] (x p))` → `(Fn [(Pair2 k v)] k)`; deeper facet `:(Box (Pair2 k v))` | `defn_param_multi_var_applied_annotation` | tests/spec_03_types.rs | e2e | [S109] — RED | pos |
+| FV-6 | §3.3 MUST-1 + §3.9/§4.9 (body/"return" position — no return syntax exists per §5.1.1) — (a) the §3.3 example shape `(defn id [:a x] :a x)`: the SAME written var in param annotation and body annotation MUST co-refer within one definition boundary → `(Fn [a] a)`, not `(Fn [a] b)`; (b) var only in the body annotation `(defn id2 [x] :a x)` → `(Fn [a] a)` | `written_var_param_and_body_annotation_corefer` | tests/spec_03_types.rs | e2e | [S109] — RED | pos |
+| FV-7 | §3.3 MUST-1, multiple distinct vars — `(defn fst2 [:a x :b y] x)` → `(Fn [a b] a)`; `(fst2 1 "s")` → 1. The success at MIXED argument types IS the guard that `a`/`b` are independent (not wrongly unified) | `defn_param_two_distinct_free_vars_independent` | tests/spec_03_types.rs | e2e all-modes | [S109] — RED | pos + neg (no cross-var unify) |
+| FV-8 | §3.3 (one definition boundary = one var per identifier) — `(defn eq2 [:a x :a y] x)` → `(Fn [a a] a)`; pos: `(eq2 1 2)` → 1; neg: `(eq2 1 "two")` → TYPE-MISMATCH error (x and y MUST unify), and the error is a unification failure, never `unknown type` | `defn_param_same_free_var_reused_unifies` (+ `_neg` sibling) | tests/spec_03_types.rs | e2e + **unit u2** | [S109] — RED | pos + neg |
+| FV-9 | §3.3 + §3.9.1, free + concrete mixed — `(defn tag [:a x :Int n] x)` → `(Fn [a Int] a)`; `(tag "s" 3)` → "s"; neg facet: `(tag "s" "t")` rejected (the concrete cell still constrains) | `defn_param_free_var_and_concrete_mixed` | tests/spec_03_types.rs | e2e | [S109] — RED | pos + neg |
+| FV-10 | §3.11 boundary discrimination — a free-var annotation on a CODEGEN-REACHING bare value (`:(Vec a) []` consumed at runtime in `--run`/`--link`) is the §3.11 AMBIGUOUS-type error ("add an annotation"), and at the REPL a bare polymorphic value is disposition-3 introspection display (§3.11.4) — in NO mode is the verdict `unknown type 'a'`. Pins that the W6 fix routes free vars into the EXISTING ambiguity/disposition machinery rather than a new error path | `free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg` | tests/spec_03_types.rs | e2e per-mode verdicts | [S109] — RED expected; per-mode wording verify-first | neg |
+| FV-11 | §5.1.2 "Each variant is type-checked independently" × §3.3 — `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))`: clause 1's body pins ITS `a` to Int, clause 2's body pins ITS `a` to String; matching `:a` identifiers across clauses are NO signal. Compiles (a leak would conflict Int/String); `(h 5)` → 6, `(h "ab" 0)` → "abab" | `multi_arity_same_written_var_independent_per_clause` | tests/spec_05_definitions.rs | e2e + **unit u3** | [S109] — RED | pos + neg (no cross-clause leak) |
+| FV-12 | §5.1.2 (polymorphic variant = ambiguous error) × §3.3 — a free-var annotation does NOT rescue multi-arity ambiguity: a variant whose `:a` param stays unpinned by its own body gets the §5.1.2 ambiguous-type error NAMING the clause (couples SS-3's diagnostic row), and never `unknown type 'a'` | `multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg` | tests/spec_05_definitions.rs | e2e | [S109] — RED expected (error-CLASS facet) | neg |
+| FV-13 | §3.9.3 (neither type nor trait ⇒ error) — the critical over-broadening guard: UPPERCASE unknowns still error. (a) `(defn f [:Foo x] x)` → `unknown type` naming `Foo`; (b) nested `(defn g [:(Box Foo) b] b)` (Box defined) → same. The W6 fix MUST key on the §3.3 lowercase rule, not swallow real unknown-type errors | `unknown_uppercase_type_annotation_still_errors_neg` (+ nested sibling) | tests/spec_03_types.rs | e2e + **unit u4** | [S109] — **PIN** (GREEN today; MUST HOLD through the fix) | neg (invariance) |
+| FV-14 | §3.9.2 invariance — `(defn show2 [:Num x] x)`-shape trait-constraint annotation still yields the CONSTRAINED polymorphic scheme (§3.4.1 display), not a free var, not unknown-type. Cite existing coverage if a `[Tested …]` row exists; else thin pin | `trait_constraint_annotation_unaffected_by_free_var_rule` | tests/spec_03_types.rs (or cite spec_07) | e2e cite-or-pin + **unit u5** | [S109] — **PIN** (GREEN today) | pos (invariance) |
+| FV-15 | §3.3 MUST-1 × §4.5 (`fn` param position) — `((fn [:a x] x) 3)` → 3; parity facet: `(let [f (fn [:a x] x)] …)` behaves identically to the unannotated `let_polymorphism_identity_two_types` twin (the written var is a fresh var; the annotation adds NO new generalization boundary). Nested facet `(fn [:(Box a) b] …)` | `fn_lambda_param_free_var_annotation` | tests/spec_04_expressions.rs | e2e all-modes | [S109] — RED | pos + parity |
+
+**Row count: 15** — 13 RED at authoring (FV-10/FV-12 with verify-first
+WORDING facets only; the RED expectation stands) + 2 PINs GREEN-today
+(FV-13/FV-14, the over-broadening guards). Polarity: 6 positive
+(FV-1/3/5/6/14/15), 4 negative (FV-2/10/12/13), 5 dual pos+neg
+(FV-4/7/8/9/11).
+
+**Unit-tier enumeration (the S108-Inc2 deferral discipline — `/dev` pins these
+at the annotation-resolution seam in the SAME change-set as the fix; a bare
+"unit-pinned" without these named cases is a hole):**
+
+- **u1** — a free lowercase identifier in an annotation mints a FRESH type
+  variable (never enters the named-type/trait lookup of §3.9.3);
+- **u2** — same identifier within ONE definition boundary ⇒ SAME variable
+  (param↔param FV-8, param↔body FV-6);
+- **u3** — fresh identifier scope per multi-arity clause (FV-11's seam);
+- **u4** — case discrimination: uppercase unknown still takes the §3.9.3
+  error path (FV-13's seam);
+- **u5** — a known TRAIT name annotation still takes the §3.9.2 constraint
+  path (FV-14's seam).
 
 Sweep for further cells in the family (enumerated so none falls through;
 `/testing` probes each and adds the cell with its observed polarity):
 
-- `defn` RETURN-type annotation (`:(Maybe a)` return) — same free-var question;
+- `let` binding annotation with a free var (verify-first: may share the
+  defn-param seam — if a distinct codepath, it gets its own FV row);
 - higher-order param (`:(Fn [a] a) f`) — free vars inside an `Fn` annotation;
-- expression annotation (the `:Type form` reader macro in expression position,
-  §1.4.5/§2.3.8/§4.9) with a free var;
+- top-level expression annotation `:a form` / `:(Box a) form` outside any
+  definition (§1.4.5/§2.3.8/§4.9) — FV-10 covers the codegen-reaching arm;
+  the pinned-by-context arm (`:a 5` → unifies to Int?) is verify-first;
 - `deftrait` method signature (GREEN control — type vars are normative there)
   and `impl` target/method sigs;
-- multi-arity `defn` per-clause annotations (couples SS-3/SS-4 — each clause
-  independently, §5.1.2).
+- written CONSTRAINED-var display syntax as input (`[:Num a]` parses as a
+  param NAMED `a` constrained by Num per §5.1.1 EBNF — confirm no fixture
+  accidentally relies on it reading as "var a with constraint").
 
-Consistency negative once the stance is settled: whatever the ruling, the SAME
+Consistency negative (the uniformity lens this matrix exists for): the SAME
 annotation shape must behave identically across positions (`defn` param vs
-`fn` param vs `let`) — a per-position divergence is the codepath-duplication
-smell this matrix exists to catch.
+`fn` param vs body annotation vs `let`) — a per-position divergence is the
+codepath-duplication smell; FV-3/FV-15's twin-parity facets are its guards.
+
+#### L.2 W6 in-scope `/testing` execution items (recorded for wave-gate accounting)
+
+Not plan rows — `/testing` execution work scheduled INSIDE W6, recorded here
+so the wave gate accounts for them:
+
+1. **FIXME 0586** — invert/delete/regen the 5 superseded pre-§17.2.1
+   "pull-visible-command" agent-lane e2e tests per the FIXME's own per-test
+   action table (probe channel landed in W2; the five now assert removed
+   behaviour). Includes the golden regen. The separate pre-existing `set-doc`
+   resolution defect flagged in that FIXME is NOT folded in — it needs its
+   own triage row (`/qa` to attribute when the repro lands).
+2. **vec-assoc nondeterministic garbage** (W1 finding, `/stdlib`,
+   stash-confirmed PRE-EXISTING; SPRINT.md §Notes) — commit the narrow
+   FREE-STANDING failing repro (stdlib-free per root CLAUDE.md
+   §Stdlib-separation; `vec-assoc` shape reduced to primitives).
+   Nondeterministic wrong value ⇒ likely uninitialized-memory/RC class;
+   lands failing-not-ignored with `// defect:` (class per observed evidence —
+   `rc-miscount` or `uaf` candidates; `/testing` records what reduction
+   shows), owner attribution to backend expected but confirmed at reduction.
+   Out of S109 theme → carries ACROSS sprint close as a committed RED guard.
 
 ### Phase-5 sequencing note for `/testing`
 
@@ -2414,7 +2513,9 @@ fixture constraint — no free-var param annotations; note DC-12's differing
 arities keep it clear of the W6 defect by construction — concrete `:Int`
 fields) + AL edge set + DC-14; (3) observability + display rows
 (these depend on the `/repl`-specced surfaces and the agent harness;
-verify-first items marked above); (4) the §L W6 matrix (spec-stance
-verify-first, then the free-var REDs); (5) remaining GREEN pins/controls.
+verify-first items marked above); (4) the §L.1 W6 matrix (spec stance
+RESOLVED — §3.3 [S109] MUSTs landed; author the FV-13/FV-14 PINs FIRST, then
+the free-var REDs, then the L.2 execution items); (5) remaining GREEN
+pins/controls.
 Every RED lands failing-not-ignored with `// spec:` + (for defect rows) the
 `// defect:` line given in its row.

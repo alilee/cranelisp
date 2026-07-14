@@ -346,11 +346,18 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
 | P5-S2 | /testing | 0571.2 review-finding negatives (B1/I1/I2) | (shim §II.3) | (shim) | — DONE: 5 negatives RED for right reason (B1 mode-divergence, I1 failed-reset false-no-member, I2×3 if/match/vec check-gate-leak). Suite 9f (concurrent landings dropped 17→9) |
 | P5-S2 | /dev (resume) | **0571.2 fix pass** (typecheck+int) | (shim §II.3) | (shim) | — **DONE `5e3739c5`**: B1 visibility gate (mode-uniform) + I1 failed-reset predicate+purge + I2 UNIFORM value-position mint (0585 instance) + I3 Failed fail-fast + I4 dedup diagnostic + M2 cycle span. 5 negatives GREEN; caught+fixed own regression (reset over-scope); 6 unit tests; zero pub-API. Suite 4f = 0569, 0570 + 2 carries |
 | P5-S2 | /stdlib | 0570 pt1 — mark test submodules `(mod- test)` | (shim §II.3) | (shim) | — DONE: 17 modules → `(mod- test)` + CLAUDE.md convention; builds clean, self-tests 80/81. **Surfaced NEW defect: `vec-assoc` returns nondeterministic garbage** (pre-existing, stash-confirmed) → finding, repro owed |
-| P5-S2 | /dev (resume) | 0570 pt2 + 0569 — /search honor mod- + macro row | (shim §II.3) | (shim) | — search index/import filter honors mod- (§8.2.3) + macro rows show `; defmacro` |
+| P5-S2 | /dev (resume) | 0570 pt2 + 0569 — /search honor mod- + macro row | (shim §II.3) | (shim) | — **DONE `5ccd6e73`**: search index honors `mod-` bit (Principle-19 declared attr, not name-probe); macros now indexed + render `; defmacro` (were absent entirely); caught+fenced macro-only-module cache regression. **ALL S109 DEFAULT-SUITE DEFECTS FIXED** — suite = 2 carries only |
+| P5-S2 | /sprint | commit 0570 stdlib markings + FIXMEs | — | — | — `874ee81d`: stdlib `mod-` markings + 0583/0584/0585 FIXMEs + sprint record |
+| P5-S2 | /dev (resume) | 0571.3 residuals (I1 leg + purge cascade-victim) | (shim §II.3) | (shim) | — **DONE `77e4688c`**: monotone `ever_terminal` set; both residuals closed ("loaded requires ever-terminal"); 2 unit pins; no regression. **0571 chapter fully clean.** Flagged: transient `agent_flag` build-interleave race (infra finding) |
+| P5-S2 | /dev (resume) | **W2 observability** (src/agent, 0577-A) | (shim §II.3) | (shim) | — **DONE `e83810bf`**: six §17.20.3a fields (F1 question / F2 error_class / F3 give-up cause+dominant / F4 primer_hash+harvest_len / F5 scenario env / F6 step accounting) + Thread-B probe channel (read-probes run against throwaway sink, not echoed to session). OB-1/3/4/5/6/7/9 GREEN, OB-8/10 stay GREEN; +OB-2/F3 unit pins. All `#[cfg(feature="agent")]` → default suite unaffected by construction, `cargo check --workspace` clean. **FIXME 0586→/testing**: 5 pre-§17.2.1 "pull-visible-command" e2e tests now RED-for-right-reason (probe channel superseded them) — INVERT/delete + golden regen; separate pre-existing set-doc defect flagged not folded. Threads C/D deferred per dispatch |
 | P5-S2 | /review | 0571.2 re-review (Blocker fix) | (shim §II.3) | (shim) | — **0571 CLEAN for sprint**: B1/I2/I3/I4(code)/M2 CONFIRMED complete; Blocker dead. I1 confirmed on autoload path; 2 narrow Minor residuals → 0571.3 (degraded-startup false-no-member + purge cascade-victim hazard, module-history discriminator). Root-pos mint→0585; I4 design-doc→/design |
 | P5-S2 | /review | 0571 scheduler gap-arm review | (shim §II.3) | (shim) | — **NOT CLEAN: 1 Blocker + 4 Important** (see 0571 REVIEW note). Confirmed: no lost-wakeup re-open, cycle determinism, 0513 preserved, no backend resolution. Blocker = private-FQ-display visibility bypass (mode-divergence) → 0571.2 fix pass |
 | P5-S2 | /dev | W1.1a typecheck — bucket 2 dotted-ctor capability | (shim §II.3) | (shim) | — **REVERTED (blocked)**: mechanism works but canonical-key model has ~54 int-side regressions (display/quasiquote→prelude cascade/bootstrap-seeded-ctor split); work preserved as patch. 3 escalations (see W1.1a BLOCKER note) |
 | P5-S2 | /arch (resume) | W1 model re-ruling ((b) coordinate) + #2 ordering + per-regression verify | (shim §II.3) | (shim) | — **DONE**: measured 73 regs (not 54); ROOT = ONE backend site `lookup_constructor` (context.rs:146) one-hop bare-key (NOT quasiquote/seeded); **found SILENT soundness bug** (cross-module nullary ctor → closure-alloc vs iconst-tag, 2 backend resolvers disagree); coordinate design in `dotted-ctor-canonical-keys.md`; **#2 ordering YES tractable**; accessor-bug folds into W1 commit-1; FIXME 0582→/design |
+| W6 | /spec | §3.3 written-free-var-annotation clarification (scribe, settled stance) | (shim §II.3) | (shim) | — DONE: additive §3.3 paragraph — a user-WRITTEN free lowercase var in a param/return annotation is implicitly universally quantified at the fn boundary, identical to inference-generated; MUST-1 (quantify) + MUST-2 (NOT unknown-named-type) for the REDs to cite. `[S109]` inline tag |
+| W6 | /qa | annotation-resolution variant×{pos,neg} matrix (PLAN §L) | (shim §II.3) | (shim) | — DONE: 15 rows (13 RED + 2 must-hold PINs FV-13 uppercase-unknown-still-errors / FV-14 trait-path-unaffected — over-broadening guards); positions × {pos,neg} incl. within-sig same-ident-unifies, multi-arity cross-clause INDEPENDENCE + no-rescue-of-§5.1.2-ambiguity, §3.11 codegen-reach→ambiguity-not-unknown-type; u1–u5 unit deferrals enumerated. Caught §3.3 example order typo → FIXME 0587 |
+| W6 | /spec (resume) | 0587 §3.3 example annotation-order fix | (shim §II.3) | (shim) | — DONE + FIXME deleted: `[x :a]`→`[:a x]` (EBNF §5.1.1 `colon_prefix symbol` / §3.9 binds-following-form); MUST prose unaffected |
+| W6 | /testing | W6 REDs + 0586 invert + vec-assoc repro | (shim §II.3) | (shim) | — **DONE `e6a68e3b`**: 15 W6 fns (2 PINs GREEN hold, 13 RED-for-right-reason → `unknown type 'a'` at `resolve.rs::resolve_type_expr` TypeVar var_map miss); 0586 (3 deleted / 1 rewritten §17.22 / 1 inverted — was inline-assert not golden-file) agent-lane GREEN; **vec-assoc repro = 2-line UAF** (RC premature-free, REPL+`--link` deterministic surfaces, candidate owner /backend, carries close). Suite 19 RED = 15 W6 + 2 vec-assoc + 2 carries, no regressions. NEW: `set_doc_non_function_target` RED untracked (pre-existing set-doc defect) → /qa triage |
 
 ## Notes
 
@@ -391,6 +398,20 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
   a real scope addition (values must be matchable, not just constructible). Three
   `cranelisp-types` items consolidate into one Phase-3 `/arch` change-set. Audit
   rotation → `src/`.
+
+## W6 spec-stance gate — RESOLVED (2026-07-14, /sprint read of §3.3)
+
+`/qa`'s §L gate: author the W6 free-var-annotation REDs only if a spec MUST backs
+them. **Resolved: §3.3 is the basis** — "Type variables are lowercase identifiers
+that stand for unknown or universally quantified types … implicitly universally
+quantified at function definition boundaries." A user-WRITTEN free type var in a
+param annotation (`:a` / `:(Maybe a)`) is a type variable per §3.3; the compiler
+treating it as an unknown type-name lookup (`unknown type 'a'`) is the defect. User
+already confirmed the capability ("can't have parts of the language unimplemented",
+P5). **No new user question** — `/spec` scribes a one-line §3.3 clarification (written
+annotations, not only inference-generated vars, are implicitly quantified) so the W6
+REDs cite a MUST. W6 authorized: `/spec` clarify → `/qa` annotation matrix → `/testing`
+REDs → `/dev` (free-var param annotation → fresh quantified var) → `/review`.
 
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
@@ -602,6 +623,12 @@ under time pressure — reinforces 0583.
 - {tbd}
 
 ### Findings (record in FIXMEs if not already)
+- **Infra (P5) — `agent_flag_errors_on_non_agent_build` build-interleave race.** The
+  `--features agent` build interleaving with the non-agent default suite produces a
+  transient stale-binary failure (passes in isolation/re-run; seen S109 by /testing +
+  /dev). Not an assertion flake — a real build-artifact race. Fix candidate: a nextest
+  setup-script ordering / separate profile so the agent build doesn't clobber the
+  non-agent binary mid-suite. → `/qa`/`/testing` infra; carry.
 - **NEW defect (P5, /stdlib) — `vec-assoc` nondeterministic garbage.**
   `collections.vec.test/test-assoc-sets`: `vec-assoc` returns a different huge wrong
   value each run (expected 99). Stash-confirmed PRE-EXISTING (fails identically on the
