@@ -1344,6 +1344,186 @@ fn returned_polymorphic_fn_rejected_neg() {
     );
 }
 
+// --- B-1 (RED, pos) — an annotated lambda APPLIED IN PLACE at a GENERIC arg ----
+//
+// Plan: tests/plan/PLAN.md §L Table 2b, row B-1 (FIXME 0596). The poly-as-value
+// discriminator that landed at `c3008d1f` (R10) over-fires: it flags ANY written
+// lambda param var that is still `Type::Var` after body inference, conflating
+// (a) free-because-held-as-a-value (row 10, correctly rejected) with
+// (b) free-because-applied-in-place-at-the-enclosing-definition's-own-quantified
+// -var (spec-valid, wrongly rejected). This is the {applied-in-place ×
+// GENERIC-arg} cell that was missing from both the §L matrix and the unit tier
+// (R9(ii) only exercised the CONCRETE arg `3`), which is exactly why the
+// over-fire landed unobserved.
+
+// spec: spec/03-types.md §3.3.4/§3.10 — MUST (f)/(h): a written variable is
+// rejected ONLY when it would leave a function polymorphic in a VALUE position
+// (returned/stored/passed rather than instantiated at a use); a lambda APPLIED
+// IN PLACE to a generic-typed argument is instantiation-at-use (§3.10, always
+// sound) and MUST be accepted. `(defn f1 [x] ((fn [:b y] y) x))` and
+// `(defn f2 [:a x] ((fn [:b y] y) x))` — the inner annotated lambda is applied
+// in place to the enclosing defn's own quantified param; application binds `b`
+// to that var and NO function value stays polymorphic anywhere (the result is
+// `y`'s value, not a `fn`). Both MUST be accepted as `∀a. (Fn [a] a)`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program.rs::check_defn_body (escaped_poly_fn) + infer.rs::infer_lambda (lambda_written_vars) (the landed W6.3 discriminator flags any written lambda var still Type::Var after body inference, conflating held-as-value with applied-in-place-at-a-GENERIC-type — §3.3.4's operative "held as a value" condition does not hold, §3.10 makes instantiation-at-use sound; FIXME 0596) found=S109 owner=/dev
+#[test]
+fn lambda_applied_in_place_at_generic_arg_accepted() {
+    // Facet 1 — bare-enclosing: `(defn f1 [x] ((fn [:b y] y) x))`.
+    let f1 = repl_prims("(defn f1 [x] ((fn [:b y] y) x))\n");
+    let c1 = format!("{}{}", f1.stdout, f1.stderr);
+    assert!(
+        !c1.contains("cannot be returned or stored") && !c1.contains("rank-2"),
+        "f1 applies the annotated lambda IN PLACE to a generic arg — NO function \
+         value stays polymorphic, so it MUST NOT be rejected as poly-as-value \
+         (§3.3.4/§3.10 MUST (f)/(h); the 0596 over-fire); got:\n{c1}"
+    );
+    assert!(
+        !c1.contains("codegen") && !c1.contains("__expr"),
+        "the acceptance MUST be clean — never a codegen frame (§3.10); got:\n{c1}"
+    );
+    assert!(
+        f1.stdout.contains(":(Fn [a] a) user/f1"),
+        "`(defn f1 [x] ((fn [:b y] y) x))` MUST be accepted as `∀a. (Fn [a] a)` — \
+         the inner `b` is instantiated at `x`'s var by application (§3.10); \
+         got:\n{}",
+        f1.stdout
+    );
+
+    // Facet 2 — co-annotated-enclosing: `(defn f2 [:a x] ((fn [:b y] y) x))`.
+    // The enclosing `:a` and lambda-owned `:b` are DISTINCT names (b is not in
+    // the enclosing scope); application binds `b` to `a`, result is `a`.
+    let f2 = repl_prims("(defn f2 [:a x] ((fn [:b y] y) x))\n");
+    let c2 = format!("{}{}", f2.stdout, f2.stderr);
+    assert!(
+        !c2.contains("cannot be returned or stored") && !c2.contains("rank-2"),
+        "f2 applies the annotated lambda IN PLACE to the `:a`-typed param — MUST \
+         NOT be rejected as poly-as-value (§3.3.4/§3.10; 0596 over-fire); \
+         got:\n{c2}"
+    );
+    assert!(
+        f2.stdout.contains(":(Fn [a] a) user/f2"),
+        "`(defn f2 [:a x] ((fn [:b y] y) x))` MUST be accepted as `∀a. (Fn [a] a)` \
+         — application binds the lambda-owned `b` to the enclosing `a` (§3.10); \
+         got:\n{}",
+        f2.stdout
+    );
+
+    // All-modes value: the in-place-instantiated identity computes end-to-end.
+    run_through_all_modes(
+        "(defn f1 [x] ((fn [:b y] y) x))\n(defn main [] (Pure (f1 7)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(7);
+}
+
+// --- B-1 fence (GREEN, neg) — the held-as-value trio STAYS rejected -----------
+//
+// Non-regression fence for the 0596 fix (Table 2b B-1): the narrowing that flips
+// f1/f2 green MUST NOT un-reject the genuine poly-as-value cases. R10's
+// `returned_polymorphic_fn_rejected_neg` already pins the RETURNED leg (`mk`);
+// this pins the two remaining trio members — let-stored-and-returned (`mk3`) and
+// passed-uninstantiated (`mk4`) — which were previously unpinned. All three are
+// GREEN (correctly rejected) at `c3008d1f` and MUST stay so: a fix regressing
+// either is a mis-narrowing.
+
+// spec: spec/03-types.md §3.3.4/§3.10 — MUST (f): a written variable that would
+// leave a function polymorphic in a VALUE position — stored in a `let` and
+// returned, or passed uninstantiated to another function — is rank-2 and MUST be
+// rejected. `(defn mk3 [] (let [g (fn [:b y] y)] g))` (stored then returned) and
+// `(defn mk4 [] (takes (fn [:b y] y)))` (passed uninstantiated) both hold the
+// `fn` as a value with `b` free → both rejected. The arg axis is moot: the value
+// never reaches an application, so it is NOT instantiation-at-use.
+#[test]
+fn held_as_value_polymorphic_fn_variants_stay_rejected_neg() {
+    // let-stored-and-returned.
+    let mk3 = repl_prims("(defn mk3 [] (let [g (fn [:b y] y)] g))\n");
+    let c3 = format!("{}{}", mk3.stdout, mk3.stderr);
+    assert!(
+        !c3.contains("codegen") && !c3.contains("__expr"),
+        "the poly-as-value rejection MUST be a clean type error, never a codegen \
+         frame (§3.3.4/§3.10); got:\n{c3}"
+    );
+    assert!(
+        !mk3.stdout.contains("user/mk3 ; defn"),
+        "a `fn` stored in a `let` and RETURNED is poly-as-value — `mk3` MUST be \
+         REJECTED, not silently defined (§3.3.4 MUST (f)); got:\n{}",
+        mk3.stdout
+    );
+
+    // passed-uninstantiated (to a function that never applies it).
+    let mk4 = repl_prims(
+        "(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n",
+    );
+    let c4 = format!("{}{}", mk4.stdout, mk4.stderr);
+    assert!(
+        !c4.contains("codegen") && !c4.contains("__expr"),
+        "the poly-as-value rejection MUST be a clean type error, never a codegen \
+         frame (§3.3.4/§3.10); got:\n{c4}"
+    );
+    assert!(
+        !mk4.stdout.contains("user/mk4 ; defn"),
+        "a `fn` PASSED uninstantiated is poly-as-value — `mk4` MUST be REJECTED, \
+         not silently defined (§3.3.4 MUST (f)); got:\n{}",
+        mk4.stdout
+    );
+
+    // --run: both rejections hold end-to-end.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn mk3 [] (let [g (fn [:b y] y)] g))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: a let-stored-and-returned still-polymorphic `fn` MUST be rejected \
+         (§3.10 rank-1); got success:\n{rcomb}"
+    );
+}
+
+// --- B-1 fence (GREEN, pos) — a let-stored `fn` APPLIED in place is accepted ---
+//
+// The other side of the fence: the fix must not OVER-narrow. A `fn` stored in a
+// `let` and then APPLIED in place is pinned by the use (§3.10) — `b` is
+// instantiated, no value stays polymorphic — so it MUST stay accepted. Contrast
+// `mk3` above (stored + returned, rejected): storage alone is not the trigger,
+// escaping-as-a-value is. GREEN PIN at `c3008d1f`.
+
+// spec: spec/03-types.md §3.3.4/§3.10 — MUST (h): `(defn f3 [] (let [g (fn [:b
+// y] y)] (g 3)))` stores the polymorphic `fn` then APPLIES it in place; the
+// application instantiates `b := Int`, so nothing stays polymorphic → accepted
+// as `(Fn [] Int)`, `(f3)` → 3.
+#[test]
+fn let_stored_polymorphic_fn_applied_in_place_accepted() {
+    let out = repl_prims("(defn f3 [] (let [g (fn [:b y] y)] (g 3)))\n(f3)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("cannot be returned or stored") && !combined.contains("rank-2"),
+        "a let-stored `fn` APPLIED in place is pinned by the use (§3.10) — MUST \
+         NOT be rejected as poly-as-value; got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":(Fn [] primitives/Int) user/f3"),
+        "`(defn f3 [] (let [g (fn [:b y] y)] (g 3)))` MUST be accepted as \
+         `(Fn [] Int)` — the application pins `b := Int` (§3.10); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "`(f3)` MUST evaluate to 3; got:\n{}",
+        out.stdout
+    );
+
+    run_through_all_modes(
+        "(defn f3 [] (let [g (fn [:b y] y)] (g 3)))\n(defn main [] (Pure (f3)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(3);
+}
+
 // --- R11 (RED→pass) — a bare value-position `:a` pins to the concrete type -----
 
 // spec: spec/03-types.md §3.3.1 — MUST (a), row 11: a bare value-position
