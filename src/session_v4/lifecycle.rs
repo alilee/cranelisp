@@ -475,28 +475,31 @@ impl CompilerSession {
         self.current_repl_module.clone()
     }
 
-    /// Reset every Failed module in the scheduler AND drop its stale live symbol
-    /// table (I1, 0571.2). A module that fails to load leaves live bindings
-    /// behind: `(import [primitives [Int]])` writes the `Int` import into the
-    /// LIVE table *before* the body-check failure, so the failed module's table
-    /// is NON-empty even though it never finished loading. If the reset leaves
-    /// that table in place, a later FQ reference reads the module as "loaded"
-    /// (the table exists and the scheduler has forgotten it) and reports a false
-    /// "module X has no member Y" on autoload RETRY (§8.5.4 edge 4/5). Dropping
-    /// the table makes the retry re-drive from scratch — `ensure_module_exists`
-    /// re-seeds it on the next dependency drive.
+    /// Reset every Failed module in the scheduler AND drop the stale live symbol
+    /// table of each one that NEVER reached terminal typecheck (I1, 0571.2 +
+    /// 0571.3). A module that fails to load leaves live bindings behind:
+    /// `(import [primitives [Int]])` writes the `Int` import into the LIVE table
+    /// *before* the body-check failure, so the failed module's table is NON-empty
+    /// even though it never finished loading. If the reset leaves that table in
+    /// place, a later FQ reference reads the module as "loaded" (the table exists
+    /// and the scheduler has forgotten it) and reports a false "module X has no
+    /// member Y" on autoload RETRY (§8.5.4 edge 4/5). Dropping the table makes the
+    /// retry re-drive from scratch — `ensure_module_exists` re-seeds it.
     ///
-    /// **Autoload-retry scoped.** Only the FQ-autoload dep-drive path (a FRESH
-    /// dependency that failed to load) uses this purging variant. The
-    /// degraded-startup and T1-redefinition-rollback resets deliberately do NOT
-    /// purge: those "failed" modules are EXISTING modules whose tables hold prior
-    /// valid definitions that recovery/repair depends on — purging them would
-    /// destroy recoverable state (regression fence: the `repl_redefinition` T1
-    /// error-block-lift + coherent-stale guards).
+    /// **Discriminate by MODULE HISTORY, not call-site (0571.3 fix (a)).** The
+    /// Failed set at an autoload-failure moment can include a **cascade victim** —
+    /// a previously-terminal (was-good) module that `cascade_failure_locked`
+    /// marked Failed only because it awaited the broken dep. Purging ITS table
+    /// would destroy valid definitions — the exact state-destruction the earlier
+    /// call-site scoping was meant to prevent. So purge only a module that was
+    /// **never terminal** (`!was_ever_terminal`): a fresh dep that never
+    /// successfully typechecked. A was-terminal module keeps its table.
     pub(crate) fn reset_failed_modules(&self) {
         let reset = self.shared.scheduler.reset_all_failed_modules();
         for m in &reset {
-            self.shared.symbol_tables.remove(m);
+            if !self.shared.scheduler.was_ever_terminal(m) {
+                self.shared.symbol_tables.remove(m);
+            }
         }
     }
 

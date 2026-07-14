@@ -316,6 +316,17 @@ struct SchedulerState {
     /// the flag, preventing stale `.o` loading after a source change.
     cached_modules: HashSet<ModuleFullPath>,
 
+    /// Every module that has EVER reached a terminal typecheck pool
+    /// (`TypecheckDone`/`Complete`) — its signatures were successfully
+    /// published at least once. **Monotone: entries are NEVER removed**, so it
+    /// survives `reset_module` / `reset_all_failed_modules` (which drop the
+    /// `ModuleState`). This is the "was-good" history the `/int` layer needs to
+    /// tell a genuinely-loaded module — or a was-terminal CASCADE VICTIM the
+    /// scheduler later marked Failed — apart from a fresh dep that has NEVER
+    /// completed (0571.3): "loaded/terminal" requires *ever*-terminal, not
+    /// merely present-with-symbols.
+    ever_terminal: HashSet<ModuleFullPath>,
+
     shutdown: bool,
 }
 
@@ -327,6 +338,7 @@ impl SchedulerState {
             typecheck_next: VecDeque::new(),
             typecheck_done: VecDeque::new(),
             cached_modules: HashSet::new(),
+            ever_terminal: HashSet::new(),
             shutdown: false,
         }
     }
@@ -478,6 +490,9 @@ impl CompileScheduler {
         state.modules.insert(module.clone(), ms);
         state.typecheck_done.push_back(module.clone());
         state.cached_modules.insert(module.clone());
+        // Cache-hit enters TypecheckDone directly (bypasses `set_pool_locked`) —
+        // record the was-terminal history (0571.3).
+        state.ever_terminal.insert(module.clone());
 
         // Satisfy any pending typecheck waiters on symbols from this module.
         Self::satisfy_typecheck_waiters_for_all_symbols_locked(
@@ -529,6 +544,9 @@ impl CompileScheduler {
         state.modules.insert(module.clone(), ms);
         state.typecheck_done.push_back(module.clone());
         state.cached_modules.insert(module.clone());
+        // Cache-hit enters TypecheckDone directly (bypasses `set_pool_locked`) —
+        // record the was-terminal history (0571.3).
+        state.ever_terminal.insert(module.clone());
 
         // Satisfy pending typecheck waiters on this module's symbols.
         Self::satisfy_typecheck_waiters_for_all_symbols_locked(
@@ -1461,6 +1479,17 @@ impl CompileScheduler {
             .is_some_and(|ms| ms.pool == ModulePool::Failed)
     }
 
+    /// Whether `module` has EVER reached a terminal typecheck pool
+    /// (`TypecheckDone`/`Complete`) — i.e. it successfully published its
+    /// signatures at least once in this session. **Monotone**: survives
+    /// `reset_module`/`reset_all_failed_modules` (which drop the live
+    /// `ModuleState`). The `/int` "loaded/terminal" predicate uses this so a
+    /// was-good module the scheduler later forgot — or a cascade victim — is not
+    /// confused with a fresh dep that never completed (0571.3).
+    pub fn was_ever_terminal(&self, module: &ModuleFullPath) -> bool {
+        self.lock().ever_terminal.contains(module)
+    }
+
     /// Check whether a module's typecheck is complete — i.e., its SymbolTable
     /// is fully populated with every Def the module will ever expose.
     ///
@@ -2144,6 +2173,13 @@ impl CompileScheduler {
     ) {
         if let Some(ms) = state.modules.get_mut(module) {
             ms.pool = pool;
+        }
+        // Record the was-terminal history (0571.3) — monotone, never removed.
+        // This is the single chokepoint for the normal typecheck→terminal and
+        // Complete transitions (`notify_typecheck_done`, `notify_module_complete`);
+        // the cache-hit register paths (`new_cached*`) mark it directly.
+        if pool.is_terminal_typecheck() {
+            state.ever_terminal.insert(module.clone());
         }
     }
 

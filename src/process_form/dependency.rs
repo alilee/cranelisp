@@ -275,19 +275,22 @@ pub(super) fn handle_import(
 /// module's Defs are populated, so a `contains_key` check alone is not
 /// sufficient. Require a terminal typecheck state via `is_typechecked`.
 ///
-/// **Failed-then-reset exclusion (I1, 0571.2).** `is_typechecked` answers
-/// `true` for EVERY module the scheduler does not track (its doc: "not in the
-/// scheduler — synthetic OR removed via Failed reset"), because it cannot tell a
-/// compiler-seeded synthetic module (`primitives`/`macros` — never registered,
-/// table POPULATED) from a module that FAILED to load and was removed by
-/// `reset_module` (unregistered, table left EMPTY — the failed cluster's staging
-/// was dropped, so no Def committed). Reading the latter as "loaded" made an
-/// autoload RETRY report the §8.5.4 edge-4/5 false "module X has no member Y"
-/// (the member exists in source; the module failed to load). We therefore split
-/// on scheduler registration: a tracked module trusts its terminal-pool verdict
-/// (which correctly covers a genuinely-loaded EMPTY `.cl` file); an UNTRACKED
-/// module is loaded only if its live table actually carries symbols — synthetic
-/// modules do, a failed-reset module does not (so it re-drives / re-loads).
+/// **"Loaded/terminal" requires EVER-terminal, not merely present-with-symbols
+/// (I1, 0571.2 + 0571.3).** `is_typechecked` answers `true` for EVERY module the
+/// scheduler does not track (its doc: "not in the scheduler — synthetic OR
+/// removed via Failed reset"), so it cannot tell a genuinely-loaded module from
+/// one that FAILED to load. A failed dep is left with an import-seeded table —
+/// `(import [primitives [Int]])` writes the `Int` alias into the LIVE table
+/// *before* the body-check failure — so a "present-with-symbols" test also reads
+/// it "loaded" and reports the §8.5.4 edge-4/5 false "module X has no member Y"
+/// on an autoload RETRY (0571.2 fixed the empty-table case, 0571.3 the
+/// import-seeded case). We therefore split on scheduler registration: a tracked
+/// module trusts its terminal-pool verdict (covers a genuinely-loaded EMPTY
+/// `.cl` file); an UNTRACKED module is loaded only if it EVER reached terminal
+/// (`was_ever_terminal` — a was-good module the scheduler later forgot, monotone
+/// across reset) OR is a compiler-seeded synthetic module (`primitives`/`macros`
+/// — mounted at bootstrap, fully populated, never scheduler-tracked). A
+/// never-terminal failed/import-seeded dep is neither → not loaded → re-drives.
 pub(super) fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) -> bool {
     if !ctx.symbol_tables.contains_key(dep) {
         return false;
@@ -295,10 +298,8 @@ pub(super) fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) ->
     if ctx.scheduler.is_registered(dep) {
         return ctx.scheduler.is_typechecked(dep);
     }
-    ctx.symbol_tables
-        .get(dep)
-        .map(|t| t.all_symbols().next().is_some())
-        .unwrap_or(false)
+    ctx.scheduler.was_ever_terminal(dep)
+        || crate::bootstrap::seeded_importable_modules().contains(dep)
 }
 
 /// Drive a dependency module to readiness — the register-edge half of the

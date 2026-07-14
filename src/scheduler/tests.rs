@@ -1114,6 +1114,50 @@
         assert!(sched.is_registered(&good), "a non-failed module is untouched");
     }
 
+    // spec: §8.5.4 — 0571.3 (a). A module that REACHED terminal typecheck and is
+    // LATER marked Failed (a cascade victim awaiting a broken dep) keeps its
+    // was-terminal history across `reset_all_failed_modules` — the history is
+    // MONOTONE. `reset_failed_modules` reads this to SPARE its live table (a
+    // was-good module's valid definitions are not destroyed).
+    #[test]
+    fn was_ever_terminal_survives_terminal_then_failed_then_reset() {
+        let sched = CompileScheduler::new();
+        let victim = mod_path("was_good");
+        sched.register_module(victim.clone(), no_sexps(), false);
+        sched.notify_typecheck_done(&victim);
+        assert!(
+            sched.was_ever_terminal(&victim),
+            "a module reaching TypecheckDone is ever-terminal"
+        );
+        // Cascade failure marks it Failed; the autoload reset removes it.
+        sched.notify_module_failed(&victim, dummy_error("cascade: awaited broken dep"));
+        let reset = sched.reset_all_failed_modules();
+        assert_eq!(reset, vec![victim.clone()]);
+        assert!(!sched.is_registered(&victim), "reset dropped the live state");
+        assert!(
+            sched.was_ever_terminal(&victim),
+            "the was-terminal history is monotone — it survives reset so the purge \
+             SPARES the cascade victim's table (0571.3 a)"
+        );
+    }
+
+    // spec: §8.5.4 — 0571.3 (b). A dep that FAILS before ever reaching terminal
+    // typecheck is NOT ever-terminal — so `fq_module_is_loaded`'s untracked arm
+    // reads it not-loaded (the retry re-drives it, no false "no member"), and
+    // `reset_failed_modules` purges its import-seeded stale table.
+    #[test]
+    fn was_ever_terminal_false_for_never_completed_failed_dep() {
+        let sched = CompileScheduler::new();
+        let broken = mod_path("broken");
+        sched.register_module(broken.clone(), no_sexps(), false);
+        sched.notify_module_failed(&broken, dummy_error("undefined variable: nope"));
+        let _ = sched.reset_all_failed_modules();
+        assert!(
+            !sched.was_ever_terminal(&broken),
+            "a dep that never completed must NOT read ever-terminal (0571.3 b)"
+        );
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // S93 §6 — THE DETERMINISTIC P_publish / P_read INTERLEAVING PIN.
     //
