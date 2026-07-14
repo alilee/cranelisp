@@ -809,12 +809,40 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         needed_module: &ModuleFullPath,
         needed_symbol: &Symbol,
+        ref_span: Span,
     ) -> Result<(), CranelispError> {
         observability::record_module_event(
             SchedulerTraceTag::ModuleStateBlocked,
             module.as_ref(),
         );
         let mut state = self.lock();
+
+        // I3 fail-fast (0571.2): if the dependency has ALREADY FAILED, surface
+        // its error now instead of registering a waiter. A `Failed` module never
+        // reaches a terminal typecheck pool, so no future `notify_typecheck_done`
+        // sweep would ever fire — `module` would park in `TypecheckBlocked`
+        // forever (the pool-path analogue of the hang `await_signature_barrier`'s
+        // closure-Failed fast-path closes for the eval waiter). Surface the dep's
+        // recorded error verbatim so the referencing turn sees the real cause.
+        if let Some(ms) = state.modules.get(needed_module)
+            && ms.pool == ModulePool::Failed
+        {
+            // `CranelispError` is not `Clone`; reconstruct from the recorded
+            // message + span (the `await_signature_barrier` precedent). The dep's
+            // own error span is preferred over `ref_span` — it points AT the real
+            // fault inside the failed dependency.
+            let (message, span) = ms
+                .error
+                .as_ref()
+                .map(|e| (e.to_string(), e.span()))
+                .unwrap_or_else(|| {
+                    (format!("module '{needed_module}' failed to load"), ref_span)
+                });
+            return Err(CranelispError::ModuleError {
+                message,
+                location: ErrorLocation::from_span_file(span, None),
+            });
+        }
 
         // S93 Invariant PP — lost-wakeup Blocker fix (mirror
         // `block_on_first_unready_closure_member`'s atomic check-and-act). The
@@ -880,14 +908,18 @@ impl CompileScheduler {
                 .collect::<Vec<_>>()
                 .join(" -> ");
             let msg = format!("circular dependency detected: {}", cycle_str);
+            // M2 (0571.2): attribute the circular-dependency error to the
+            // REFERENCE site (the FQ/import ref that closed the cycle), not the
+            // `Span::SYNTHETIC` module head — every diagnostic actionable (AL-3
+            // parity).
             // Fail the module in the scheduler.
             Self::notify_module_failed_locked(&mut state, module, CranelispError::ModuleError {
                 message: msg.clone(),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                location: ErrorLocation::from_span_file(ref_span, None),
             });
             return Err(CranelispError::ModuleError {
                 message: msg,
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                location: ErrorLocation::from_span_file(ref_span, None),
             });
         }
 
@@ -1774,6 +1806,7 @@ impl CompileScheduler {
         &self,
         holder: &ModuleFullPath,
         dep: &ModuleFullPath,
+        ref_span: Span,
     ) -> Result<(), CranelispError> {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(holder) {
@@ -1789,9 +1822,11 @@ impl CompileScheduler {
                 .map(|m| m.to_string())
                 .collect::<Vec<_>>()
                 .join(" -> ");
+            // M2 (0571.2): attribute to the REFERENCE site, not `Span::SYNTHETIC`
+            // — this is the eval-path FQ-cycle site (B4/B5).
             return Err(CranelispError::ModuleError {
                 message: format!("circular dependency detected: {}", cycle_str),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                location: ErrorLocation::from_span_file(ref_span, None),
             });
         }
         Ok(())
@@ -1859,8 +1894,13 @@ impl CompileScheduler {
     /// Reset all Failed modules, removing them from the scheduler.
     ///
     /// Used by the REPL after a cascaded dependency failure. Scans all
-    /// registered modules and resets any in the Failed pool.
-    pub fn reset_all_failed_modules(&self) {
+    /// registered modules and resets any in the Failed pool. **Returns the list
+    /// of modules reset** so the caller (which owns `symbol_tables`, the
+    /// scheduler does not) can drop their stale live tables — a failed module's
+    /// import bindings write to the LIVE table before its body-check failure, so
+    /// a reset that leaves the table behind lets a later FQ ref read the module
+    /// as "loaded" (I1, 0571.2).
+    pub fn reset_all_failed_modules(&self) -> Vec<ModuleFullPath> {
         let mut state = self.lock();
         let failed: Vec<ModuleFullPath> = state.modules
             .iter()
@@ -1871,13 +1911,14 @@ impl CompileScheduler {
             SchedulerTraceTag::ResetAllFailed,
             failed.len(),
         );
-        for m in failed {
+        for m in &failed {
             // Inline the reset logic to avoid re-locking.
-            state.modules.remove(&m);
-            state.typecheck_first.retain(|x| x != &m);
-            state.typecheck_next.retain(|x| x != &m);
-            state.typecheck_done.retain(|x| x != &m);
+            state.modules.remove(m);
+            state.typecheck_first.retain(|x| x != m);
+            state.typecheck_next.retain(|x| x != m);
+            state.typecheck_done.retain(|x| x != m);
         }
+        failed
     }
 
     // -----------------------------------------------------------------------

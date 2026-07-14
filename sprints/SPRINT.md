@@ -338,7 +338,15 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
 | P5-S2 | /arch (resume) | W1.2 DC-11 Blocker cure design | (shim §II.3) | (shim) | — DONE `d45e2cee`: cure (a′) resolved-ctor rides mono node → backend CONSUMES tc resolution (one pattern resolver, loud-miss P18); design §10. Landed: `bare_member_name` + depth guard. I-1 folded (bare_member_name both sides), debug-asserts YES, cache 17→18. /qa tag-order matrix §10.9 |
 | P5-S2 | /qa (resume) | W1.2 tag-order matrix rows | (shim §II.3) | (shim) | — DONE: PLAN §D.3 — DC-12 (differing-layout twins both orders), DC-13 (xmod nondeterminism guard), DC-14 (warm-cache 17→18), BU-1/BU-2 (/dev unit pins) |
 | P5-S2 | /testing (resume) | W1.2 Blocker guards DC-12/13/14 | (shim §II.3) | (shim) | — DONE: all 3 RED for right reason (DC-13 nondeterminism reproduced 1/7/1, 1/1/7); W1 rows stay GREEN; suite 14→17 |
-| P5-S2 | /dev (resume) | **W1.2 §10 Blocker cure** (typecheck+types+backend) | (shim §II.3) | (shim) | — resolved-ctor transport on mono node + loud-miss + I-1 + debug-asserts + cache 17→18; flips DC-12/13/14 + BU-1/BU-2 |
+| P5-S2 | /dev (resume) | **W1.2 §10 Blocker cure** (typecheck+types+backend) | (shim §II.3) | (shim) | — **DONE, LANDED `c1e399e4`**: resolved-ctor rides mono node → keyed read (one deterministic pattern resolver). DC-12/13/14 GREEN (DC-13 3×→7 deterministic); W1 rows hold; BU-1/2/3. Found+fixed drained-sidecar seam bug. FIXME 0584→/arch (lenient-body None-arm ratify). Cache 17→18 |
+| P5-S2 | /sprint | commit S109 durable record (I-3 close) | — | — | — `a919bfd8`: 50 files (spec/design/test/plan/audit/fixmes); closes the fix-without-committed-tests inversion; later-wave REDs = known-defect guards |
+| P5-S2 | /dev (resume) | **0571 FQ-reference cluster** (typecheck+int) | (shim §II.3) | (shim) | — **DONE `35153cf8`**: FQ-D1 value-pos-generic mint (Let/ParBind) + FQ-D2 introspection-path + B4/B5 member-absent-unconditional-gap→int-decides-cycle + AL-3 reference-span. All 5 guards + bonus EV-1 GREEN; mode-parity verified; NO backend resolution added; zero pub-API. Suite 8f |
+| P5-S2 | /dev (resume) | 0573 product-deftype persistence | (shim §II.3) | (shim) | — **DONE `e22763ca`**: save.rs one-line `type_def_info()` delegation; both rows GREEN; reload + --run/--link parity. Suite 6f. (0569/0572 display rows already GREEN) |
+| P5-S2 | /dev (resume) | 0575/0576 error-quality diagnostics | (shim §II.3) | (shim) | — **DONE `5764b538`**: fn single-arity parse msg (§4.5) + multi-arity defn names clause/param (§5.1.2) + 0568 `__expr` guarded same path; both rows GREEN + unit pins. Suite 4f = 0570×2 + 2 carries |
+| P5-S2 | /testing | 0571.2 review-finding negatives (B1/I1/I2) | (shim §II.3) | (shim) | — DONE: 5 negatives RED for right reason (B1 mode-divergence, I1 failed-reset false-no-member, I2×3 if/match/vec check-gate-leak). Suite 9f (concurrent landings dropped 17→9) |
+| P5-S2 | /dev (resume) | **0571.2 fix pass** (typecheck+int) | (shim §II.3) | (shim) | — B1 visibility gate + I1 failed-reset predicate + I2 uniform value-position mint + I3 Failed fail-fast + I4 comments/dedup + M2 cycle span; flips 5 negatives |
+| — | — | later-wave REDs remaining | — | — | 0570 (mod- honor, W4), 0569 (search macro `; defmacro` row, W3) still RED |
+| P5-S2 | /review | 0571 scheduler gap-arm review | (shim §II.3) | (shim) | — **NOT CLEAN: 1 Blocker + 4 Important** (see 0571 REVIEW note). Confirmed: no lost-wakeup re-open, cycle determinism, 0513 preserved, no backend resolution. Blocker = private-FQ-display visibility bypass (mode-divergence) → 0571.2 fix pass |
 | P5-S2 | /dev | W1.1a typecheck — bucket 2 dotted-ctor capability | (shim §II.3) | (shim) | — **REVERTED (blocked)**: mechanism works but canonical-key model has ~54 int-side regressions (display/quasiquote→prelude cascade/bootstrap-seeded-ctor split); work preserved as patch. 3 escalations (see W1.1a BLOCKER note) |
 | P5-S2 | /arch (resume) | W1 model re-ruling ((b) coordinate) + #2 ordering + per-regression verify | (shim §II.3) | (shim) | — **DONE**: measured 73 regs (not 54); ROOT = ONE backend site `lookup_constructor` (context.rs:146) one-hop bare-key (NOT quasiquote/seeded); **found SILENT soundness bug** (cross-module nullary ctor → closure-alloc vs iconst-tag, 2 backend resolvers disagree); coordinate design in `dotted-ctor-canonical-keys.md`; **#2 ordering YES tractable**; accessor-bug folds into W1 commit-1; FIXME 0582→/design |
 
@@ -529,6 +537,44 @@ EXCEPT:
 **Verified GREEN by /review:** P7 duplication cure (one-hop body deleted, no dormant
 copy); DC-11 typecheck-half correct per §6.2.1; the 2 mid-work fixes are root fixes;
 two-commit discipline honored; public-API zero movement; writer uniformity (§1).
+
+## 0571 REVIEW findings (2026-07-14) — NOT CLEAN; 0571.2 fix pass owed
+
+`/review` confirmed the gap-arm mechanism is sound (no S93 re-open, cycle determinism,
+0513 preserved, mode parity on the compile path, no backend resolution) — but found:
+
+- **B1 (BLOCKER) — private-FQ-display visibility bypass (mode-divergence + §8.7.3
+  violation).** 0571's D2 introspection arm (`src/eval.rs:586-598`) raw-probes the
+  table with NO `is_public()` gate → a private `defn-` member displays via the REPL
+  introspection intercept instead of erroring; `--run` errors correctly. Also a NEW
+  raw-probe resolution-mirror site (S110-boundary class). → `/dev` (int) + `/qa` neg
+  twin (no private-FQ negative test exists).
+- **I1 — "no member Y" fires for a failed-then-reset module** — masks the real load
+  failure + wedges recovery. `fq_module_is_loaded` counts a reset module as loaded
+  (`is_typechecked` returns true for a forgotten module; the empty seeded table is
+  never removed on failure). → `/dev` (int) + `/testing` repro.
+- **I2 — value-position mint covers only Apply-arg + Let/ParBind; concrete generic
+  refs in if/match/vector positions STILL leak to codegen** (`((if c gcount gother)
+  […])`). **3rd recurrence** (0374 HOF → 0488 imported → 0571 let-value) of the
+  "monomorphise-uniformly-across-value-positions" class; the uniform fix (verdict on
+  every non-callee `Var`) exists 20 lines away. → `/dev` uniform collect + **`/arch`
+  class escalation (FIXME 0585)** + `/qa` if/match/vec matrix cells.
+- **I3 — `block_for_typecheck` lacks a Failed fail-fast** — a waiter registered on an
+  already-Failed dep becomes a zombie; the reshape widened the gap set routed here.
+  Mirror `await_signature_barrier`'s fail-fast. → `/dev` (int).
+- **I4 — stale contradictory comments at the 0513 seam + `phantom_member_diagnostic`
+  (0490) is a 2nd int-side site authoring "module X has no member Y" (mirror); no
+  design doc records the new gap-arm contract.** → `/dev` (comment cure + consolidate
+  to one diagnostic site) + `/design` (record the contract).
+- **Minors**: M2 cycle error still `Span::SYNTHETIC` (AL-3's own headline case!);
+  M3 5×-dup `ModuleFailed` construction; M4 partial ref-span scan + wasted park IO;
+  M5 `finalize_cluster` ~127L over budget.
+
+**0571.2 plan:** `/dev` fix pass (B1 + I1 + I2-uniform + I3 + I4 + M2) AFTER the
+0575/0576 diagnostics wave frees the source token → `/testing` negatives (B1 private-FQ,
+I1 failed-reset-retry, I2 if/match/vec) → re-`/review`. FIXME 0585 → `/arch` (I2 class).
+Note: B1/M1/I4 are the resolution-mirror class = the S110 centrepiece re-instantiated
+under time pressure — reinforces 0583.
 
 ## Outcome (Phase 7)
 

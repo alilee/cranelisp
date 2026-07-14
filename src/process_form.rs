@@ -458,21 +458,15 @@ fn finalize_cluster(
         // the `Span::SYNTHETIC` module-head span the wrap reported at.
         if let Some(dep) = gap_target_module(&gap) {
             let member = gap_member(&gap);
-            let referenced = format!("{dep}/{member}");
-            let ref_span = expanded_program
-                .iter()
-                .find_map(|tl| find_named_var_span_in_toplevel(tl, &referenced))
-                .unwrap_or(Span::SYNTHETIC);
             // Module present AND terminal (`fq_module_is_loaded`) ⇒ its
             // signatures are fully published, so the member GENUINELY does not
             // exist ⇒ the honest "module X has no member Y" at the reference
-            // site (§8.5.4). Never re-drive a terminal module (the member stays
-            // absent on every retry — an infinite loop).
+            // site (§8.5.4). Authored via the single `module_has_no_member_error`
+            // seam (I4, 0571.2 — the sole author of this diagnostic, shared with
+            // `phantom_member_diagnostic`). Never re-drive a terminal module (the
+            // member stays absent on every retry — an infinite loop).
             if fq_module_is_loaded(ctx, &dep) {
-                return Err(CranelispError::ModuleError {
-                    message: format!("module '{dep}' has no member '{member}'"),
-                    location: ErrorLocation::from_span_file(ref_span, None),
-                });
+                return Err(module_has_no_member_error(expanded_program, &dep, &member));
             }
             // Absent OR present-but-non-terminal ⇒ drive it (register + park): a
             // not-yet-loaded module loads then re-drives; a present-but-non-
@@ -480,7 +474,11 @@ fn finalize_cluster(
             // `block_dep` arm, whose `block_for_typecheck` acyclicity check
             // converts a genuine FQ cycle into the honest circular-dependency
             // error (B4/B5). A missing-module file surfaces `drive_module_dep`'s
-            // "module not found" at `ref_span` (AL-3).
+            // "module not found" at the reference span (AL-3).
+            let ref_span = expanded_program
+                .iter()
+                .find_map(|tl| find_named_var_span_in_toplevel(tl, &format!("{dep}/{member}")))
+                .unwrap_or(Span::SYNTHETIC);
             drive_module_dep(ctx, module, &dep, ref_span)?;
             return Ok(ClusterOnce::Gap { dep });
         }
@@ -561,15 +559,35 @@ fn phantom_member_diagnostic(
     // Locate the user's reference span so the diagnostic carries a real source
     // location (`<qualifier>/<member>` is the verbatim AST var name) rather
     // than the `0..0` the phantom-module path emitted.
-    let referenced = format!("{qualifier}/{member}");
+    Some(module_has_no_member_error(
+        program,
+        &ModuleFullPath::from(qualifier),
+        &member,
+    ))
+}
+
+/// The single author of the §8.5.4 "module X has no member Y" diagnostic (I4,
+/// 0571.2). BOTH the FQ-gap decision arm (`process_cluster_once`, a member-absent
+/// terminal module) and `phantom_member_diagnostic` (the current-module-relative
+/// mis-resolution shape) route the message + reference-span lookup through here,
+/// so the diagnostic has exactly one authoring site — no display-envelope mirror
+/// (Principle 7). Locates the user's verbatim `<module>/<member>` reference span
+/// so the error carries a real source location, falling back to `Span::SYNTHETIC`
+/// when the var name is not found in the program.
+fn module_has_no_member_error(
+    program: &[TopLevel],
+    module: &ModuleFullPath,
+    member: &str,
+) -> CranelispError {
+    let referenced = format!("{module}/{member}");
     let span = program
         .iter()
         .find_map(|tl| find_named_var_span_in_toplevel(tl, &referenced))
         .unwrap_or(Span::SYNTHETIC);
-    Some(CranelispError::ModuleError {
-        message: format!("module '{qualifier}' has no member '{member}'"),
+    CranelispError::ModuleError {
+        message: format!("module '{module}' has no member '{member}'"),
         location: ErrorLocation::from_span_file(span, None),
-    })
+    }
 }
 
 /// Find the span of an `Expr::Var` named `target` inside a top-level form (a

@@ -4176,3 +4176,69 @@ fn data_ctor_value_displays_with_fields_not_bare_name_neg() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Sprint 109 — 0571.2 B1: a private FQ member MUST error (§8.7.3), NOT display an
+// introspection envelope; mode-uniform. `/review` proved this in the landed 0571
+// change-set (35153cf8). Plan: tests/plan/PLAN.md §S109 (0571.2 negatives).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.7.3 — accessing a private member via a qualified
+// reference is a compile-time error, in EVERY mode. RED today: the REPL raw-probe
+// display seam renders `:(Fn …) mathx/helper ; defn` for a `(defn- helper …)`
+// private member, bypassing the visibility gate that `--run` correctly applies
+// (`helper is private to module mathx`) — a mode divergence.
+// defect: class=mode-divergence locus=src/repl.rs (introspection display seam bypasses the §8.7.3 visibility gate that --run resolution applies) found=S109 owner=/dev
+#[test]
+fn private_fq_member_errors_not_displays_mode_uniform_neg() {
+    let mathx = "(import [primitives [Int add-i64]])\n\
+                 (defn- helper [:Int x] :Int (add-i64 x 1))\n\
+                 (defn pub [:Int x] :Int (add-i64 x 2))\n";
+    // REPL leg — a private FQ member MUST error, NOT render a `; defn` envelope.
+    let repl = Cranelisp::new()
+        .repl()
+        .file("mathx.cl", mathx)
+        .stdin("mathx/helper\n")
+        .output();
+    let repl_lc = repl.stdout.to_lowercase();
+    assert!(
+        repl_lc.contains("private") || repl_lc.contains("not accessible"),
+        "REPL: a private FQ member MUST error with the §8.7.3 visibility error, \
+         not display; got:\n{}",
+        repl.stdout
+    );
+    assert!(
+        !repl.stdout.contains("mathx/helper ; defn"),
+        "REPL: a private FQ member MUST NOT render a `; defn` introspection \
+         envelope (§8.7.3 gate bypass); got:\n{}",
+        repl.stdout
+    );
+    // --run leg — the SAME visibility error (mode-uniform; the divergence today).
+    let run = Cranelisp::new()
+        .file("mathx.cl", mathx)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/helper 5)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let run_text = format!("{}\n{}", run.stdout, run.stderr).to_lowercase();
+    assert!(
+        !run.status.success()
+            && (run_text.contains("private") || run_text.contains("not accessible")),
+        "--run: a private FQ member MUST error (§8.7.3); {}\n{}",
+        run.stdout, run.stderr
+    );
+    // Control — a PUBLIC FQ member DOES display in the REPL (proves the private
+    // rejection is the visibility gate, not a dead display path).
+    let pubrepl = Cranelisp::new()
+        .repl()
+        .file("mathx.cl", mathx)
+        .stdin("mathx/pub\n")
+        .output();
+    assert!(
+        pubrepl.stdout.contains("mathx/pub"),
+        "control: a PUBLIC FQ member MUST display in the REPL; got:\n{}",
+        pubrepl.stdout
+    );
+}

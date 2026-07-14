@@ -131,6 +131,41 @@
         assert_eq!(gap_target_module(&gap), Some(ModuleFullPath::from("mac")));
     }
 
+    // spec: spec/08-modules.md §8.5.4 — I4 (0571.2). `module_has_no_member_error`
+    // is the SINGLE author of the "module X has no member Y" diagnostic (shared
+    // by the FQ-gap decision arm and `phantom_member_diagnostic` — no
+    // display-envelope mirror, Principle 7). It formats the message and locates
+    // the user's verbatim `<module>/<member>` reference span.
+    #[test]
+    fn module_has_no_member_error_authors_message_and_locates_ref_span() {
+        let sexps = cranelisp_frontend::parse("(mathx/helper 1)").unwrap();
+        let program = crate::worker::build_program_compat(&sexps).unwrap();
+        let module = ModuleFullPath::from("mathx");
+
+        let err = module_has_no_member_error(&program, &module, "helper");
+        assert!(
+            err.to_string().contains("module 'mathx' has no member 'helper'"),
+            "message: {}",
+            err
+        );
+        // The reference is located in the program, so the diagnostic carries a
+        // real source span rather than the SYNTHETIC fallback.
+        assert_ne!(
+            err.span(),
+            Span::SYNTHETIC,
+            "the `mathx/helper` reference span must be located"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.5.4 — a member reference absent from the
+    // program falls back to the SYNTHETIC span (still a well-formed message).
+    #[test]
+    fn module_has_no_member_error_falls_back_to_synthetic_span_when_ref_absent() {
+        let err = module_has_no_member_error(&[], &ModuleFullPath::from("m"), "x");
+        assert!(err.to_string().contains("module 'm' has no member 'x'"));
+        assert_eq!(err.span(), Span::SYNTHETIC);
+    }
+
     // spec: spec/09-macros.md §9.3.6 — the expand-phase macro gap (`MacroInMem`)
     // also reduces to "load `fq.module`".
     #[test]

@@ -99,7 +99,7 @@ impl CompilerSession {
         match result {
             Ok(()) => Ok(()),
             Err(e) => {
-                self.shared.scheduler.reset_all_failed_modules();
+                self.reset_failed_modules();
                 Err(CranelispError::from(e))
             }
         }
@@ -595,6 +595,20 @@ impl CompilerSession {
                 .get(&module_part)?
                 .get(sym)
                 .cloned()?;
+            // §8.7.3 visibility gate (0571.2 B1): a PRIVATE member is accessible
+            // ONLY from within its module's subtree. A REPL FQ display must NOT
+            // bypass the gate a `--run` reference hits — this is the visibility
+            // FILTER (mirroring `resolve_qualified`'s `visibility_check`) applied
+            // to the probe, NOT a second resolver. An inaccessible member returns
+            // `None` so the reference falls to the ordinary resolution path, which
+            // errors identically across modes (mode-uniform §8.7.3).
+            let cur = self.current_module_path();
+            let accessible = e.is_public()
+                || cur == module_part
+                || cur.as_ref().starts_with(&format!("{module_part}."));
+            if !accessible {
+                return None;
+            }
             (e, module_part, Symbol::from(sym))
         } else {
             let (e, m) = self.lookup_with_prelude_fallback_opt(name, false)?;

@@ -257,7 +257,7 @@ pub(super) fn handle_import(
         // Pool path blocks + requeues; eval path records a cycle-check edge only
         // (S93 Invariant SW — the entry module is never moved to
         // TypecheckBlocked).
-        block_dep(ctx, module, dep)?;
+        block_dep(ctx, module, dep, spec_span)?;
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
@@ -274,8 +274,31 @@ pub(super) fn handle_import(
 /// seeded-but-empty `SymbolTable` may exist in `symbol_tables` before a
 /// module's Defs are populated, so a `contains_key` check alone is not
 /// sufficient. Require a terminal typecheck state via `is_typechecked`.
+///
+/// **Failed-then-reset exclusion (I1, 0571.2).** `is_typechecked` answers
+/// `true` for EVERY module the scheduler does not track (its doc: "not in the
+/// scheduler — synthetic OR removed via Failed reset"), because it cannot tell a
+/// compiler-seeded synthetic module (`primitives`/`macros` — never registered,
+/// table POPULATED) from a module that FAILED to load and was removed by
+/// `reset_module` (unregistered, table left EMPTY — the failed cluster's staging
+/// was dropped, so no Def committed). Reading the latter as "loaded" made an
+/// autoload RETRY report the §8.5.4 edge-4/5 false "module X has no member Y"
+/// (the member exists in source; the module failed to load). We therefore split
+/// on scheduler registration: a tracked module trusts its terminal-pool verdict
+/// (which correctly covers a genuinely-loaded EMPTY `.cl` file); an UNTRACKED
+/// module is loaded only if its live table actually carries symbols — synthetic
+/// modules do, a failed-reset module does not (so it re-drives / re-loads).
 pub(super) fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) -> bool {
-    ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_typechecked(dep)
+    if !ctx.symbol_tables.contains_key(dep) {
+        return false;
+    }
+    if ctx.scheduler.is_registered(dep) {
+        return ctx.scheduler.is_typechecked(dep);
+    }
+    ctx.symbol_tables
+        .get(dep)
+        .map(|t| t.all_symbols().next().is_some())
+        .unwrap_or(false)
 }
 
 /// Drive a dependency module to readiness — the register-edge half of the
@@ -318,12 +341,14 @@ pub(super) fn block_dep(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
     dep: &ModuleFullPath,
+    ref_span: Span,
 ) -> Result<(), CranelispError> {
     if ctx.eval_driven {
-        ctx.scheduler.register_dep_edge_for_cycle_check(module, dep)
+        ctx.scheduler
+            .register_dep_edge_for_cycle_check(module, dep, ref_span)
     } else {
         ctx.scheduler
-            .block_for_typecheck(module, dep, &Symbol::from("*"))
+            .block_for_typecheck(module, dep, &Symbol::from("*"), ref_span)
     }
 }
 
@@ -339,7 +364,7 @@ pub(super) fn drive_module_dep(
     // never blocked (S93 Invariant SW); the dep is loaded so there is no cycle.
     if fq_module_is_loaded(ctx, dep) {
         if !ctx.eval_driven {
-            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
         return Ok(());
@@ -371,7 +396,7 @@ pub(super) fn drive_module_dep(
     // — block-then-immediately-unblock to re-queue the referencing module.
     if try_cache_hit_load(ctx, dep, &dep_file) {
         if !ctx.eval_driven {
-            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
         return Ok(());
@@ -395,7 +420,7 @@ pub(super) fn drive_module_dep(
     // `module` is rejected with the standard error (pool path blocks+requeues;
     // eval path records a cycle-check edge only — S93 Invariant SW).
     ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
-    block_dep(ctx, module, dep)?;
+    block_dep(ctx, module, dep, span)?;
 
     Ok(())
 }
@@ -858,7 +883,7 @@ pub(super) fn handle_export(
 
         // Register dep with scheduler (sexps ride the packet) and record edge.
         ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
-        block_dep(ctx, module, dep)?;
+        block_dep(ctx, module, dep, spec_span)?;
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
@@ -1039,7 +1064,7 @@ fn drive_submodule(
 
     // Register dep with scheduler (sexps ride the packet) and record edge.
     ctx.scheduler.register_module(sub_path.clone(), dep_sexps, true);
-    block_dep(ctx, module, &sub_path)?;
+    block_dep(ctx, module, &sub_path, decl_span)?;
 
     Ok(BlockAction::Block {
         dep_module: sub_path,
@@ -1396,7 +1421,7 @@ pub(super) fn inject_prelude_if_needed(
             })?;
 
             ctx.scheduler.register_module(prelude_path.clone(), prelude_sexps, true);
-            block_dep(ctx, module, &prelude_path)?;
+            block_dep(ctx, module, &prelude_path, Span::SYNTHETIC)?;
 
             return Ok(Some(prelude_path));
         }

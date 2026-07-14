@@ -7433,6 +7433,42 @@
         );
     }
 
+    // spec: spec/04-expressions.md §4.6.2 + spec/03-types.md §3.11.1 — POSITION
+    //   COMPLETENESS (I2 / FIXME 0585). A generic fn-value referenced in a
+    //   value position that is NEITHER an `Apply` arg NOR a `Let`/`ParBind`
+    //   binding value — here an `if` BRANCH — must still be monomorphised and
+    //   rewritten. RED on the pre-0571.2 whitelist: `collect_parametric_fn_value_args`
+    //   only visited `Apply { args }` and `Let`/`ParBind` bindings, so an
+    //   if/match/vector-position fn-value was never collected and reached the
+    //   backend slot-less (the codegen `undefined variable` leak). The uniform
+    //   non-callee-child walk (mirroring `find_ambiguous_value_position`) closes
+    //   it. This unit test FAILS on revert of that walk.
+    #[test]
+    fn u_b_if_branch_fn_value_position_mints_and_rewrites() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn iden [x] x)\n\
+             (defn use1 [] ((if true iden iden) 5))",
+        );
+        assert!(
+            tc.symbol_table().get("test/iden$Int").is_some(),
+            "a generic fn-value in an `if`-branch value position must be \
+             monomorphised (I2/0585 position-completeness — the whitelist skipped \
+             if/match/vector)",
+        );
+        let body = stored_body(&tc, "use1");
+        assert!(
+            body_has_var_named(&body, "test/iden$Int"),
+            "the if-branch fn-value `Var` must be rewritten to the mangled name; \
+             body = {body:?}",
+        );
+        assert!(
+            !body_has_var_named(&body, "iden"),
+            "no un-rewritten bare `iden` fn-value `Var` may remain; body = {body:?}",
+        );
+    }
+
     // The signature-(c) fixture, mirroring the e2e FOLD_MODULE: a same-module
     // generic fold (`vreduce`/`vreduce-loop`) whose helper threads a polymorphic
     // accumulator, and `vconcat` — a fold-bodied generic passing the builtin

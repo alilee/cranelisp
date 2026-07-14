@@ -475,6 +475,31 @@ impl CompilerSession {
         self.current_repl_module.clone()
     }
 
+    /// Reset every Failed module in the scheduler AND drop its stale live symbol
+    /// table (I1, 0571.2). A module that fails to load leaves live bindings
+    /// behind: `(import [primitives [Int]])` writes the `Int` import into the
+    /// LIVE table *before* the body-check failure, so the failed module's table
+    /// is NON-empty even though it never finished loading. If the reset leaves
+    /// that table in place, a later FQ reference reads the module as "loaded"
+    /// (the table exists and the scheduler has forgotten it) and reports a false
+    /// "module X has no member Y" on autoload RETRY (§8.5.4 edge 4/5). Dropping
+    /// the table makes the retry re-drive from scratch — `ensure_module_exists`
+    /// re-seeds it on the next dependency drive.
+    ///
+    /// **Autoload-retry scoped.** Only the FQ-autoload dep-drive path (a FRESH
+    /// dependency that failed to load) uses this purging variant. The
+    /// degraded-startup and T1-redefinition-rollback resets deliberately do NOT
+    /// purge: those "failed" modules are EXISTING modules whose tables hold prior
+    /// valid definitions that recovery/repair depends on — purging them would
+    /// destroy recoverable state (regression fence: the `repl_redefinition` T1
+    /// error-block-lift + coherent-stale guards).
+    pub(crate) fn reset_failed_modules(&self) {
+        let reset = self.shared.scheduler.reset_all_failed_modules();
+        for m in &reset {
+            self.shared.symbol_tables.remove(m);
+        }
+    }
+
     /// Set the current module path (REPL carry-forward).
     ///
     /// Sprint 67 Cluster B sub-fire 2d: writes the CompilerSession-owned
@@ -1680,7 +1705,10 @@ impl CompilerSession {
 
         // 1. Reset failed scheduler state (entry + any failed deps are
         //    removed; deps re-register on demand through the eval dep drive).
-        self.shared.scheduler.reset_all_failed_modules();
+        //    Scheduler-only — the entry's table is re-seeded just below and the
+        //    degraded re-drive re-populates from source, so no table purge here
+        //    (contrast the autoload-retry reset, which drops stale dep tables).
+        let _ = self.shared.scheduler.reset_all_failed_modules();
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
         let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
         self.shared.scheduler.register_module(module.clone(), empty, false);

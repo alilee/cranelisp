@@ -1310,7 +1310,11 @@ impl CompilerSession {
     /// path, so it cannot recurse or perturb the surviving module state.)
     fn enter_t1_reload_error_block(&mut self, target: &FQSymbol, stale: &[FQSymbol], error: &str) {
         use crate::session_v4::FailedForm;
-        self.shared.scheduler.reset_all_failed_modules();
+        // Scheduler-only reset here — do NOT purge the failed modules' live
+        // tables (contrast the autoload-retry reset). A T1 redefinition rollback
+        // relies on the PRIOR (valid) definitions still living in those tables
+        // for the caller-repair lift; purging them destroys recoverable state.
+        let _ = self.shared.scheduler.reset_all_failed_modules();
         let failed: Vec<FailedForm> = stale
             .iter()
             .filter(|fq| fq.module == target.module)

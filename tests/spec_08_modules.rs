@@ -3327,3 +3327,133 @@ fn bare_field_accessor_same_cluster_run_mode() {
         .output()
         .assert_exit(7);
 }
+
+// =============================================================================
+// Sprint 109 — 0571.2 negatives (I1 + I2). `/review` proved these in the landed
+// 0571 change-set (35153cf8). Plan: tests/plan/PLAN.md §S109 (0571.2 negatives).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.4 edge 4/5 — a retry after a FAILED auto-load
+// MUST NOT falsely claim "module X has no member Y" (the member exists; the
+// module never loaded). The real dependency compile error MUST surface (or the
+// reference resolve once fixed), never a spurious no-member claim. RED today: the
+// REPL caches the failed load as "loaded but empty", so the second `(broken/f)`
+// says `module 'broken' has no member 'f'` — clobbering the real error.
+// defect: class=error-swallow locus=src/session_v4 (a failed auto-load is cached as loaded-but-empty; the retry surfaces a false no-member claim instead of the real dep error) found=S109 owner=/dev
+#[test]
+fn failed_autoload_retry_does_not_claim_no_member_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "broken.cl",
+            "(import [primitives [Int]])\n(defn f [:Int x] :Int (nonexistent-thing x))\n",
+        )
+        .stdin("(broken/f 1)\n(broken/f 2)\n")
+        .output();
+    // The FIRST reference reports the real dependency compile error.
+    assert!(
+        out.stdout.contains("nonexistent-thing"),
+        "the first reference MUST surface the real dep compile error; got:\n{}",
+        out.stdout
+    );
+    // The retry MUST NOT falsely claim the module has no member `f`.
+    assert!(
+        !out.stdout.contains("has no member 'f'"),
+        "a retry after a FAILED auto-load MUST NOT falsely claim `module 'broken' \
+         has no member 'f'` — `f` exists; the module failed to load (§8.5.4 edge \
+         4/5); got:\n{}",
+        out.stdout
+    );
+}
+
+// --- I2 — concrete generic fn-value ref in non-Apply/non-Let positions -------
+// FIXME 0585 (/qa owns the full value-position matrix); these are the three
+// leaking cells (if / match / vector) authored as the REDs. `deftype`-free.
+
+/// The generic-fn module: `gcount`/`gother` stay polymorphic (param inferred as
+/// `(Vec _)`), so a value-position reference must be monomorphised check-side.
+const I2_MATHX: &str =
+    "(import [primitives [Int Vec vec-len]])\n\
+     (defn gcount [xs] :Int (vec-len xs))\n\
+     (defn gother [xs] :Int 0)\n";
+
+// spec: spec/08-modules.md §8.5.4 edge 1 + spec/03-types.md §3.11.1 — a concrete
+// generic fn-value reference in an `if` value position MUST resolve check-side (a
+// mono minted at the inferred concrete type) or die check-side with the §3.11.1
+// annotation-required error — NEVER reach codegen as `undefined variable`. RED
+// today: it leaks the doubly-wrapped codegen error.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position generic ref in a non-Apply/non-Let position never mints a mono; leaks to backend) found=S109 owner=/dev
+#[test]
+fn fq_generic_value_ref_in_if_position_never_reaches_codegen() {
+    let out = Cranelisp::new()
+        .file("mathx.cl", I2_MATHX)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Bool]])\n\
+             (defn main [] (Pure ((if true mathx/gcount mathx/gother) [1 2 3])))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert_no_doubly_wrapped_codegen_leak(&text);
+    if !out.status.success() {
+        assert!(
+            !text.contains("codegen"),
+            "a concrete generic fn-value ref in `if` position MUST be decided \
+             check-side (resolve or §3.11.1 annotation error), never leak to \
+             codegen (I2, 0585); {text}"
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 + spec/03-types.md §3.11.1 — same, in a
+// `match`-arm value position (deftype-free: seeded `Option` scrutinee). RED today.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position generic ref in a match-arm position never mints a mono; leaks to backend) found=S109 owner=/dev
+#[test]
+fn fq_generic_value_ref_in_match_position_never_reaches_codegen() {
+    let out = Cranelisp::new()
+        .file("mathx.cl", I2_MATHX)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Option Some None]])\n\
+             (defn main [] (Pure\n\
+               ((match (Some 0) [(Some _) mathx/gcount None mathx/gother]) [1 2 3])))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert_no_doubly_wrapped_codegen_leak(&text);
+    if !out.status.success() {
+        assert!(
+            !text.contains("codegen"),
+            "a concrete generic fn-value ref in a `match`-arm value position MUST \
+             be decided check-side, never leak to codegen (I2, 0585); {text}"
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 + spec/03-types.md §3.11.1 — same, as a
+// VECTOR element used concretely (`(vec-get [gcount] 0)` applied). RED today.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position generic ref as a vector element never mints a mono; leaks to backend) found=S109 owner=/dev
+#[test]
+fn fq_generic_value_ref_in_vector_position_never_reaches_codegen() {
+    let out = Cranelisp::new()
+        .file("mathx.cl", I2_MATHX)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure Vec vec-get]])\n\
+             (defn main [] (Pure ((vec-get [mathx/gcount] 0) [1 2 3])))\n",
+        )
+        .run("main.cl")
+        .output();
+    let text = combined(&out);
+    assert_no_doubly_wrapped_codegen_leak(&text);
+    if !out.status.success() {
+        assert!(
+            !text.contains("codegen"),
+            "a concrete generic fn-value ref as a vector element MUST be decided \
+             check-side, never leak to codegen (I2, 0585); {text}"
+        );
+    }
+}

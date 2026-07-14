@@ -660,7 +660,7 @@
             Some(PriorityWork::Typecheck { .. })
         ));
         sched
-            .block_for_typecheck(&a, &b, &Symbol::from("foo"))
+            .block_for_typecheck(&a, &b, &Symbol::from("foo"), Span::SYNTHETIC)
             .unwrap();
         match sched.take_priority_work() {
             Some(PriorityWork::Typecheck { module, .. }) => {
@@ -682,7 +682,7 @@
         sched.register_module(b.clone(), no_sexps(), false);
         let _ = sched.take_priority_work();
         sched
-            .block_for_typecheck(&a, &b, &Symbol::from("*"))
+            .block_for_typecheck(&a, &b, &Symbol::from("*"), Span::SYNTHETIC)
             .unwrap();
         let _ = sched.take_priority_work();
         sched.notify_typecheck_done(&b);
@@ -733,7 +733,7 @@
 
         // Now the discovery path records the edge — on an already-terminal dep.
         sched
-            .block_for_typecheck(&module, &dep, &Symbol::from("*"))
+            .block_for_typecheck(&module, &dep, &Symbol::from("*"), Span::SYNTHETIC)
             .unwrap();
 
         // `module` MUST NOT be stranded in TypecheckBlocked: with `dep` already
@@ -778,7 +778,7 @@
         sched.register_module(b.clone(), no_sexps(), false);
         let _ = sched.take_priority_work();
         sched
-            .block_for_typecheck(&a, &b, &Symbol::from("bar"))
+            .block_for_typecheck(&a, &b, &Symbol::from("bar"), Span::SYNTHETIC)
             .unwrap();
         let _ = sched.take_priority_work();
         sched.notify_module_failed(&b, dummy_error("type error in mod_b"));
@@ -1096,6 +1096,24 @@
         );
     }
 
+    // spec: §8.5.4 — I1 (0571.2). `reset_all_failed_modules` RETURNS the list of
+    // reset modules so the session (which owns `symbol_tables`) can purge their
+    // stale live tables; each returned module is also removed from the scheduler.
+    #[test]
+    fn reset_all_failed_modules_returns_reset_list_and_unregisters() {
+        let sched = CompileScheduler::new();
+        let good = mod_path("ok");
+        let bad = mod_path("bad");
+        sched.register_module(good.clone(), no_sexps(), false);
+        sched.register_module(bad.clone(), no_sexps(), false);
+        sched.notify_module_failed(&bad, dummy_error("boom"));
+
+        let reset = sched.reset_all_failed_modules();
+        assert_eq!(reset, vec![bad.clone()], "only the Failed module is reset");
+        assert!(!sched.is_registered(&bad), "the reset module is unregistered");
+        assert!(sched.is_registered(&good), "a non-failed module is untouched");
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // S93 §6 — THE DETERMINISTIC P_publish / P_read INTERLEAVING PIN.
     //
@@ -1277,7 +1295,7 @@
         // edge. The entry MUST stay in its terminal pool — NOT TypecheckBlocked.
         let dep = mod_path("helper");
         sched
-            .register_dep_edge_for_cycle_check(&entry, &dep)
+            .register_dep_edge_for_cycle_check(&entry, &dep, Span::SYNTHETIC)
             .expect("no cycle: helper does not import user");
         assert_eq!(
             sched.module_pool(&entry),
@@ -1315,12 +1333,12 @@
 
         // Eval thread: entry → helper (no cycle yet — helper imports nothing).
         sched
-            .register_dep_edge_for_cycle_check(&entry, &dep)
+            .register_dep_edge_for_cycle_check(&entry, &dep, Span::SYNTHETIC)
             .expect("entry → helper alone is acyclic");
 
         // Pool worker compiling helper hits `(import [user])` → helper → user.
         // The reverse check follows user.blocked_on = helper → CYCLE.
-        let err = sched.block_for_typecheck(&dep, &entry, &Symbol::from("*"));
+        let err = sched.block_for_typecheck(&dep, &entry, &Symbol::from("*"), Span::SYNTHETIC);
         assert!(
             err.is_err(),
             "the eval edge entry → helper must make helper → entry a detected \
@@ -1342,11 +1360,11 @@
 
         // helper already blocked on user (its worker recorded the edge).
         sched
-            .block_for_typecheck(&dep, &entry, &Symbol::from("*"))
+            .block_for_typecheck(&dep, &entry, &Symbol::from("*"), Span::SYNTHETIC)
             .expect("helper → user alone is acyclic");
 
         // Eval thread now records user → helper, closing the cycle.
-        let err = sched.register_dep_edge_for_cycle_check(&entry, &dep);
+        let err = sched.register_dep_edge_for_cycle_check(&entry, &dep, Span::SYNTHETIC);
         assert!(err.is_err(), "user → helper → user is a detected cycle");
         // The entry was NOT failed — it keeps its pre-edge pool (not Failed).
         assert_eq!(
@@ -1355,6 +1373,63 @@
             "a REPL import cycle is an eval error — the entry module is not failed"
         );
         assert!(!sched.is_failed(&entry), "entry must not be in Failed");
+    }
+
+    // spec: §8.5.4 — I3 fail-fast (0571.2). Blocking on a dependency that has
+    // ALREADY FAILED must return `Err` IMMEDIATELY rather than register a waiter
+    // that no future `notify_typecheck_done` will ever sweep (a Failed module
+    // never reaches a terminal typecheck pool → the blocker would park forever).
+    #[test]
+    fn block_for_typecheck_fails_fast_when_dep_already_failed() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("consumer");
+        let b = mod_path("broken_dep");
+        sched.register_module(a.clone(), no_sexps(), false);
+        sched.register_module(b.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        // b fails to typecheck.
+        sched.notify_module_failed(&b, dummy_error("undefined variable: nonexistent"));
+
+        let err = sched.block_for_typecheck(&a, &b, &Symbol::from("*"), Span::SYNTHETIC);
+        assert!(err.is_err(), "blocking on an already-Failed dep must fail fast");
+        // The dep's own error is surfaced (not a park), and `a` is NOT parked in
+        // TypecheckBlocked waiting on a dead dependency.
+        assert!(
+            err.unwrap_err().to_string().contains("nonexistent"),
+            "the failed dependency's recorded error must be surfaced verbatim"
+        );
+        assert_ne!(
+            sched.module_pool(&a),
+            Some(ModulePool::TypecheckBlocked),
+            "the consumer must not be parked on a dead dependency"
+        );
+    }
+
+    // spec: §8.5.4 / AL-3 parity — M2 (0571.2). The circular-dependency error
+    // must be attributed to the REFERENCE site (the span the caller threads),
+    // not `Span::SYNTHETIC`, so the diagnostic points at the offending ref.
+    #[test]
+    fn cycle_error_carries_reference_span_not_synthetic() {
+        let sched = CompileScheduler::new();
+        let entry = mod_path("user");
+        let dep = mod_path("helper");
+        sched.register_module(entry.clone(), no_sexps(), false);
+        sched.register_module(dep.clone(), no_sexps(), false);
+        let ref_span = Span::new(42, 55);
+
+        // helper → user recorded first (acyclic alone).
+        sched
+            .block_for_typecheck(&dep, &entry, &Symbol::from("*"), Span::SYNTHETIC)
+            .expect("helper → user alone is acyclic");
+        // Eval thread closes user → helper → user with a real reference span.
+        let err = sched
+            .register_dep_edge_for_cycle_check(&entry, &dep, ref_span)
+            .expect_err("user → helper → user is a detected cycle");
+        assert_eq!(
+            err.span(),
+            ref_span,
+            "the circular-dependency error must carry the reference span, not SYNTHETIC"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════

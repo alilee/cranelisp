@@ -3873,31 +3873,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
     ) {
         // A generic fn referenced in VALUE position at a concrete `Fn` type
-        // (FIXME 0374 fn-value monomorphisation; 0571 D1 extension). The
-        // per-`Var` collect is shared by:
-        //  - HOF ARGUMENTS `(map mk xs)` — `mk` is an `Apply` arg;
-        //  - LET-BINDING VALUES `(let [f gcount] (f [1 2 3]))` — the concrete
-        //    `Fn` type flows back from the later use of `f`, so `gcount`'s value
-        //    ref carries `(Fn [(Vec Int)] Int)` and mints `gcount$Vec_Int`.
-        // An Apply CALLEE (`(f x)`) is excluded — it is call position and mints
-        // through the ordinary call path. Without the LET case a value-position
-        // generic ref reaches the backend slot-less ⇒ the `undefined variable`
-        // codegen leak (0571 D1).
-        match expr {
-            Expr::Apply { args, .. } => {
-                for arg in args {
-                    self.try_collect_parametric_fn_value(state, arg, out);
-                }
-            }
-            Expr::Let { bindings, .. } | Expr::ParBind { bindings, .. } => {
-                for (_, val) in bindings {
-                    self.try_collect_parametric_fn_value(state, val, out);
-                }
-            }
-            _ => {}
-        }
+        // (FIXME 0374 fn-value monomorphisation; 0571 D1 extension; 0585 —
+        // position-completeness cure). A value-position generic fn-value ref
+        // reaches the backend slot-less unless monomorphised here ⇒ the
+        // `undefined variable` codegen leak (0571 D1).
+        //
+        // **POSITION-COMPLETE (0585, mirroring `find_ambiguous_value_position`).**
+        // The verdict must fire on EVERY codegen-reaching value position, not a
+        // hand-picked whitelist. The old shape only visited `Apply { args }` and
+        // `Let`/`ParBind` binding values, so a generic fn-value in an `if`
+        // branch, a `match` arm body, a `VecLit` element, a ctor field, or a
+        // `let` tail body slipped past collection and reached codegen slot-less.
+        // `for_each_child_expr` is the single child-enumeration source of truth;
+        // its children ARE the value positions. Only the `Apply` CALLEE is a
+        // DISPATCH position (not a runtime value) — it mints through the ordinary
+        // call-site path, so we recurse INTO it but never collect it as a
+        // fn-value. `try_collect_parametric_fn_value` self-guards on
+        // `Expr::Var`, so applying it to a non-`Var` child is a no-op.
+        let callee_span = match expr {
+            Expr::Apply { callee, .. } => Some(callee.span()),
+            _ => None,
+        };
         for_each_child_expr(expr, |child| {
-            self.collect_parametric_fn_value_args(state, child, out)
+            if Some(child.span()) != callee_span {
+                self.try_collect_parametric_fn_value(state, child, out);
+            }
+            self.collect_parametric_fn_value_args(state, child, out);
         });
     }
 

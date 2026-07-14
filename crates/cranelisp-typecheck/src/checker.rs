@@ -1254,19 +1254,23 @@ where
                 // Neither candidate resolved a scheme. Choose which cause to
                 // surface (FIXME 0513, spec §8.6.4 order-independence):
                 let gap = match abs {
-                    // The absolute probe carried its own gap — its named module
-                    // was itself unknown to the session. Surface it.
+                    // The absolute probe carried its own gap. Post-0571 this is
+                    // the member-absent case too: `resolve_qualified` yields the
+                    // abs `module/name` gap UNCONDITIONALLY when the module is
+                    // present but the member is absent (as well as when the module
+                    // itself is unknown). Surfacing it here MUST win over the
+                    // child probe's phantom `<current>.<qualifier>` gap so the
+                    // resolution is order-independent (a loaded absolute module
+                    // always beats an unloaded child probe — FIXME 0513, spec
+                    // §8.6.4); INT authors the honest "module X has no member Y"
+                    // from this gap's live state (`module_has_no_member_error`).
                     Ok((_, Some(g))) => Some(g),
-                    // The absolute module is LOADED but the member is absent
-                    // (`Ok((None, None))` — a definitive member-not-found with no
-                    // gap). This MUST win over the child probe's phantom
-                    // `<current>.<qualifier>` gap: the honest diagnostic is
-                    // "module `<module_part>` has no member `<name_part>`" (authored
-                    // int-side from the absent-member fact), NOT a hunt for a
-                    // non-existent `<current>.<module_part>` submodule. Returning no
-                    // gap suppresses the phantom so the resolution is
-                    // order-independent (a loaded absolute module always beats an
-                    // unloaded child probe).
+                    // Abs probe resolved cleanly with NEITHER scheme nor gap. This
+                    // is NOT the member-absent case (that yields a gap above,
+                    // post-0571); it is reachable only via `resolve_qualified`'s
+                    // conservative fall-through for a future non-exhaustive
+                    // `ResolveError` variant (treated as recoverable not-found, no
+                    // gap). Return no gap — the phantom child gap stays suppressed.
                     Ok((_, None)) => None,
                     // A hard error from the absolute probe (e.g. a visibility
                     // violation) is not a member-absent verdict — preserve the
