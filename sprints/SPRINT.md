@@ -358,6 +358,14 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
 | W6 | /qa | annotation-resolution variant×{pos,neg} matrix (PLAN §L) | (shim §II.3) | (shim) | — DONE: 15 rows (13 RED + 2 must-hold PINs FV-13 uppercase-unknown-still-errors / FV-14 trait-path-unaffected — over-broadening guards); positions × {pos,neg} incl. within-sig same-ident-unifies, multi-arity cross-clause INDEPENDENCE + no-rescue-of-§5.1.2-ambiguity, §3.11 codegen-reach→ambiguity-not-unknown-type; u1–u5 unit deferrals enumerated. Caught §3.3 example order typo → FIXME 0587 |
 | W6 | /spec (resume) | 0587 §3.3 example annotation-order fix | (shim §II.3) | (shim) | — DONE + FIXME deleted: `[x :a]`→`[:a x]` (EBNF §5.1.1 `colon_prefix symbol` / §3.9 binds-following-form); MUST prose unaffected |
 | W6 | /testing | W6 REDs + 0586 invert + vec-assoc repro | (shim §II.3) | (shim) | — **DONE `e6a68e3b`**: 15 W6 fns (2 PINs GREEN hold, 13 RED-for-right-reason → `unknown type 'a'` at `resolve.rs::resolve_type_expr` TypeVar var_map miss); 0586 (3 deleted / 1 rewritten §17.22 / 1 inverted — was inline-assert not golden-file) agent-lane GREEN; **vec-assoc repro = 2-line UAF** (RC premature-free, REPL+`--link` deterministic surfaces, candidate owner /backend, carries close). Suite 19 RED = 15 W6 + 2 vec-assoc + 2 carries, no regressions. NEW: `set_doc_non_function_target` RED untracked (pre-existing set-doc defect) → /qa triage |
+| W6 | /dev | typecheck — poly-annotation fix (`resolve_type_expr` TypeVar mint) | (shim §II.3) | (shim) | — **DONE `e401cce9`**: opt-in `mint_free_var` allocator threaded ONLY into the 3 annotation seams (`register_defn_signature`, `infer_lambda`, `infer_annotate`) → fresh var indistinguishable from inference-generated (same generalize/§3.11/§5.1.2 path); deftype-field/trait-sig keep `None`→`TypeNotFound` (over-broadening guard). Case-discrim structural (frontend routes lowercase→`TypeVar`); per-clause scope = per-`var_map`-instance (multi-arity → separate `register_defn_signature`); param↔body co-ref via unification. u1–u5 unit pins. 13 REDs GREEN, PINs held, suite 4/4488 (2 vec-assoc + 2 carries only), zero pub-API |
+| W6 | /review | W6 poly-annotation change-set review | (shim §II.3) | (shim) | — **NOT CLEAN**: core sound (13 GREEN, PINs hold, no regress) but 4 findings → F1/0588 flexible-not-rigid (acquire bug, USER-ruled rigid), F2/0589 qualified-lowercase mint hole, F3/0590 mirror class is FOUR resolvers + wrong rustdoc, F4/0591 parse gaps in 4 body positions. Uniformity/PIN/per-clause verified clean otherwise |
+| W6.2 | /spec | §3.3 rigid/definition-scoped rescribe (assert-not-acquire) | (shim §II.3) | (shim) | — DONE: removed misleading "identical to inference-generated"; rigid skolem + instantiate-at-call-site + assert-not-acquire + flexible-MAY-unify-rigid / rigid-NOT-with-concrete asymmetry + definition-scoped (nested fn = fresh boundary/shadow). Positive/skolem-escape/not-unknown-type MUSTs for REDs; worked `id`✓ / `f :a "hello"`→error |
+| W6.2 | /qa | §L matrix re-exam under rigid semantics | (shim §II.3) | (shim) | — DONE: 21 rows (6 pos / 9 neg / 6 dual); FV-11 RECLASSIFIED (body-pin acquire→skolem-escape); 13 W6 rows → **PINs (must hold)**; +FV-16..21 (worked-neg, distinct-rigid, applied-twin, **rigid-by-USE `add-i64 x` errors**, nested-shadow, F2 qualified). u1–u8. **2 NEW OPEN CORNERS routed to /spec/user: nested-fn shadow (confirm) + top-level-boundary written-var meaning (no fn boundary)**; set-doc RED triage still owed |
+| W6.2 | user | nested-fn scope ruling + top-level fall-out | — | — | — **RULED: nested `fn` `:a` CO-REFERS to enclosing defn's `a` (lexical scope, NOT shadow)** — `(defn g [:a x] (fn [:a y] y))` : `∀a.(Fn [a] (Fn [a] a))`. Top-level = determinate fall-out (rigid rule; `def` binding is the generalization boundary; concrete ascription to bare `:a` = skolem-escape) — NO new decision. Process note: should have clarified spec fully before the build chain (memory saved) |
+| W6.2 | /spec (resume) | §3.3 nested-scope correction (shadow→co-refer) | (shim §II.3) | (shim) | — DONE: "Definition-scoped means lexical co-reference" — introduced at outermost binder, co-refers across nested `fn` closures, nested `fn` does NOT open a fresh boundary; `(defn g …)` → `∀a.(Fn [a] (Fn [a] a))`; top-level `def`-is-boundary fall-out sentence. MUST-1..4/asymmetry/assert-not-acquire intact |
+| W6.2 | /qa (resume) | flip FV-20/u7 shadow→co-reference | (shim §II.3) | (shim) | — DONE: FV-20 now co-ref (pos `(Fn [a] (Fn [a] a))`, `((g 3) "t")` errors; neg `(defn outer [:a x] ((fn [:a y] y) "s"))` skolem-escape — both parse, both e2e); u7 = var_map THREADS into `infer_lambda` (shared, not reset). No other row assumed shadow (FV-11 clauses are disjoint scopes); top-level contingency now settled-not-open |
+| W6.2 | /testing (resume) | W6.2 rigid-semantics REDs | (shim §II.3) | (shim) | — **DONE `fb6e84c6`**: 8 REDs RED-for-right-reason at `e401cce9` (flexible accepts what rigid rejects — FV-16 acquires `(Fn [a] String)`, FV-20 pos shows shadow `(Fn [a] (Fn [b] b))` + accepts "t", FV-21 mints) + FV-11 rewrite; 13 PINs + FV-18 control GREEN. Suite 12 RED = 8 W6.2 + 2 vec-assoc + 2 carries. u1–u8 left to /dev |
 
 ## Notes
 
@@ -412,6 +420,50 @@ P5). **No new user question** — `/spec` scribes a one-line §3.3 clarification
 annotations, not only inference-generated vars, are implicitly quantified) so the W6
 REDs cite a MUST. W6 authorized: `/spec` clarify → `/qa` annotation matrix → `/testing`
 REDs → `/dev` (free-var param annotation → fresh quantified var) → `/review`.
+
+## W6.2 RIGID/DEFINITION-SCOPED RULING (user, 2026-07-14) — W6 /review findings disposition
+
+`/review` of the W6 fix (`e401cce9`) was **NOT CLEAN** — the 13 REDs are green and
+the PINs hold, but four corner findings. The core one (F1/0588) surfaced that the
+landed fix mints a **flexible** inference var for a written annotation, so an
+ascription *acquires* the var's type (`:a "hello"` silently sets `a := String`).
+That violates "annotations ASSERT, not acquire" (user).
+
+**RULING (user):** a written type variable is **definition-scoped AND rigid**. It is
+universally quantified at the definition boundary; **instantiation happens at the
+CALL site** (the caller picks the type); within the body the var is a rigid skolem —
+the body may not choose what it is. An annotation `:a e` is a *checking obligation*,
+dischargeable only when `e` already has type `a` (e.g. `e` is a param declared `:a`).
+Asymmetry to encode: a **flexible** inference var (e.g. an unannotated param's type)
+MAY unify with a rigid written var (this is how a param acquires the written type);
+a **rigid** written var may NOT be unified with a concrete type or a distinct rigid
+var — that is a type error (skolem-escape). Consequence: `(defn id [:a x] :a x)` →
+`∀a.(Fn [a] a)` ✓; `(defn f [:a x] :a "hello")` → **type error** (String ≠ rigid a),
+so `(f 3)` never arises. One rigid var per written identifier per definition, shared
+across the definition's annotations; a nested `fn`/`defn` is a fresh boundary.
+
+**Fix this sprint** — corrective W6.2 chain: `/spec` scribe §3.3 (rigid/skolem +
+assert-not-acquire + the flexible-unifies-rigid / rigid-with-concrete-errors
+asymmetry) → `/qa` re-examine §L (any acquisition-assuming positive becomes a
+NEGATIVE; add the rigid-error rows) → `/testing` REDs → `/dev` (rigid +
+definition-scoped skolemisation; **folds F2/0589** qualified-lowercase `:user/int`
+mint-guard + **F3/0590** the wrong trait-sig rustdoc line) → `/review`.
+
+**Other W6 finding dispositions:**
+- **F2 (0589, defect):** qualified-lowercase `:user/int` mints silently instead of
+  erroring `unknown type` — folded into the W6.2 `/dev` pass (+ a `/testing` negative).
+- **F3 (0590, recurring mirror class):** the type-var resolver mirror is **FOUR**
+  (`traits/type_resolve.rs` ×3 + `form.rs`), each minting on its own — the S110
+  convergence class (pairs with 0583 backend, 0585 value-position). Rustdoc line
+  corrected in W6.2; the four-way convergence is an S110 `/design` record, not chased
+  this sprint. FIXME 0590 stays open, target `/design`.
+- **F4 (0591, parse gap → CARRY):** annotations don't *parse* in four body positions
+  (multi-arity clause body, `fn`/match-arm/`if` bodies) — a pre-existing frontend
+  limitation separable from W6's delivered scope. Carried as filed; FIXME 0591 open,
+  target `/qa`/frontend for a future sprint.
+- **set-doc RED (untracked):** `set_doc_non_function_target_e2e_refused_not_recorded_neg`
+  fails on the pre-W2 tree too (pre-existing set-doc resolution defect) → `/qa` triage
+  + tracking record so it is not mistaken for a regression.
 
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
