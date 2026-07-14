@@ -693,7 +693,15 @@ fn generate_types(
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TypeDef { .. } = entry {
+        // Enumerate through the SINGLE `type_def_info()` reader (0573; the S79
+        // dual-facet cure) — it answers `Some` for a sum/enum `TypeDef` entry AND
+        // for a single-ctor PRODUCT deftype, whose type facet rides on its
+        // got-slotted ctor `Def` (`Constructor { type_def: Some(..) }`) and has NO
+        // separate `TypeDef` entry. Matching `ModuleEntry::TypeDef` literally
+        // skipped the product form ⇒ it was accepted + usable in-session but never
+        // persisted to the backing `.cl` (silent data loss on reload). A sum ctor
+        // (`type_def: None`) answers `None`, so each type is emitted exactly once.
+        if entry.type_def_info().is_some() {
             let (sexp, source) =
                 introspection_sexp_and_source(introspection, module_path, name);
             if let Some(text) = emit_decl_or_source(sexp, source) {
