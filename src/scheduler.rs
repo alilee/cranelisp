@@ -1305,6 +1305,7 @@ impl CompileScheduler {
                     message: ms.error.as_ref()
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "unknown error".to_string()),
+                    span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
                 });
             }
             if !ms.inmem_done && ms.pool != ModulePool::Complete {
@@ -1340,6 +1341,7 @@ impl CompileScheduler {
                     message: ms.error.as_ref()
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "unknown error".to_string()),
+                    span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
                 });
             }
             if ms.inmem_done || ms.pool == ModulePool::Complete {
@@ -1369,6 +1371,7 @@ impl CompileScheduler {
                         message: ms.error.as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
+                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
                     });
                 }
                 if !ms.inmem_done && ms.pool != ModulePool::Complete {
@@ -1398,6 +1401,7 @@ impl CompileScheduler {
                         message: ms.error.as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
+                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
                     });
                 }
                 if !ms.object_done {
@@ -1575,6 +1579,7 @@ impl CompileScheduler {
                             .as_ref()
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string()),
+                        span: ms.error.as_ref().map(|e| e.span()).unwrap_or(Span::SYNTHETIC),
                     });
                 }
             }
@@ -2351,6 +2356,9 @@ pub enum SchedulerError {
     ModuleFailed {
         module: ModuleFullPath,
         message: String,
+        /// The inner error's span — so the `From<SchedulerError>` wrap pins the
+        /// reference site (0571 AL-3), not the bogus module-head `0..0`.
+        span: Span,
     },
     /// In-memory codegen not yet complete for a module.
     InmemIncomplete {
@@ -2365,7 +2373,7 @@ pub enum SchedulerError {
 impl std::fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SchedulerError::ModuleFailed { module, message } => {
+            SchedulerError::ModuleFailed { module, message, .. } => {
                 write!(f, "module '{}' failed: {}", module, message)
             }
             SchedulerError::InmemIncomplete { module } => {
@@ -2517,10 +2525,10 @@ pub fn dependency_closure(
 impl From<SchedulerError> for CranelispError {
     fn from(e: SchedulerError) -> Self {
         match e {
-            SchedulerError::ModuleFailed { module, message } => {
+            SchedulerError::ModuleFailed { module, message, span } => {
                 CranelispError::ModuleError {
                     message: format!("module '{}' failed: {}", module, message),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                    location: ErrorLocation::from_span_file(span, None),
                 }
             }
             SchedulerError::InmemIncomplete { module } => {

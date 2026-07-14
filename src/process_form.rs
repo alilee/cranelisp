@@ -71,6 +71,7 @@ pub(crate) use self::form_dispatch::{
     record_imports_on_symbol_table, record_submodule_on_symbol_table,
 };
 pub(crate) use self::dependency::gap_target_module;
+use self::dependency::gap_member;
 // `check_private_submodule_import`/`splice_inline_mod_to_bare` are `pub(crate)` in
 // `dependency`; their only callers are the sibling/worker test modules — re-export
 // on the parent path (test-only, gated to avoid a lib-build unused-import warning).
@@ -349,11 +350,24 @@ pub fn process_cluster_once(
             Ok(outcome)
         }
         Pass2Result::BlockedOnFqModule { dep_module } => {
-            // An FQ macro reference to an unloaded module surfaced during
-            // expansion (Pass 2). Drive the dependency (register + block) with
-            // import's file-resolution rules; the cluster retries from the top
-            // once it is live (FIXME 0268).
-            drive_module_dep(ctx, module, &dep_module, Span::SYNTHETIC)?;
+            // An FQ reference to an unloaded module surfaced during expansion
+            // (Pass 2 macro recognition). Drive the dependency (register + block)
+            // with import's file-resolution rules; the cluster retries from the
+            // top once it is live (FIXME 0268). 0571 AL-3: attribute a
+            // missing-module failure to the REFERENCE SITE (`dep_module/...` in
+            // the cluster's forms), not the bogus module-head `0..0` span.
+            let ref_span = working_program
+                .iter()
+                .find_map(|tl| match tl {
+                    TopLevel::Expr(e) => find_module_qualified_ref_span(e, dep_module.as_ref()),
+                    TopLevel::Defn(d) => d
+                        .variants
+                        .iter()
+                        .find_map(|v| find_module_qualified_ref_span(&v.body, dep_module.as_ref())),
+                    _ => None,
+                })
+                .unwrap_or(Span::SYNTHETIC);
+            drive_module_dep(ctx, module, &dep_module, ref_span)?;
             Ok(ClusterOnce::Gap { dep: dep_module })
         }
     }
@@ -436,16 +450,41 @@ fn finalize_cluster(
         if let Some(err) = phantom_member_diagnostic(ctx, module, &gap, expanded_program) {
             return Err(err);
         }
-        // Map the gap to its target module and drive it (register + block) if
-        // it is a not-yet-loaded module we can act on.
-        if let Some(dep) = gap_target_module(&gap)
-            && !fq_module_is_loaded(ctx, &dep)
-        {
-            drive_module_dep(ctx, module, &dep, Span::SYNTHETIC)?;
+        // 0571 (B4/B5 + AL-3): the qualified-reference gap now fires
+        // unconditionally on a member-absent abs module (typecheck
+        // `resolve_qualified`). INT owns the decision from the module's LIVE
+        // state (Principle 3/17 — typecheck stays scheduler-free). The
+        // reference-site span makes every diagnostic actionable (AL-3), replacing
+        // the `Span::SYNTHETIC` module-head span the wrap reported at.
+        if let Some(dep) = gap_target_module(&gap) {
+            let member = gap_member(&gap);
+            let referenced = format!("{dep}/{member}");
+            let ref_span = expanded_program
+                .iter()
+                .find_map(|tl| find_named_var_span_in_toplevel(tl, &referenced))
+                .unwrap_or(Span::SYNTHETIC);
+            // Module present AND terminal (`fq_module_is_loaded`) ⇒ its
+            // signatures are fully published, so the member GENUINELY does not
+            // exist ⇒ the honest "module X has no member Y" at the reference
+            // site (§8.5.4). Never re-drive a terminal module (the member stays
+            // absent on every retry — an infinite loop).
+            if fq_module_is_loaded(ctx, &dep) {
+                return Err(CranelispError::ModuleError {
+                    message: format!("module '{dep}' has no member '{member}'"),
+                    location: ErrorLocation::from_span_file(ref_span, None),
+                });
+            }
+            // Absent OR present-but-non-terminal ⇒ drive it (register + park): a
+            // not-yet-loaded module loads then re-drives; a present-but-non-
+            // terminal module parks via `drive_module_dep`'s already-loaded /
+            // `block_dep` arm, whose `block_for_typecheck` acyclicity check
+            // converts a genuine FQ cycle into the honest circular-dependency
+            // error (B4/B5). A missing-module file surfaces `drive_module_dep`'s
+            // "module not found" at `ref_span` (AL-3).
+            drive_module_dep(ctx, module, &dep, ref_span)?;
             return Ok(ClusterOnce::Gap { dep });
         }
-        // The gap names a module that IS already loaded (or is not an
-        // FQ-module gap we can act on) — surface it as a hard error so the
+        // Not an FQ-module gap we can act on — surface a hard error so the
         // failure is not silently swallowed.
         return Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
@@ -550,9 +589,25 @@ fn find_named_var_span_in_toplevel(tl: &TopLevel, target: &str) -> Option<Span> 
 /// Recursively search `expr` for an `Expr::Var` whose name equals `target`,
 /// returning its span. Covers every child-bearing `Expr` variant.
 fn find_named_var_span(expr: &Expr, target: &str) -> Option<Span> {
-    let arm = |e: &Expr| find_named_var_span(e, target);
+    find_var_span_matching(expr, &|name| name == target)
+}
+
+/// The span of the FIRST `Expr::Var` whose name is qualified by `module` (i.e.
+/// `module/...`) — the reference-site span for a missing-module / member-absent
+/// FQ diagnostic (0571 AL-3) when only the module (not the member) is known at
+/// the seam (the expand-time `BlockedOnFqModule`).
+fn find_module_qualified_ref_span(expr: &Expr, module: &str) -> Option<Span> {
+    let prefix = format!("{module}/");
+    find_var_span_matching(expr, &|name| name.starts_with(&prefix))
+}
+
+/// The span of the first `Expr::Var` whose name satisfies `pred`. The single
+/// AST-walk both the exact-name ([`find_named_var_span`]) and module-prefix
+/// ([`find_module_qualified_ref_span`]) reference-site lookups share (P7).
+fn find_var_span_matching(expr: &Expr, pred: &impl Fn(&str) -> bool) -> Option<Span> {
+    let arm = |e: &Expr| find_var_span_matching(e, pred);
     match expr {
-        Expr::Var { name, span, .. } if name.as_ref() == target => Some(*span),
+        Expr::Var { name, span, .. } if pred(name.as_ref()) => Some(*span),
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }
         | Expr::BoolLit { .. }

@@ -2611,7 +2611,20 @@ impl CompilerSession {
                 let (entry, lookup_module) =
                     match self.lookup_with_prelude_fallback_opt(name, false) {
                         Some((e, m)) => (Some(e), m),
-                        None => (None, cur_module.clone()),
+                        // 0571 D2: an UNIMPORTED qualified reference (`mathx/gcount`)
+                        // is not in the current scope — resolve it in its OWN
+                        // module so the bare FQ display renders the `; defn`
+                        // introspection envelope, IDENTICAL to the imported-bare
+                        // control, instead of the generic `; defined` fallback.
+                        None => match self
+                            .shared
+                            .symbol_tables
+                            .get(module)
+                            .and_then(|t| t.get(name).cloned())
+                        {
+                            Some(e) => (Some(e), module.clone()),
+                            None => (None, cur_module.clone()),
+                        },
                     };
                 // Follow import chains to the definition.
                 let (entry, resolved_module) = match entry {

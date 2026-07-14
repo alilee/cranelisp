@@ -355,11 +355,27 @@
 
         let (scheme, gap) = tf.env().lookup(&tf.state, "primitives/nosuchfn");
         assert!(scheme.is_none(), "the missing member does not resolve");
-        assert!(
-            gap.is_none(),
-            "a loaded-module member-miss is an honest not-found — no phantom \
-             `user.primitives/nosuchfn` child gap may escape, got {gap:?}",
-        );
+        // 0571 (supersedes FIXME 0513's gap-less arm): a loaded-module member
+        // miss now yields the gap UNCONDITIONALLY — but naming the REAL abs
+        // module (`primitives`), NOT the phantom `user.primitives` child. INT
+        // decides from the module's live state (present + terminal ⇒ the honest
+        // "module X has no member Y"). The 0513 invariant that HELD is preserved:
+        // no phantom CHILD gap escapes.
+        match gap {
+            Some(cranelisp_types::ResolutionGap::SymbolTypechecked(fq)) => {
+                assert_eq!(
+                    fq.module.as_ref(),
+                    "primitives",
+                    "the gap names the REAL abs module, never the phantom \
+                     `user.primitives` child; got {fq:?}",
+                );
+                assert_eq!(fq.symbol.as_ref(), "nosuchfn");
+            }
+            other => panic!(
+                "a loaded-module member miss must yield the honest abs-module gap \
+                 (0571), got {other:?}",
+            ),
+        }
 
         // Control: the loaded member still resolves through the same arm.
         let (scheme, gap) = tf.env().lookup(&tf.state, "primitives/known");

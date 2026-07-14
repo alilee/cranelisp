@@ -3811,41 +3811,68 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
     ) {
-        if let Expr::Apply { args, .. } = expr {
-            for arg in args {
-                if let Expr::Var { name, span, .. } = arg
-                    && let Some(ty) = state.expr_types.get(span)
-                    && let Type::Fn(param_types, ret_ty) = apply(&state.subst, ty)
-                    // The fn-value's full signature must be concrete — that is the
-                    // instantiation the HOF demands and the shape that pins any
-                    // residual ADT-field `Type::Var`.
-                    && param_types.iter().all(|p| p.is_concrete())
-                    && ret_ty.is_concrete()
-                    && let Some(resolved) =
-                        self.resolve_terminal_fq_scoped(state, name.as_ref())
-                    && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
-                {
-                    // FIXME 0488 sig b: the 0374 implementation only handled the
-                    // LOCAL case (`home == current_module` gate + `home: None` at
-                    // the mint). An IMPORTED generic fn-value resolves with `home`
-                    // == its defining module; carry that home so the mint re-checks
-                    // the body in the DEFINING scope and probes the callee there
-                    // (mirroring the cross-module call path, FIXME 0355). Record
-                    // the BARE terminal symbol so the mangled key + `rename_var_at_span`
-                    // target agree (`iden2` → `iden2$Int`). Same-module keeps
-                    // `home: None` (byte-identical to the 0374 path).
-                    let home = if resolved.home == state.current_module {
-                        None
-                    } else {
-                        Some(resolved.home.clone())
-                    };
-                    out.push((resolved.fq.symbol.clone(), *span, param_types, home));
+        // A generic fn referenced in VALUE position at a concrete `Fn` type
+        // (FIXME 0374 fn-value monomorphisation; 0571 D1 extension). The
+        // per-`Var` collect is shared by:
+        //  - HOF ARGUMENTS `(map mk xs)` — `mk` is an `Apply` arg;
+        //  - LET-BINDING VALUES `(let [f gcount] (f [1 2 3]))` — the concrete
+        //    `Fn` type flows back from the later use of `f`, so `gcount`'s value
+        //    ref carries `(Fn [(Vec Int)] Int)` and mints `gcount$Vec_Int`.
+        // An Apply CALLEE (`(f x)`) is excluded — it is call position and mints
+        // through the ordinary call path. Without the LET case a value-position
+        // generic ref reaches the backend slot-less ⇒ the `undefined variable`
+        // codegen leak (0571 D1).
+        match expr {
+            Expr::Apply { args, .. } => {
+                for arg in args {
+                    self.try_collect_parametric_fn_value(state, arg, out);
                 }
             }
+            Expr::Let { bindings, .. } | Expr::ParBind { bindings, .. } => {
+                for (_, val) in bindings {
+                    self.try_collect_parametric_fn_value(state, val, out);
+                }
+            }
+            _ => {}
         }
         for_each_child_expr(expr, |child| {
             self.collect_parametric_fn_value_args(state, child, out)
         });
+    }
+
+    /// The per-`Var` fn-value monomorphisation collect (FIXME 0374 / 0488 sig b /
+    /// 0571 D1) — records `(bare_symbol, ref_span, param_types, home)` for a
+    /// value-position `Var` that resolves to a monomorphisable polymorphic fn
+    /// whose full `Fn` signature is concrete at this reference. Shared by the HOF
+    /// argument and let-binding value sites.
+    fn try_collect_parametric_fn_value(
+        &self,
+        state: &CheckState,
+        var_expr: &Expr,
+        out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
+    ) {
+        if let Expr::Var { name, span, .. } = var_expr
+            && let Some(ty) = state.expr_types.get(span)
+            && let Type::Fn(param_types, ret_ty) = apply(&state.subst, ty)
+            // The fn-value's full signature must be concrete — the instantiation
+            // the use demands, and the shape that pins any residual ADT-field
+            // `Type::Var`.
+            && param_types.iter().all(|p| p.is_concrete())
+            && ret_ty.is_concrete()
+            && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
+            && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
+        {
+            // Same-module ⇒ `home: None` (byte-identical to the 0374 path); an
+            // IMPORTED generic fn-value carries its defining module so the mint
+            // re-checks the body in the DEFINING scope (FIXME 0488 sig b). The
+            // BARE terminal symbol keys the mangle + `rename_var_at_span` target.
+            let home = if resolved.home == state.current_module {
+                None
+            } else {
+                Some(resolved.home.clone())
+            };
+            out.push((resolved.fq.symbol.clone(), *span, param_types, home));
+        }
     }
 
     /// Does this terminal entry need a monomorphised specialisation when called

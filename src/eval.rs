@@ -258,6 +258,18 @@ impl CompilerSession {
         };
 
         for retry in 0..MAX_DEP_RETRIES {
+            // 0571 D2: a bare QUALIFIED symbol (`mathx/gcount`) is introspectable
+            // only once its module is live — which happens on the FQ-autoload
+            // RETRY (`eval_one_form`'s pre-pass ran while the module was still
+            // absent ⇒ `None`). Re-check each pass so the bare FQ display takes
+            // the introspection path (no codegen) the moment the module loads,
+            // instead of compiling a value-position FQ ref to a codegen leak.
+            if cluster.len() == 1
+                && let Some(result) = self.check_bare_symbol_introspection(&cluster[0])
+            {
+                return Ok(Some(result));
+            }
+
             let module = self.current_module_path();
             let single_sexp = cluster.to_vec();
 
@@ -563,7 +575,31 @@ impl CompilerSession {
         // (a bare special-form name must NOT resolve in the value display), and
         // the seam's `is_public()` gate applies here automatically — a PRIVATE
         // prelude binding is not shown "in scope" (spec §8.8.1).
-        let (entry, lookup_module) = self.lookup_with_prelude_fallback_opt(name, false)?;
+        // 0571 D2: a QUALIFIED bare reference `module/symbol` (`mathx/gcount`)
+        // takes the SAME introspection display path an imported bare name does —
+        // mode+name-uniform, NO codegen (a value-position FQ ref would otherwise
+        // reach the backend slot-less ⇒ the `undefined variable` codegen leak).
+        // The named module is present here on the FQ-autoload RETRY (the first
+        // pass gaps → `drive_module_dep` loads it → re-runs this gate). `display_sym`
+        // is the BARE terminal so the `FQSymbol` renders `module/symbol`, not a
+        // doubled `module/module/symbol`.
+        let (entry, lookup_module, display_sym) = if let Some(slash) = name.find('/') {
+            let module_part = ModuleFullPath::from(&name[..slash]);
+            let sym = &name[slash + 1..];
+            if module_part.as_ref().is_empty() || sym.is_empty() {
+                return None; // a bare `/` operator, not a qualified reference
+            }
+            let e = self
+                .shared
+                .symbol_tables
+                .get(&module_part)?
+                .get(sym)
+                .cloned()?;
+            (e, module_part, Symbol::from(sym))
+        } else {
+            let (e, m) = self.lookup_with_prelude_fallback_opt(name, false)?;
+            (e, m, Symbol::from(name))
+        };
 
         // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
         // resolver now chases the full chain (user → prelude → primitives)
@@ -592,7 +628,7 @@ impl CompilerSession {
                         return None;
                     }
                     Some(EvalResult::Def {
-                        symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                        symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
                         ty: Type::Int,
                         warnings: Vec::new(),
                         defined: false,
@@ -617,7 +653,7 @@ impl CompilerSession {
                         None
                     } else {
                         Some(EvalResult::Def {
-                            symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                            symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
                             ty: Type::Int,
                             warnings: Vec::new(),
                             defined: false,
@@ -627,21 +663,21 @@ impl CompilerSession {
                 // Primitives + user functions get introspection display per
                 // spec §4.1.1, §4.1.2.
                 _ => Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
                     ty: scheme.ty.clone(),
                     warnings: Vec::new(),
                     defined: false,
                 }),
             },
             ModuleEntry::SpecialForm { scheme, .. } => Some(EvalResult::Def {
-                symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
                 ty: scheme.ty.clone(),
                 warnings: Vec::new(),
                 defined: false,
             }),
             ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => {
                 Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: display_sym.clone() },
                     ty: Type::Int,
                     warnings: Vec::new(),
                     defined: false,

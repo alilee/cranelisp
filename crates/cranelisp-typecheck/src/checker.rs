@@ -1764,11 +1764,27 @@ where
         let qualified = format!("{module_path}/{name}");
         match self.scope_resolve(state, &qualified, Span::SYNTHETIC) {
             Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry, 0), None)),
-            // Module present, symbol absent: a genuine not-found the `lookup`
-            // fallback chain may still satisfy via another candidate. No gap.
+            // Module present, symbol absent (S109 0571 B4/B5). Yield the gap
+            // UNCONDITIONALLY (supersedes FIXME 0513's gap-less arm): typecheck
+            // reports "the qualified reference `module/name` did not resolve"
+            // and stays scheduler-free; INT decides from the module's live state
+            // (Principle 3/17) — module present-but-non-terminal ⇒ park (a genuine
+            // FQ cycle then converts to the honest circular-dependency error via
+            // `block_for_typecheck`'s acyclicity check), terminal ⇒ the honest
+            // "module X has no member Y" diagnostic. The gap carries the referenced
+            // `module/name` so INT need not re-probe. The `lookup` gap-selection
+            // (abs probe wins over the phantom child) keeps the 0513
+            // order-independence: the abs member-absent gap is preferred, so the
+            // phantom `<current>.<qualifier>` child gap never surfaces.
             Err(ResolveError::TypeNotFound { .. })
             | Err(ResolveError::TraitNotFound { .. })
-            | Err(ResolveError::ConstructorNotFound { .. }) => Ok((None, None)),
+            | Err(ResolveError::ConstructorNotFound { .. }) => Ok((
+                None,
+                Some(ResolutionGap::SymbolTypechecked(FQSymbol {
+                    module: module_path.clone(),
+                    symbol: Symbol::from(name),
+                })),
+            )),
             // Alias-resolved target module absent from the session tables: the
             // precise cross-module resolution gap. Reported in-band so the
             // fallback chain is not short-circuited; the `&mut`-holding caller

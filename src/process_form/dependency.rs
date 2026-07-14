@@ -418,6 +418,20 @@ pub(crate) fn gap_target_module(gap: &cranelisp_types::ResolutionGap) -> Option<
     }
 }
 
+/// The referenced member NAME a gap names (the symbol / type after the `/`) —
+/// for the reference-site span lookup and the honest "module X has no member Y"
+/// diagnostic (0571 AL-3). Empty for a non-member gap shape.
+pub(crate) fn gap_member(gap: &cranelisp_types::ResolutionGap) -> String {
+    use cranelisp_types::ResolutionGap;
+    match gap {
+        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
+            fq.symbol.to_string()
+        }
+        ResolutionGap::Type(fqt) => fqt.name.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Run the per-dep prologue that every structural form handler
 /// (handle_import, handle_export, handle_mod, inject_prelude_if_needed) and the
 /// FQ-auto-load drive run before `scheduler.register_module`:
