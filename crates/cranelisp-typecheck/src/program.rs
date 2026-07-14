@@ -25,7 +25,7 @@ use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
     Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath, ParametricFn,
     ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
-    UserFnState, Visibility, Warning, apply,
+    TypeId, UserFnState, Visibility, Warning, apply,
 };
 
 // Test-only imports: used exclusively by the `#[cfg(test)]` `check_via_forms`
@@ -3104,6 +3104,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
+        // ONE var scope for the whole signature (spec §3.3 [S109]): a free
+        // lowercase type var the author writes in a param annotation mints a
+        // fresh quantified var, and a repeated name (`[:a x :a y]`) resolves to
+        // the SAME var so x and y unify. This map is built fresh PER CALL —
+        // multi-arity clauses each go through a separate `register_defn_signature`
+        // (via their own `{name}__vN` internal defn, see
+        // `check_form_register_multi_sig`), so `:a` in one clause is independent
+        // of `:a` in another (fresh scope per clause).
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let mut param_types = Vec::new();
         for (_name, ann) in defn.params().iter() {
             let param_ty = match ann {
@@ -3120,9 +3129,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.resolve_bound_param(state, bounds, defn.span)?
                 }
                 Some(ann) => {
-                    let var_map = HashMap::new();
-                    match self.resolve_type_expr_in_module(
-                        ann, &var_map, &state.current_module, defn.span,
+                    match self.resolve_annotation_type_expr_in_module(
+                        ann, &mut var_map, &state.current_module, defn.span,
                     ) {
                         Ok(ty) => ty,
                         // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE

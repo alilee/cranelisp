@@ -2379,6 +2379,50 @@ where
         module_path: &ModuleFullPath,
         span: Span,
     ) -> Result<Type, ResolveError> {
+        // Type-definition context (deftype field, trait-method sig, platform
+        // sig): a `TypeVar` that is not a declared parameter is an unbound
+        // reference and a miss is an error (`mint_free_var: None`). The caller's
+        // `var_map` is read-only here, so clone into a scratch map — no minting
+        // means the clone is never mutated.
+        let mut scratch = var_map.clone();
+        self.resolve_type_expr_impl(texpr, &mut scratch, module_path, None, span)
+    }
+
+    /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
+    /// annotation `:a form`, or a type var nested in an applied annotation
+    /// `:(Box a)`) to its [`Type`], **minting a fresh quantified type variable**
+    /// for each free lowercase type-var name the source author writes (spec §3.3
+    /// [S109]). The minted var is bound in `var_map`, so repeated names within
+    /// one resolution co-refer (`[:a x :a y]` unifies x and y). `var_map` is the
+    /// **per-definition (per arity-clause) var scope**: the caller builds ONE
+    /// fresh map per signature and shares it across all parameters, so vars are
+    /// independent across clauses (each clause a fresh map) yet shared within one
+    /// clause. The minted var is an ordinary inference variable — it flows into
+    /// the same generalisation + §3.11 ambiguity machinery as any
+    /// inference-generated var (no parallel path).
+    pub(crate) fn resolve_annotation_type_expr_in_module(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &mut std::collections::HashMap<Symbol, TypeId>,
+        module_path: &ModuleFullPath,
+        span: Span,
+    ) -> Result<Type, ResolveError> {
+        let mint = || self.fresh_var_id().1;
+        self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)
+    }
+
+    /// Shared resolution core for both the type-definition path
+    /// ([`resolve_type_expr_in_module`], `mint_free_var: None`) and the
+    /// annotation path ([`resolve_annotation_type_expr_in_module`],
+    /// `mint_free_var: Some(..)`).
+    fn resolve_type_expr_impl(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &mut std::collections::HashMap<Symbol, TypeId>,
+        module_path: &ModuleFullPath,
+        mint_free_var: Option<&dyn Fn() -> TypeId>,
+        span: Span,
+    ) -> Result<Type, ResolveError> {
         // Leaf-name resolution routes through the arbitrary-root scope resolve
         // (S108 Wave-G §3.3 — this inline leaf-resolver copy collapses onto
         // `scope_resolve_in`). The prelude fallback for a bare `TypeRef`, the
@@ -2406,7 +2450,7 @@ where
             };
             self.scope_resolve_in(module_path, &name, span).ok().map(|resolved| resolved.entry)
         };
-        crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
+        crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, mint_free_var, span)
     }
 
     /// Resolve a **qualified** `TypeRef` (`module: Some(..)`) appearing in a

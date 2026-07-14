@@ -22,35 +22,72 @@ use crate::checker::type_def_view_of;
 /// Resolve a type expression to a concrete type.
 ///
 /// `var_map` maps type variable names (e.g., `:a`) to their allocated TypeIds.
+/// It is `&mut` because a type-var name may be **minted on first sight** (see
+/// `mint_free_var` below) and recorded here so that a later occurrence of the
+/// same name — anywhere in the same resolution (`[:a x :a y]`, `:(Box a)`) —
+/// resolves to the SAME `TypeId`.
+///
 /// `resolve_terminal` resolves a [`TypeRef`] to its terminal [`ModuleEntry`]
 /// via the caller's symbol table (current-module lookup + import chain-follow),
 /// returning `None` when the name is not reachable.
+///
+/// `mint_free_var` controls what happens when a `TypeVar` name misses `var_map`
+/// (spec §3.3, [S109]):
+///
+/// - **`Some(alloc)` — annotation context** (`defn`/`fn` parameter, a value
+///   annotation `:a form`, or a type var nested in an applied annotation
+///   `:(Box a)`). A lowercase type variable the source author *writes* in an
+///   annotation is implicitly universally quantified at the definition boundary,
+///   *identically to an inference-generated variable*. A miss therefore **mints
+///   a fresh unification variable** via `alloc()` (the checker's ordinary
+///   `fresh_var_id` allocator), binds it in `var_map`, and returns `Type::Var`.
+///   The minted var flows into exactly the same generalisation + §3.11 ambiguity
+///   machinery as any inference-generated var — there is no parallel path.
+/// - **`None` — type-definition context** (`deftype` field, trait-method sig).
+///   A `TypeVar` that is not a declared type parameter is an unbound reference
+///   and a miss is an error, as before. The case discrimination is entirely on
+///   `TypeExpr::TypeVar` (a lowercase-leading identifier — the frontend routes
+///   an uppercase name to `TypeExpr::Named`), so an unknown UPPERCASE type still
+///   errors `TypeNotFound` regardless of `mint_free_var` (§3.9.3).
 pub fn resolve_type_expr<C: CodeStore>(
     texpr: &TypeExpr,
-    var_map: &HashMap<Symbol, TypeId>,
+    var_map: &mut HashMap<Symbol, TypeId>,
     resolve_terminal: &dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
+    mint_free_var: Option<&dyn Fn() -> TypeId>,
     span: Span,
 ) -> Result<Type, ResolveError> {
     match texpr {
         TypeExpr::Named(name) => resolve_named(name, resolve_terminal, span),
 
         TypeExpr::FnType(params, ret) => {
-            let param_types: Result<Vec<Type>, _> = params
-                .iter()
-                .map(|p| resolve_type_expr(p, var_map, resolve_terminal, span))
-                .collect();
-            let ret_type = resolve_type_expr(ret, var_map, resolve_terminal, span)?;
-            Ok(Type::Fn(param_types?, Box::new(ret_type)))
+            let mut param_types = Vec::with_capacity(params.len());
+            for p in params {
+                param_types.push(resolve_type_expr(
+                    p, var_map, resolve_terminal, mint_free_var, span,
+                )?);
+            }
+            let ret_type = resolve_type_expr(ret, var_map, resolve_terminal, mint_free_var, span)?;
+            Ok(Type::Fn(param_types, Box::new(ret_type)))
         }
 
-        TypeExpr::TypeVar(name) => var_map
-            .get(name)
-            .map(|&id| Type::Var(id))
-            .ok_or_else(|| ResolveError::TypeNotFound {
-                name: cranelisp_types::TypeName::from(name.as_ref()),
-                from_module: cranelisp_types::ModuleFullPath::from(""),
-                span,
-            }),
+        TypeExpr::TypeVar(name) => {
+            if let Some(&id) = var_map.get(name) {
+                Ok(Type::Var(id))
+            } else if let Some(alloc) = mint_free_var {
+                // Annotation-context miss: mint a fresh quantified var (spec §3.3
+                // [S109]) and record it so later occurrences of this name in the
+                // same resolution co-refer.
+                let id = alloc();
+                var_map.insert(name.clone(), id);
+                Ok(Type::Var(id))
+            } else {
+                Err(ResolveError::TypeNotFound {
+                    name: cranelisp_types::TypeName::from(name.as_ref()),
+                    from_module: cranelisp_types::ModuleFullPath::from(""),
+                    span,
+                })
+            }
+        }
 
         TypeExpr::SelfType => Err(ResolveError::TypeNotFound {
             name: cranelisp_types::TypeName::from("Self"),
@@ -59,7 +96,7 @@ pub fn resolve_type_expr<C: CodeStore>(
         }),
 
         TypeExpr::Applied(name, args) => {
-            resolve_applied(name, args, var_map, resolve_terminal, span)
+            resolve_applied(name, args, var_map, resolve_terminal, mint_free_var, span)
         }
 
         // A `Bounds([..])` annotation is NOT a concrete type — it is "an
@@ -120,8 +157,9 @@ fn resolve_named<C: CodeStore>(
 fn resolve_applied<C: CodeStore>(
     name: &TypeRef,
     args: &[TypeExpr],
-    var_map: &HashMap<Symbol, TypeId>,
+    var_map: &mut HashMap<Symbol, TypeId>,
     resolve_terminal: &dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
+    mint_free_var: Option<&dyn Fn() -> TypeId>,
     span: Span,
 ) -> Result<Type, ResolveError> {
     match resolve_terminal(name) {
@@ -157,7 +195,9 @@ fn resolve_applied<C: CodeStore>(
                             span,
                         });
                     }
-                    let elem = resolve_type_expr(&args[0], var_map, resolve_terminal, span)?;
+                    let elem = resolve_type_expr(
+                        &args[0], var_map, resolve_terminal, mint_free_var, span,
+                    )?;
                     return Ok(Type::ADT(info.name.clone(), vec![elem]));
                 }
                 let expected_arity = info.type_params.len();
@@ -171,10 +211,12 @@ fn resolve_applied<C: CodeStore>(
                         span,
                     });
                 }
-                let resolved_args: Vec<Type> = args
-                    .iter()
-                    .map(|a| resolve_type_expr(a, var_map, resolve_terminal, span))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let mut resolved_args = Vec::with_capacity(args.len());
+                for a in args {
+                    resolved_args.push(resolve_type_expr(
+                        a, var_map, resolve_terminal, mint_free_var, span,
+                    )?);
+                }
                 Ok(Type::ADT(info.name.clone(), resolved_args))
             }
             None => Err(type_not_found(name, span)),

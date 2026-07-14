@@ -1329,6 +1329,53 @@
         }
     }
 
+    // spec: 03-types §3.3 [S109] / §3.9.2 (u5) — a KNOWN trait-name annotation
+    // still takes the constraint path, unaffected by the written-free-var minting
+    // rule. `(defn show2 [:Num x] x)` yields a CONSTRAINED polymorphic scheme
+    // (Num constraint on the param var), NOT a plain minted free var and NOT an
+    // `unknown type Num` error. Pins that the §3.3 free-var fix keys on
+    // `TypeExpr::TypeVar` (lowercase) and does not intercept the uppercase
+    // `Named` → try-type-then-trait path (FV-14's seam).
+    #[test]
+    fn u5_trait_constraint_annotation_unaffected_by_free_var_rule() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        // (defn show2 [:Num x] x)
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("show2"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(
+                    Symbol::from("x"),
+                    Some(cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Num"),
+                    ))),
+                )],
+                body: Expr::var(Symbol::from("x"), span(18, 19)),
+                span: span(0, 20),
+            }],
+            visibility: Visibility::Public,
+            span: span(0, 20),
+        })];
+
+        // Must type-check (no `unknown type Num` error).
+        tc.check_program_self(&program).unwrap();
+
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("show2") {
+            assert!(
+                !scheme.constraints.is_empty(),
+                "show2's `:Num` annotation must produce a constrained scheme, not a plain free var"
+            );
+            assert!(
+                !scheme.type_vars.is_empty(),
+                "show2 stays polymorphic (constrained), not concrete"
+            );
+        } else {
+            panic!("show2 not found in symbol table");
+        }
+    }
+
     // spec: 03-types §3.6 — REPL expression monomorphises constrained fn on demand
     #[test]
     fn test_repl_expr_monomorphise() {

@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
-    Type, TypeExpr,
+    Type, TypeExpr, TypeId,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -496,12 +496,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Type, CranelispError> {
         self.push_scope(state);
 
+        // ONE var scope for the whole lambda signature (spec §3.3 [S109],
+        // FV-15) — a written free lowercase type var mints a fresh quantified
+        // var, a repeated name across params co-refers, identical to the `defn`
+        // param path (`register_defn_signature`).
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let mut param_types = Vec::new();
         for (param_name, annotation) in params.iter() {
             let param_ty = if let Some(annotation) = annotation {
-                let var_map = HashMap::new();
-                self.resolve_type_expr_in_module(
-                    annotation, &var_map, &state.current_module, span,
+                self.resolve_annotation_type_expr_in_module(
+                    annotation, &mut var_map, &state.current_module, span,
                 )?
             } else {
                 self.fresh_var()
@@ -1242,9 +1246,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let var_map = HashMap::new();
-        let ann_type = self.resolve_type_expr_in_module(
-            annotation, &var_map, &state.current_module, span,
+        // A value annotation `:a form` (body/"return" position, §3.9/§4.9) mints
+        // a fresh quantified var for a written free lowercase type var (spec §3.3
+        // [S109], FV-6/FV-10). The minted var is an ordinary inference var: it
+        // co-refers with the annotated value's type through the `unify` below
+        // (so `(defn id [:a x] :a x)` yields `(Fn [a] a)`), and if it reaches
+        // codegen unpinned it is caught by the §3.11 ambiguity machinery — NOT a
+        // spurious "unknown type" error.
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
+        let ann_type = self.resolve_annotation_type_expr_in_module(
+            annotation, &mut var_map, &state.current_module, span,
         )?;
 
         let expr_ty = self.infer_expr(state, expr)?;
