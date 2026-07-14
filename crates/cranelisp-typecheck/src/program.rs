@@ -402,6 +402,45 @@ pub(crate) enum CheckPass {
 /// feeds this to `merge_form_result()` to accumulate into module-level state.
 /// In v4, the scheduler also uses these fields for per-symbol codegen readiness.
 #[derive(Debug)]
+/// A located §3.11.1 codegen-reaching ambiguity, enriched with the offending
+/// arity clause + param for the diagnostic (0576).
+struct AmbiguousForm {
+    /// The enclosing `defn` name.
+    name: Symbol,
+    /// The reference-site span of the unpinned value position.
+    span: Span,
+    /// The offending clause's arity — `Some` only for a MULTI-arity `defn` (a
+    /// single-sig defn has one obvious clause, so it keeps the plain message).
+    clause_arity: Option<usize>,
+    /// The unpinned param/binder name, when the position is a bare non-synthetic
+    /// `Var` (0568: never a `__`-prefixed internal binder).
+    param: Option<Symbol>,
+}
+
+impl AmbiguousForm {
+    /// The user-facing ambiguity message. Names the offending arity CLAUSE and
+    /// unpinned PARAM when known (0576) — "each arity clause is type-checked
+    /// independently" (§5.1.2), so the fix is a per-clause annotation — and falls
+    /// back to the plain fn-level message otherwise.
+    fn message(&self) -> String {
+        let where_ = match self.clause_arity {
+            Some(arity) => format!("the {arity}-arg arity clause of `{}`", self.name),
+            None => format!("`{}`", self.name),
+        };
+        match &self.param {
+            Some(p) => format!(
+                "ambiguous type: the parameter `{p}` in {where_} is not pinned — \
+                 each arity clause is type-checked independently (spec §5.1.2), so \
+                 add a `:Type` annotation to `{p}` in that clause"
+            ),
+            None => format!(
+                "ambiguous type; add an annotation to pin the type of the \
+                 polymorphic value bound in {where_}"
+            ),
+        }
+    }
+}
+
 pub(crate) struct FormCheckResult {
     /// Method resolutions discovered while checking this form.
     /// In Pass 1: empty (registration produces no resolutions).
@@ -1847,12 +1886,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// substitution (`state.subst`) and flags a residual free var that sits
     /// INSIDE a structure (`(Option a)`, `(Vec a)`) — a bare-`Var` value type is
     /// a transient unresolved-dispatch shape pinned by its use, skipped.
+    /// A located §3.11.1 ambiguity, enriched (0576) with the offending arity
+    /// CLAUSE (`clause_arity`, `Some` only for a multi-arity `defn`) and the
+    /// unpinned PARAM name (`param`, absent when the position is not a bare
+    /// binder or is synthetic).
     fn find_ambiguous_top_level_form(
         &self,
         state: &CheckState,
         accumulator: &ModuleCheckAccumulator,
         working_program: &[TopLevel],
-    ) -> Option<(Symbol, Span)> {
+    ) -> Option<AmbiguousForm> {
         for top in working_program {
             let TopLevel::Defn(defn) = top else { continue };
             // The vars LEGITIMATELY polymorphic for this defn are the free vars
@@ -1895,11 +1938,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if defn_is_polymorphic {
                 continue;
             }
+            let multi_arity = defn.variants.len() > 1;
             for variant in &defn.variants {
-                if let Some(span) =
+                if let Some((span, param)) =
                     self.find_ambiguous_value_position(state, &variant.body, &allowed_vars)
                 {
-                    return Some((defn.name.clone(), span));
+                    return Some(AmbiguousForm {
+                        name: defn.name.clone(),
+                        span,
+                        // The offending CLAUSE (0576) — named by its arity only
+                        // for a multi-arity `defn`, so a single-sig defn keeps the
+                        // plain message.
+                        clause_arity: multi_arity.then_some(variant.params.len()),
+                        param,
+                    });
                 }
             }
         }
@@ -1947,12 +1999,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         !ty.is_concrete()
     }
 
+    /// Returns the span of the first codegen-reaching value position carrying a
+    /// free-at-root `Type::Var`, plus the offending binder NAME when that
+    /// position is a bare `Expr::Var` (a param/`let` use) — so the diagnostic can
+    /// name the unpinned param (0576). A synthetic `__`-prefixed binder is NOT
+    /// surfaced (0568 — never leak an internal binder into user text).
     fn find_ambiguous_value_position(
         &self,
         state: &CheckState,
         expr: &Expr,
         allowed_vars: &std::collections::HashSet<u32>,
-    ) -> Option<Span> {
+    ) -> Option<(Span, Option<Symbol>)> {
         // The CALLEE of an `Apply` is a DISPATCH position, not a runtime value
         // position — an overloaded / multi-sig / trait-method callee carries a
         // transient bare `Type::Var` pinned-away by sig/dictionary resolution
@@ -1970,7 +2027,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // scrutinee + arm bodies, `If` branches, `VecLit` elements, `ConstrADT`
         // fields, `Let`/`ParBind` bindings + body, `Lambda`/`Trace`/`Annotate`
         // inner — i.e. EVERY codegen-reaching value position.
-        let mut found = None;
+        let mut found: Option<(Span, Option<Symbol>)> = None;
         for_each_child_expr(expr, |child| {
             if found.is_some() {
                 return;
@@ -2018,7 +2075,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     .iter()
                     .any(|v| !allowed_vars.contains(v))
             {
-                found = Some(child.span());
+                // Name the unpinned binder when the position is a bare `Var`
+                // (a param / `let` use), skipping synthetic `__`-prefixed
+                // binders so the internal name never leaks (0568/0576).
+                let binder = match child {
+                    Expr::Var { name, .. } if !name.as_ref().starts_with("__") => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                };
+                found = Some((child.span(), binder));
                 return;
             }
             // Not flagged at this position — descend.
@@ -2169,15 +2235,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // defn (§3.11.3 — sound, dead-for-codegen). `find_ambiguous_top_level_form`
         // is scoped to `let`-binding value positions, so the two REPL display
         // guards stay green and named poly defns are admitted.
-        if let Some((name, span)) =
-            self.find_ambiguous_top_level_form(state, accumulator, working_program)
-        {
+        if let Some(amb) = self.find_ambiguous_top_level_form(state, accumulator, working_program) {
             return Err(CranelispError::TypeError {
-                message: format!(
-                    "ambiguous type; add an annotation to pin the type of \
-                     the polymorphic value bound in `{name}`"
-                ),
-                location: ErrorLocation::from_span(span),
+                message: amb.message(),
+                location: ErrorLocation::from_span(amb.span),
             });
         }
 

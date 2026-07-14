@@ -5,6 +5,41 @@
         TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
 
+    // spec: spec/05-definitions.md §5.1.2 (0576) — the multi-arity ambiguity
+    // diagnostic NAMES the offending arity clause + unpinned param (not just the
+    // fn name), and NEVER leaks a synthetic `__` binder (0568). Message-
+    // construction seam test.
+    #[test]
+    fn ambiguous_form_message_names_clause_and_param() {
+        let sp = cranelisp_types::Span::new(0, 0);
+        // Multi-arity clause + a named param → names both + cites §5.1.2.
+        let m = AmbiguousForm {
+            name: Symbol::from("rp"),
+            span: sp,
+            clause_arity: Some(2),
+            param: Some(Symbol::from("rot")),
+        }
+        .message();
+        assert!(m.contains("2-arg"), "names the offending clause by arity: {m}");
+        assert!(m.contains("clause"), "says 'clause': {m}");
+        assert!(m.contains("rot"), "names the unpinned param: {m}");
+        assert!(m.contains("§5.1.2"), "cites the independent-clause rule: {m}");
+        assert!(!m.contains("__"), "never leaks a synthetic binder (0568): {m}");
+
+        // Single-sig (no clause arity) + no bound param → the plain fn-level
+        // message, still `__`-free.
+        let plain = AmbiguousForm {
+            name: Symbol::from("main"),
+            span: sp,
+            clause_arity: None,
+            param: None,
+        }
+        .message();
+        assert!(plain.contains("main") && plain.contains("ambiguous type"), "{plain}");
+        assert!(!plain.contains("clause"), "single-sig keeps the plain message: {plain}");
+        assert!(!plain.contains("__"), "no synthetic binder leak: {plain}");
+    }
+
     /// Seed glob-import edges from `source` into the fixture's CURRENT module,
     /// mirroring `(import [source [*]])`. Import registration is no longer a
     /// typecheck concern (facade `typecheck.md`); tests seed edges directly.

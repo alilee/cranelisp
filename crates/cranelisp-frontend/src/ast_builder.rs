@@ -1351,9 +1351,26 @@ fn build_fn(
     children: &[Sexp],
     span: Span,
 ) -> Result<Expr, CranelispError> {
-    // (fn [params] body) or (lambda [params] body)
+    // (fn [params] body) or (lambda [params] body) — single-arity ONLY
+    // (spec §4.5). A `[params]` is a `Sexp::Bracket`; when the first operand is
+    // instead a `Sexp::List` `([params] body)` the user wrote the parenthesised
+    // MULTI-ARITY clause form, which is `defn`-only. Name the real constraint
+    // (0575) rather than the misleading "requires param list and body" (which
+    // reads as if `fn` got no params).
+    if children.len() >= 2 && matches!(&children[1], Sexp::List(..)) {
+        return Err(parse_err(
+            "fn is single-arity: it takes one [params] bracket and a body. The \
+             parenthesised multi-arity clause form `(fn ([p] …) ([p q] …))` is \
+             defn-only — use defn for multiple arities (spec §4.5)",
+            span,
+        ));
+    }
     if children.len() != 3 {
-        return Err(parse_err("fn requires param list and body", span));
+        return Err(parse_err(
+            "fn is single-arity: it takes one [params] bracket and a body \
+             (use defn for multiple arities, spec §4.5)",
+            span,
+        ));
     }
     let params = build_annotated_params(&children[1])?;
     let body = build_expr(&children[2])?;

@@ -123,6 +123,28 @@
         build_expr(&sexps[0])
     }
 
+    // spec: spec/04-expressions.md §4.5 (0575) — `fn` is SINGLE-arity; the
+    // parenthesised multi-arity clause form `(fn ([p] …) ([p q] …))` is
+    // defn-only. The parse error MUST name that constraint (single-arity + defn),
+    // not the misleading "requires param list and body" (which reads as if `fn`
+    // got no params). Message-construction seam test.
+    #[test]
+    fn fn_multi_arity_clause_form_names_single_arity_and_defn() {
+        let err = parse_and_build_expr("(fn ([x] x) ([x y] x))")
+            .expect_err("the multi-arity `fn` clause form is rejected (§4.5)");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("single-arity"),
+            "the error names `fn` as single-arity; got: {msg}"
+        );
+        assert!(
+            msg.contains("defn"),
+            "the error points at `defn` for multiple arities; got: {msg}"
+        );
+        // A well-formed single-arity fn still builds.
+        assert!(parse_and_build_expr("(fn [x] x)").is_ok());
+    }
+
     // -- Literals --
 
     // spec: 02-grammar §2.3.1 — integer literal expression
