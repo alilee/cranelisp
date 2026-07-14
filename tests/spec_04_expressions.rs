@@ -1106,15 +1106,13 @@ fn nested_fn_corefering_var_pinned_by_body() {
         out.stdout
     );
 
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user("(defn outer [:a x] ((fn [:a y] y) \"s\"))\n(defn main [] (Pure (str-len (outer \"z\"))))\n")
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        run.status.success(),
-        "--run: the co-referring inner `:a` pinned to String by its body MUST be \
-         accepted (§3.3.1 MUST (a)/(g)); got failure:\n{rcomb}"
-    );
+    // All-modes value equivalence: the co-referring pinned identity computes
+    // end-to-end. `main` returns `(Pure (str-len (outer "z")))` — `(outer "z")`
+    // yields the body's "s", `str-len "s"` = 1 ⇒ exit 1; `success()` was the
+    // wrong assertion for a nonzero-`Pure` `main`.
+    run_through_all_modes(
+        "(defn outer [:a x] ((fn [:a y] y) \"s\"))\n(defn main [] (Pure (str-len (outer \"z\"))))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(1);
 }

@@ -1465,20 +1465,60 @@ fn multi_arity_same_written_var_independent_per_clause() {
         out.stdout
     );
 
-    // --run: the multi-arity defn compiles and both clauses compute.
-    let run = Cranelisp::new()
+    // NOTE: the `--run` end-to-end leg is intentionally NOT exercised here. A
+    // multi-arity fn CALLED from `main` in batch `--run` mode hits the
+    // pre-existing C-4 defect (`entry module has no \`main\` function` — a
+    // batch-entry/overload-path failure that is INDEPENDENT of W6.3 written
+    // type vars: it reproduces with fully-concrete `:Int` params). That defect
+    // has its own minimal guard, `multi_arity_call_from_main_batch_no_main_neg`
+    // below; coupling it here would mask the W6.3 semantics this test pins. The
+    // REPL/type facets above are the correct, mode-agnostic W6.3 assertions.
+}
+
+// spec: spec/05-definitions.md §5.1.2 — Multi-Signature: a multi-arity fn
+// CALLED from `main` in batch `--run` mode MUST compile and run like any other
+// function. This is the C-4 pre-existing defect, minimally reduced by /testing
+// (S109 W6.3): calling a 2+-clause `defn` from `main`'s body in `--run` aborts
+// with the misleading `entry module has no \`main\` function` even though `main`
+// is plainly defined. Reduction facts (all confirmed manually against
+// target/debug/cranelisp):
+//   - INDEPENDENT of W6.3 written type vars — reproduces with fully-concrete
+//     `:Int` params (zero type vars);
+//   - the multi-arity `defn` alone is fine; the trigger is CALLING it from
+//     `main`'s body (a `main` that does not reference it exits 0);
+//   - needs 2+ clauses — a single-clause parenthesised `([:Int x] x)` called
+//     from `main` runs correctly;
+//   - MODE-DIVERGENT — the identical `(defn h (…) (…))` + `(h 7)` evaluates
+//     correctly in the REPL; only batch `--run` fails. Attribution candidate:
+//     the int-side overload/batch-entry path (main's codegen/GOT-slot for a
+//     multi-arity call), NOT the W6.3 typecheck change.
+// The correct behaviour is exit 7 (`(h 7)` → clause 1 → 7 → `(Pure 7)`); this
+// guard is RED until the batch-entry defect is fixed, then flips GREEN.
+// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::lookup_main_code_ptr (batch-entry main GOT slot unpopulated when main calls a multi-arity fn — REPL evaluates the same call fine) found=S109 owner=/dev
+#[test]
+fn multi_arity_call_from_main_batch_no_main_neg() {
+    let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))\n\
-             (defn main [] (Pure (h 5)))\n",
+            "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+             (defn main [] (Pure (h 7)))\n",
         )
         .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    let text = format!("{}\n{}", out.stdout, out.stderr);
     assert!(
-        run.status.success(),
-        "--run: each clause's bare `:a` pinned by its own body MUST be accepted \
-         (§3.3.1 MUST (a), §5.1.2); got failure:\n{rcomb}"
+        !text.contains("has no `main` function"),
+        "a multi-arity fn called from `main` in batch `--run` MUST NOT abort with \
+         `entry module has no \\`main\\` function` — `main` is plainly defined \
+         (C-4, §5.1.2); got:\n{text}"
+    );
+    // A `(Pure n)` `main` exits with code `n`, so the correct disposition is
+    // exit 7 — NOT `status.success()` (which requires exit 0). The bug currently
+    // yields exit 1 with the bogus no-`main` error.
+    assert!(
+        out.status.code() == Some(7),
+        "`main` returns `(Pure (h 7))` = `(Pure 7)` ⇒ exit 7; got exit {:?}:\n{text}",
+        out.status.code()
     );
 }
 

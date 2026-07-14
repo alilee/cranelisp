@@ -975,27 +975,21 @@ fn written_var_concrete_ascription_pins() {
         out.stdout
     );
     assert!(
-        out.stdout.contains(":primitives/String \"x\""),
-        "`(f \"x\")` MUST evaluate to \"x\"; got:\n{}",
+        out.stdout.contains(":primitives/String \"hello\""),
+        "the body `:a \"hello\"` returns the constant \"hello\" — §3.3.1 row 4 \
+         asserts only the TYPE `(Fn [String] String)`, not that `(f \"x\")` \
+         echoes its argument; got:\n{}",
         out.stdout
     );
 
-    // --run: the body-ascribed identity computes and the program succeeds.
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure (str-len (f \"ab\"))))\n")
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        run.status.success(),
-        "--run: the value-position bare ascription MUST be accepted (§3.3.1 \
-         MUST (a)); got failure:\n{rcomb}"
-    );
-    assert!(
-        !rcomb.contains("unknown type") && !rcomb.to_lowercase().contains("rigid"),
-        "--run: MUST NOT surface a rigid/unknown error; got:\n{rcomb}"
-    );
+    // All-modes value equivalence: the body-ascribed fn computes end-to-end.
+    // `main` returns `(Pure (str-len (f "ab")))` = `(Pure 5)` ⇒ exit 5;
+    // `success()` was the wrong assertion for a nonzero-`Pure` `main`.
+    run_through_all_modes(
+        "(defn f [:a x] :a \"hello\")\n(defn main [] (Pure (str-len (f \"ab\"))))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(5);
 }
 
 // --- C-1 (RED→pass, was FV-17) — two bare vars TIED by the body MERGE ---------
@@ -1029,17 +1023,14 @@ fn bare_vars_tied_by_body_merge() {
         out.stdout
     );
 
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user("(defn g [:a x :b y] :a y)\n(defn main [] (Pure (g 1 2)))\n")
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        run.status.success(),
-        "--run: two bare vars tied by the body MUST be accepted (merge, not \
-         error) (§3.3.1 MUST (a)); got failure:\n{rcomb}"
-    );
+    // All-modes value equivalence: the merged identity computes end-to-end.
+    // `main` returns `(Pure (g 1 2))` = `(Pure 2)` ⇒ exit 2; `success()` was the
+    // wrong assertion for a nonzero-`Pure` `main`.
+    run_through_all_modes(
+        "(defn g [:a x :b y] :a y)\n(defn main [] (Pure (g 1 2)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(2);
 }
 
 // --- C-2 (RED→pass, was FV-18 neg) — bare var PINS THROUGH the constructor ----
@@ -1070,21 +1061,16 @@ fn applied_annotation_bare_var_pins_through_ctor() {
         out.stdout
     );
 
-    let run = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user(
-            "(deftype (Box a) [:a v])\n\
-             (defn h [:(Box Int) b] :(Box a) b)\n\
-             (defn main [] (Pure (v (h (Box 7)))))\n",
-        )
-        .output();
-    let rcomb = format!("{}{}", run.stdout, run.stderr);
-    assert!(
-        run.status.success(),
-        "--run: `a := Int` pinning through the `Box` constructor MUST be accepted \
-         (§3.3.1 MUST (a)); got failure:\n{rcomb}"
-    );
+    // All-modes value equivalence: `a := Int` pins through `Box` end-to-end.
+    // `main` returns `(Pure (v (h (Box 7))))` = `(Pure 7)` ⇒ exit 7; `success()`
+    // was the wrong assertion for a nonzero-`Pure` `main`.
+    run_through_all_modes(
+        "(deftype (Box a) [:a v])\n\
+         (defn h [:(Box Int) b] :(Box a) b)\n\
+         (defn main [] (Pure (v (h (Box 7)))))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(7);
 }
 
 // spec: spec/03-types.md §3.3.1 — MUST (a)/(g) DISCHARGE case (applied form; the
