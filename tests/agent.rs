@@ -807,38 +807,12 @@ fn agent_on_single_fq_symbol_introspects_not_routed_to_agent() {
     );
 }
 
-// spec: repl/spec.md §17.2 — pull-as-visible-command: the stub asks for a read
-// command (`/source foo`); the agent synthesizes it, runs it through the SAME
-// process_commands path a keystroke uses, renders it as-if-typed, feeds the
-// result back, then answers. The transcript shows the command line + the answer.
-#[cfg(feature = "agent")]
-#[test]
-fn stub_pull_renders_as_visible_command() {
-    let out = stub_repl(
-        "tool: source target\n\
-         done: that is the source of target\n",
-        PreludeVariant::PrimitivesOnly,
-        "(defn target [x] (add-i64 x 1))\n\
-         /ask show me target\n",
-    );
-    // The synthesized read command appears in the transcript as if typed.
-    assert!(
-        out.stdout.contains("/source target"),
-        "the pulled command must render as-typed, stdout={}",
-        out.stdout
-    );
-    // The agent's terminal prose is framed.
-    assert!(
-        out.stdout.contains("\u{258c}"),
-        "the agent answer must be framed, stdout={}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("that is the source of target"),
-        "the agent prose must render, stdout={}",
-        out.stdout
-    );
-}
+// NOTE (FIXME 0586, W2/0577-A): `stub_pull_renders_as_visible_command` was
+// DELETED here — it asserted the pre-§17.2.1 visible-command echo (`/source
+// target` rendered as-typed), which the probe channel removed. Its inverse
+// contract (probe NOT echoed) + the conclusions-still-shown half are covered by
+// the OB-9/OB-10 guards (`agent_probe_traffic_not_echoed_to_session_neg`,
+// `agent_probe_conclusions_and_definition_still_shown`).
 
 // spec: repl/spec.md §17.3 — +neg: a write/non-read tool-call is REFUSED by the
 // read-only allowlist. The stub attempts `/sh`; the agent renders a refusal and
@@ -1132,36 +1106,11 @@ fn agent_output_lisp_fence_pretty_printed_styled() {
 // A.2 — rendering improvements (positive — RED until §14 render.rs lands)
 // ---------------------------------------------------------------------------
 
-// spec: repl/spec.md §17.12 — an agent-issued pull (a read command the agent
-// "types") renders with the distinct agent-input prompt glyph `agent>` so the
-// transcript reads honestly: who typed what. The result below it is the REPL's
-// own normal output, unprefixed. RED until the §14.2 agent-input prefix lands.
-#[cfg(feature = "agent")]
-#[test]
-fn agent_issued_pull_shows_agent_prompt() {
-    let out = stub_repl_flags(
-        "tool: source target\n\
-         done: that is the source of target\n",
-        PreludeVariant::PrimitivesOnly,
-        // colour-independent assertion (the glyph degrades to plain `agent>`),
-        // so run under --no-color to pin the plain-text token.
-        &["--no-color"],
-        "(defn target [x] (add-i64 x 1))\n\
-         /ask show me target\n",
-    );
-    // The pulled command line carries the `agent>` agent-input prompt (§17.12).
-    assert!(
-        out.stdout.contains("agent>"),
-        "the agent-issued pull must carry the `agent>` prompt glyph, stdout={}",
-        out.stdout
-    );
-    // And the command itself is still echoed as-typed after the prompt.
-    assert!(
-        out.stdout.contains("/source target"),
-        "the pulled command must still render as-typed, stdout={}",
-        out.stdout
-    );
-}
+// NOTE (FIXME 0586, W2/0577-A): `agent_issued_pull_shows_agent_prompt` was
+// DELETED here — it asserted the pre-§17.2.1 `agent>` prompt + `/source target`
+// echo, which is the direct inverse of the landed §17.2.1 probe channel. The
+// OB-9 guard (`agent_probe_traffic_not_echoed_to_session_neg`) is the covering
+// contract.
 
 // spec: repl/spec.md §17.13.1 — the agent's markdown prose (heading / list /
 // emphasis / inline-code) renders FORMATTED for the terminal within the §17.2
@@ -1240,16 +1189,22 @@ fn agent_prose_markdown_no_color_clean_neg() {
 }
 
 // ---------------------------------------------------------------------------
-// A.2 (iv) — Lane-D whole-session golden: a full `/ask` session (scripted prose
-// + a ```lisp fence + an agent-issued pull) renders with the three visually-
-// distinct origins honestly marked: agent prose framed in `▌`, the pull echoed
-// unframed with the `agent>` prompt glyph, the fence pretty-printed (not raw),
-// and NO literal escape codes under --no-color. Pins the whole rendered shape;
-// a single drift in any of the three render rules flips it red. RED until §14.
+// A.2 (iv) — Lane-D whole-session render shape: a full `/ask` session (scripted
+// prose + a ```lisp fence + an agent-issued probe) renders with the user-visible
+// origins honestly marked: agent prose framed in `▌`, the fence pretty-printed
+// (not raw), NO literal escape codes under --no-color — and, per §17.2.1, the
+// PROBE traffic is PRIVATE (no `agent>` echo, no `/source target` command line).
+// Pins the whole rendered shape; a single drift in any render rule flips it red.
+//
+// Inverted for the §17.2.1 probe channel (W2/0577-A; FIXME 0586): the two
+// former pull-echo assertions now assert the probe is NOT echoed. This is a
+// whole-session render golden; OB-9 (`agent_probe_traffic_not_echoed_to_session_neg`)
+// covers the probe-hidden contract in isolation.
 // ---------------------------------------------------------------------------
 
-// spec: repl/spec.md §17.12 — whole-session render shape (Lane D): pull glyph +
-// framed prose + pretty-printed fence + clean --no-color, all in one session.
+// spec: repl/spec.md §17.2.1 — whole-session render shape (Lane D): framed prose
+// + pretty-printed fence + clean --no-color, with probe traffic routed to the
+// private channel (no visible-command echo), all in one session.
 #[cfg(feature = "agent")]
 #[test]
 fn agent_session_render_golden_transcript() {
@@ -1265,15 +1220,20 @@ fn agent_session_render_golden_transcript() {
         "(defn target [x] (add-i64 x 1))\n\
          /ask show me target and a cleaner version\n",
     );
-    // (1) the agent-issued pull line carries the `agent>` prompt glyph (§17.12).
+    // (1) §17.2.1: probe traffic is PRIVATE — the pull command is NOT echoed
+    // into the user session (no `agent>` prompt glyph, no `/source target`
+    // command line). Inverted from the pre-§17.2.1 visible-command echo
+    // (W2/0577-A; FIXME 0586).
     assert!(
-        out.stdout.contains("agent>"),
-        "the agent-issued pull must carry the `agent>` prompt, stdout={}",
+        !out.stdout.contains("agent>"),
+        "§17.2.1: the probe pull MUST NOT carry an `agent>` prompt (probe \
+         traffic is private), stdout={}",
         out.stdout
     );
     assert!(
-        out.stdout.contains("/source target"),
-        "the pulled command must render as-typed, stdout={}",
+        !out.stdout.contains("/source target"),
+        "§17.2.1: the probe command MUST NOT be echoed into the user session, \
+         stdout={}",
         out.stdout
     );
     // (2) the agent's terminal prose is framed in the `▌` gutter.
@@ -1733,11 +1693,13 @@ fn agent_terminal_answer_streams_incrementally() {
     );
 }
 
-// spec: repl/spec.md §17.22 — the streaming path applies ONLY to the terminal
-// `Done` prose (explicit S107 seam): a turn that issues a TOOL CALL is NOT
-// streamed — its pull command + result render as today (unframed pull with the
-// `agent>` prompt, after the tool runs); only the terminal `Done` prose that
-// follows streams framed. Pins the seam boundary.
+// spec: repl/spec.md §17.22 × §17.2.1 — the streaming/framing path applies ONLY
+// to the terminal `Done` prose: a turn that issues a TOOL CALL (a probe) is NOT
+// streamed AND — post-§17.2.1 (W2/0577-A) — the probe traffic is PRIVATE, so it
+// no longer renders in the user session at all (no `agent>` echo, no `/source
+// target` command line). The surviving §17.22 intent, re-pinned against the
+// conclusion prose (FIXME 0586): only the terminal `Done` prose renders, and it
+// renders FRAMED (`▌`).
 #[cfg(feature = "agent")]
 #[test]
 fn agent_tool_call_turn_not_streamed() {
@@ -1749,35 +1711,26 @@ fn agent_tool_call_turn_not_streamed() {
         "(defn target [x] (add-i64 x 1))\n\
          /ask show me target\n",
     );
-    // The tool-call turn is NOT streamed: the pull renders as-today — the `agent>`
-    // command echo, UNFRAMED (no `▌` gutter on the pull line).
-    let pull_line = out
-        .stdout
-        .lines()
-        .find(|l| l.contains("/source target"))
-        .unwrap_or_else(|| panic!("the pulled command must render; stdout={}", out.stdout));
+    // §17.2.1: the tool-call (probe) turn produces NO visible pull — its command
+    // is not echoed into the user session.
     assert!(
-        pull_line.contains("agent>"),
-        "the pull renders as-today with the `agent>` prompt; line={pull_line:?}"
-    );
-    assert!(
-        !pull_line.contains('\u{258c}'),
-        "the tool-call pull is NOT framed (not streamed — §17.22 seam); line={pull_line:?}"
-    );
-    // The pull RESULT (the source of target) renders UNFRAMED too (tool-call turn).
-    assert!(
-        out.stdout
-            .lines()
-            .any(|l| l.contains("(defn target [x] (add-i64 x 1))") && !l.contains('\u{258c}')),
-        "the pull result renders unframed (the tool-call turn is not streamed); stdout={}",
+        !out.stdout.contains("agent>"),
+        "§17.2.1: the probe pull MUST NOT carry an `agent>` prompt (private \
+         channel); stdout={}",
         out.stdout
     );
-    // Only the terminal `Done` prose is streamed → framed.
+    assert!(
+        !out.stdout.contains("/source target"),
+        "§17.2.1: the probe command MUST NOT be echoed into the user session; \
+         stdout={}",
+        out.stdout
+    );
+    // §17.22 surviving intent: only the terminal `Done` prose renders, FRAMED.
     assert!(
         out.stdout
             .lines()
             .any(|l| l.contains("that is the source of target") && l.contains('\u{258c}')),
-        "the terminal Done prose must render framed (streamed); stdout={}",
+        "the terminal Done prose must render framed (§17.22); stdout={}",
         out.stdout
     );
 }
@@ -2620,50 +2573,12 @@ fn agent_document_yes_auto_accepts_preamble_edit() {
 // allowlist row.
 // ===========================================================================
 
-// spec: repl/spec.md §17.17.3 — the agent pulls `/syntax`: a stub `tool: syntax
-// hkt` makes the agent synthesize `/syntax hkt` (the `agent>` glyph), the topic
-// content renders beneath it unframed, then a `done:` answer is framed (`▌`).
-// Same who-typed-what honesty as every other agent pull (§17.12).
-#[cfg(feature = "agent")]
-#[test]
-fn agent_pulls_syntax_renders_as_command() {
-    let out = stub_repl_flags(
-        "tool: syntax hkt\n\
-         done: so a higher-kinded type is written with (f a)\n",
-        PreludeVariant::PrimitivesOnly,
-        // --no-color so the `agent>` glyph degrades to the plain token.
-        &["--no-color"],
-        "/ask how do I write a higher-kinded type?\n",
-    );
-    // The synthesized pull command renders as-typed with the agent-input prompt.
-    assert!(
-        out.stdout.contains("agent>"),
-        "the agent-issued /syntax pull must carry the `agent>` prompt, stdout={}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("/syntax hkt"),
-        "the pulled command must render as-typed, stdout={}",
-        out.stdout
-    );
-    // The topic content rendered beneath the pull (the `hkt` block's content).
-    assert!(
-        out.stdout.contains("hkt") || out.stdout.contains("SPEC") || out.stdout.contains("TOPIC"),
-        "the /syntax topic content must render beneath the pull, stdout={}",
-        out.stdout
-    );
-    // The terminal prose answer is framed.
-    assert!(
-        out.stdout.contains('\u{258c}'),
-        "the agent's terminal answer must be framed, stdout={}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("higher-kinded type"),
-        "the agent prose must render, stdout={}",
-        out.stdout
-    );
-}
+// NOTE (FIXME 0586, W2/0577-A): `agent_pulls_syntax_renders_as_command` was
+// DELETED here — it asserted the pre-§17.2.1 `/syntax hkt` probe rendered
+// as-typed with the `agent>` glyph, which the private probe channel removed
+// (§17.2.1). The probe-not-echoed contract is covered by the OB-9 guard
+// (`agent_probe_traffic_not_echoed_to_session_neg`); no `/syntax`-specific
+// re-pin is warranted (the contract is tool-agnostic).
 
 // ===========================================================================
 // Primer-shape repros (S90 Wave 1 primer-defect fold-in — SPRINT.md Notes

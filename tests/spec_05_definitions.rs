@@ -1415,3 +1415,82 @@ fn defn_multi_arity_annotated_clauses_compile() {
         .output()
         .assert_exit(7);
 }
+
+// =============================================================================
+// §5.1.2 × §3.3 [S109] — Written free vars in multi-arity clauses (W6).
+// Plan: tests/plan/PLAN.md §S109 §L.1 (FV-11, FV-12).
+//
+// §3.3 (S109) MUST-1/MUST-2 crossed with §5.1.2 "each variant type-checked
+// independently": matching `:a` identifiers across clauses are NO signal — each
+// clause scopes its own fresh var. And a free-var annotation does NOT rescue a
+// variant that stays unpinned by its own body — that is the §5.1.2 ambiguity
+// error naming the clause, NEVER `unknown type`.
+// =============================================================================
+
+// spec: spec/03-types.md §3.3 — MUST-1 × §5.1.2 independent per-clause checking:
+// `(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))` — clause 1's
+// body pins ITS `a` to Int, clause 2's body pins ITS `a` to String; the matching
+// `:a` identifiers across clauses are independent (a cross-clause leak would
+// conflict Int/String). Compiles; `(h 5)` → 6, `(h "ab" 0)` → "abab". Neg facet:
+// no `unknown type`, and no cross-clause leak.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
+#[test]
+fn multi_arity_same_written_var_independent_per_clause() {
+    let out = repl_prims(
+        "(defn h ([:a x] (add-i64 x 1)) ([:a x :Int n] (str-concat x x)))\n\
+         (h 5)\n\
+         (h \"ab\" 0)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "written `:a` vars in multi-arity clauses MUST NOT be unknown-type \
+         errors (§3.3 MUST-2); got:\n{combined}"
+    );
+    // Each clause's `a` is pinned independently by its own body — no leak.
+    out.assert_stdout_contains_all(&[":primitives/Int 6", ":primitives/String \"abab\""]);
+}
+
+// spec: spec/05-definitions.md §5.1.2 × spec/03-types.md §3.3 — a free-var
+// annotation does NOT rescue multi-arity ambiguity: the 2-arg delegating clause
+// `([:a p :a rot] (rp p rot 0))` cannot pin `a` from its own body (the delegating
+// call does not back-flow the 3-arg sibling's `:Int` types), so it is the §5.1.2
+// ambiguous-type error naming the clause — NEVER `unknown type `a``. Couples SS-3's
+// diagnostic-quality contract. Error-CLASS facet (wording verify-first).
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
+#[test]
+fn multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(import [primitives [Pure Int]])\n\
+             (defn rp\n\
+               ([:a p :a rot] (rp p rot 0))\n\
+               ([:Int p :Int rot :Int idx] idx))\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .output();
+    let text = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        !text.contains("unknown type"),
+        "an unpinned free-var multi-arity clause MUST route to the §5.1.2 \
+         ambiguity path, NEVER `unknown type` (§3.3 MUST-2); got:\n{text}"
+    );
+    assert!(
+        !out.status.success(),
+        "a variant whose free-var params stay unpinned by its own body MUST be \
+         an ambiguous-type error (§5.1.2 — the free var does not rescue it); \
+         got:\n{text}"
+    );
+    assert!(
+        text.contains("ambig")
+            || text.contains("annotat")
+            || text.contains("rot")
+            || text.contains("clause")
+            || text.contains("variant")
+            || text.contains("arity"),
+        "the diagnostic SHOULD name the offending clause/param (couples SS-3); \
+         got:\n{text}"
+    );
+}

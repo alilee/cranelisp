@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -915,4 +915,58 @@ fn fn_multi_arity_clause_form_parse_error_neg() {
         "the multi-arity `fn` form MUST be rejected under --run too; {}\n{}",
         run.stdout, run.stderr
     );
+}
+
+// =============================================================================
+// §4.5 [S109] — Written free-type-variable annotation in `fn` param position.
+// Plan: tests/plan/PLAN.md §S109 §L.1 (FV-15).
+//
+// §3.3 (S109) MUST-1: a lowercase identifier appearing free in an annotation is
+// implicitly universally quantified, IDENTICALLY to an inference-generated
+// variable. Here in `fn` (lambda) param position (§4.5) — the same annotation
+// shape as a `defn` param, and it MUST behave identically (per-position
+// divergence would be the codepath-duplication smell). MUST-2: never
+// `unknown type`.
+// =============================================================================
+
+// spec: spec/03-types.md §3.3 — MUST-1 in `fn` param position (§4.5): a bare
+// free var `:a` on a lambda parameter quantifies; `((fn [:a x] x) 3)` → 3.
+// All-modes value equivalence. The written var is a fresh var — the annotation
+// adds NO new generalization boundary (parity with the unannotated
+// `let_polymorphism_identity_two_types` twin). Nested facet `:(Box a)` too.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map falls to TypeNotFound instead of minting a fresh quantified var) found=S109 owner=/dev
+#[test]
+fn fn_lambda_param_free_var_annotation() {
+    // Neg facet: the lambda with `:a` param must not error `unknown type`.
+    let out = repl_prims("((fn [:a x] x) 3)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a free var `:a` on a `fn` param MUST NOT be an unknown-type error \
+         (§3.3 MUST-2, §4.5); got:\n{combined}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "`((fn [:a x] x) 3)` MUST evaluate to 3; got:\n{}",
+        out.stdout
+    );
+
+    // Nested facet: `:(Box a)` on a lambda param.
+    let nested = repl_prims(
+        "(deftype (Box a) [:a v])\n\
+         ((fn [:(Box a) b] (v b)) (Box 7))\n",
+    );
+    let ncomb = format!("{}{}", nested.stdout, nested.stderr);
+    assert!(
+        !ncomb.contains("unknown type"),
+        "a free var nested in `:(Box a)` on a `fn` param MUST NOT be an \
+         unknown-type error; got:\n{ncomb}"
+    );
+
+    // Pos: all-modes value equivalence for the lambda-annotated identity.
+    run_through_all_modes(
+        "(defn main [] (Pure ((fn [:a x] x) 3)))",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(3);
 }
