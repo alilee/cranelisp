@@ -45,7 +45,7 @@ use crate::worker::{
 mod cache_restore;
 mod macro_clause;
 mod macro_resolution;
-mod form_dispatch;
+pub(crate) mod form_dispatch;
 mod platform;
 mod dependency;
 

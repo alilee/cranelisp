@@ -263,7 +263,7 @@ fn reject_defmacro_over_binding(
 /// regen source alongside the original was the D1 directory poison (the two
 /// forms do not co-load).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn register_macro_in_module(
+pub(crate) fn register_macro_in_module(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,

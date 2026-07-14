@@ -31,7 +31,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
-use cranelisp_types::{ModuleEntry, ModuleFullPath, Symbol, Type};
+use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, Symbol, Type};
 
 use super::SharedState;
 use crate::scheduler::ModulePool;
@@ -113,6 +113,26 @@ struct IndexedEntry {
     /// The symbol's docstring text (the same text `/doc` shows), for the
     /// docstring axis (§17.19.1, S106) and the excerpt facet (§17.19.2 facet 5).
     docstring: Option<String>,
+    /// Whether the entry is a macro (`DefKind::Macro`) — carries the §1.1
+    /// classification through the index so a `/search` row renders the canonical
+    /// macro envelope (`; defmacro`), never a placeholder scalar `:Type`
+    /// (§17.19.2a, 0569). The index is the authority; the renderer never
+    /// re-probes the live table (an importable-but-unloaded module has no live
+    /// entry to consult).
+    is_macro: bool,
+}
+
+/// One importable symbol's index payload — the projection
+/// `public_entries_from_table` (and the branch-c `record_triples`) hand the
+/// recorders. A named row (not a bare tuple, `src/CLAUDE.md`) so the §1.1
+/// classification (`is_macro`) rides alongside the scheme/docstring rather than
+/// being re-derived at render time.
+#[derive(Debug, Clone)]
+struct ImportableRow {
+    name: Symbol,
+    scheme: Type,
+    docstring: Option<String>,
+    is_macro: bool,
 }
 
 /// Relevance tier of a `/search` hit — the §17.19.1a total order, strongest
@@ -146,6 +166,9 @@ pub(crate) struct SearchHit {
     pub docstring: Option<String>,
     /// Which axis/strength this hit matched on (§17.19.1a).
     pub tier: MatchTier,
+    /// Whether the hit is a macro — drives the `; defmacro` canonical envelope
+    /// on the row's primary line (§17.19.2a, 0569).
+    pub is_macro: bool,
 }
 
 impl ImportableIndices {
@@ -234,14 +257,15 @@ impl ImportableIndices {
 
     /// Record the public entries of `module` into the index and mark it indexed.
     /// Each `(name, scheme.ty, docstring)` is one importable symbol.
-    fn record_entries(&self, module: &ModuleFullPath, entries: Vec<(Symbol, Type, Option<String>)>) {
+    fn record_entries(&self, module: &ModuleFullPath, entries: Vec<ImportableRow>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        for (name, scheme, docstring) in entries {
+        for ImportableRow { name, scheme, docstring, is_macro } in entries {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
                 scheme,
                 docstring,
+                is_macro,
             });
         }
         g.indexed.insert(module.clone());
@@ -261,19 +285,20 @@ impl ImportableIndices {
     fn record_preindexed(
         &self,
         module: &ModuleFullPath,
-        entries: Vec<(Symbol, Type, Option<String>)>,
+        entries: Vec<ImportableRow>,
     ) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !g.indexed.insert(module.clone()) {
             return; // already indexed — do not double-count or double-push.
         }
         g.enumerated_total += 1;
-        for (name, scheme, docstring) in entries {
+        for ImportableRow { name, scheme, docstring, is_macro } in entries {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
                 scheme,
                 docstring,
+                is_macro,
             });
         }
     }
@@ -302,17 +327,18 @@ impl ImportableIndices {
     fn record_loaded_replace(
         &self,
         module: &ModuleFullPath,
-        entries: Vec<(Symbol, Type, Option<String>)>,
+        entries: Vec<ImportableRow>,
     ) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         // REPLACE: drop any existing rows for this module first (refresh).
         g.entries.retain(|e| &e.module != module);
-        for (name, scheme, docstring) in entries {
+        for ImportableRow { name, scheme, docstring, is_macro } in entries {
             g.entries.push(IndexedEntry {
                 name,
                 module: module.clone(),
                 scheme,
                 docstring,
+                is_macro,
             });
         }
         // Tally the module EXACTLY once. A first-time record of a module outside
@@ -334,14 +360,16 @@ impl ImportableIndices {
         module: &ModuleFullPath,
         entries: Vec<(Symbol, Type, ModuleEntry<crate::code::Code>)>,
     ) {
-        let rows: Vec<(Symbol, Type, Option<String>)> = entries
+        let rows: Vec<ImportableRow> = entries
             .into_iter()
-            .map(|(n, t, e)| {
-                let doc = match &e {
-                    ModuleEntry::Def { docstring, .. } => docstring.clone(),
-                    _ => None,
+            .map(|(name, scheme, e)| {
+                let (docstring, is_macro) = match &e {
+                    ModuleEntry::Def { docstring, kind, .. } => {
+                        (docstring.clone(), matches!(kind.as_ref(), DefKind::Macro { .. }))
+                    }
+                    _ => (None, false),
                 };
-                (n, t, doc)
+                ImportableRow { name, scheme, docstring, is_macro }
             })
             .collect();
         self.record_entries(module, rows);
@@ -411,6 +439,7 @@ impl IndexedEntry {
             scheme: self.scheme.clone(),
             docstring: self.docstring.clone(),
             tier,
+            is_macro: self.is_macro,
         }
     }
 }
@@ -478,6 +507,24 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
     );
     for dir in &lib_dirs {
         enumerate_cl_modules(dir, dir, &mut modules, &mut seen);
+    }
+
+    // §8.2.3 (0570): a `(mod- X)` PRIVATE submodule — and its whole subtree — is
+    // NOT importable from outside its parent, so its symbols MUST NOT enter the
+    // `/search` index (surfacing one with an `(import …)` hint advertises exactly
+    // what §8.2.3 forbids). Privacy is the PARENT-declared `ModDecl.visibility`
+    // bit (Principle 19 — a declared module attribute, read here via a cheap
+    // syntactic scan of each enumerated file), NEVER a `.test`/name heuristic.
+    // Drop every enumerated module that IS a private submodule or a DESCENDANT of
+    // one. The import path enforces the same rule at load time
+    // (`check_private_submodule_import`); this is the index-surface half.
+    let private_roots = private_submodule_paths(&modules, &shared.project_root, &lib_dirs);
+    if !private_roots.is_empty() {
+        modules.retain(|m| {
+            !private_roots
+                .iter()
+                .any(|p| m == p || m.as_ref().starts_with(&format!("{p}.")))
+        });
     }
 
     // The built-in SEEDED modules (spec §17.19 R10, S108) are indexed below by a
@@ -605,6 +652,42 @@ fn is_terminal(shared: &SharedState, module: &ModuleFullPath) -> bool {
         .scheduler
         .module_pool(module)
         .is_some_and(|p| p.is_terminal_typecheck())
+}
+
+/// Collect the full paths of PRIVATE submodules (`(mod- X)`) declared by any
+/// enumerated module, by a cheap syntactic scan of each module's file (§8.2.3,
+/// 0570). A private submodule is declared by its PARENT via `ModDecl.visibility`
+/// (Principle 19 — a declared module attribute, NOT a name heuristic), so the
+/// returned set holds `{parent}.{X}` full paths; the caller drops those and their
+/// subtrees from the `/search` index. Parse/read errors on a file are skipped
+/// (the module is simply not treated as declaring privacy — the branch-b/c index
+/// pass surfaces any real error). Never typechecks — purely syntactic.
+fn private_submodule_paths(
+    modules: &[ModuleFullPath],
+    project_root: &std::path::Path,
+    lib_dirs: &[std::path::PathBuf],
+) -> HashSet<ModuleFullPath> {
+    let mut private_roots: HashSet<ModuleFullPath> = HashSet::new();
+    for m in modules {
+        let Some(file) = crate::pipeline::resolve_module_file(m, project_root, lib_dirs) else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(sexps) = cranelisp_frontend::parse(&source) else {
+            continue;
+        };
+        let Ok((decls, _)) = cranelisp_frontend::extract_module_declarations(m, &sexps) else {
+            continue;
+        };
+        for d in &decls.mod_decls {
+            if d.visibility == cranelisp_types::Visibility::Private {
+                private_roots.insert(ModuleFullPath::from(format!("{m}.{}", d.name.as_ref())));
+            }
+        }
+    }
+    private_roots
 }
 
 /// Recursively enumerate `.cl` files under `dir` as dotted module paths relative
@@ -772,7 +855,7 @@ fn try_branch_b(
     module: &ModuleFullPath,
     file: &std::path::Path,
     cache_dir: &std::path::Path,
-) -> Option<Vec<(Symbol, Type, Option<String>)>> {
+) -> Option<Vec<ImportableRow>> {
     use cranelisp_backend::cache;
 
     // Source-content gate: hash the live source and consult the manifest loaded
@@ -815,7 +898,25 @@ fn index_branch_c(
             // Clean check. Write a benign `.meta` (no `.o`, no register_module)
             // so a later real `/import` of this module is a cache-hit (§25.5),
             // built from the typed entries we read out of live before cleanup.
-            if let Some(dir) = cache_dir.as_deref() {
+            //
+            // EXCEPT for a MACRO-carrying module (0569 regression fence): its
+            // index `.meta` is INCOMPLETE for a real import — it holds the macro's
+            // classified entry (searchable) but NOT the compiled clause code, and
+            // the indexer writes no `.o`. A macro-only module has no
+            // `defined_symbols()` codegen targets, so `cache_validity_check` would
+            // ACCEPT that `.meta` as a valid cache-hit and INSTALL the macro
+            // without ever compiling its clauses — a later `(my-double 21)` then
+            // has no clause code. So we index the entries for `/search`
+            // (`record_triples`) but do NOT write the import cache `.meta` when any
+            // entry is a macro; the import then fully compiles (clauses included).
+            // Non-macro modules keep the index→import cache-hit optimization.
+            let has_macro = entries.iter().any(|(_, _, e)| {
+                matches!(e, ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), DefKind::Macro { .. }))
+            });
+            if let Some(dir) = cache_dir.as_deref()
+                && !has_macro
+            {
                 write_index_meta(shared, module, dir, &entries);
             }
             shared
@@ -996,11 +1097,46 @@ fn index_typecheck_into_private(
     crate::imports::install_exports(priv_tables, module, prelude_fallback, &decls.export_specs)
         .map_err(|e| format!("export install error: {e}"))?;
 
-    let program = crate::worker::build_program_compat(&remaining)
+    // Register `defmacro` entries so user macros are SEARCHABLE (0569). Macro
+    // registration is int-orchestrated (`register_macro_in_module`) and is NOT
+    // run by `check_forms`; moreover `build_forms` DROPS `ParsedEntry::Macro`
+    // (frontend contract). An index typecheck that only ran `check_forms`
+    // therefore omitted every user macro from the index. Route each defmacro
+    // through the SAME registration seam the eval/worker path uses (reuse, not a
+    // mirror — Principle 7) into the PRIVATE module table, with NO introspection
+    // (REPL-only) and NO clause compilation (indexing needs only the classified
+    // `DefKind::Macro` entry, from which `public_entries_with_entry` reads the
+    // name + `is_macro`). The non-macro forms fall through to `check_forms`.
+    let mut regular: Vec<cranelisp_types::Sexp> = Vec::with_capacity(remaining.len());
+    for form in remaining {
+        if cranelisp_frontend::is_defmacro(&form) {
+            let info = cranelisp_frontend::parse_defmacro(&form)
+                .map_err(|e| format!("defmacro parse error: {e}"))?;
+            crate::process_form::form_dispatch::register_macro_in_module(
+                priv_tables,
+                None,
+                module,
+                &info.name,
+                &info,
+                &form,
+                &form,
+                None,
+                priv_aliases,
+                prelude_fallback,
+            )
+            .map_err(|e| format!("macro register error: {}", e.message()))?;
+        } else {
+            regular.push(form);
+        }
+    }
+
+    let program = crate::worker::build_program_compat(&regular)
         .map_err(|e| format!("build error: {e}"))?;
     let parsed = crate::worker::top_level_to_parsed_entries(&program);
     if parsed.is_empty() {
-        return Ok(()); // structural-only / empty module — no checkable defns.
+        // Regular-defn typecheck is a no-op, but any macros registered above are
+        // already in the private table — the caller reads them out (0569).
+        return Ok(());
     }
 
     // Staging-mode `check_forms`: typed entries land in the private module table
@@ -1064,7 +1200,7 @@ fn public_entries_with_entry(
 /// `/exports`). The docstring feeds the §17.19.1 docstring axis (S106).
 fn public_entries_from_table(
     table: &cranelisp_types::SymbolTable<impl cranelisp_types::CodeStore, impl cranelisp_types::LinkerStore>,
-) -> Vec<(Symbol, Type, Option<String>)> {
+) -> Vec<ImportableRow> {
     let mut out = Vec::new();
     for (sym, entry) in table.all_symbols() {
         if matches!(entry, ModuleEntry::Import { .. }) {
@@ -1077,9 +1213,16 @@ fn public_entries_from_table(
         if name.contains('$') || name.starts_with("__") {
             continue;
         }
-        // Only function/value defs carry a usable scheme for the `:Type` facet.
-        if let ModuleEntry::Def { scheme, docstring, .. } = entry {
-            out.push((sym.clone(), scheme.ty.clone(), docstring.clone()));
+        // Only function/value/macro defs carry a usable index row. A macro's
+        // `scheme.ty` is a placeholder scalar (§17.19.2a); `is_macro` carries the
+        // §1.1 classification so the row renders `; defmacro` instead of it (0569).
+        if let ModuleEntry::Def { scheme, docstring, kind, .. } = entry {
+            out.push(ImportableRow {
+                name: sym.clone(),
+                scheme: scheme.ty.clone(),
+                docstring: docstring.clone(),
+                is_macro: matches!(kind.as_ref(), DefKind::Macro { .. }),
+            });
         }
     }
     out
@@ -1110,12 +1253,76 @@ mod tests {
         )
     }
     /// A `(name, scheme, no-docstring)` row for the common test case.
-    fn row(name: &str, ty: Type) -> (Symbol, Type, Option<String>) {
-        (sym(name), ty, None)
+    fn row(name: &str, ty: Type) -> ImportableRow {
+        ImportableRow { name: sym(name), scheme: ty, docstring: None, is_macro: false }
     }
     /// A `(name, scheme, docstring)` row for the docstring-axis tests.
-    fn row_doc(name: &str, ty: Type, doc: &str) -> (Symbol, Type, Option<String>) {
-        (sym(name), ty, Some(doc.to_string()))
+    fn row_doc(name: &str, ty: Type, doc: &str) -> ImportableRow {
+        ImportableRow { name: sym(name), scheme: ty, docstring: Some(doc.to_string()), is_macro: false }
+    }
+    /// A macro index row (`is_macro = true`) for the §17.19.2a classification test.
+    fn row_macro(name: &str, ty: Type) -> ImportableRow {
+        ImportableRow { name: sym(name), scheme: ty, docstring: None, is_macro: true }
+    }
+
+    // spec: repl/spec.md §17.19.2a (0569) — the `is_macro` classification rides
+    // the index from record to `SearchHit`, so the row renderer can emit the
+    // `; defmacro` envelope rather than the macro's placeholder scalar scheme.
+    #[test]
+    fn search_hit_carries_is_macro_classification() {
+        let idx = ImportableIndices::default();
+        idx.record_entries(
+            &m("macx"),
+            vec![row_macro("twice", Type::Int), row("gcd2", int_arrow_int())],
+        );
+        let macro_hit = idx.search_by_name("twice");
+        assert_eq!(macro_hit.len(), 1);
+        assert!(macro_hit[0].is_macro, "a macro entry's hit must carry is_macro");
+        let fn_hit = idx.search_by_name("gcd2");
+        assert_eq!(fn_hit.len(), 1);
+        assert!(!fn_hit[0].is_macro, "a fn entry's hit must NOT carry is_macro");
+    }
+
+    // spec: spec/08-modules.md §8.2.3 (0570) — `private_submodule_paths` reads the
+    // PARENT-declared `(mod- X)` visibility bit (a syntactic scan, not a name
+    // heuristic) and returns the private submodule's full path; the caller drops
+    // it (and its subtree) from the `/search` index. A `(mod pub)` sibling is NOT
+    // returned.
+    #[test]
+    fn private_submodule_paths_reads_mod_dash_bit_not_a_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("host.cl"),
+            "(import [primitives [Int]])\n(mod- priv)\n(mod pub)\n(defn host-fn [] :Int 1)\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("host")).unwrap();
+        std::fs::write(
+            root.join("host/priv.cl"),
+            "(import [primitives [Int]])\n(defn secret [] :Int 42)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("host/pub.cl"),
+            "(import [primitives [Int]])\n(defn shown [] :Int 7)\n",
+        )
+        .unwrap();
+
+        let modules = vec![m("host"), m("host.priv"), m("host.pub")];
+        let private = private_submodule_paths(&modules, root, &[]);
+        assert!(
+            private.contains(&m("host.priv")),
+            "the `(mod- priv)` child must be reported private; got {private:?}"
+        );
+        assert!(
+            !private.contains(&m("host.pub")),
+            "a `(mod pub)` child must NOT be reported private; got {private:?}"
+        );
+        assert!(
+            !private.contains(&m("host")),
+            "the parent module itself is not a private submodule; got {private:?}"
+        );
     }
 
     // spec: design/int/agent.md §25.3 — Index A name lookup, exact match. An

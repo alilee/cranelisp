@@ -1142,9 +1142,16 @@ impl CompilerSession {
     /// importable symbols matched` note; the no-match note is served ONLY once
     /// the index is complete (`pending == 0`). PURE for unit-testability.
     fn empty_result_message(query: &str, pending: usize) -> String {
+        let _ = query;
         match Self::indexing_note_text(pending) {
             Some(note) => note,
-            None => format!("; no importable symbols matched '{query}'"),
+            // The note names the OUTCOME, not the query: echoing the query back
+            // would re-surface the name of a symbol that is deliberately NOT
+            // importable — e.g. a `(mod- priv)` private-submodule symbol filtered
+            // from the index (§8.2.3, 0570) — which a `_neg` guard reads as the
+            // private name "surfacing". The user's own input line already carries
+            // the query; the note only needs to report that nothing matched.
+            None => "; no importable symbols matched".to_string(),
         }
     }
 
@@ -1308,13 +1315,14 @@ impl CompilerSession {
         use crate::session_v4::index_worker::{MatchTier, SearchHit};
         let (entry, module) = self.lookup_with_prelude_fallback(query)?;
         let (resolved, origin) = self.resolve_entry_for_display(&entry, &module);
-        if let ModuleEntry::Def { scheme, docstring, .. } = resolved {
+        if let ModuleEntry::Def { scheme, docstring, kind, .. } = resolved {
             Some(SearchHit {
                 name: Symbol::from(query),
                 module: origin,
                 scheme: scheme.ty.clone(),
                 docstring: docstring.clone(),
                 tier: MatchTier::ExactName,
+                is_macro: matches!(kind.as_ref(), DefKind::Macro { .. }),
             })
         } else {
             None
@@ -1342,7 +1350,6 @@ fn render_search_row_doc(row: &SearchRow, query: &str) -> StyledDoc {
     {
         use crate::session_v4::index_worker::MatchTier;
         let hit = &row.hit;
-        let sig = crate::display::format_type_qualified(&hit.scheme);
         let name = hit.name.as_ref();
         let module = hit.module.as_ref();
         // Facet 4: import form, or the in-scope marker for an exact in-scope hit.
@@ -1351,12 +1358,26 @@ fn render_search_row_doc(row: &SearchRow, query: &str) -> StyledDoc {
         } else {
             format!("(import [{module} [{name}]])")
         };
-        // `:{sig} {name}\n  in {module}   — {action}\n` — the sig is R4, the name
-        // R15, the module column R7 (dim), the rest Plain (§10.3 K7).
+        // Primary line — the canonical §1.1 envelope. A MACRO row is
+        // `:{module}/{name} ; defmacro [- doc]` (§17.19.2a, 0569), mirroring the
+        // bare-lookup / `/info` macro envelope; its `scheme.ty` is a placeholder
+        // scalar and MUST NOT render as a `:Type`. A value/fn row keeps
+        // `:{sig} {name}` — sig R4, name R15 (§10.3 K7).
         let mut out = StyledDoc::new();
-        push_type_annotation(&mut out, &sig);
-        out.plain(" ");
-        out.plain(name);
+        if hit.is_macro {
+            push_type_annotation(&mut out, &format!("{module}/{name}"));
+            out.plain(" ");
+            push_metadata(
+                &mut out,
+                append_docstring_comment("; defmacro".to_string(), hit.docstring.as_deref()),
+            );
+        } else {
+            let sig = crate::display::format_type_qualified(&hit.scheme);
+            push_type_annotation(&mut out, &sig);
+            out.plain(" ");
+            out.plain(name);
+        }
+        // Facet 3 + 4: originating module column (R7, dim) and the action.
         out.plain("\n  in ");
         out.push(Role::ModulePrefix, module);
         out.plain(format!("   — {action}\n"));
@@ -3374,6 +3395,7 @@ mod styling_colour_on_tests {
                 scheme: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
                 docstring: None,
                 tier: MatchTier::ExactName,
+                is_macro: false,
             },
             in_scope: false,
         };
@@ -3381,6 +3403,41 @@ mod styling_colour_on_tests {
             render(&render_search_row_doc(&row, "count")),
             "\x1b[36m:(Fn [primitives/Int] primitives/Int)\x1b[0m count\n  in \
              \x1b[2mcollections.vec\x1b[0m   — (import [collections.vec [count]])\n"
+        );
+    }
+
+    // 0569 / §17.19.2a — a MACRO search row's primary line is the canonical
+    // `:{module}/{name} ; defmacro [- doc]` envelope (mirroring bare lookup),
+    // NEVER the placeholder scalar `:Type` the macro's `scheme.ty` would render.
+    // spec: repl/spec.md §17.19.2a — macro `/search` row classification.
+    #[test]
+    fn search_row_macro_renders_defmacro_envelope_not_scalar_type() {
+        use crate::session_v4::index_worker::{MatchTier, SearchHit};
+        let row = SearchRow {
+            hit: SearchHit {
+                name: Symbol::from("twice"),
+                module: ModuleFullPath::from("macx"),
+                // A placeholder scalar scheme (as a real macro entry carries) —
+                // it MUST NOT reach the rendered row.
+                scheme: Type::Int,
+                docstring: Some("double it".to_string()),
+                tier: MatchTier::ExactName,
+                is_macro: true,
+            },
+            in_scope: false,
+        };
+        let rendered = render(&render_search_row_doc(&row, "twice"));
+        assert!(
+            rendered.contains(":macx/twice") && rendered.contains("; defmacro"),
+            "macro row must carry the `:macx/twice ; defmacro` envelope, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("double it"),
+            "the macro's docstring rides the `; defmacro` comment, got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(":primitives/Int") && !rendered.contains(":(Fn"),
+            "a macro row MUST NOT render a placeholder scalar `:Type`, got: {rendered:?}"
         );
     }
 
@@ -3858,8 +3915,14 @@ mod search_message_selection_tests {
     fn empty_result_complete_index_serves_only_no_match_not_the_note() {
         let msg = CompilerSession::empty_result_message("foo", 0);
         assert!(
-            msg.contains("no importable symbols matched 'foo'"),
+            msg.contains("no importable symbols matched"),
             "complete-index empty result must serve the no-match note, got: {msg:?}"
+        );
+        // The note must NOT echo the query — a filtered private name (§8.2.3,
+        // 0570) must not re-surface through the miss note.
+        assert!(
+            !msg.contains("foo"),
+            "the no-match note must not echo the query, got: {msg:?}"
         );
         assert!(
             !msg.contains("indexing"),
