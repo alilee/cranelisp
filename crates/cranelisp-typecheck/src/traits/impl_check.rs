@@ -807,6 +807,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         self.push_scope(state);
 
+        // This body is re-checked against ALREADY-CONCRETE param/ret types (a
+        // monomorphisation instance or a trait-impl method): the caller has
+        // chosen the types, so a written-var annotation in the body is FLEXIBLE,
+        // not a rigid skolem (spec §3.3 [S109] MUST-1 — re-minting a rigid var
+        // and pinning it to the instance's concrete type would be a spurious
+        // skolem-escape). Save/restore so the flag never leaks past this body.
+        let saved_suppress = state.suppress_rigid_annotations;
+        let saved_rigid = std::mem::take(&mut state.rigid_vars);
+        let saved_scope = state.written_var_scope.take();
+        state.suppress_rigid_annotations = true;
+
         for ((param_name, _), param_ty) in
             defn.params().iter().zip(param_types.iter())
         {
@@ -817,14 +828,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
-        let body_ty = self.infer_expr(state, defn.body())?;
-        self.unify(state, &body_ty, ret_ty, defn.span)?;
+        let result = (|| {
+            let body_ty = self.infer_expr(state, defn.body())?;
+            self.unify(state, &body_ty, ret_ty, defn.span)?;
+            // Post-inference deferred trait resolution
+            self.resolve_deferred_trait_calls(state, defn.body());
+            Ok(())
+        })();
 
-        // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(state, defn.body());
+        state.suppress_rigid_annotations = saved_suppress;
+        state.rigid_vars = saved_rigid;
+        state.written_var_scope = saved_scope;
 
         self.pop_scope(state);
-        Ok(())
+        result
     }
 
     /// Generate default method implementations for methods not provided in the impl.

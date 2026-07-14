@@ -1376,6 +1376,86 @@
         }
     }
 
+    // spec: 03-types §3.3 [S109] (u1) — a written PARAMETER type var is RIGID, not
+    // a flexible inference var. Proven by CONTRAST at the program seam (the resolve
+    // layer only mints — u1-resolve-half): `(defn id [:a x] x)` type-checks and
+    // stays polymorphic (the body never constrains `a`), but `(defn f [:a x]
+    // (add-i64 x 1))` is a TYPE ERROR — the body USE forces the rigid `a ~ Int`
+    // (MUST-1/MUST-4). Under the FLEXIBLE (W6) model the second would silently
+    // narrow to `(Fn [Int] Int)` and compile — so acceptance of `f` is exactly
+    // the F1/0588 regression this cell guards.
+    #[test]
+    fn u1_written_param_var_is_rigid_body_use_cannot_pin() {
+        // (a) a written var the body does not constrain stays polymorphic.
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse("(defn id [:a x] x)").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
+            assert!(!scheme.ty.is_concrete(), "id must stay polymorphic (∀a. a→a)");
+            assert!(!scheme.type_vars.is_empty(), "id's `a` must be quantified");
+        } else {
+            panic!("id not found");
+        }
+
+        // (b) a body USE that would force the rigid `a` concrete is a type error —
+        //     the defining proof that the param var is RIGID, not flexible.
+        let mut tc2 = tc_with_prims();
+        let sexps2 =
+            cranelisp_frontend::parse("(defn f [:a x] (add-i64 x 1))").expect("parse");
+        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
+        let err = tc2.check_program_self(&program2).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("unknown type"),
+            "the rigid-by-use rejection MUST be a type error, never `unknown type` \
+             (§3.3 MUST-2); got: {msg}"
+        );
+    }
+
+    // spec: 03-types §3.3 [S109] SCOPE-5 (u7) — nested-`fn` lexical co-reference:
+    // the enclosing definition's written-var scope THREADS into the nested `fn`
+    // (`infer_lambda` shares `written_var_scope`, does not reset it), so an inner
+    // `:a` resolves to the SAME rigid `TypeId` as the enclosing `defn`'s `:a`.
+    // `(defn g [:a x] (fn [:a y] y))` MUST have scheme `∀a. (Fn [a] (Fn [a] a))` —
+    // ONE quantified var appearing in all three positions. Under the superseded
+    // SHADOW reading the inner `:a` would mint a SECOND var (`∀a b. (Fn [a] (Fn
+    // [b] b))`), which this cell rejects (the 0588 non-threaded per-`fn` map).
+    #[test]
+    fn u7_nested_fn_written_var_corefers_enclosing_rigid_same_typeid() {
+        let mut tc = tc_with_prims();
+        let sexps =
+            cranelisp_frontend::parse("(defn g [:a x] (fn [:a y] y))").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("g") else {
+            panic!("g not found");
+        };
+        // Exactly ONE quantified var — co-reference, not a fresh nested shadow.
+        assert_eq!(
+            scheme.type_vars.len(),
+            1,
+            "nested `:a` must CO-REFER (one quantified var), not shadow; got scheme {:?}",
+            scheme.ty
+        );
+        // Structural: (Fn [Var(a)] (Fn [Var(a)] Var(a))) — the SAME TypeId in all
+        // three positions.
+        let Type::Fn(outer_params, outer_ret) = &scheme.ty else {
+            panic!("g scheme is not a Fn: {:?}", scheme.ty);
+        };
+        let Type::Var(a_outer) = outer_params[0] else {
+            panic!("outer param not a Var: {:?}", outer_params[0]);
+        };
+        let Type::Fn(inner_params, inner_ret) = outer_ret.as_ref() else {
+            panic!("g result is not a Fn: {:?}", outer_ret);
+        };
+        assert_eq!(inner_params[0], Type::Var(a_outer), "inner param must be the outer rigid `a`");
+        assert_eq!(**inner_ret, Type::Var(a_outer), "inner result must be the outer rigid `a`");
+        assert_eq!(scheme.type_vars[0], a_outer, "the one quantified var IS `a`");
+    }
+
     // spec: 03-types §3.6 — REPL expression monomorphises constrained fn on demand
     #[test]
     fn test_repl_expr_monomorphise() {

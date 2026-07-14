@@ -3,11 +3,9 @@
 //! `infer_expr` dispatches to per-variant helpers. Each helper is typically
 //! 10-40 lines, independently testable. Addresses audit HIGH-1 (monolithic infer_expr).
 
-use std::collections::HashMap;
-
 use cranelisp_types::{ErrorLocation,
     CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
-    Type, TypeExpr, TypeId,
+    Type, TypeExpr,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -496,23 +494,34 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Type, CranelispError> {
         self.push_scope(state);
 
-        // ONE var scope for the whole lambda signature (spec §3.3 [S109],
-        // FV-15) — a written free lowercase type var mints a fresh quantified
-        // var, a repeated name across params co-refers, identical to the `defn`
-        // param path (`register_defn_signature`).
-        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
+        // SHARE the enclosing definition's written-var scope (spec §3.3 SCOPE-5):
+        // a nested `fn`'s `:a` CO-REFERS to the enclosing rigid `a` (FV-20),
+        // never a fresh shadow (the 0588 seam). A standalone lambda (no enclosing
+        // scope) gets a fresh one via `unwrap_or_default`. A lambda's OWN fresh
+        // param vars are FLEXIBLE — a lambda is NOT a generalization boundary in
+        // rank-1; its written var is quantified at the enclosing definition and
+        // instantiated at application, so leaving it flexible is the faithful
+        // realization (FV-15: `((fn [:a x] x) 3)` → 3). Only a name that
+        // co-refers to an already-rigid enclosing var stays rigid (it is reused,
+        // not re-minted). So the minted ids from THIS call are deliberately NOT
+        // added to `state.rigid_vars`.
+        let mut var_map = state.written_var_scope.take().unwrap_or_default();
         let mut param_types = Vec::new();
         for (param_name, annotation) in params.iter() {
             let param_ty = if let Some(annotation) = annotation {
-                self.resolve_annotation_type_expr_in_module(
+                let (ty, _minted) = self.resolve_annotation_type_expr_in_module(
                     annotation, &mut var_map, &state.current_module, span,
-                )?
+                )?;
+                ty
             } else {
                 self.fresh_var()
             };
             param_types.push(param_ty.clone());
             self.bind_local(state, param_name.clone(), mono(param_ty));
         }
+        // Restore the shared scope BEFORE inferring the body so a nested
+        // annotation / lambda co-refers through the same scope.
+        state.written_var_scope = Some(var_map);
 
         let body_ty = self.infer_expr(state, body)?;
         self.pop_scope(state);
@@ -1246,17 +1255,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        // A value annotation `:a form` (body/"return" position, §3.9/§4.9) mints
-        // a fresh quantified var for a written free lowercase type var (spec §3.3
-        // [S109], FV-6/FV-10). The minted var is an ordinary inference var: it
-        // co-refers with the annotated value's type through the `unify` below
-        // (so `(defn id [:a x] :a x)` yields `(Fn [a] a)`), and if it reaches
-        // codegen unpinned it is caught by the §3.11 ambiguity machinery — NOT a
-        // spurious "unknown type" error.
-        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
-        let ann_type = self.resolve_annotation_type_expr_in_module(
+        // A value annotation `:a form` (body/"return" position, §3.9/§4.9)
+        // resolves against the definition's SHARED written-var scope (spec §3.3
+        // SCOPE-5): a body `:a` CO-REFERS to the param's rigid `a` (FV-6/FV-16),
+        // never a fresh per-`Annotate` shadow (the 0588 seam). A body-annotation
+        // FRESH var is RIGID (MUST-3 assert-not-acquire): the annotation ASSERTS
+        // the type, it does not acquire it — so ascribing a concrete-typed
+        // (`:a "hello"`) or distinct-rigid expr to a bare written var is a
+        // skolem-escape type error via the `unify` below, NOT a spurious
+        // "unknown type". A legitimately-polymorphic residual (`:(Vec a) []`)
+        // still flows into the §3.11 ambiguity machinery.
+        let mut var_map = state.written_var_scope.take().unwrap_or_default();
+        let (ann_type, minted) = self.resolve_annotation_type_expr_in_module(
             annotation, &mut var_map, &state.current_module, span,
         )?;
+        // Body/value-annotation fresh vars are RIGID (unlike a lambda param) —
+        // UNLESS we are re-checking against already-concrete types (a mono
+        // instance / trait-impl method), where the caller has chosen the types
+        // (MUST-1) and the annotation is flexible (`suppress_rigid_annotations`).
+        if !state.suppress_rigid_annotations {
+            state.rigid_vars.extend(minted);
+        }
+        state.written_var_scope = Some(var_map);
 
         let expr_ty = self.infer_expr(state, expr)?;
         self.unify(state, &expr_ty, &ann_type, span)?;

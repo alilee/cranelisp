@@ -4,6 +4,55 @@ The voice of the code: API gotchas, data-structure invariants, debugging hooks
 for the inference engine, traits, monomorphisation, and module-locality
 resolution. Owned by `/dev` when narrow-deployed to this crate.
 
+## Rigid written type variables (spec §3.3 [S109], S109 W6.2)
+
+A **written free lowercase type variable** (`:a`, or one nested in `:(Box a)`)
+is a RIGID skolem — a *fixed-but-unknown* type within its definition body. The
+body may not choose what it is (assert-not-acquire); it is quantified at the
+definition boundary and instantiated at the call site. Three coupled pieces
+realize this; break any one and the model silently reverts to the flexible
+"acquire" bug (F1/0588):
+
+1. **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var`** are the ONE
+   unification seam (the free 3-arg `unify` is a test-only helper). The `rigid`
+   set is `CheckState::rigid_vars`. Asymmetry (MUST-4): a flexible var MAY bind
+   to a rigid one (param acquisition); a rigid var MUST NOT unify with a
+   concrete type nor a *distinct* rigid var (skolem-escape). `self.unify` always
+   threads `state.rigid_vars`. **Do not add a unify path that ignores the rigid
+   set** — a symmetric-in-flexibility unify is the defect.
+
+2. **`rigid_vars` is scoped to the OWNING body, never global.** `check_defn_body`
+   seeds it from the definition's Pass-1 written-var scope and tears it down on
+   return. This is load-bearing: outside its own body a written var must behave
+   as an ordinary *quantifiable* var (MUST-1) so a forward-referencing sibling
+   instantiates it flexibly. A global rigid set would skolem-escape every
+   forward call.
+
+3. **`written_var_scope` threads the name→rigid-`TypeId` map** from Pass-1
+   (`register_defn_signature`, returned via `accumulator.defn_var_scopes`)
+   through Pass-2 body checking and INTO nested `fn` closures (`infer_lambda`
+   SHARES it, never resets — SCOPE-5 co-reference). `infer_annotate` extends
+   `rigid_vars` for body/value annotations (rigid); `infer_lambda` does NOT (a
+   lambda's own fresh param vars are flexible — a lambda is not a rank-1
+   generalization boundary; only names co-referring to an already-rigid
+   enclosing var stay rigid — FV-15 vs FV-20).
+
+**`suppress_rigid_annotations`** turns rigidity OFF while re-checking a body
+against ALREADY-CONCRETE types (`check_defn_body_with_types` — mono instances +
+trait-impl methods): the caller has chosen the types (MUST-1), so re-minting a
+rigid var and pinning it to the instance's concrete type would be a spurious
+skolem-escape. This flag is why a body annotation (`(defn id [:a x] :a x)`) did
+not break monomorphisation.
+
+**Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
+caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type
+var is a BARE lowercase identifier). The frontend still mis-tags `:user/int` as
+a `TypeVar` carrying the qualified string; the in-crate `!contains('/')` guard
+is the backstop — the frontend routing half is a separate `/dev`-on-frontend
+item. FIXME 0590 records four MIRROR resolvers (`traits/type_resolve.rs` ×3 +
+`form.rs`) that hand-roll their own mint-on-miss; the S110 convergence folds
+them onto this canonical resolver.
+
 ## Concrete-boundary `codegen_view` population (S84 Phase-3, FIXME 0392)
 
 Every codegen-bound `ModuleEntry::Def` carries a `codegen_view:

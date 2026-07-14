@@ -526,6 +526,15 @@ pub(crate) struct ModuleCheckAccumulator {
     /// Type vars from pass 1 registration, keyed by defn name.
     /// Needed by pass 2 to check bodies against registered signatures.
     pub(crate) defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
+    /// **Written-var lexical scope from Pass-1 signature registration** (spec
+    /// §3.3 [S109]), keyed by the same defn name (multi-arity clauses under
+    /// their `{name}__v{i}` internal name). Each maps the written type-var names
+    /// in the parameter annotations (`:a`, `:(Box a)`) to the ONE rigid `TypeId`
+    /// they minted. Pass-2 `check_defn_body` installs it as the definition's
+    /// `written_var_scope` + seeds `rigid_vars`, so a body/nested-`fn`
+    /// occurrence of the same name co-refers to the same rigid var (the 0588
+    /// cross-pass threading; empty for a signature with no written type vars).
+    pub(crate) defn_var_scopes: HashMap<Symbol, HashMap<Symbol, TypeId>>,
     /// **Redefinition slot carry-forward (S83, FIXME 0356/0357, Principle 20).**
     /// With deferred GOT-slot allocation, Pass-1 `register_defn_signature`
     /// overwrites a redefined symbol's prior `Concrete` entry with a slot-less
@@ -563,6 +572,7 @@ impl ModuleCheckAccumulator {
             warnings: Vec::new(),
             call_graph_edges: Vec::new(),
             defn_type_vars: HashMap::new(),
+            defn_var_scopes: HashMap::new(),
             redef_slots: HashMap::new(),
         }
     }
@@ -1035,8 +1045,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             accumulator.redef_slots.insert(defn.name.clone(), slot);
         }
-        let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
+        let (param_types, ret_ty, var_scope) = self.register_defn_signature(state, defn)?;
         accumulator.defn_type_vars.insert(defn.name.clone(), (param_types, ret_ty));
+        accumulator.defn_var_scopes.insert(defn.name.clone(), var_scope);
         Ok(FormCheckResult::empty())
     }
 
@@ -1075,7 +1086,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 accumulator.redef_slots.insert(internal_name.clone(), slot);
             }
             // Register each variant's signature
-            let (param_types, ret_ty) = self.register_defn_signature(state, &internal_defn)?;
+            let (param_types, ret_ty, var_scope) =
+                self.register_defn_signature(state, &internal_defn)?;
+            accumulator.defn_var_scopes.insert(internal_name.clone(), var_scope);
             accumulator.defn_type_vars.insert(internal_name, (param_types, ret_ty));
         }
         state.overloads.insert(defn.name.clone(), overload_entries);
@@ -1153,6 +1166,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 message: format!("internal: missing type vars for {}", defn.name),
                 location: ErrorLocation::from_span(defn.span),
             })?;
+        // The Pass-1 written-var scope threaded through to the body check
+        // (spec §3.3 [S109]; empty when no written type vars — 0588).
+        let var_scope = accumulator
+            .defn_var_scopes
+            .get(&defn.name)
+            .cloned()
+            .unwrap_or_default();
 
         // Snapshot method_resolutions and expr_types sizes so we can extract
         // just the new entries added during this form's checking.
@@ -1160,7 +1180,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
         let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
 
-        self.check_defn_body(state, defn, param_types, ret_ty)
+        self.check_defn_body(state, defn, param_types, ret_ty, var_scope)
             .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
         self.resolve_deferred_trait_calls(state, defn.body());
         self.resolve_value_position_trait_methods(state, defn.body(), false);
@@ -1437,6 +1457,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     ),
                     location: ErrorLocation::from_span(variant.span),
                 })?;
+            // Each arity clause is a DISJOINT written-var scope (§5.1.2 clause
+            // independence; spec §3.3 [S109], u3) — clause i's rigid `:a` is a
+            // distinct skolem from clause j's.
+            let var_scope = accumulator
+                .defn_var_scopes
+                .get(&internal_name)
+                .cloned()
+                .unwrap_or_default();
 
             // Snapshot for per-variant delta extraction
             let variant_mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
@@ -1455,7 +1483,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span: variant.span,
             };
 
-            self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
+            self.check_defn_body(state, &internal_defn, param_types, ret_ty, var_scope)?;
             self.resolve_deferred_trait_calls(state, internal_defn.body());
             self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
 
@@ -3077,7 +3105,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         defn: &Defn,
-    ) -> Result<(Vec<Type>, Type), CranelispError> {
+    ) -> Result<(Vec<Type>, Type, HashMap<Symbol, TypeId>), CranelispError> {
         // Fast path for trait impl (mangled) methods: if this symbol already
         // has a Def entry with `ast: Some(_)` and a concrete scheme (no free
         // vars / constraints), AND its name matches the trait-impl mangled
@@ -3100,18 +3128,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 && scheme.constraints.is_empty()
                 && let Type::Fn(param_types, ret_ty) = &scheme.ty
             {
-                return Ok((param_types.clone(), (**ret_ty).clone()));
+                return Ok((param_types.clone(), (**ret_ty).clone(), HashMap::new()));
             }
         }
 
         // ONE var scope for the whole signature (spec §3.3 [S109]): a free
         // lowercase type var the author writes in a param annotation mints a
-        // fresh quantified var, and a repeated name (`[:a x :a y]`) resolves to
-        // the SAME var so x and y unify. This map is built fresh PER CALL —
+        // fresh RIGID var, and a repeated name (`[:a x :a y]`) resolves to the
+        // SAME var so x and y unify. This map is built fresh PER CALL —
         // multi-arity clauses each go through a separate `register_defn_signature`
         // (via their own `{name}__vN` internal defn, see
         // `check_form_register_multi_sig`), so `:a` in one clause is independent
-        // of `:a` in another (fresh scope per clause).
+        // of `:a` in another (fresh scope per clause). It is RETURNED to the
+        // caller and threaded (via `accumulator.defn_var_scopes`) into Pass-2
+        // body checking so a body/nested-`fn` `:a` co-refers to the param's
+        // rigid var (SCOPE-5 lexical co-reference; 0588). Every entry here is a
+        // written PARAMETER var and therefore RIGID — `check_defn_body` seeds
+        // `rigid_vars` from `var_map.values()`.
         let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let mut param_types = Vec::new();
         for (_name, ann) in defn.params().iter() {
@@ -3132,7 +3165,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     match self.resolve_annotation_type_expr_in_module(
                         ann, &mut var_map, &state.current_module, defn.span,
                     ) {
-                        Ok(ty) => ty,
+                        // Fresh param-annotation vars are RIGID; the shared scope
+                        // (`var_map`) is threaded to Pass-2 where `check_defn_body`
+                        // seeds `rigid_vars` from it. `_minted` is redundant with
+                        // `var_map.values()` for the param case.
+                        Ok((ty, _minted)) => ty,
                         // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE
                         // annotation `:Eq a` is ambiguous between a concrete-type
                         // annotation and a single trait bound. The frontend leaves
@@ -3242,18 +3279,39 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         );
 
-        Ok((param_types, ret_ty))
+        Ok((param_types, ret_ty, var_map))
     }
 
     /// Check a single function definition body.
+    ///
+    /// `written_var_scope` is the definition's Pass-1 written-type-var scope
+    /// (name → rigid `TypeId`, spec §3.3 [S109]); it is installed as the active
+    /// `state.written_var_scope` and seeds `state.rigid_vars` for the duration
+    /// of this body so that (a) a body/nested-`fn` `:a` co-refers to the param's
+    /// rigid var (SCOPE-5), and (b) a body that would force a rigid var concrete
+    /// — by ascription (`:a "hello"`) or by use (`(add-i64 x 1)`) — is a
+    /// skolem-escape type error (MUST-3/MUST-4). Both are torn down on return so
+    /// a forward-referencing sibling instantiates the (now quantified) var
+    /// flexibly (MUST-1).
     fn check_defn_body(
         &self,
         state: &mut CheckState,
         defn: &Defn,
         param_types: &[Type],
         ret_ty: &Type,
+        written_var_scope: HashMap<Symbol, TypeId>,
     ) -> Result<(), CranelispError> {
         self.push_scope(state);
+
+        // Activate the definition's RIGID written-var scope (spec §3.3 [S109]).
+        // Every Pass-1 param-annotation var is rigid; `infer_annotate` extends
+        // `rigid_vars` for body/value annotations. Saved/restored so nothing
+        // leaks past this body (a forward-ref caller must see the var as an
+        // ordinary quantifiable one — MUST-1).
+        let prev_rigid = std::mem::take(&mut state.rigid_vars);
+        let prev_scope = state.written_var_scope.take();
+        state.rigid_vars = written_var_scope.values().copied().collect();
+        state.written_var_scope = Some(written_var_scope);
 
         // Bind parameters
         for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
@@ -3269,6 +3327,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Unify body type with return type variable
         self.unify(state, &body_ty, ret_ty, defn.span)?;
+
+        // Deactivate the rigid written-var scope before the post-passes /
+        // generalization run (MUST-1: outside its own body the written var is an
+        // ordinary quantified var).
+        state.rigid_vars = prev_rigid;
+        state.written_var_scope = prev_scope;
 
         self.pop_scope(state);
 

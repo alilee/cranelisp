@@ -193,6 +193,44 @@ pub struct CheckState {
         HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
+    /// **RIGID written type variables active for the definition body currently
+    /// being checked** (spec §3.3 [S109]). A written free lowercase type
+    /// variable (`:a`, or one nested in `:(Box a)`) is a *fixed-but-unknown*
+    /// skolem within its definition — the body may not choose what it is. These
+    /// `TypeId`s are consulted by [`unify`](TypeCheckEnv::unify) (via
+    /// `unify::unify_with_rigid`): a rigid var MUST NOT unify with a concrete
+    /// type nor with a *distinct* rigid var (skolem-escape), while a flexible
+    /// inference var MAY acquire a rigid one.
+    ///
+    /// **Scoped to the owning body, NOT global.** Installed by `check_defn_body`
+    /// from the definition's Pass-1 written-var scope, extended by
+    /// `infer_annotate` for body/value annotations, and torn down when the body
+    /// check completes. Outside its own body a written variable is an ordinary
+    /// quantified var (MUST-1: "universally quantified at the definition
+    /// boundary, exactly as an inference-generated variable"), so a
+    /// forward-referencing caller instantiates it flexibly — the rigid guard
+    /// must NOT fire there. A nested `fn`'s own *fresh* parameter vars are NOT
+    /// added (they are flexible, generalized at the enclosing boundary — FV-15);
+    /// only names that CO-REFER to an already-rigid enclosing var stay rigid.
+    pub(crate) rigid_vars: HashSet<TypeId>,
+    /// The current definition's **written-var lexical scope** — name → the one
+    /// `TypeId` that name resolves to across the whole definition body,
+    /// **including nested `fn` closures** (spec §3.3 SCOPE-5 lexical
+    /// co-reference). Threaded from Pass-1 signature registration through Pass-2
+    /// body checking; `infer_annotate`/`infer_lambda` resolve written vars
+    /// against it (never a fresh per-occurrence map — the 0588 seam). `None`
+    /// outside a definition body; a top-level value annotation gets a transient
+    /// per-annotation scope.
+    pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
+    /// When set, a written type-var annotation in a body is resolved FLEXIBLY —
+    /// it does NOT mint a rigid skolem (spec §3.3 [S109]). Active while
+    /// re-checking a body against **already-concrete** types (a
+    /// monomorphisation instance or a trait-impl method —
+    /// `check_defn_body_with_types`): the caller has already CHOSEN the concrete
+    /// types, which is exactly MUST-1's "chosen by the caller at each use site".
+    /// Re-minting a rigid var and pinning it to the instance's concrete type
+    /// would be a spurious skolem-escape.
+    pub(crate) suppress_rigid_annotations: bool,
 }
 
 impl CheckState {
@@ -216,6 +254,9 @@ impl CheckState {
             synthesised_accessor_names: std::collections::HashSet::new(),
             accessor_owning_types: HashMap::new(),
             current_module: module,
+            rigid_vars: HashSet::new(),
+            written_var_scope: None,
+            suppress_rigid_annotations: false,
         }
     }
 
@@ -1872,7 +1913,7 @@ where
         t2: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        crate::unify::unify(&mut state.subst, t1, t2).map_err(|e| {
+        crate::unify::unify_with_rigid(&mut state.subst, &state.rigid_vars, t1, t2).map_err(|e| {
             // Re-wrap with the caller's span if the error has SYNTHETIC span
             if e.span() == Span::SYNTHETIC {
                 CranelispError::TypeError {
@@ -2379,36 +2420,56 @@ where
         module_path: &ModuleFullPath,
         span: Span,
     ) -> Result<Type, ResolveError> {
-        // Type-definition context (deftype field, trait-method sig, platform
-        // sig): a `TypeVar` that is not a declared parameter is an unbound
-        // reference and a miss is an error (`mint_free_var: None`). The caller's
-        // `var_map` is read-only here, so clone into a scratch map — no minting
-        // means the clone is never mutated.
+        // Type-definition context (`deftype` field, platform sig): a `TypeVar`
+        // that is not a declared parameter is an unbound reference and a miss is
+        // an error (`mint_free_var: None`). (Trait-method signatures do NOT route
+        // through here — they resolve via `traits/type_resolve.rs`, which mints
+        // their own type-var map; see FIXME 0590.) The caller's `var_map` is
+        // read-only here, so clone into a scratch map — no minting means the
+        // clone is never mutated.
         let mut scratch = var_map.clone();
         self.resolve_type_expr_impl(texpr, &mut scratch, module_path, None, span)
     }
 
     /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
     /// annotation `:a form`, or a type var nested in an applied annotation
-    /// `:(Box a)`) to its [`Type`], **minting a fresh quantified type variable**
-    /// for each free lowercase type-var name the source author writes (spec §3.3
-    /// [S109]). The minted var is bound in `var_map`, so repeated names within
-    /// one resolution co-refer (`[:a x :a y]` unifies x and y). `var_map` is the
-    /// **per-definition (per arity-clause) var scope**: the caller builds ONE
-    /// fresh map per signature and shares it across all parameters, so vars are
-    /// independent across clauses (each clause a fresh map) yet shared within one
-    /// clause. The minted var is an ordinary inference variable — it flows into
-    /// the same generalisation + §3.11 ambiguity machinery as any
-    /// inference-generated var (no parallel path).
+    /// `:(Box a)`) to its [`Type`], **minting a fresh type variable** for each
+    /// free lowercase type-var name the source author writes (spec §3.3 [S109]),
+    /// and returning the list of `TypeId`s freshly minted by this call.
+    ///
+    /// The minted var is bound in `var_map`, so repeated names within one
+    /// resolution — and across the whole definition when the caller threads ONE
+    /// shared scope (the `written_var_scope`) — co-refer (`[:a x :a y]` shares
+    /// `a`; a body `:a` co-refers to a param `:a`). A name already in `var_map`
+    /// is REUSED (not re-minted), so it is absent from the returned list; only
+    /// genuinely fresh names appear.
+    ///
+    /// **Rigidity is the caller's decision, keyed on the returned ids.** A
+    /// `defn`/`fn` **parameter** or a **body/value annotation** marks its fresh
+    /// ids RIGID (`CheckState::rigid_vars`); a **standalone/nested `fn`
+    /// parameter** leaves its fresh ids flexible (a lambda is not a
+    /// generalization boundary in rank-1 — it is quantified at the enclosing
+    /// definition, so its own fresh vars stay flexible and are instantiated at
+    /// application). Co-referring names carry whatever rigidity they were minted
+    /// with, automatically (they are not re-minted).
     pub(crate) fn resolve_annotation_type_expr_in_module(
         &self,
         texpr: &cranelisp_types::TypeExpr,
         var_map: &mut std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Type, ResolveError> {
-        let mint = || self.fresh_var_id().1;
-        self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)
+    ) -> Result<(Type, Vec<TypeId>), ResolveError> {
+        // Collect the ids minted by this call so the caller can mark them rigid
+        // (or not). `RefCell` because the `mint` closure is `Fn` (the resolver
+        // takes `&dyn Fn`) yet must record a side effect per mint.
+        let minted = std::cell::RefCell::new(Vec::new());
+        let mint = || {
+            let id = self.fresh_var_id().1;
+            minted.borrow_mut().push(id);
+            id
+        };
+        let ty = self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)?;
+        Ok((ty, minted.into_inner()))
     }
 
     /// Shared resolution core for both the type-definition path

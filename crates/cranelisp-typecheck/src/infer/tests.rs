@@ -1,4 +1,5 @@
     use super::*;
+    use std::collections::HashMap;
     use crate::checker::TestFixture;
     use cranelisp_types::{ConstructorDef, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, TypeName, Visibility};
 

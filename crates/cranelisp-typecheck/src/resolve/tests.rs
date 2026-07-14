@@ -410,6 +410,13 @@
     }
 
     // --- S109 §L.1 unit tier: written free type-var minting (spec §3.3) ---
+    //
+    // These pin the RESOLVE-layer mechanism: on a `var_map` miss in annotation
+    // context the resolver mints a fresh `Type::Var` and records it for
+    // co-reference. Whether that var is RIGID or flexible is the CALLER's
+    // decision (the checker; see the program-seam u1/u7 and the unify-seam u6
+    // cells) — the resolver only mints and records. A qualified name (`user/int`,
+    // contains `/`) never mints (u8).
 
     /// A counter-backed fresh-`TypeId` allocator, standing in for the checker's
     /// `fresh_var_id`. IDs start high (500) to keep them distinct from the
@@ -423,10 +430,11 @@
         }
     }
 
-    // spec: 03-types §3.3 [S109] (u1) — a free lowercase type var that MISSES
-    // `var_map` mints a fresh quantified variable when a `mint_free_var`
+    // spec: 03-types §3.3 [S109] (u1 resolve-half) — a free lowercase type var
+    // that MISSES `var_map` mints a fresh variable when a `mint_free_var`
     // allocator is supplied (annotation context), instead of erroring, and the
-    // minted id is recorded in `var_map`.
+    // minted id is recorded in `var_map`. (RIGIDITY of that var is asserted by
+    // the caller — see the program-seam `u1_written_param_var_is_rigid_*` cell.)
     #[test]
     fn u1_free_var_mints_fresh_when_allocator_present() {
         let mut var_map = HashMap::new();
@@ -600,4 +608,43 @@
             Type::ADT(test_fqtn("Pair"), vec![Type::Var(500), Type::Var(500)]),
             "both `a` positions co-refer to one minted var"
         );
+    }
+
+    // spec: 03-types §3.3 [S109] / §3.9.3 (u8) — a QUALIFIED lowercase name
+    // (`user/int`, contains `/`) is a module-qualified reference, NEVER a type
+    // variable (a var is a BARE lowercase identifier, §3.3). It MUST NOT mint
+    // even when a `mint_free_var` allocator is present — it falls to the
+    // `TypeNotFound` error naming the qualified string (F2/0589). Together with
+    // u4 (uppercase) this fences the minting rule to exactly bare-lowercase.
+    #[test]
+    fn u8_qualified_lowercase_name_does_not_mint() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(500);
+
+        // `:user/int` arrives (frontend-mis-tagged) as a `TypeVar` carrying the
+        // full qualified string. With a mint allocator present it STILL errors.
+        let err = resolve_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("user/int")),
+            &mut var_map,
+            &r,
+            Some(&mint),
+            Span::SYNTHETIC,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::TypeNotFound { .. }));
+        // It was NOT minted into the scope.
+        assert!(var_map.is_empty(), "a qualified name must not be recorded as a var");
+
+        // A BARE lowercase sibling in the same call DOES mint (control).
+        let ok = resolve_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("a")),
+            &mut var_map,
+            &r,
+            Some(&mint),
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert_eq!(ok, Type::Var(500));
     }

@@ -41,14 +41,25 @@ use crate::checker::type_def_view_of;
 ///   *identically to an inference-generated variable*. A miss therefore **mints
 ///   a fresh unification variable** via `alloc()` (the checker's ordinary
 ///   `fresh_var_id` allocator), binds it in `var_map`, and returns `Type::Var`.
-///   The minted var flows into exactly the same generalisation + §3.11 ambiguity
-///   machinery as any inference-generated var — there is no parallel path.
-/// - **`None` — type-definition context** (`deftype` field, trait-method sig).
+///   Whether that minted var is treated as a RIGID skolem or a flexible var is
+///   the *caller's* decision (spec §3.3 [S109]; see
+///   `resolve_annotation_type_expr_in_module`) — this resolver only mints and
+///   records for co-reference.
+/// - **`None` — type-definition context** (`deftype` field, platform sig).
 ///   A `TypeVar` that is not a declared type parameter is an unbound reference
 ///   and a miss is an error, as before. The case discrimination is entirely on
 ///   `TypeExpr::TypeVar` (a lowercase-leading identifier — the frontend routes
 ///   an uppercase name to `TypeExpr::Named`), so an unknown UPPERCASE type still
-///   errors `TypeNotFound` regardless of `mint_free_var` (§3.9.3).
+///   errors `TypeNotFound` regardless of `mint_free_var` (§3.9.3). (Trait-method
+///   signatures do NOT route through here — they resolve via
+///   `traits/type_resolve.rs`, which mints their own type-var map; FIXME 0590.)
+///
+/// **Qualified names never mint (F2/0589).** A type variable is a *bare*
+/// lowercase identifier (spec §3.3: `a, b, elem, f`). A `TypeVar` name that
+/// contains a `/` is a module-qualified reference (`user/int`) the frontend has
+/// mis-tagged as a `TypeVar`; it can never be a type variable, so it does NOT
+/// mint even in annotation context — it falls to the `TypeNotFound` error
+/// naming the qualified string.
 pub fn resolve_type_expr<C: CodeStore>(
     texpr: &TypeExpr,
     var_map: &mut HashMap<Symbol, TypeId>,
@@ -73,10 +84,15 @@ pub fn resolve_type_expr<C: CodeStore>(
         TypeExpr::TypeVar(name) => {
             if let Some(&id) = var_map.get(name) {
                 Ok(Type::Var(id))
-            } else if let Some(alloc) = mint_free_var {
-                // Annotation-context miss: mint a fresh quantified var (spec §3.3
-                // [S109]) and record it so later occurrences of this name in the
-                // same resolution co-refer.
+            } else if let Some(alloc) = mint_free_var
+                // A type variable is a BARE lowercase identifier (spec §3.3). A
+                // `/`-qualified name (`user/int`) is a module-qualified reference,
+                // never a var — it must NOT mint (F2/0589); fall to TypeNotFound.
+                && !name.as_ref().contains('/')
+            {
+                // Annotation-context miss: mint a fresh var (spec §3.3 [S109]) and
+                // record it so later occurrences of this name in the same
+                // resolution co-refer. Rigidity is decided by the caller.
                 let id = alloc();
                 var_map.insert(name.clone(), id);
                 Ok(Type::Var(id))
