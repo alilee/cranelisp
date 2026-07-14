@@ -30,4 +30,4 @@
 ;; `(mod test …)` submodule (S87 Stage C.2): super-imports the Num operators
 ;; and checks Int arithmetic with assert-eq (Int has Eq + Display).
 
-(mod test)
+(mod- test)

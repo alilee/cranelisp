@@ -39,4 +39,4 @@
 ;; `(mod test …)` submodule (S87 Stage C.2): exercises the pair accessors
 ;; with the in-language harness.
 
-(mod test)  ;; body in pair/test.cl (extraction-stable backing file, spec §8.2.5)
+(mod- test)  ;; body in pair/test.cl (extraction-stable backing file, spec §8.2.5)

@@ -38,7 +38,7 @@
 ;; and exercises Int + Bool ordering. (String ordering is omitted by design,
 ;; see the note below, so there is no String self-test.)
 
-(mod test)
+(mod- test)
 
 ;; NOTE: `Ord String` is intentionally NOT implemented. Lexicographic
 ;; string ordering needs a code-point comparison primitive (a `char→int`

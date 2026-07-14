@@ -40,4 +40,4 @@
 ;; `(mod test …)` submodule (S87 Stage C.2): exercises the Float helpers with
 ;; the in-language harness (Float has Eq + Display).
 
-(mod test)  ;; body in float/test.cl (extraction-stable backing file, spec §8.2.5)
+(mod- test)  ;; body in float/test.cl (extraction-stable backing file, spec §8.2.5)

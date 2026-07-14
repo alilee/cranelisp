@@ -51,4 +51,4 @@
 ;; with the in-language harness (`testing.assertions` does NOT depend on
 ;; `fn.result`, so there is no load cycle).
 
-(mod test)
+(mod- test)

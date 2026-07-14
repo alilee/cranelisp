@@ -116,4 +116,4 @@
 ;; per spec §8.2.5). The tests assert sequential-identity against vec-map /
 ;; vec-reduce: parallelism is transparent, so correctness is checkable serially.
 
-(mod test)
+(mod- test)

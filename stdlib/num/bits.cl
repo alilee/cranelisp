@@ -105,4 +105,4 @@
 ;; known values via the in-language harness. Body in bits/test.cl
 ;; (extraction-stable backing file, spec §8.2.5).
 
-(mod test)
+(mod- test)

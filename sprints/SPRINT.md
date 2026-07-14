@@ -344,8 +344,10 @@ contingency fires). W2/W3/W4/W5 = zero public-API.
 | P5-S2 | /dev (resume) | 0573 product-deftype persistence | (shim §II.3) | (shim) | — **DONE `e22763ca`**: save.rs one-line `type_def_info()` delegation; both rows GREEN; reload + --run/--link parity. Suite 6f. (0569/0572 display rows already GREEN) |
 | P5-S2 | /dev (resume) | 0575/0576 error-quality diagnostics | (shim §II.3) | (shim) | — **DONE `5764b538`**: fn single-arity parse msg (§4.5) + multi-arity defn names clause/param (§5.1.2) + 0568 `__expr` guarded same path; both rows GREEN + unit pins. Suite 4f = 0570×2 + 2 carries |
 | P5-S2 | /testing | 0571.2 review-finding negatives (B1/I1/I2) | (shim §II.3) | (shim) | — DONE: 5 negatives RED for right reason (B1 mode-divergence, I1 failed-reset false-no-member, I2×3 if/match/vec check-gate-leak). Suite 9f (concurrent landings dropped 17→9) |
-| P5-S2 | /dev (resume) | **0571.2 fix pass** (typecheck+int) | (shim §II.3) | (shim) | — B1 visibility gate + I1 failed-reset predicate + I2 uniform value-position mint + I3 Failed fail-fast + I4 comments/dedup + M2 cycle span; flips 5 negatives |
-| — | — | later-wave REDs remaining | — | — | 0570 (mod- honor, W4), 0569 (search macro `; defmacro` row, W3) still RED |
+| P5-S2 | /dev (resume) | **0571.2 fix pass** (typecheck+int) | (shim §II.3) | (shim) | — **DONE `5e3739c5`**: B1 visibility gate (mode-uniform) + I1 failed-reset predicate+purge + I2 UNIFORM value-position mint (0585 instance) + I3 Failed fail-fast + I4 dedup diagnostic + M2 cycle span. 5 negatives GREEN; caught+fixed own regression (reset over-scope); 6 unit tests; zero pub-API. Suite 4f = 0569, 0570 + 2 carries |
+| P5-S2 | /stdlib | 0570 pt1 — mark test submodules `(mod- test)` | (shim §II.3) | (shim) | — DONE: 17 modules → `(mod- test)` + CLAUDE.md convention; builds clean, self-tests 80/81. **Surfaced NEW defect: `vec-assoc` returns nondeterministic garbage** (pre-existing, stash-confirmed) → finding, repro owed |
+| P5-S2 | /dev (resume) | 0570 pt2 + 0569 — /search honor mod- + macro row | (shim §II.3) | (shim) | — search index/import filter honors mod- (§8.2.3) + macro rows show `; defmacro` |
+| P5-S2 | /review | 0571.2 re-review (Blocker fix) | (shim §II.3) | (shim) | — **0571 CLEAN for sprint**: B1/I2/I3/I4(code)/M2 CONFIRMED complete; Blocker dead. I1 confirmed on autoload path; 2 narrow Minor residuals → 0571.3 (degraded-startup false-no-member + purge cascade-victim hazard, module-history discriminator). Root-pos mint→0585; I4 design-doc→/design |
 | P5-S2 | /review | 0571 scheduler gap-arm review | (shim §II.3) | (shim) | — **NOT CLEAN: 1 Blocker + 4 Important** (see 0571 REVIEW note). Confirmed: no lost-wakeup re-open, cycle determinism, 0513 preserved, no backend resolution. Blocker = private-FQ-display visibility bypass (mode-divergence) → 0571.2 fix pass |
 | P5-S2 | /dev | W1.1a typecheck — bucket 2 dotted-ctor capability | (shim §II.3) | (shim) | — **REVERTED (blocked)**: mechanism works but canonical-key model has ~54 int-side regressions (display/quasiquote→prelude cascade/bootstrap-seeded-ctor split); work preserved as patch. 3 escalations (see W1.1a BLOCKER note) |
 | P5-S2 | /arch (resume) | W1 model re-ruling ((b) coordinate) + #2 ordering + per-regression verify | (shim §II.3) | (shim) | — **DONE**: measured 73 regs (not 54); ROOT = ONE backend site `lookup_constructor` (context.rs:146) one-hop bare-key (NOT quasiquote/seeded); **found SILENT soundness bug** (cross-module nullary ctor → closure-alloc vs iconst-tag, 2 backend resolvers disagree); coordinate design in `dotted-ctor-canonical-keys.md`; **#2 ordering YES tractable**; accessor-bug folds into W1 commit-1; FIXME 0582→/design |
@@ -570,6 +572,21 @@ two-commit discipline honored; public-API zero movement; writer uniformity (§1)
   M3 5×-dup `ModuleFailed` construction; M4 partial ref-span scan + wasted park IO;
   M5 `finalize_cluster` ~127L over budget.
 
+**0571.2 RE-REVIEW (2026-07-14): 0571 CLEAN for sprint.** Blocker + all Importants
+fixed. Residuals (all Minor, enumerated):
+- **0571.3 (queued /dev, small):** (a) I1 degraded-startup leg — false "no member"
+  still reachable for a failed startup DEP (predicate `fq_module_is_loaded`
+  untracked+non-empty reads it loaded); (b) **purge cascade-victim hazard (NEW,
+  introduced by 0571.2)** — `reset_failed_modules` purges by CALL-SITE, but the Failed
+  set can include a cascade-failed was-good module mid-watcher-reload → destroys its
+  valid table. Fix: discriminate by **module history (purge only never-was-terminal)**,
+  not call-site. `/testing` negatives owed for both.
+- **repl.rs:2617** still-ungated raw probe (latent, no live bypass — sole producer now
+  gated) + B1-test defect-locus annotation drift (trivial). → carry.
+- **root-position mint cell** (defn body IS a generic fn value at concrete type) — for
+  the **0585** matrix (`/qa`). **I4 design-doc record** of the gap-arm contract → `/design`.
+  Original M1/M3/M4/M5 → carry.
+
 **0571.2 plan:** `/dev` fix pass (B1 + I1 + I2-uniform + I3 + I4 + M2) AFTER the
 0575/0576 diagnostics wave frees the source token → `/testing` negatives (B1 private-FQ,
 I1 failed-reset-retry, I2 if/match/vec) → re-`/review`. FIXME 0585 → `/arch` (I2 class).
@@ -585,6 +602,13 @@ under time pressure — reinforces 0583.
 - {tbd}
 
 ### Findings (record in FIXMEs if not already)
+- **NEW defect (P5, /stdlib) — `vec-assoc` nondeterministic garbage.**
+  `collections.vec.test/test-assoc-sets`: `vec-assoc` returns a different huge wrong
+  value each run (expected 99). Stash-confirmed PRE-EXISTING (fails identically on the
+  unchanged tree), independent of 0570. Nondeterministic wrong value ⇒ likely
+  uninitialized-memory / heap-layout / RC soundness (backend). **Repro owed** —
+  narrow free-standing `/testing` repro (tests must be stdlib-free), then backend
+  triage. Out of S109 theme → carry with a committed failing repro. → `/qa`/`/testing`.
 - **S110 CENTREPIECE + `/audit` calibration miss (user, P5) → FIXME 0583.** The
   backend runs a full name resolver (10 `resolve_*` + the arbitrary-order
   `resolve_driven` global scan) instead of receiving FQ symbols from typecheck — a

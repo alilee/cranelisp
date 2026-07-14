@@ -178,4 +178,4 @@
 ;; verbs (count/get/conj/assoc) and the vec combinators with the harness.
 ;; Vec values reduce to Int scalars (via count/get/vec-reduce) for assert-eq.
 
-(mod test)
+(mod- test)

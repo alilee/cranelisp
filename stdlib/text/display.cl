@@ -32,4 +32,4 @@
 ;; The tests return `(Option String)` directly via inline `if` over a
 ;; `str-eq` of the rendered String — the same shape the harness produces.
 
-(mod test)
+(mod- test)

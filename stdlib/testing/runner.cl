@@ -186,4 +186,4 @@
 ;; EXTRACTION (spec §8.2.5) cannot strip it. It super-imports the runner's
 ;; pure helpers and asserts with the in-language harness.
 
-(mod test)
+(mod- test)

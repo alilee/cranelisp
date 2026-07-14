@@ -90,15 +90,21 @@ not write code for `tests/` (owned by `/qa`+`/testing`) or `examples/` (owned by
   (spec §8.3.6) to suppress the implicit prelude glob (§8.8.1): a project's custom
   prelude may re-export you, and importing from a prelude that depends on you is a
   cycle. Stdlib modules use only primitives and explicit inter-module imports.
-- **Self-tests ship as SEPARATE backing files.** Author `<module-dir>/<stem>/test.cl`
-  (module `<module>.test`) and leave a **bare `(mod test)`** in the parent — do NOT
-  author inline `(mod test …)` bodies. The compiler extracts an inline body to that
-  backing path on first compile (spec §8.2.5), but the extraction does not write the
-  file when the lib dir is the in-place workspace `stdlib/`, so an inline body is
-  silently stripped (a full `cargo nextest run` corrupted the tree this way, S87).
-  Authoring the backing file directly is extraction-stable. 17 modules currently
-  carry backing self-tests. Test functions use the `test-*` naming convention for
-  `discover-tests`.
+- **Self-tests ship as SEPARATE backing files, and the parent decl is PRIVATE.**
+  Author `<module-dir>/<stem>/test.cl` (module `<module>.test`) and leave a
+  **`(mod- test)`** (private submodule, spec §8.2.3) in the parent — do NOT author
+  inline `(mod test …)` bodies. The `mod-` (dash) form is mandatory: a bare
+  `(mod test)` declares a PUBLIC submodule, which `/search` then advertises as
+  importable (`test-count`, `test-int-eq`, … surface with a valid-but-unwanted
+  import hint — 0570). Private test submodules must not be importable or searchable,
+  so they use `(mod- test)`. The compiler extracts an inline body to the backing
+  path on first compile (spec §8.2.5), but the extraction does not write the file
+  when the lib dir is the in-place workspace `stdlib/`, so an inline body is silently
+  stripped (a full `cargo nextest run` corrupted the tree this way, S87). Authoring
+  the backing file directly is extraction-stable — and `mod-` does not break child-file
+  extraction or in-subtree usage (`super`-import resolution is unchanged). 17 modules
+  currently carry backing self-tests. Test functions use the `test-*` naming
+  convention for `discover-tests`.
 - **Clojure alignment.** Follow `clojure.core` naming and design where possible.
 - **Trait method params** use `self` syntax (spec §7.1). Primitive names match the
   builtins table exactly (`add-i64`, `str-concat`, …; spec appendix-A).
