@@ -970,3 +970,122 @@ fn fn_lambda_param_free_var_annotation() {
     )
     .assert_all_equal(3);
 }
+
+// =============================================================================
+// §3.3 [S109 W6.2] — Nested `fn` written vars CO-REFER (do NOT shadow).
+// Plan: tests/plan/PLAN.md §L.1 (FV-20). Corrected 2026-07-14: the earlier
+// "nested shadow" reading was ruled the OPPOSITE by the user.
+//
+// §3.3 SCOPE-5 (definition-scoped = lexical co-reference): a written var is
+// introduced at the OUTERMOST binder where its name first appears; every
+// occurrence of that name within the lexical scope — INCLUDING inside nested
+// `fn` closures — MUST co-refer to the same one rigid variable. A nested `fn`
+// does NOT open a fresh quantification boundary. Worked example (normative):
+// `(defn g [:a x] (fn [:a y] y))` → `∀a. (Fn [a] (Fn [a] a))` — `x` and `y`
+// are the SAME rigid `a`.
+//
+// At `e401cce9` the per-`Annotate` fresh var_map (F1/0588) makes the inner `:a`
+// a FRESH var (shadow), so the scheme is `(Fn [a] (Fn [b] b))` and the neg
+// facet is silently accepted — RED-for-right-reason on both facets.
+// =============================================================================
+
+// --- FV-20 (RED pos+neg) — inner `fn` `:a` co-refers to the enclosing rigid ---
+
+// spec: spec/03-types.md §3.3 — SCOPE-5 (lexical co-reference; nested `fn` does
+// NOT shadow): `(defn g [:a x] (fn [:a y] y))` → `∀a. (Fn [a] (Fn [a] a))` — the
+// inner `:a` co-refers to `g`'s rigid `a`. Made OBSERVABLE by the call chain:
+// `(g 3)` instantiates `a := Int` for BOTH layers, so `((g 3) 4)` → 4 while
+// `((g 3) "t")` MUST error — under the superseded shadow reading `(g 3)` would
+// stay polymorphic in `y` and wrongly accept "t". Companion `(defn g2 [:a x]
+// ((fn [:a y] y) x))` checks trivially (same rigid `a` both sides).
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars via a per-Annotate fresh var_map — the inner `fn` `:a` becomes a fresh SHADOW var instead of co-referring to the enclosing definition's rigid var — F1/0588) found=S109 owner=/dev
+#[test]
+fn nested_fn_written_var_corefers_enclosing_rigid() {
+    // Scheme facet: the inner `:a` co-refers → `(Fn [a] (Fn [a] a))`, NOT the
+    // shadow scheme `(Fn [a] (Fn [b] b))`.
+    let sch = repl_prims("(defn g [:a x] (fn [:a y] y))\n");
+    assert!(
+        sch.stdout.contains(":(Fn [a] (Fn [a] a)) user/g"),
+        "the inner `fn` `:a` MUST co-refer to `g`'s rigid `a` → \
+         `(Fn [a] (Fn [a] a))`, NOT the shadow `(Fn [a] (Fn [b] b))` (§3.3 \
+         SCOPE-5); got:\n{}",
+        sch.stdout
+    );
+
+    // Observable co-reference: `(g 3)` pins BOTH layers to Int.
+    let pos = repl_prims("(defn g [:a x] (fn [:a y] y))\n((g 3) 4)\n");
+    assert!(
+        pos.stdout.contains(":primitives/Int 4"),
+        "`(g 3)` instantiates `a := Int` for both layers, so `((g 3) 4)` → 4; \
+         got:\n{}",
+        pos.stdout
+    );
+
+    // The discriminator: `((g 3) "t")` MUST error — a shadow `y` would accept it.
+    let neg = repl_prims("(defn g [:a x] (fn [:a y] y))\n((g 3) \"t\")\n");
+    let ncomb = format!("{}{}", neg.stdout, neg.stderr);
+    assert!(
+        !neg.stdout.contains(":primitives/String \"t\""),
+        "co-reference pins `a := Int` at `(g 3)`, so `((g 3) \"t\")` MUST be a \
+         type mismatch — a SHADOW `y` would wrongly accept \"t\" (§3.3 \
+         SCOPE-5); got:\n{}",
+        neg.stdout
+    );
+    assert!(
+        !ncomb.contains("unknown type"),
+        "the co-reference mismatch MUST be a type error, never `unknown type` \
+         (§3.3 MUST-2); got:\n{ncomb}"
+    );
+
+    // Companion positive: same rigid `a` on both sides checks trivially.
+    let g2 = repl_prims("(defn g2 [:a x] ((fn [:a y] y) x))\n(g2 5)\n");
+    assert!(
+        g2.stdout.contains(":(Fn [a] a) user/g2") && g2.stdout.contains(":primitives/Int 5"),
+        "`(defn g2 [:a x] ((fn [:a y] y) x))` MUST check (same rigid `a` both \
+         sides) → `(Fn [a] a)`, `(g2 5)` → 5; got:\n{}",
+        g2.stdout
+    );
+}
+
+// spec: spec/03-types.md §3.3 — SCOPE-5 co-reference, NEGATIVE face (the
+// discriminating cell, inverted from the superseded shadow spec): `(defn outer
+// [:a x] ((fn [:a y] y) "s"))` MUST be a skolem-escape type error — the inner
+// `:a` co-refers to outer's rigid `a`, so applying `(fn [:a y] y)` to the
+// concrete `"s"` forces rigid `a ~ String` (MUST-4). The shadow reading
+// expected this to COMPILE to "s". (The inner-BODY assertion form `:a "hello"`
+// inside the `fn` body cannot parse — 0591 — so it stays unit-only, u7.)
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars via a per-Annotate fresh var_map — the inner `fn` `:a` shadows instead of co-referring, so the concrete application silently acquires instead of skolem-escaping — F1/0588) found=S109 owner=/dev
+#[test]
+fn nested_fn_written_var_corefers_enclosing_rigid_neg() {
+    let out = repl_prims("(defn outer [:a x] ((fn [:a y] y) \"s\"))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "the co-reference skolem-escape MUST be a type error, never `unknown \
+         type` (§3.3 MUST-2); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains("user/outer ; defn"),
+        "applying the co-referring inner `fn` to concrete \"s\" forces rigid `a \
+         ~ String` — the defn MUST be rejected (§3.3 SCOPE-5/MUST-4), not \
+         silently accepted; got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn outer [:a x] ((fn [:a y] y) \"s\"))\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: the co-referring inner `:a` forced to `String` MUST be rejected \
+         (§3.3 SCOPE-5 — inner `fn` does not shadow); got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+}

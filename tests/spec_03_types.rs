@@ -912,3 +912,313 @@ fn free_var_annotation_codegen_reaching_is_ambiguity_not_unknown_type_neg() {
          ambiguity); got:\n{runcomb}"
     );
 }
+
+// =============================================================================
+// §3.3 [S109 W6.2] — Written vars are RIGID / definition-scoped (2026-07-14
+// user ruling; §3.3 "definition-scoped and rigid"). Plan: tests/plan/PLAN.md
+// §L.1 (FV-16 … FV-21). These invert the FLEXIBLE/acquire model shipped at
+// `e401cce9` (F1/0588): an annotation ASSERTS, it does not ACQUIRE.
+//
+//   MUST-3 (assert-not-acquire; skolem-escape): `:a e` is a checking
+//     obligation discharged only when `e` ALREADY has type `a`. Ascribing a
+//     concrete-typed expr — or one carrying a DISTINCT rigid var — to a bare
+//     quantified var MUST be a type error; it MUST NOT silently acquire.
+//   MUST-4 (unification asymmetry): a FLEXIBLE var MAY unify with a rigid
+//     written var (param acquisition), but a RIGID written var MUST NOT unify
+//     with a concrete type nor a distinct rigid var — by USE just as by
+//     ascription.
+//   MUST-2 (not-unknown-type): the rejection is a TYPE error, never
+//     `unknown type` and never a codegen-layer frame.
+//
+// All rows are RED-not-ignored at `e401cce9` (the flexible impl ACCEPTS what
+// rigid MUST reject) and flip green at the `/dev` rigid re-fix. Fixtures are
+// free-standing (no stdlib); `[:a x]` annotation order (§5.1.1 EBNF); body
+// annotations sit in the single-arity `defn` body position (0588's live-repro
+// shape — the four gapped body positions of 0591 stay unit-only).
+// =============================================================================
+
+// --- FV-16 (RED, neg, all-modes) — assert-not-acquire: concrete ascription ----
+
+// spec: spec/03-types.md §3.3 — MUST-3 (assert-not-acquire; skolem-escape), THE
+// worked negative verbatim: `(defn f [:a x] :a "hello")` is a TYPE ERROR —
+// `"hello"` is concrete `String`, so the assertion `:a "hello"` cannot be
+// discharged against the rigid quantified `a`. It MUST NOT yield `(Fn [a]
+// String)` (silent acquisition), MUST NOT be `unknown type` (MUST-2), and the
+// defn is REJECTED — so a follow-on `(f 3)` never returns the acquired-world
+// value "hello".
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — ascription ACQUIRES instead of asserting; no rigid skolem — F1/0588) found=S109 owner=/dev
+#[test]
+fn written_var_concrete_ascription_skolem_escape_neg() {
+    // REPL: MUST NOT silently acquire `a := String`, and the follow-on call
+    // MUST NOT return the acquired-world value.
+    let out = repl_prims("(defn f [:a x] :a \"hello\")\n(f 3)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a concrete ascription to rigid `:a` MUST be skolem-escape, never \
+         `unknown type` (§3.3 MUST-2); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [a] primitives/String)"),
+        "ascribing concrete `String` to rigid `a` MUST NOT silently acquire \
+         `(Fn [a] String)` (§3.3 MUST-3 assert-not-acquire); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains(":primitives/String \"hello\""),
+        "the defn is a skolem-escape type error, so `(f 3)` MUST NOT return the \
+         acquired-world value \"hello\" (§3.3 MUST-3); got:\n{}",
+        out.stdout
+    );
+
+    // --run and --link: the defn is rejected → non-zero exit, never unknown-type.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: ascribing concrete `String` to rigid `a` MUST be rejected \
+         (§3.3 MUST-3 skolem-escape); got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+
+    let link = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link("user.cl")
+        .user("(defn f [:a x] :a \"hello\")\n(defn main [] (Pure 0))\n")
+        .output();
+    let lcomb = format!("{}{}", link.stdout, link.stderr);
+    assert!(
+        !link.status.success(),
+        "--link: the skolem-escape defn MUST fail typecheck before linking \
+         (§3.3 MUST-3); got success:\n{lcomb}"
+    );
+    assert!(
+        !lcomb.contains("unknown type"),
+        "--link: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{lcomb}"
+    );
+}
+
+// --- FV-17 (RED, neg) — distinct-rigid ascription -----------------------------
+
+// spec: spec/03-types.md §3.3 — MUST-3/MUST-4 (distinct-rigid clause): ascribing
+// a `b`-typed value to `:a` is a type error. `(defn g [:a x :b y] :a y)` — `y`
+// carries the DISTINCT rigid `b`, so the assertion `:a y` cannot be discharged;
+// the two rigid vars MUST NOT unify (which would collapse `(Fn [a b] …)` to
+// `(Fn [a a] …)`), and the failure is never `unknown type`. FV-7's in-body
+// negative face.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — ascription unifies two distinct written vars instead of asserting; no rigid skolem — F1/0588) found=S109 owner=/dev
+#[test]
+fn written_var_distinct_rigid_ascription_skolem_escape_neg() {
+    // REPL: the defn MUST NOT be accepted (no successful `g` scheme line).
+    let out = repl_prims("(defn g [:a x :b y] :a y)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a distinct-rigid ascription MUST be skolem-escape, never `unknown \
+         type` (§3.3 MUST-2); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains("user/g ; defn"),
+        "ascribing a `b`-typed value to rigid `:a` MUST be rejected, not a \
+         silently-accepted defn (§3.3 MUST-3/MUST-4); got:\n{}",
+        out.stdout
+    );
+
+    // --run: rejected → non-zero exit.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn g [:a x :b y] :a y)\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: two DISTINCT rigid vars MUST NOT unify (§3.3 MUST-4); the defn \
+         MUST be rejected; got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+}
+
+// --- FV-18 (neg RED + pos GREEN control) — skolem-escape through applied type --
+
+// spec: spec/03-types.md §3.3 — MUST-3 nested in an applied type: skolem-escape
+// reaches THROUGH a type constructor. `(defn h [:(Box Int) b] :(Box a) b)` is a
+// type error — the body annotation asserts `(Box a)` (rigid `a`) over `b` which
+// already has the concrete `(Box Int)`, and rigid `a ≠ Int` (MUST-4). MUST NOT
+// silently acquire `a := Int`; never `unknown type`.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — the applied-type var ACQUIRES `Int` under the constructor instead of asserting — F1/0588) found=S109 owner=/dev
+#[test]
+fn applied_annotation_rigid_var_concrete_mismatch_neg() {
+    let out = repl_prims(
+        "(deftype (Box a) [:a v])\n\
+         (defn h [:(Box Int) b] :(Box a) b)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "an applied-type skolem-escape MUST be a type error, never `unknown \
+         type` (§3.3 MUST-2); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [(user/Box primitives/Int)] (user/Box primitives/Int)) user/h"),
+        "asserting `:(Box a)` (rigid `a`) over a `(Box Int)` param MUST NOT \
+         silently acquire `a := Int` (§3.3 MUST-3/MUST-4 through the \
+         constructor); got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(deftype (Box a) [:a v])\n\
+             (defn h [:(Box Int) b] :(Box a) b)\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: rigid `a ≠ Int` under the `Box` constructor MUST be rejected \
+         (§3.3 MUST-3 applied-type skolem-escape); got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+}
+
+// spec: spec/03-types.md §3.3 — MUST-3 DISCHARGE case (applied form; GREEN
+// control twin of the neg above): `(defn h2 [:(Box a) b] :(Box a) b)` checks —
+// the body annotation `:(Box a)` co-refers to the param's OWN rigid `(Box a)`,
+// so the assertion is already satisfied → `(Fn [(Box a)] (Box a))`. This is the
+// positive control that proves the neg rejects for the RIGHT reason (concrete
+// mismatch), not because applied-type body annotations are broken wholesale.
+#[test]
+fn applied_annotation_rigid_var_corefers_param() {
+    let out = repl_prims(
+        "(deftype (Box a) [:a v])\n\
+         (defn h2 [:(Box a) b] :(Box a) b)\n",
+    );
+    assert!(
+        out.stdout.contains(":(Fn [(user/Box a)] (user/Box a)) user/h2"),
+        "a body annotation `:(Box a)` co-referring to the param's rigid \
+         `(Box a)` MUST discharge → `(Fn [(Box a)] (Box a))` (§3.3 MUST-3 \
+         discharge case); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("unknown type"),
+        "the co-referring discharge MUST NOT be an unknown-type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// --- FV-19 (RED, neg) — rigid-by-USE (the key consequence) --------------------
+
+// spec: spec/03-types.md §3.3 — MUST-1 ("never by the definition's own body") +
+// MUST-4: rigidity binds unification BY USE, not only by explicit ascription.
+// `(defn f2 [:a x] (add-i64 x 1))` is a type error — the body USE `(add-i64 x
+// 1)` forces the rigid `a ~ Int`. It MUST NOT compile as `(Fn [Int] Int)` (the
+// flexible model's silent narrowing — the defn would then LIE about its written
+// polymorphism); never `unknown type`. FV-11's single-clause core.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate + resolve.rs::resolve_type_expr (W6 minted FLEXIBLE inference vars for written annotation vars — a body use silently NARROWS the var instead of the rigid var rejecting — F1/0588) found=S109 owner=/dev
+#[test]
+fn written_var_body_use_cannot_pin_rigid_neg() {
+    let out = repl_prims("(defn f2 [:a x] (add-i64 x 1))\n(f2 5)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("unknown type"),
+        "a body-use rigid-escape MUST be a type error, never `unknown type` \
+         (§3.3 MUST-2); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains(":(Fn [primitives/Int] primitives/Int) user/f2"),
+        "a body USE `(add-i64 x 1)` MUST NOT silently narrow rigid `a` to \
+         `(Fn [Int] Int)` (§3.3 MUST-1/MUST-4 — rigid by use, not only by \
+         ascription); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains(":primitives/Int 6"),
+        "the defn is rejected (skolem-escape by use), so `(f2 5)` MUST NOT \
+         evaluate to 6; got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn f2 [:a x] (add-i64 x 1))\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: a body use forcing rigid `a ~ Int` MUST be rejected (§3.3 \
+         MUST-4 — no by-use exemption); got success:\n{rcomb}"
+    );
+    assert!(
+        !rcomb.contains("unknown type"),
+        "--run: the rejection MUST be a type error, never `unknown type`; \
+         got:\n{rcomb}"
+    );
+}
+
+// --- FV-21 (RED, neg) — qualified-lowercase annotation is NOT a var -----------
+
+// spec: spec/03-types.md §3.3 (the var rule is for a BARE lowercase identifier)
+// + §3.9.3 (neither type nor trait ⇒ error): a QUALIFIED lowercase annotation is
+// a named-type REFERENCE, never a type variable. `(defn f [:user/int x] x)` MUST
+// be an `unknown type` error naming `user/int`; it MUST NOT mint a type variable
+// (today it mints silently and typechecks polymorphic — F2/0589). The qualified
+// sibling of FV-13's uppercase guard — together they fence the minting rule to
+// exactly bare-lowercase.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck (type-var minting keyed on lowercase-ness without excluding QUALIFIED names; four mirror mint sites per 0590 — traits/type_resolve.rs ×3 + form.rs — F2/0589) found=S109 owner=/dev
+#[test]
+fn qualified_lowercase_annotation_unknown_type_not_minted_neg() {
+    let out = repl_prims("(defn f [:user/int x] x)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("unknown type") && combined.contains("user/int"),
+        "a QUALIFIED lowercase annotation `:user/int` is a named-type reference \
+         and MUST error as an unknown type naming `user/int` (§3.9.3); it MUST \
+         NOT be minted as a var (§3.3 is bare-lowercase only); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains("user/f ; defn"),
+        "`(defn f [:user/int x] x)` MUST be rejected, not silently defined as a \
+         polymorphic fn over a minted `user/int` var (F2/0589); got:\n{}",
+        out.stdout
+    );
+
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn f [:user/int x] x)\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: a qualified-lowercase named-type annotation with no such type \
+         MUST be rejected (§3.9.3), never minted (F2/0589); got success:\n{rcomb}"
+    );
+    assert!(
+        rcomb.contains("unknown type"),
+        "--run: the failure MUST be an unknown-type error naming `user/int`; \
+         got:\n{rcomb}"
+    );
+}
