@@ -1,4 +1,5 @@
     use super::*;
+    use super::finalize::AmbiguousForm;
     use crate::checker::TestFixture;
     use cranelisp_types::{CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName,
         ModuleEntry, ModuleFullPath, Symbol,
