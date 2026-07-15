@@ -1065,6 +1065,19 @@ order-flexible within the serial spine.
   the self-edge the backend keys via `resolve_got_target`); **dotted `Type.member`** capture
   (`resolve_dotted_member_entry`). Consolidate the `infer_var` triple-probe into one (the
   Important mirror). Same schema-19 window; one unit pin per leg. → `/review`.
+- **W0.1b — cross-module storage-module fix (`/arch` ruled `b48902ab`; `/dev` coordinated
+  types+typecheck+int, before W1).** The W0.1 review + arch completeness sweep found the
+  producer records the CALLER's module, not the STORAGE module, on three legs — masked
+  today by the backend global scan, hard-fails at W1's keyed read (Rev-2: no discovering
+  gaps via backend misses). Fix per `backend-keyed-consumer.md §1.1.1`: (i) **trait-method**
+  — `ModuleEntry::TraitImpl.impl_module` + `ResolvedCall::TraitMethod.impl_module` (both
+  REQUIRED, no serde default, schema-19 window, cross-crate atomic); `dispatch_target_fq`
+  reads it (also repairs the S101 reverse-index for cross-module trait calls); (ii)
+  **AutoCurry plain leg** — transport the callee Var's recorded carrier through
+  `pending_auto_curry`; (iii) **fn-value mono rewrite** (`mono_collect.rs:79-88`) — sidecar
+  insert at the Var rename (else the 0585 guard hard-fails post-W2). Cascade: `into_concrete`,
+  `src/repl.rs::impl_entry` fixture, types baseline regen. One unit pin per leg;
+  behaviour-invariant (13-RED baseline holds). → `/review`.
 - **W0.2 — harnesses (`/testing`, before W1).** **KC-W0-2** golden-CLIF byte-identity harness
   (the gate that makes the W0.b flip shippable) + **KC-W0-6** backend unit-harness
   fixture-sidecar population (else the backend unit suite reds at W1). tests/ + backend-src;
