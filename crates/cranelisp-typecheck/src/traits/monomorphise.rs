@@ -667,10 +667,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             };
             for fq_trait in traits {
                 if !self.has_impl_with_state(state, &fq_trait.name, &impl_type) {
+                    // `fq_trait` is already FQ; render `impl_type` FQ too so the
+                    // message disambiguates two same-named ADTs (S87-1).
+                    let fq_impl_type =
+                        self.fq_type_name_for_diagnostics(state, &impl_type, call_span);
                     return Err(CranelispError::TypeError {
                         message: format!(
                             "no impl of trait {} for type {}",
-                            fq_trait, impl_type
+                            fq_trait, fq_impl_type
                         ),
                         location: ErrorLocation::from_span(call_span),
                     });

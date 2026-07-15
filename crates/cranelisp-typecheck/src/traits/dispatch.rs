@@ -61,10 +61,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // State-rooted: chain-follow the trait reference from the current
         // module's view to the trait's defining module per Decision 45.
         if !self.has_impl_with_state(state, &trait_name, &impl_type_name) {
+            // Render both halves fully-qualified so the message disambiguates
+            // a missing impl under two same-named ADTs from different modules
+            // (S87-1). Best-effort — falls back to the bare name if the FQ
+            // resolution fails.
+            let fq_trait = self.fq_trait_name_for_diagnostics(state, &trait_name, span);
+            let fq_impl_type = self.fq_type_name_for_diagnostics(state, &impl_type_name, span);
             return Err(CranelispError::TypeError {
                 message: format!(
                     "no impl of trait {} for type {}",
-                    trait_name, impl_type_name
+                    fq_trait, fq_impl_type
                 ),
                 location: ErrorLocation::from_span(span),
             });

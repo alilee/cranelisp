@@ -1964,7 +1964,7 @@
 
         let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
-            err.message().contains("no impl of trait Num for type Bool"),
+            err.message().contains("no impl of trait test/Num for type primitives/Bool"),
             "expected Num/Bool error, got: {}",
             err.message()
         );
@@ -1990,7 +1990,7 @@
 
         let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
-            err.message().contains("no impl of trait Num for type String"),
+            err.message().contains("no impl of trait test/Num for type primitives/String"),
             "expected Num/String error, got: {}",
             err.message()
         );
@@ -2016,7 +2016,7 @@
 
         let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
-            err.message().contains("no impl of trait Ord for type Bool"),
+            err.message().contains("no impl of trait test/Ord for type primitives/Bool"),
             "expected Ord/Bool error, got: {}",
             err.message()
         );
@@ -2042,7 +2042,7 @@
 
         let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
-            err.message().contains("no impl of trait Ord for type String"),
+            err.message().contains("no impl of trait test/Ord for type primitives/String"),
             "expected Ord/String error, got: {}",
             err.message()
         );

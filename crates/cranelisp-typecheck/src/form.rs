@@ -508,8 +508,15 @@ fn parsed_to_top_level(parsed: ParsedEntry) -> Option<TopLevel> {
         ParsedEntry::TraitDecl { decl } => Some(TopLevel::TraitDecl(decl)),
         ParsedEntry::TraitImpl { impl_ } => Some(TopLevel::TraitImpl(impl_)),
         ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => None,
-        // Catch-all for #[non_exhaustive] forward-compatibility.
-        _ => None,
+        // `ParsedEntry` is `#[non_exhaustive]` (cranelisp-types), so the
+        // compiler requires a catch-all. A NEW variant reaching here is a
+        // frontend-contract break: every `ParsedEntry` must be either mapped
+        // to a `TopLevel` or explicitly declined above (S87-3). Fail loudly
+        // rather than silently dropping the entry.
+        other => unreachable!(
+            "parsed_to_top_level: unhandled ParsedEntry variant {other:?} — a new \
+             frontend-contract variant must be mapped or explicitly declined here"
+        ),
     }
 }
 

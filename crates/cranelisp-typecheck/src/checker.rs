@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, MethodResolutions, ModuleAliases,
+    CranelispError, FQSymbol, FQTraitName, MethodResolutions, ModuleAliases,
     ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
     Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
     Warning, apply,
@@ -682,24 +682,22 @@ where
         self.resolve_terminal_entry_and_home(module_path, name).map(|(e, _home)| e)
     }
 
-    /// Look up the parent type name for a constructor.
+    /// Look up the parent type name for a constructor, rooted in
+    /// `module_path`.
     ///
     /// Per Principle 17 — current-module-only short-name lookup, with
-    /// per-symbol chain-follow on `Import`/`Reexport` entries. Public
-    /// default-rooted variant defaults to `user`. Returns the bare TypeName
-    /// of the parent type. A **single-ctor product** type resolves through the
-    /// `Def { kind: Constructor }` arm exactly like a sum ctor (S79 Option 3a):
-    /// the product ctor's surviving entry under the `"Rectangle"` key is the
-    /// got-slotted ctor `Def`, whose `DefKind::Constructor.type_name` names the
-    /// parent type. There is no longer a separate `TypeDef`-via-`constructor_scheme`
-    /// path to consult.
-    #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
-    pub(crate) fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
-        let user_path = ModuleFullPath::from("user");
-        self.lookup_constructor_type_in_module(&user_path, ctor_name)
-    }
-
-    /// Module-rooted variant of [`Self::lookup_constructor_type`].
+    /// per-symbol chain-follow on `Import`/`Reexport` entries. Returns the bare
+    /// TypeName of the parent type. A **single-ctor product** type resolves
+    /// through the `Def { kind: Constructor }` arm exactly like a sum ctor (S79
+    /// Option 3a): the product ctor's surviving entry under the `"Rectangle"`
+    /// key is the got-slotted ctor `Def`, whose `DefKind::Constructor.type_name`
+    /// names the parent type. There is no longer a separate
+    /// `TypeDef`-via-`constructor_scheme` path to consult.
+    ///
+    /// The former no-arg `lookup_constructor_type` sibling that defaulted its
+    /// root to `"user"` was deleted (S87-4, Principle 17/19 — no module is
+    /// privileged by name); the `#[cfg(test)]` convenience wrapper in
+    /// `test_support.rs` roots explicitly at `state.current_module`.
     pub(crate) fn lookup_constructor_type_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -1154,6 +1152,38 @@ where
             ModuleEntry::TraitDecl { .. } => Ok(resolved.home),
             _ => Err(trait_not_found()),
         }
+    }
+
+    /// Best-effort fully-qualified render of a bare `TypeName` for a diagnostic
+    /// message. Resolves `type_name` to its `FQTypeName` (`module/name`) so a
+    /// "no impl" message disambiguates two same-named ADTs from different
+    /// modules; falls back to the bare name when resolution fails — a
+    /// diagnostic must never itself error. Read-only (routes through
+    /// `scope_resolve`).
+    pub(crate) fn fq_type_name_for_diagnostics(
+        &self,
+        state: &CheckState,
+        type_name: &TypeName,
+        span: Span,
+    ) -> String {
+        self.resolve_type(state, type_name, span)
+            .map(|fq| fq.to_string())
+            .unwrap_or_else(|_| type_name.to_string())
+    }
+
+    /// Best-effort fully-qualified render of a bare `TraitName` for a
+    /// diagnostic message — sibling of [`Self::fq_type_name_for_diagnostics`].
+    /// Chain-follows the trait reference to its defining module and renders
+    /// `module/Trait`; falls back to the bare name on resolution failure.
+    pub(crate) fn fq_trait_name_for_diagnostics(
+        &self,
+        state: &CheckState,
+        trait_name: &TraitName,
+        span: Span,
+    ) -> String {
+        self.resolve_trait(state, trait_name.as_ref(), span)
+            .map(|home| FQTraitName::new(home, trait_name.clone()).to_string())
+            .unwrap_or_else(|_| trait_name.to_string())
     }
 
     /// Resolve a constructor name to its parent type's `FQTypeName` via

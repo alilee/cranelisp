@@ -174,7 +174,60 @@ fn test_try_resolve_trait_method_no_impl() {
     let err = result.unwrap_err();
     match err {
         CranelispError::TypeError { message, .. } => {
-            assert!(message.contains("no impl of trait TestTrait for type Bool"), "{message}");
+            // S87-1: the trait renders fully-qualified (`user/TestTrait`); the
+            // bare primitive `Bool` is not a resolvable type-def in this bare
+            // fixture, so the type half best-effort-falls-back to the bare name.
+            assert!(message.contains("no impl of trait user/TestTrait for type Bool"), "{message}");
+        }
+        other => panic!("expected TypeError, got {other:?}"),
+    }
+}
+
+// spec: 07-traits §7.4.3 — S87-1: the "no impl" diagnostic renders the impl
+// TYPE fully-qualified so a missing impl under two same-named ADTs from
+// different modules is disambiguable (`user/Widget` vs a would-be
+// `other/Widget`), not an undifferentiated bare `Widget`.
+#[test]
+fn no_impl_diagnostic_renders_type_fully_qualified() {
+    use cranelisp_types::{ConstructorDef, FQTypeName, ModuleFullPath};
+
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl()).unwrap();
+    // Register a `Widget` ADT in the current (`user`) module so the type name
+    // resolves to its FQ identity `user/Widget`.
+    tc.register_type_def_self(
+        &TypeName::from("Widget"),
+        &None,
+        &[],
+        &[ConstructorDef {
+            name: Symbol::from("Widget"),
+            docstring: None,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+
+    let widget = Type::ADT(
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Widget")),
+        vec![],
+    );
+    // No impl of TestTrait for Widget is registered.
+    let err = tc
+        .try_resolve_trait_method_self(&Symbol::from("test-op"), &[widget.clone(), widget], Span::SYNTHETIC)
+        .expect_err("missing impl must be a type error");
+    match err {
+        CranelispError::TypeError { message, .. } => {
+            assert!(
+                message.contains("user/Widget"),
+                "type half must be module-qualified for same-named-ADT disambiguation: {message}"
+            );
+            assert!(
+                message.contains("user/TestTrait"),
+                "trait half must be module-qualified: {message}"
+            );
         }
         other => panic!("expected TypeError, got {other:?}"),
     }
