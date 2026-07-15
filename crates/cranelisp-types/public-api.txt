@@ -837,6 +837,21 @@ impl core::marker::Unpin for cranelisp_types::WarningKind
 impl core::marker::UnsafeUnpin for cranelisp_types::WarningKind
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::WarningKind
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::WarningKind
+#[non_exhaustive] pub struct cranelisp_types::AdtCtorSpec
+pub cranelisp_types::AdtCtorSpec::docstring: core::option::Option<alloc::string::String>
+pub cranelisp_types::AdtCtorSpec::fields: alloc::vec::Vec<cranelisp_types::FieldInfo>
+pub cranelisp_types::AdtCtorSpec::got_slot: usize
+pub cranelisp_types::AdtCtorSpec::internal: bool
+pub cranelisp_types::AdtCtorSpec::name: cranelisp_types::Symbol
+impl cranelisp_types::AdtCtorSpec
+pub fn cranelisp_types::AdtCtorSpec::new(cranelisp_types::Symbol, alloc::vec::Vec<cranelisp_types::FieldInfo>, core::option::Option<alloc::string::String>, bool, usize) -> Self
+impl core::marker::Freeze for cranelisp_types::AdtCtorSpec
+impl core::marker::Send for cranelisp_types::AdtCtorSpec
+impl core::marker::Sync for cranelisp_types::AdtCtorSpec
+impl core::marker::Unpin for cranelisp_types::AdtCtorSpec
+impl core::marker::UnsafeUnpin for cranelisp_types::AdtCtorSpec
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::AdtCtorSpec
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::AdtCtorSpec
 pub struct cranelisp_types::CallEdge
 pub cranelisp_types::CallEdge::callee: cranelisp_types::Symbol
 pub cranelisp_types::CallEdge::span: cranelisp_types::Span
@@ -1734,6 +1749,7 @@ pub trait cranelisp_types::MacroExpander: core::marker::Send + core::marker::Syn
 pub fn cranelisp_types::MacroExpander::invoke(&self, &cranelisp_types::FQSymbol, &[cranelisp_types::Sexp], cranelisp_types::Span) -> core::result::Result<cranelisp_types::Sexp, cranelisp_types::MacroInvokeError>
 pub fn cranelisp_types::apply(&cranelisp_types::Subst, &cranelisp_types::Type) -> cranelisp_types::Type
 pub fn cranelisp_types::bare_member_name(&str) -> &str
+pub fn cranelisp_types::build_adt_entries<C: cranelisp_types::CodeStore>(&cranelisp_types::FQTypeName, &[cranelisp_types::Symbol], &[cranelisp_types::TypeId], core::option::Option<&str>, &[cranelisp_types::AdtCtorSpec], cranelisp_types::Visibility) -> alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::ModuleEntry<C>)>
 pub fn cranelisp_types::check_binding_addition(&cranelisp_types::Symbol, cranelisp_types::BindingProvenance, cranelisp_types::BindingProvenance, &cranelisp_types::FQSymbol, cranelisp_types::Span) -> core::result::Result<(), cranelisp_types::CranelispError>
 pub fn cranelisp_types::collect_var_ids_ordered(&cranelisp_types::Type, &mut alloc::vec::Vec<cranelisp_types::TypeId>)
 pub fn cranelisp_types::ensure_module_exists<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath) -> cranelisp_types::EnsureOutcome where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore

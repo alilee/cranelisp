@@ -1060,6 +1060,61 @@ pub struct FieldInfo {
 
 No changes from v1.
 
+### ADT-entry builder — `AdtCtorSpec` + `build_adt_entries` (S110 R-2)
+
+The ONE derivation of the symbol-table entry set an ADT registration produces
+(`crates/cranelisp-types/src/adt_build.rs`; Principle 24 "Resolve once" —
+instance R-2 of the registration-mirror class). Two writers previously
+maintained the shape as a near-line-for-line mirror — typecheck
+`adt.rs::register_type_def_with_ctor_infos` (user `deftype`) and int
+`src/bootstrap.rs::register_synth_adt` (synthetic seeds: `Option`, `Pair`,
+`Result`, `IO`, `SList`/`Sexp`, `Trace`) — and S109's canonical-key change had
+to be hand-applied to BOTH (the `src/` audit R-2 finding). Now both are thin
+callers.
+
+```rust
+/// One constructor of an ADT registration: caller-RESOLVED field types
+/// (FieldInfo), pre-allocated got_slot (the builder is pure — slot
+/// allocation is table state), ctor docstring, internal flag. Tag is
+/// positional, assigned by build_adt_entries.
+#[non_exhaustive]
+pub struct AdtCtorSpec {
+    pub name: Symbol,
+    pub fields: Vec<FieldInfo>,
+    pub docstring: Option<String>,
+    pub internal: bool,
+    pub got_slot: usize,
+}
+impl AdtCtorSpec { pub fn new(..) -> Self }
+
+/// Pure: ADT description → ordered (key, entry) list.
+pub fn build_adt_entries<C: CodeStore>(
+    fqtn: &FQTypeName,
+    type_params: &[Symbol],
+    type_var_ids: &[TypeId],
+    adt_docstring: Option<&str>,
+    ctors: &[AdtCtorSpec],
+    visibility: Visibility,
+) -> Vec<(Symbol, ModuleEntry<C>)>
+```
+
+The builder owns: the product/sum split (S79 Option 3a — single ctor named as
+the type ⇒ one dual-facet `Def` with `type_def: Some(..)`, no alias, no
+`TypeDef`), ctor schemes (`forall vars. (Fn [fields] ADT)` / bare `ADT` for
+nullary), the synthesised `DefnVariant` body wrapping `Expr::ConstrADT`,
+canonical `member_key(Type, Ctor)` keying + the bare-name `Import` alias edge
+per sum ctor (S109 dotted-ctor keying), the product docstring fallback, and
+the `TypeDefInfo` computed ONCE. Callers keep: GOT-slot allocation (rides in
+on the spec), insertion policy (bootstrap inserts verbatim; typecheck runs its
+§8.6.5 contest classification on the returned `Import` alias pairs — the only
+`Import` shape the builder emits, so structurally discriminable), the
+recursive-field pre-seed, and product field-accessor synthesis
+(typecheck-only). Ordering contract: per ctor in tag order, canonical `Def`
+before its bare alias; sum `TypeDef` last — a sequential inserter preserves
+as-built semantics. No serde-shape change (existing entry shapes only; no
+`CACHE_SCHEMA_VERSION` impact). Caller wiring is the S110 Phase-5 coordinated
+`/dev` change-set (`design/arch/backend-keyed-consumer.md` §6).
+
 ---
 
 ## Module System

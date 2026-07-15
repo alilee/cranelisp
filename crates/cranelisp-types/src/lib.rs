@@ -227,6 +227,7 @@ pub(crate) mod parsed;
 // `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
 // edge.
 pub(crate) mod module;
+pub(crate) mod adt_build;
 pub(crate) mod ownership;
 pub(crate) mod got;
 pub(crate) mod heap;
@@ -301,6 +302,15 @@ pub use module::{
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
 };
+// ADT-entry builder (S110 R-2, the registration-mirror cure; Principle 24
+// "Resolve once"): the ONE derivation of the entry set an ADT registration
+// produces — product/sum split, ctor schemes + synthesised `ConstrADT` bodies,
+// canonical `member_key(Type, Ctor)` keying + bare-alias edges, the TypeDef.
+// Two thin callers: typecheck `adt.rs` (user `deftype`) and int
+// `src/bootstrap.rs` (synthetic seeds). Pure — callers keep GOT-slot
+// allocation and insertion policy (§8.6.5 contests are typecheck's).
+// `design/arch/interfaces.md` §"ADT-entry builder".
+pub use adt_build::{AdtCtorSpec, build_adt_entries};
 // Ownership-inference carrier types (S102 CS-A) — the typecheck→backend
 // memory-model contract: the `Mode` lattice, per-callable `ModeSummary`
 // (ABI-bearing `param_modes`/`result` + advisory `param_flow`/`spark_ops`/
