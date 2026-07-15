@@ -335,6 +335,7 @@ evidenced classes):
 | `error-swallow` | A raised diagnostic is dropped or clobbered between its raise site and the display boundary — e.g. the multi-form REPL eval arm wrapping a per-form error as a fake `Val{0}` warning that a later warnings overwrite discards, surfacing silent `:Int 0` (S108 E7). Distinct from `silent-accept` (nothing was ever raised) |
 | `check-gate-leak` | A source-level fault typecheck must decide (resolve or reject check-side) leaks past the check boundary and surfaces as a codegen/backend-layer error — e.g. the slot-less generic value-position FQ ref reaching `backend/literals.rs` as an opaque codegen error (S108, 0571 D1). Distinct from `silent-accept` (nothing raised anywhere) and `error-swallow` (raised then dropped): here the wrong LAYER raises (added S109, /qa) |
 | `wrong-reject` | A spec-conforming program REJECTED — an over-strict gate or mis-scoped semantic model; the inverse of `silent-accept` (S109 W6.2 rigid-bare written vars rejecting §3.3 rows 2/4/11) (added S109, /qa) |
+| `shared-state-write-race` | A background/concurrent actor writes substrate a foreground consumer reads — correctness resting on undo/cleanup discipline or scheduling luck instead of isolation-by-construction (S109 index-feed phantom-prelude write, FIXME 0604; the S61→S93 heisenbug lineage). Distinct from `mode-divergence` (deterministic per mode) — here one mode's outcome varies by interleaving (added S110, /qa) |
 
 **Rules:**
 

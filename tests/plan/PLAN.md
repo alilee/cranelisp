@@ -2871,3 +2871,405 @@ MUST-1..MUST-4/SCOPE-5 band to the §3.3 (a)–(k) band + FV-12's re-grounding
 comment, then the L.2 execution items; (5) remaining GREEN pins/controls.
 Every RED lands failing-not-ignored with `// spec:` + (for defect rows) the
 `// defect:` line given in its row.
+
+## Sprint 110 — sprint-wide failing-test plan (Phase-3 exit gate, 2026-07-15, /qa)
+
+The QA-first drafting spec for `/testing` (Phase 5 authors to THIS plan before
+per-crate D/D/R begins). Scope: `sprints/SPRINT.md` all five buckets. Design
+contracts: `design/arch/backend-keyed-consumer.md` (§1 carrier contract, §1.1
+hard-miss families, §1.2 REJECT criterion, §3 S1–S24 inventory + W3 grep gate,
+§4 wave briefs, §5 W0.b totalization, §6 R-2, §7 0585 guard);
+`design/typecheck/type-expr-resolver-convergence.md` (0590);
+`design/typecheck/return-poly-dispatch-signal.md` + FIXME 0611 (R16/R17);
+`design/int/index-worker-isolation.md` (0604 — attribution CORRECTED, see
+`s109-attribution-index-feed-race.md` §2); FIXMEs 0583/0585/0604/0605/0609.
+Spec contracts: `spec/03-types.md` §3.3.3 MUST (e)/§3.11;
+`spec/05-definitions.md` §5.1.2; `spec/07-traits.md` (trait/HKT sig
+resolution); `spec/08-modules.md` §8.5 (type refs resolve in scope);
+`spec/12-runtime.md` §12.1.
+
+Discipline reminders binding on this plan: REDs are failing-not-ignored; every
+fix pairs a `/dev` unit test in the same change-set (METHOD §2.2); every
+deferral to the unit tier ENUMERATES its cases (S108 Inc2); fixtures are
+stdlib-free except the §E gate (the ONE sanctioned
+`use_workspace_stdlib_for_stdlib_conformance_only()` exception);
+language-semantics rows run all modes. A large share of S110 is
+**behaviour-invariant plumbing** (0583 W0–W3, R-2, 0606/0608), so this plan
+leans harder than usual on (a) invariance gates (suite-green + CLIF
+byte-identity + zero library-baseline movement), (b) unit-tier hard-miss
+negatives (loud-failure pins that e2e structurally cannot reach — a
+well-formed program never produces a missing carrier), and (c) structural
+grep gates executed by `/review`. Where a family is unit-tier, its cases are
+enumerated here — a bare "unit-pinned" is a hole.
+
+**Vocabulary addition (this pass, /qa):** `class=shared-state-write-race`
+added to the controlled `// defect:` vocabulary in `tests/CLAUDE.md`
+(requested by FIXME 0604 §Acceptance 4) — a background/concurrent actor
+writes substrate a foreground consumer reads, correctness previously resting
+on undo/cleanup or scheduling luck. `/testing` retro-tags the 0604 repro
+family with it when the fix lands.
+
+### Risk read (summary; full entries in `risks.md` §"S110 risk read")
+
+Highest-silent-failure changes, in order: (1) **W0/W0.b behaviour-invariance**
+— the producer change-set touches every mono view and relocates the lenient
+builder; a semantic drift ships silently unless byte-identity is gated, and a
+**stale cache** (schema 18→19) deserialising `None` carriers post-W1 is a
+hard-fail-at-a-distance class; (2) **the soft-fallback hybrid** — one
+keyed-read-else-`resolve_driven` arm silently masks every producer gap and
+voids the whole initiative (Rev-2 makes it a `/review` REJECT; no test can
+see it from outside); (3) **W1 harness red** — backend unit fixtures that
+don't populate sidecars flip the whole backend unit suite RED mid-wave
+(pinned as a `/dev`+`/testing` W0 obligation); (4) **0590 tightening blast
+radius** — the deleted never-error `Named` fabrication may have been
+load-bearing (a program that compiled via a fabricated ADT now errors) —
+scout BEFORE the flip; (5) **0604 false-green** — a scheduling-perturbation
+"fix" that quiets the phantom under one interleaving; the locate-first sweep
+is the gate; (6) **R16/R17 false-positive regression** — the S109 revert
+class: an outcome-grounded gate that drifts back to surface-type concreteness
+re-flags `(add2 3 4)`.
+
+### A. 0583 — backend pure keyed-lookup consumer: per-wave acceptance
+
+The per-site flip sets are `backend-keyed-consumer.md` §3 (S1–S24) — each
+wave brief enumerates its sites and `/review` checks carrier coverage per
+site. The e2e suite's job per wave is **invariance** (the flips are
+behaviour-preserving); the NEW authored guards are the **hard-miss negative
+families**, which are **unit-tier by construction**: post-W0 a well-formed
+program always carries its resolutions, so carrier-miss/entry-miss states are
+only constructible by fixture (the backend unit harness builds both tables
+and exprs). The S109 §10.9 BU-1 loud-miss pin is the worked precedent.
+
+#### A.1 W0 (producer) — behaviour-invariance + totalization pins
+
+| Row | Contract | Guard | Tier / owner | Status |
+|---|---|---|---|---|
+| KC-W0-1 | §4 W0 shippability — carriers ride unread | Full suite green at W0 close; **zero new REDs** vs the S110-entry RED set | e2e (existing suite) / `/dev` runs, `/qa` verifies | [S110] |
+| KC-W0-2 | §4 W0.b — CLIF byte-identity: the typecheck-built lenient view lowers identically to the deleted backend-built one | `CRANELISP_CODEGEN_TRACE=1` capture over a fixture set spanning the lenient entry classes (ctor `Def`, synthesised accessor, `f$Var` multi-sig variant, generic template, `__expr` disposition-3 body, non-concretized macro-clause body) — byte-compare pre/post W0.b | e2e-shaped verification harness, run in the W0 change-set / `/dev` + `/testing` | [S110] |
+| KC-W0-3 | §8 cache `CACHE_SCHEMA_VERSION` 18→19 | Warm-cache row: cold run then warm run identical result post-W0; stale-cache neg: a pre-bump cache is INVALIDATED wholesale, never deserialised into `None`-carrier views (`tests/cache.rs`, the DC-9/DC-14 template) | e2e / `/testing` | [S110] — author with W0 |
+| KC-W0-4 | §5 pin 1 — every synthesised accessor view's ctor arm carries `resolved_ctor` = the owner type's canonical ctor key | typecheck unit (enumerated: product accessor; sum-with-fields accessor; parameterised-type accessor) | unit / `/dev` (typecheck) | [S110] |
+| KC-W0-5 | §5 pin 2 — totalization: every codegen-reached `defined_symbols()` entry carries a view after check | typecheck unit + the backend view-absent hard error (`lib.rs:905` flip) as the runtime twin | unit / `/dev` | [S110] |
+| KC-W0-6 | **W1 harness pin** (arch §4 W0.a) — backend unit-test fixtures populate `resolved_targets`/mono sidecars | `/testing`+`/dev` obligation recorded HERE so W1 does not red the backend unit suite: `test_support.rs:327/692` callers updated IN W0, fixture sidecars computed from the fixture tables. Acceptance: backend unit tier green at W0 close AND at W1 close | unit-infra / `/dev` (backend) | [S110] — blocking for W1 |
+
+#### A.2 W1 (call seam, flips S1–S9) + W2 (value seam, flips S10–S18)
+
+Positive kind-flip coverage: for each reference kind below, `/testing`
+VERIFIES an existing e2e exercises it through the keyed path (all modes where
+marked) and authors only the missing cells — the flip is behaviour-invariant,
+so pre-existing green tests ARE the flip guards; a kind with no e2e exercising
+it is a coverage gap to fill BEFORE its wave lands.
+
+| Row | Kind (wave) | Existing-coverage verification target / new cell | Status |
+|---|---|---|---|
+| KC-K1 | Concrete user fn call, cross-module + mangled variant (W1) | multi-module call suites (`spec_08`, `mono_mangle_home_collision.rs`) — verify; modes | [S110] — verify-first |
+| KC-K2 | Primitive call, GOT-slot (W1) | ubiquitous (`add-i64` everywhere) — verify | [S110] |
+| KC-K3 | Ctor `Apply` incl. dotted + colliding names (W1) | DC-1/DC-2/DC-6/DC-12/DC-13 (§S109 D) stay green — these ARE the W1 ctor guards | [S110] |
+| KC-K4 | Platform effect + poll shape (W1) | `concurrency_*`/platform suites — verify | [S110] |
+| KC-K5 | Extern (`discover-tests`) (W1) | `/run-tests` + discover-tests e2e — verify | [S110] |
+| KC-K6 | Callee mode-summary / borrow elision (W1→W2) | `ownership_fences.rs`, `projection_elision_guard.rs` stay green | [S110] |
+| KC-K7 | fn-as-value gate + closure-wrapper arity (W2) | `generic_value_use_mono.rs`, HOF suites — verify | [S110] |
+| KC-K8 | vec-query primitive as value, both curry legs (W2) | vec-query value-use family (null-got-slot repros, S100–101) stays green | [S110] |
+| KC-K9 | Nullary-ctor `Var` + ctor-as-value (W2) | the S109 AN-2 nullary-as-closure class guards stay green; `dotted_ctor_passed_as_argument_and_let_bound` (DC-8) | [S110] |
+| KC-K10 | Operator-as-value (backend-synthesized name, §1.4) (W2) | verify an e2e passes a bare operator as a value (e.g. `(map + …)`-shape with prelude ops or primitives-only `(let [f +] …)`); author if missing | [S110] — likely new cell |
+
+Hard-miss negative families (unit tier, backend harness — **enumerated**, per
+wave; each asserts a `CodegenError` whose message names the reference and the
+miss, and asserts the output is NOT `undefined variable` and NOT a silent
+wrong value):
+
+| Row | §1.1 family | Fixture shape (unit) | Wave |
+|---|---|---|---|
+| KC-N1 | Carrier-`None` on a table-reference kind at the CALL seam | mono `Apply` whose callee `Var` carries `resolved_target: None` but names a table-resident fn | W1 |
+| KC-N2 | `Some(fq)` that fetches nothing (entry-miss) at the call seam | carrier names `m/ghost` absent from the fixture tables | W1 |
+| KC-N3 | Carrier-`None` at the VALUE seam | value-position `Var`, `resolved_target: None`, table-resident target | W2 |
+| KC-N4 | Entry-miss at the value seam | value-position carrier → absent entry | W2 |
+| KC-N5 | Slot-less `Polymorphic` template at a value read (the 0585 backstop) | carrier resolves to a `UserFnState::Polymorphic` slot-less template entry → the pinned message "generic value reference '<name>' reached codegen without a mono instance" — release builds included | W2 |
+| KC-N6 | Local-variable `None` is NOT a miss | local/lambda param `Var` with `resolved_target: None` compiles (the backend local-`variables` check precedes the keyed read) — the false-positive fence for KC-N1/N3 | W1 |
+
+Structural acceptance (not test rows; `/review` executes, `/qa` audits at
+Phase 6/7): **Rev-2 REJECT** — any keyed-read-else-resolver hybrid in a wave
+change-set is a Blocker; kinds flip atomically (every §3 site of a kind in
+its wave).
+
+#### A.3 W3 (deletion + residue)
+
+| Row | Contract | Guard | Tier / owner |
+|---|---|---|---|
+| KC-W3-1 | §3 grep gate: zero `resolve_driven\|resolve_chain\|resolve_got_target\|…\|lookup_constructor\|lenient_mono_from_expr` in `crates/cranelisp-backend/src/`; `resolution.rs` retains exactly `got_data_symbol_name` + `inner_fn_discriminator_for` | `/review` structural criterion at the W3 change-set + the post-W3 backend audit's boundary lens; recorded here as the wave's definition of done | structural / `/review` + `/audit` |
+| KC-W3-2 | §5 pin 3 — no live caller of `compile_defn` / `lenient_mono_from_expr` (delete or `#[cfg(test)]`) | compile-time (deletion) + `/review` confirms | structural / `/dev` |
+| KC-W3-3 | S20 fold onto `ctor_meta_at(arm.resolved_ctor)` is behaviour-invariant | the S109 pattern-position suite (DC-4/DC-11/DC-12/DC-13, BR-1/BR-2) stays green — no new rows | e2e (existing) |
+| KC-W3-4 | S19 `None`-arm deletion — a `None` on any ctor arm post-W0.b is keying drift | unit: a mono match arm with `resolved_ctor: None` hard-errors (supersedes the §10.3 fold-in note) | unit / `/dev` (backend) |
+
+### B. 0585 — value-position × {mint, die} matrix (lands under W2)
+
+The class record: MINT (a generic value ref at a concretely-determined type
+mints a mono and RUNS) and DIE (an indeterminate generic value ref dies
+check-side with the §3.11 message — never a codegen frame, never `undefined
+variable`) must hold at EVERY value position. S109 0571.2 fixed the
+if/match/vec instances via the uniform `for_each_child_expr` collect; these
+rows pin the CLASS so a 4th position cannot silently leak. File:
+`tests/generic_value_use_mono.rs` (dedupe against its existing FQ-call /
+HOF-arg / control cells and spec_08 FQ-D1). All mint rows
+`run_through_all_modes`; die rows assert the §3.11 message + the FQ-D3
+no-codegen-frame negative.
+
+| Row | Position | Mint cell (proposed test) | Die cell (proposed test) | Status |
+|---|---|---|---|---|
+| VP-1 | Apply arg (HOF) | existing `imported_generic_in_value_position_monomorphises` — verify green post-W2 | `generic_value_hof_arg_indeterminate_dies_check_side_neg` (no concrete use anywhere) | [S110] — mint exists |
+| VP-2 | Let / ParBind binding value | existing FQ-D1 (`fq_value_ref_generic_fn_concrete_use_never_reaches_codegen`) + S109 0571.2 cells — verify | covered by FQ-D1's error leg | [S110] — verify |
+| VP-3 | **if-branch** | `generic_value_in_if_branch_mints_and_runs` — `((if c gcount gother) [1 2])` with concrete use | `generic_value_in_if_branch_indeterminate_neg` | **[S110] — the missing RED (mint leg pins 0571.2's fix; die leg new)** |
+| VP-4 | **match-arm value** | `generic_value_in_match_arm_mints_and_runs` | `generic_value_in_match_arm_indeterminate_neg` | **[S110] — missing RED** |
+| VP-5 | **vector element** | `generic_value_as_vec_element_mints_and_runs` (`(vec-get [gcount] 0)` applied concretely) | `generic_value_as_vec_element_indeterminate_neg` | **[S110] — missing RED** |
+| VP-6 | Return position | `generic_value_returned_then_concretely_used_mints` (rank-1 poly-return legitimacy fence — must NOT regress the S109 W6.3 reversal: `mk`/`weird` shapes stay accepted) | result-only-var case is R16's family (§D) — no duplicate die row | [S110] |
+
+Leg 3 of the arch ruling (the structural guard) is KC-N5 above — one shared
+enumeration + the loud W2 backstop + this matrix. `/review` verifies the
+`collect_parametric_fn_value_args` whitelist is DELETED in the wave that
+touches it. FIXME 0585 closes when W2 + this matrix land.
+
+### C. 0590 — TypeExpr resolver convergence: behaviour-tightening matrix + fence
+
+The convergence deletes the never-error `Named` fabrication arms (mirrors
+2/3) and routes trait-sig bare user types through the symbol table (mirror 1
+errored on them). Two behaviour changes, each a matrix axis; the fence rows
+pin what must NOT broaden. File: `tests/spec_07_traits.rs` (+ typecheck unit
+tier for the co-reference pins). Blast-radius scout precedes the flip.
+
+| Row | Cell: head shape × context | Expected post-convergence | Today | Status |
+|---|---|---|---|---|
+| TX-1 | bare in-scope user type × trait-method sig — `(deftrait T (m [MyType] Self))`, `MyType` a local `deftype` | RESOLVES (spec §8.5: bare ≡ qualified-in-scope); impl + call runs | mirror-1 "unknown type" error | **[S110] — RED (behaviour-tightening positive)** |
+| TX-2 | bare in-scope user type × HKT trait sig | RESOLVES against the table (not fabricated) — pin via a working HKT trait whose sig names a user ADT; assert the resolved type behaves nominally (impl dispatch works) | fabricates empty-module ADT (accidentally "works" or silently mis-keys) | [S110] |
+| TX-3 | bare in-scope user type × HKT impl method | RESOLVES against the table | fabricates target-module ADT | [S110] |
+| TX-4 | unknown uppercase Named × trait-method sig | ERRORS "unknown type" (unchanged — mirror 1 already errored) — GREEN pin | errors | [S110] — pin |
+| TX-5 | unknown uppercase Named × HKT trait sig | **ERRORS** — the fabrication deletion made loud | silently fabricates | **[S110] — RED neg** |
+| TX-6 | unknown uppercase Named × HKT impl method | **ERRORS** | silently fabricates | **[S110] — RED neg** |
+| TX-7 | qualified type × each of the three contexts | RESOLVES via module ref (the FIXME-0436 arm) — GREEN pins | works | [S110] — pin |
+| TX-8 | **FV-13 fence** — uppercase-unknown-in-annotation still errors | stays GREEN (over-broadening guard: the mint capability must not swallow unknown TYPES) | green | [S110] — must-hold |
+| TX-9 | **FV-14 fence** — trait-path resolution unaffected by the annotation mint | stays GREEN | green | [S110] — must-hold |
+| TX-10 | Step-A co-reference pin — platform-sig multi-occurrence free var shares one id (mint-on-miss ≡ the deleted pre-walk) | typecheck unit at `check_type_expr`'s caller (enumerated: two occurrences of `a` in one sig unify; `a` vs `b` stay distinct) | — | [S110] — unit, `/dev` |
+
+**Blast-radius scout (BEFORE the TX-5/TX-6 flip; `/dev` (typecheck) executes,
+`/qa` reads the report):** grep every HKT trait/impl sig in tests/, stdlib/,
+examples/, exemplar/ for non-intrinsic bare `Named` heads that today resolve
+only via fabrication — each hit is either (a) genuinely in scope (TX-2/TX-3
+covers it), or (b) a latent mis-key the flip converts to a loud error
+(enumerate; fix the source or file the finding). A fabrication that proves
+LOAD-BEARING (forward reference inside a cluster) is a staging question
+routed through `scope_resolve_in`, never a reason to keep silence
+(convergence note §3). Structural criterion for `/review`: zero
+`fresh_var`/`fresh_var_id` inside any `TypeExpr`-matching function other than
+`resolve_type_expr`'s `mint_free_var` closures; the three free-function
+mirrors + their unit suite deleted (cases re-homed onto the canonical
+resolver's tests, now covering the `Self` and con-var arms — enumerated in
+convergence note §4 step B).
+
+### D. R16/R17 — unresolved-return-poly dispatch signal (coordinated typecheck+int)
+
+The committed REDs are the acceptance spec — they flip GREEN at the fix:
+
+| Row | Committed guard | What flips it | Status |
+|---|---|---|---|
+| RD-1 | `tests/spec_03_types.rs::unresolved_return_type_dispatch_ambiguity_error_neg` (R16) — bare `(zed)`: §3.11 "ambiguous" message, MODE-UNIFORM (REPL + `--run` + `--link`), NO `GOT slot`/`__expr`/`codegen error`/`has no \`main\`` leak; bare-name `zed` stays disposition-3 introspection | the typecheck finalize gate (class (a)) + the int entry/eval consult (class (b): `validate_main` + `__expr` eval path via the 0611 carrier) | RED today — flips at the wave |
+| RD-2 | `tests/spec_03_types.rs::value_position_constraint_does_not_disambiguate_neg` (R17) — `:Zeroable (zed)`: NOT `unknown type`, NOT a GOT-slot leak, IS the §3.11 ambiguity | same change-set | RED today — flips |
+
+False-positive fence (the S109-revert class — **the load-bearing negatives**,
+authored/verified BEFORE the wave lands so the two-commit acceptance is
+checkable):
+
+| Row | Fence | Test | Status |
+|---|---|---|---|
+| RD-3 | Arg-directed dispatch stays computable and unflagged | existing `spec_07_traits.rs` `(add2 3 4)` rows stay GREEN; plus NEW explicit cell `arg_directed_dispatch_result_in_value_position_not_flagged` — `(let [r (add2 3 4)] r)` evaluates (an arg-resolved dispatch whose recorded span type is a residual var sits in an ORDINARY VALUE POSITION and must NOT be flagged by the outcome-grounded scan — the exact cell the surface-concreteness gate false-fired on) | [S110] — new GREEN pin, author FIRST |
+| RD-4 | Context-pinned return-dispatch stays green | rows 13–15 pins (`:Int (zed)` → 0; `(add-i64 (zed) 5)` → 5) stay GREEN | existing — must-hold |
+| RD-5 | Rank-1 poly-return legitimacy unaffected | the W6.3 reversal set (`mk`/`weird`/`mk3` accept) stays GREEN; the result-only-var case (`(defn g [] (constf 5))`) stays the §3.11 ambiguity (same family as R16, same message) | existing — must-hold |
+
+Unit tier (enumerated, `/dev` typecheck): (i) the finalize signal set contains
+the bare-`(zed)` span and is EMPTY for `(add2 3 4)`, `(add-i64 (zed) 5)`,
+`:Int (zed)`; (ii) `find_ambiguous_value_position`'s dispatch-position verdict
+consults the outcome signal, not `!is_concrete()`; (iii) int side: a non-empty
+`unresolved_dispatch` at the `main`/`__expr` result span produces the §3.11
+error pre-backend (`src/exe.rs::validate_main` + the eval path). Gate:
+`/arch` ratifies the 0611 carrier BEFORE the Phase-5 wave.
+
+### E. 0605 — stdlib-compile smoke gate: design CONFIRMED (with two refinements)
+
+Confirming the §6 tier-1 shape with these pins (`/testing` builds):
+
+1. **Enumeration is RECURSIVE, not top-level-only.** The top-level `.cl` set
+   (13 modules after skipping `prelude.cl`) would NOT reach `num.bits` — the
+   0604 blast radius itself. The gate enumerates every `stdlib/**/*.cl` at
+   test time, skipping `prelude.cl` and every subtree declared private by its
+   parent (`(mod- name)` — which covers ALL `.test` submodules per the S109
+   P5-S2 `(mod- test)` conversion). Enumeration = walk + a light scan of each
+   parent `.cl` for `(mod- ` declarations; no hand-list anywhere.
+2. **Shape: ONE enumerating test fn, per-module `--run` subprocess loop,
+   aggregated failure report.** Per-module discrimination comes from the loop
+   (each module compiles in its own subprocess + tmpdir), not from nextest
+   binaries: a generated test-per-module would need codegen or a hand-list
+   (which rots — the exact blindness this gate cures). The test collects ALL
+   failing modules and panics naming each (module + first error line), so one
+   run reports the full breakage set, not the first. Generous `.timeout`;
+   cache ON within the test's own tmpdir (transitive deps compile once);
+   behind `use_workspace_stdlib_for_stdlib_conformance_only()`.
+3. **Determinism note:** the gate runs `--run` (batch) — the background index
+   feed is REPL-only (R17), so the gate is deterministic by construction and
+   is NOT a race guard; the 0604 race is guarded by the ≥25× sweep landing
+   with the fix (§F). The gate's job is the CLASS (stdlib-breaking compiler
+   regressions cannot ship invisibly).
+
+| Row | Guard | Status |
+|---|---|---|
+| SG-1 | `stdlib_all_public_modules_compile_and_run` (file: `tests/stdlib_conformance.rs`, new) — every enumerated public module `--run`s a `(import [<mod> [*]])`-shaped probe cleanly, exit 0; failing MODULES named | [S110] — author early (it should be GREEN once 0604 lands; if any module is RED on HEAD today, that is signal, not noise — report, don't skip) |
+| SG-2 | `agent_flag_errors_on_non_agent_build` build-interleave race (same infra wave, separate root) — nextest setup-script/profile fix so the `--features agent` build cannot clobber the non-agent binary mid-suite; acceptance = the agent e2e family passes in a full-suite run 3× consecutively, no isolation retry | [S110] — `/testing` infra |
+
+Tier-2 (stdlib self-test execution) stays sized-separately, not S110.
+
+### F. 0604 — index-feed write-race: locate-first acceptance (attribution CORRECTED)
+
+The attribution correction is recorded in
+`s109-attribution-index-feed-race.md` §2 (this pass): the mutate-live-then-undo
+seam was S91-cured (`9ba2ca91`); the prime suspect is the **shared-cache §25.5
+write channel** (`write_index_meta` → `record_source_hash`/`record_compiled`),
+with the live `&shared.prelude_fallback` thread as the tightening item. The
+Phase-5 `/dev` brief targets the cache channel, NOT the cured live-write.
+
+| Row | Acceptance item | Owner | Status |
+|---|---|---|---|
+| IF-1 | **LOCATE before patching**: ≥25-iteration `CRANELISP_MODULE_TRACE=1` sweep of the deterministic recipe (attribution §3) against the full real stdlib, run FIRST; it must implicate the residual writer (confirm/refute the cache channel per `index-worker-isolation.md` §4, incl. whether `--no-cache` gates the index `.meta` writes). If the phantom persists with all three private snapshots + the §3.3 severance, attribution moves to the foreground import path — STOP and re-scope (flag `/qa`/`/sprint`), do not force the patch | `/dev` + `/testing` | [S110] — gate on the fix |
+| IF-2 | Unit test at the located write seam (fail-on-revert), same change-set as the fix (METHOD §2.2) | `/dev` (src/int) | [S110] |
+| IF-3 | ≥25-iteration e2e repetition sweep of the deterministic recipe lands WITH the fix (the C1-e2e precedent, §S109 C); every iteration exit 0, never the ambiguity signature | `/testing` | [S110] |
+| IF-4 | Twin guards stay GREEN — `spec_08_prelude_outer_scope.rs::super_import_wrapper_over_specific_prelude_compiles_clean` + `…_collides_when_prelude_globs_primitive_neg`. **Do NOT weaken the poison** (the consumer is spec-correct) | standing | must-hold |
+| IF-5 | §5 greppable invariant (no live SharedState map into install/typecheck/register calls; zero `shared.cache` writes on any index branch; sole write target `importable_indices`) | `/review` structural criterion | [S110] |
+| IF-6 | `concurrency_capacity::same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks` verify-after-fix: re-run ≥25× post-fix; still flaking ⇒ its OWN defect, attribute separately | `/testing` | [S110] |
+| IF-7 | `// defect:` retro-tag of the family with `class=shared-state-write-race` (vocabulary added this pass) | `/testing` | [S110] |
+
+### G. vec-assoc UAF ×2 — repro EXISTS; fix-wave acceptance
+
+The dispatch-time "repro owed" is DISCHARGED: `/testing` committed the reduced
+free-standing repro at S109 W6
+(`tests/vec_assoc_param_mutate_return_uaf.rs` — 2-line shape, stdlib-free,
+`// defect: class=rc-miscount locus=crates/cranelisp-backend … owner=/backend`,
+RC-trace-evidenced premature free; REPL garbage-value + `--link` SIGABRT are
+the two deterministic surfaces). No further reduction owed. S110 rows:
+
+| Row | Guard | Status |
+|---|---|---|
+| VA-1 | `vec_set_on_param_returned_and_consumed_repl_yields_correct_value` flips GREEN at the backend RC fix | RED today — the acceptance |
+| VA-2 | `vec_set_on_param_returned_link_does_not_corrupt_heap` flips GREEN (exit 99) | RED today |
+| VA-3 | Unit test at the RC-emission seam the fix lands on (the param-aliased-return last-use/ownership decision), same change-set; enumerated minimum: (i) `vec-set` on param, returned — no dec before caller use; (ii) `vec-push` sibling; (iii) the identity-fn control stays undamaged (no over-count introduced) | `/dev` (backend) with the fix |
+| VA-4 | **Inversion fence**: the OPPOSITE-polarity sibling `tests/vec_cow_value_use_leak.rs` (COW copy-branch LEAK) stays GREEN — an RC fix that flips an under-count into an over-count is the named risk | must-hold |
+| VA-5 | Triage aid: the 2-line repro's CLIF (`/clif` or `CRANELISP_CODEGEN_TRACE=1`) makes the early `emit_rc_dec` visible in IR — triage BEFORE patching; scheduling: against the 0583 wave holding `apply.rs`/`heap.rs` open, not interleaved (SPRINT §8) | `/dev` |
+
+### H. C-4 — multi-arity-call-from-`main` "no main" misdirect: repro EXISTS; triage note
+
+Repro DISCHARGED at S109 W6.3:
+`tests/spec_05_definitions.rs::multi_arity_call_from_main_batch_no_main_neg`
+(RED; `// defect: class=mode-divergence
+locus=src/session_v4/lifecycle.rs::lookup_main_code_ptr … owner=/dev`), with
+the reduction facts recorded on the test (concrete `:Int` params — W6.3
+independent; needs 2+ clauses; trigger = calling it from `main`'s body;
+REPL evaluates the identical program fine).
+
+**Attribution triage note (`/qa`):** the evidenced candidate is the int-side
+batch-entry path — `main`'s GOT slot/code-ptr lookup
+(`lifecycle.rs::lookup_main_code_ptr`) failing only when the batch contains a
+multi-arity (overloaded-base + mangled-variant) defn that `main` references.
+Triage order for the fixing `/dev` (src/int): (1) `CRANELISP_MODULE_TRACE=1` +
+got-trace over the repro — is `main` registered but slot-less, or absent from
+the table the lookup reads? (2) discriminate "overload batch derailed main's
+codegen" vs "lookup reads the wrong entry kind for the overloaded callee and
+aborts the batch" — the misleading message suggests the lookup, the
+mode-divergence suggests the batch deriving differently from the REPL's
+per-form path (Principle 11: any divergence here is itself the defect). If
+the seam lands in typecheck (mangled-variant registration) rather than int,
+re-attribute via `/qa` before patching — do not fix at the symptom layer.
+
+| Row | Guard | Status |
+|---|---|---|
+| C4-1 | The committed RED flips GREEN (exit 7, no bogus no-`main` error) | RED today — the acceptance |
+| C4-2 | Unit pin at the seam the fix identifies (batch-entry lookup or overload-batch codegen), same change-set | `/dev` with the fix |
+| C4-3 | Mode-parity facet: the REPL control (same defn + `(h 7)`) stays green; post-fix, `run_through_all_modes` on the repro program | `/testing` post-fix |
+
+### I. 0609 — phantom-shim reachability VERDICT: UNREACHABLE → DELETE (with pins)
+
+**Verdict (`/qa`, this pass): the `phantom_member_diagnostic` shim
+(`src/process_form.rs:535`, consult at `:450`) is UNREACHABLE post-0571 in
+every producible gap shape. `/dev` deletes it in 0609** (with its
+now-orphaned `find_named_var_span_in_toplevel`/`find_named_var_span` reach —
+note `find_var_span_matching` and `module_has_no_member_error` STAY: they
+serve the live FQ-gap arm). Basis, recorded:
+
+1. **Gap-variant reachability.** The shim matches
+   `SymbolTypechecked`/`MacroInMem`/`Type` gaps. Workspace-wide, the ONLY live
+   constructors of `ResolutionGap::MacroInMem` and `ResolutionGap::Type` are
+   unit-test fixtures (`src/process_form/tests.rs`) — no production code
+   builds them. The only live variant is `SymbolTypechecked`, built at exactly
+   two sites, both inside `checker.rs::resolve_qualified` (typecheck).
+2. **Child-shape producibility.** The phantom shape (`<current>.<qualifier>`
+   with `<qualifier>` a loaded module) requires a child-path gap. The sole
+   synthesis of a `{current}.{qualifier}` module path in the crate is
+   `lookup`'s child probe (`checker.rs:1281`). Post-0571 the gap selection
+   (`checker.rs:1303–1329`) surfaces the ABS probe's gap in every `Ok` arm —
+   including the member-absent case, which now gaps UNCONDITIONALLY
+   (`resolve_qualified`, checker.rs:1840–1848) — so the original 0490 shape
+   (loaded abs module, missing member) yields the ABS gap and the honest
+   diagnostic via the FQ-gap arm, never the child gap. Verified empirically
+   on HEAD: `(m/nonexistent x)` with `m.cl` present → `module 'm' has no
+   member 'nonexistent'` at the reference span.
+3. **The one theoretical residual arm** — abs probe HARD-errors
+   (`PrivateInaccessible`, checker.rs:1859) and the fall-through returns the
+   child probe's gap (checker.rs:1325) — was probed empirically in all four
+   shapes (call/value position × autoloaded/pre-imported module): every one
+   surfaces the honest `` `secret` is private to module `m` `` §8.7.3 error at
+   the real reference span; the phantom-shaped diagnostic never appears. (The
+   exact raise seam producing that real-span visibility error was not located
+   in this analysis — an earlier pass raises before the gap path can surface —
+   so this leg is empirical, not structural; hence pin D-3 below.)
+
+Deletion-change-set pins (`/dev` src/ + `/dev` typecheck unit; enumerated):
+
+| Pin | Guard |
+|---|---|
+| D-1 | e2e stays green: member-absent (`module 'X' has no member 'Y'` at ref span — the AL-4 row) + private-member (`… is private to module …`) + missing-module (AL-3) — verify existing S109 rows cover all three; author any missing cell BEFORE the deletion |
+| D-2 | typecheck unit at the `lookup` gap-selection seam: (i) loaded-abs-module member-absent surfaces the ABS gap, never a `<current>.<qualifier>` gap; (ii) the abs-Err (private) arm does NOT surface a child gap that reaches the caller as a phantom module reference (pin whatever the located raise seam is) |
+| D-3 | **Recommended structural closure (small, same change-set or 0609 follow-up):** flip `checker.rs:1325` to PROPAGATE the abs probe's hard error instead of falling through to the child gap — the §8.6.6 visibility diagnostic is the honest cause, and the child-shaped gap becomes structurally unproducible, converting verdict leg 3 from empirical to structural. This is the "deeper probe-order cure" the shim's comment deferred; with it, deletion is safe against future `ResolveError` variants |
+
+### J. R-2 — `build_adt_entries` caller wiring: behaviour-invariance rows
+
+The builder landed additively (S110 Phase 3, 4 unit tests, cache-neutral).
+The Phase-5 caller wiring (typecheck `adt.rs` + `src/bootstrap.rs` become thin
+callers) is behaviour-invariant; the acceptance leans on the existing suites
+plus twin checks targeting the S109 hand-apply-to-BOTH defect class:
+
+| Row | Guard | Tier |
+|---|---|---|
+| AB-1 | Entry-shape invariance: existing adt + bootstrap unit suites green; NO cache bump (entry shapes unchanged) — a schema-affecting drift here is a REJECT | unit (existing) |
+| AB-2 | **Writer-twin check** (the defect class this cures): a user `deftype` sum and the bootstrap-seeded `IO`/`Option` produce identical entry STRUCTURE per ctor — canonical `member_key` `Def` + bare-alias `Import` edge + internal flags + product dual-facet — asserted through the S109 DC suite (DC-1/2/4/6/7/9, BR-2) + IO-match internal-exclusion staying green; no new e2e needed, the twins already exist BECAUSE S109 keyed both writers | e2e (existing — must-hold set named) |
+| AB-3 | `/review` verifies the mirror is DELETED — both writers thin, zero residual entry-construction logic in either caller (the 0585-leg-1 precedent); §8.6.5 contest classification arms keep their semantics, operating on the RETURNED alias | structural |
+| AB-4 | Slot allocation stays caller-side: unit pin that builder output carries the pre-allocated `got_slot`s unchanged (no builder-side allocation) | unit (`/dev`) |
+
+### K. src/-hygiene track (0606/0608/0610) — invariance gates only
+
+Pure-decomposition claims are gated per Phase-2 Rev-3: (a) ZERO movement on
+any library crate's `public-api.txt` (none should be touched — do not invent
+a binary baseline); (b) e2e byte-identity — the golden REPL suite
+(`display_exact.rs`, goldens) + full suite green; (c) unit tier green. 0606
+additionally: the `fq_arg_tests` three-way split lands with the move
+(`repl-decomposition.md` §2) and no `repl/` file exceeds ~1,500 lines
+(`/review`). No new test rows — the gates are the acceptance. 0610: no test
+surface (hygiene).
+
+### Phase-5 sequencing note for `/testing`
+
+Author order: (1) **RD-3 (the `(add2 3 4)` value-position fence) + KC-W0-6
+harness prep + the TX blast-radius scout request** — the fences must exist
+BEFORE their waves land; (2) the VP-3/4/5 matrix REDs + TX-1/TX-5/TX-6 REDs
+(behaviour-tightening rows, RED-for-the-right-reason against HEAD); (3)
+KC-W0-3 cache rows + KC-N1..N6 unit-family handoff enumeration to `/dev`
+(backend) — `/testing` verifies the drafted unit set matches the rows at the
+wave gate; (4) SG-1 gate + SG-2 infra (low-collision; serialize with other
+tests/-touching work); (5) kind-coverage verification sweep (KC-K1..K10) —
+verify-first, author only missing cells (KC-K10 likely new); (6) D-1
+verification for the 0609 deletion; (7) post-fix items (IF-3 sweep, C4-3
+mode-parity, VA flips) ride their fixing waves. Standing REDs (RD-1/RD-2,
+C4-1, VA-1/VA-2) are already committed — no re-authoring; they are the
+acceptance criteria their waves flip.

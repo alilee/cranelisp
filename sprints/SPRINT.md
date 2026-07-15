@@ -137,8 +137,9 @@ so Phase 4 pins an order. R-2 is not here — it folds into the centrepiece (§1
 | 0583 | /arch | open | **CENTREPIECE** — backend pure keyed-lookup consumer (FQ symbols + FQ types) |
 | 0585 | /arch | open | value-position uniform mint — class record + structural guard (folds under 0583) |
 | 0590 | /design (typecheck) | open | four-mirror written-type-var resolver convergence (co-scheduled) |
-| 0604 | /dev (int) + /design (int) | open | index-feed phantom-prelude write-race — isolation by construction |
+| 0604 | /dev (int) + /design (int) | open | index-feed write-race — **attribution CORRECTED P3**: mutate-live seam S91-cured; real channel = shared-cache §25.5 write. `/dev` targets cache channel + trace-sweep-locates-first |
 | 0605 | /testing (+/qa design) | open | stdlib-compile smoke gate |
+| 0611 | /arch | open | R16/R17 unresolved-dispatch carrier — `/design` typecheck recommends transient `CheckResult.unresolved_dispatch` field (no types edit); `/arch` ratifies shape (filed P3) |
 | 0606 | /dev (src/) + /design (int) | open | R-1 — decompose repl.rs god-file (5,103 lines) |
 | 0607 | /design (int) | open | R-3 — design/int/ currency pass (int.md, agent.md §2.2, doc sprawl) |
 | 0608 | /dev (src/) | open | R-4 — over-budget function batch worst-first + narrative relocation |
@@ -567,6 +568,91 @@ R16/R17 proposal; `/design` (int) 0604/0607/0606; `/qa` acceptance rows; then
 `/sprint` Phase-4 wave pinning (§8 serial chains; W0.a+W0.b are one schema
 window).
 
+### /qa — sprint-wide failing-test plan (2026-07-15, COMPLETE; Phase-3 exit gate MET)
+
+**Plan location**: `tests/plan/PLAN.md` §"Sprint 110" (the drafting spec
+`/testing` authors to in Phase 5). Risk register: `tests/plan/risks.md`
+§"S110 risk read" (10 entries, S110-1…S110-10). Vocabulary add:
+`class=shared-state-write-race` (tests/CLAUDE.md, per 0604 §Acceptance 4).
+
+**Per-bucket row counts** (PLAN §S110):
+- §A 0583: 6 W0 rows (invariance + CLIF byte-identity + cache 18→19 +
+  totalization pins + the **W1 harness pin** KC-W0-6, blocking for W1) +
+  10 kind-coverage verification rows (KC-K1…K10; verify-first, KC-K10
+  operator-as-value the likely new cell) + 6 hard-miss negative rows
+  (KC-N1…N6, **unit-tier by construction** — post-W0 a well-formed program
+  cannot produce a missing carrier, so the loud-miss families are backend
+  unit-harness fixtures, enumerated per the S108 Inc2 rule; KC-N6 is the
+  local-variable false-positive fence) + 4 W3 rows (grep gate as structural
+  acceptance, no-live-lenient pins, S19/S20 residue).
+- §B 0585: 6-position × {mint, die} matrix; **the missing REDs are
+  VP-3/4/5 (if-branch / match-arm / vector-element)**; KC-N5 is the arch
+  ruling's loud backstop leg.
+- §C 0590: 10-row behaviour-tightening matrix (bare/qualified/unknown ×
+  trait-sig/HKT-sig/HKT-impl) — TX-1 the tightening positive RED, TX-5/TX-6
+  the fabrication-deletion negative REDs, TX-8/TX-9 = FV-13/FV-14 must-hold
+  fences; **blast-radius scout pinned BEFORE the flip** (`/dev` executes).
+- §D R16/R17: the 2 committed REDs are the acceptance (RD-1/RD-2 flip);
+  **RD-3 is the new load-bearing negative** — arg-directed dispatch result in
+  an ordinary value position must not be flagged (the exact S109-revert
+  cell), authored FIRST; 3-item typecheck/int unit enumeration; gated on
+  `/arch` ratifying 0611.
+- §E 0605: gate design CONFIRMED with two refinements — (1) enumeration is
+  **RECURSIVE** public modules (top-level-only would miss `num.bits`, the
+  0604 blast radius; `(mod- …)` subtrees excluded, which covers `.test`),
+  (2) shape = **ONE enumerating test, per-module `--run` subprocess loop,
+  aggregated all-failures report** (a generated test-per-module needs a
+  hand-list, which rots). SG-2 = the `agent_flag_errors_on_non_agent_build`
+  build-interleave infra fix, same wave.
+- §F 0604: **attribution correction LANDED** in
+  `tests/plan/s109-attribution-index-feed-race.md` §2 (mutate-live seam
+  S91-cured; prime suspect = the shared-cache §25.5 write channel; the
+  `--no-cache` boundary reconciled — it excludes stale-content, not the
+  intra-session artifact race). 7 acceptance rows; IF-1 = the ≥25×
+  locate-FIRST trace sweep gating the fix, with an explicit re-scope arm if
+  the writer proves foreground.
+- §G vec-assoc: repro-owed is **DISCHARGED** (committed S109,
+  `tests/vec_assoc_param_mutate_return_uaf.rs`, reduced to 2 lines,
+  stdlib-free, rc-miscount/premature-free evidenced); 5 rows = the 2 RED
+  flips + unit enumeration + **VA-4 polarity-inversion fence**
+  (`vec_cow_value_use_leak.rs` must stay green) + CLIF-first triage note.
+- §H C-4: repro DISCHARGED (committed S109,
+  `multi_arity_call_from_main_batch_no_main_neg`); attribution triage note
+  written (int batch-entry candidate, two-hypothesis discrimination, explicit
+  re-attribution arm if the seam lands in typecheck); 3 rows.
+- §I 0609 phantom shim: **VERDICT — UNREACHABLE post-0571 → `/dev` DELETES
+  the shim** (PLAN §I records the three-leg basis: MacroInMem/Type gaps have
+  no live producers; the sole child-path synthesis is `lookup`'s probe whose
+  post-0571 gap selection surfaces the abs gap; the residual abs-hard-error
+  arm probed empirically in 4 shapes — the honest visibility error surfaces
+  every time). 3 deletion pins, incl. **D-3: the recommended structural
+  closure** (propagate the abs probe's hard error at `checker.rs:1325`,
+  making the child gap unproducible — converts the one empirical leg to
+  structural).
+- §J R-2: 4 behaviour-invariance rows (writer-twin check via the existing
+  DC suite = the must-hold set; mirror-deleted `/review` criterion;
+  slot-allocation-stays-caller-side unit pin).
+- §K 0606/0608/0610: invariance gates only (Rev-3 — zero library-baseline
+  movement, golden-REPL byte-identity, unit tier green); no new rows.
+
+**e2e-vs-unit enumeration**: the plan's central call — 0583's hard-miss
+negatives are unit-tier by construction (with the KC-N6 fence), the flip
+positives ride the EXISTING e2e suite as invariance guards (verify-first
+kind sweep), and W0 invariance gets a CLIF byte-identity harness across the
+six lenient entry classes. Every unit deferral is enumerated in its row.
+
+**Coverage-gap findings**: (1) operator-as-value (KC-K10) likely has no e2e
+cell — author before W2; (2) the S109 AL-3/AL-4/private-member diagnostic
+rows must be verified-authored before the 0609 shim deletion (D-1); (3)
+0585's if/match/vec cells confirmed absent from
+`generic_value_use_mono.rs` — the named missing REDs; (4) SG-1 top-level-only
+would have been a false gate — recursive enumeration required.
+
+**Phase-3 exit gate: CONFIRMED** — the design surface (`backend-keyed-consumer.md`
+§9 + the two typecheck notes + the int isolation contract) is sufficient to
+draft every failing test sprint-wide; `/testing` has a complete authoring
+order (PLAN §S110 "Phase-5 sequencing note"). → `/sprint` Phase-4 wave org.
+
 ## Notes
 
 - **Phase 1 (2026-07-15):** scope drafted between sprints (S109 closed, archived). The
@@ -599,3 +685,33 @@ window).
   `from_expr` path (`lenient_mono_from_expr`, `match_codegen.rs:263`) get a Phase-3 design
   subsection. Serial-chain ordering pinned for Phase 4 (§8). No types change-set landed in
   Phase 2 (review-only). Advanced to Phase 3.
+- **Phase 3 (2026-07-15):** three design agents ran in parallel on disjoint surfaces,
+  all committed to main (shared-tree discipline honoured — each staged only its own files).
+  - **`/arch`** (`8170ea45` R-2 builder + `accde23c` design/principle/BC): `design/arch/
+    backend-keyed-consumer.md` (one-carrier contract, exhaustive **S1–S24** per-site
+    inventory, 4 wave briefs, W3 residual RULED = typecheck sole mono-view producer via
+    W0.b totalization → deletes the synthetic-body fallback); **Principle 24 "Resolve
+    once"** + 4 import blocks + BC §3 invariant 10 + §2 producer obligation; R-2
+    `AdtCtorSpec`/`build_adt_entries` landed (4 unit tests, public-api +16 additive, cache
+    NEUTRAL); W0 pinned not executed (`CACHE_SCHEMA_VERSION` 18→19 rides the Phase-5
+    producer change-set). **W1 pin for `/dev`:** the backend unit-test harness must
+    populate fixture sidecars or W1 reds the whole backend unit suite.
+  - **`/design (typecheck)`** (`99d6996f`): 0590 converges the four resolvers onto
+    `resolve_type_expr` via one `TypeExprCtx` (typecheck-internal, zero public-API; the
+    never-error `Named`-fabrication arms delete → behaviour-tightening for a `/qa` matrix +
+    blast-radius scout, FV-13/FV-14 the fence); R16/R17 signal grounded in dispatch
+    OUTCOME not surface-type → **FIXME 0611** to `/arch`.
+  - **`/design (int)`** (`061c54a2`): **0604 attribution CORRECTED** — the mutate-live
+    seam was S91-cured (`9ba2ca91`); the surviving leak is the shared-cache §25.5 write
+    channel (`write_index_meta` → `record_source_hash`/`record_compiled`), consumed
+    verbatim by the foreground import (the `bit-and`-only per-module fingerprint fits a
+    cache-artifact race). Isolation contract severs it; ≥25× trace sweep must LOCATE the
+    residual writer before `/dev` patches. **Action owed:** route the correction to `/qa`
+    (owns `tests/plan/s109-attribution-index-feed-race.md §2`) + fold into the Phase-5
+    `/dev` brief (target the cache channel, NOT the cured `index_branch_c` live-write). Also
+    delivered: 0607 currency pass (`int.md` as-built + surgical `agent.md §2.2` fix + 18
+    doc banners + doc-index) and 0606 repl.rs cut sign-off (search/format/commands/residual,
+    precise boundaries; mechanical move is Phase-5 `/dev`).
+  - **Remaining Phase-3 deliverable:** `/qa` sprint-wide test plan (interface set confirmed
+    complete by `/arch` — design doc §9 enumerates the acceptance surface). Dispatched
+    2026-07-15; on its return the Phase-3 exit gate is met → Phase 4 wave org.

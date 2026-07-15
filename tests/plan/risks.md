@@ -1,5 +1,29 @@
 # QA Risk Review
 
+## S110 risk read (2026-07-15, /qa — shapes the depth of the S110 plan in `PLAN.md` §"Sprint 110")
+
+Most of S110 is behaviour-invariant plumbing (0583 waves, R-2 wiring,
+0606/0608 decomposition) — the risk profile is therefore dominated by *silent
+semantic drift under an invariance claim* and by *guards that structurally
+cannot be e2e*. Each row names the loud-failure conversion.
+
+| # | Risk | Severity | Why silent | Guard (PLAN §S110 rows) |
+|---|---|---|---|---|
+| S110-1 | **W0/W0.b invariance drift** — the producer change-set touches every mono view and relocates the lenient builder into `cranelisp-types`; a placeholder-semantics difference in the typecheck-built lenient view changes codegen for ctor/accessor/`f$Var`/template/`__expr`/macro-clause bodies | HIGH | The suite exercises behaviour, not IR; a drift that happens to compute the same values on covered inputs ships | KC-W0-1 (suite-green, zero new REDs) + KC-W0-2 (CLIF byte-identity across the six lenient entry classes) + KC-W0-4/5 totalization unit pins |
+| S110-2 | **Cache schema 18→19 skew** — a stale `.meta`/`codegen_view` deserialises `None` carriers; pre-W1 they ride unread (invisible), post-W1 they hard-fail at a distant seam with a carrier-miss error that looks like a compiler bug | HIGH | No error at read time; the failure fires one wave later, far from the cause | KC-W0-3 warm-cache + stale-cache-invalidated-not-misread negative; bump rides the W0 change-set (definition of done) |
+| S110-3 | **The soft-fallback hybrid** — one keyed-read-else-`resolve_driven` arm silently masks every producer gap, voids Principle 24, and reintroduces the arbitrary-order scan as a shadow path | HIGH | By construction: the fallback makes every miss look green | Rev-2 = per-wave `/review` REJECT criterion (PLAN §A.2 structural); KC-N1..N6 loud-miss unit family proves the hard-fail is real; W3 grep gate (KC-W3-1) is the end-state pin |
+| S110-4 | **W1 harness red** — the backend unit suite's fixtures don't populate sidecars; W1's hard-miss flips the whole backend unit tier RED mid-wave, and the "fix" pressure invites a soft fallback (risk S110-3) | MEDIUM-HIGH (schedule + integrity) | Discovered mid-wave, exactly when the fallback temptation is highest | KC-W0-6 — fixture-sidecar population pinned as a W0 obligation, backend unit tier green at W0 AND W1 close |
+| S110-5 | **0590 tightening blast radius** — deleting the never-error `Named` fabrication converts silent fabrication into loud errors; a program (test/stdlib/example/exemplar) that leaned on fabrication breaks at the flip; conversely an over-broad mint would swallow unknown types | MEDIUM-HIGH | The fabrication *accidentally works* today — nothing marks its consumers | TX blast-radius scout BEFORE the flip; TX-5/TX-6 REDs make the tightening deliberate; TX-8/TX-9 (FV-13/FV-14) fence over-broadening |
+| S110-6 | **0604 false-green fix** — a scheduling-perturbation patch quiets the phantom under the tested interleaving (the S61→S93 treadmill + the verify-fix-not-symptom lesson); ALSO: the corrected attribution (cache channel) is itself a hypothesis — patching before the sweep locates the writer risks fixing the wrong seam | HIGH | Scheduling-dependent (16/16 in one env, 0/140 in another); symptom absence proves nothing | IF-1 locate-FIRST trace sweep (gate on the fix, with the explicit re-scope arm) + IF-2 write-seam unit + IF-3 ≥25× sweep landing WITH the fix + IF-5 structural grep |
+| S110-7 | **R16/R17 false-positive regression** — the S109 revert class: any drift of the new gate back toward surface-type concreteness re-flags arg-directed dispatch (`(add2 3 4)` computes but displays unpinned) and blocks valid programs | HIGH | The false positive fires only on dispatch shapes with residual display vars — easy to miss, catastrophic to users | RD-3 explicit value-position fence (authored FIRST) + RD-4/RD-5 must-holds + the §D unit enumeration grounding the signal in dispatch OUTCOME |
+| S110-8 | **vec-assoc RC-fix polarity inversion** — fixing the premature free (under-count) by unconditionally inc-ing the param-aliased return converts the defect into a leak (over-count), which the flipped-GREEN repro cannot see | MEDIUM | A leak is invisible to value-correctness assertions | VA-4 — the opposite-polarity sibling `vec_cow_value_use_leak.rs` named as a must-hold fence; VA-3 unit enumeration includes the identity-fn no-over-count control |
+| S110-9 | **0609 deletion on an empirical leg** — the shim-unreachable verdict's private-member leg is empirically probed, not structurally proven (the real-span visibility raise seam was not located); a future `ResolveError` variant or probe-order edit could re-open the phantom shape with the shim gone | LOW-MEDIUM | The phantom shape reports a misleading-but-plausible diagnostic — nobody files it | PLAN §I pins D-1 (three diagnostic e2e must-holds) + D-2 (gap-selection unit) + D-3 (recommended structural closure: propagate the abs hard error, making the child gap unproducible) |
+| S110-10 | **Gate blindness continuation (S109-8)** — until SG-1 lands, stdlib-breaking regressions still ship invisibly; and SG-1 scoped top-level-only would MISS nested modules (`num.bits` — the 0604 blast radius itself) | HIGH (gate gap) | Nothing in the suite imports the stdlib surface | SG-1 with the RECURSIVE public-module enumeration (PLAN §E refinement 1); SG-2 build-interleave infra fix in the same wave |
+
+Depth allocation: fences and pre-wave guards first (RD-3, KC-W0-6, TX scout,
+KC-W0-2 capture), per the S108 Inc2 rule — arch-pre-flagged boundaries and
+revert-class fences before happy paths.
+
 ## S109 risk read (2026-07-13, /qa — shapes the depth of the S109 plan in `PLAN.md` §"Sprint 109")
 
 The highest-silent-failure changes in the S109 scope, ranked. Each names the

@@ -44,27 +44,77 @@ prelude terminal (`primitives/bit-and`) — two DISTINCT terminals — and the
   ~L547–560, via `prelude_terminal`) — the poison-CONSUMER — is **CORRECT**.
   The deterministic `_neg` twin proves the same poison is required when the
   prelude legitimately provides the primitive (glob export). Do not weaken it.
-- Not a cache defect: fires with all `.cranelisp-cache` cleared AND `--no-cache`.
+- Not a *stale-cache-content* defect: fires with all `.cranelisp-cache`
+  cleared AND `--no-cache`. (This boundary does NOT exclude the intra-session
+  §25.5 index→import artifact channel — see the §2 CORRECTION.)
 - Not the §8.6.5 spec semantics: the spec ruling (prelude glob is a PEER of an
   explicit import, no precedence tier) is settled and pinned.
 
 **The bug is the phantom WRITE into the live prelude table**, upstream of the
 (correct) poison.
 
-## 2. Mechanism and seam
+## 2. Mechanism and seam — CORRECTED (S110 Phase 3, /qa, 2026-07-15)
 
-The index worker's branch (c) (`index_worker.rs::index_branch_c`) typechecks
-candidate stdlib modules **through the real import-installing path**
-(`cluster::process_cluster` — installs the module's `(import …)` decls and the
-prelude env, runs `check_forms`) **directly against the LIVE
-`symbol_tables`**, then "REMOVES the live residue" claiming the R13 invariant
-(the four `SharedState` maps stay byte-unchanged). That
-**mutate-live-then-undo** discipline, running concurrently with user compiles
-and with other index workers, is the structural defect surface: a binding
-written during a concurrent index pass either lands in the WRONG table (a
-mis-attributed import-direction write reaching `prelude`'s table) or escapes
-the residue cleanup. R13 is violated in the observed failure — the prelude
-table is NOT byte-unchanged after the feed runs.
+> **CORRECTION.** This section originally named the seam as
+> `index_worker.rs::index_branch_c` typechecking **through the live
+> `symbol_tables`** and then "removing the live residue" (mutate-live-then-undo,
+> R13-by-cleanup). `/design` (int)'s S110 Phase-3 audit
+> (`design/int/index-worker-isolation.md` §3) found that seam was **already
+> cured at S91** (`9ba2ca91`): `checked_typecheck_module` builds a
+> function-local deep-cloned `private_tables` snapshot + fresh
+> `private_aliases`, and `index_typecheck_into_private` runs
+> `install_imports`/`install_exports`/`register_macro_in_module`/`check_forms`
+> against those **private** maps only — the in-memory half of R13 holds by
+> construction today. (The stale `index_branch_c` docstrings still describing
+> the retired mutate-live model are their own defect, flagged for `/dev`
+> rewrite in the fixing change-set.) The original attribution's mechanism claim
+> is therefore RETIRED; the paragraphs below are the corrected suspect set.
+
+The defect still reproduces post-S91, so the phantom enters through a channel
+the in-memory isolation missed. Two surviving channels, in suspicion order:
+
+1. **The shared-cache write channel (§25.5) — the PRIME suspect.** On a clean
+   branch-(c) check the feed writes **foreground-consumable persistent
+   state**: `write_index_meta` serialises a `.meta` for the module "so a later
+   real `/import` is a cache-hit (§25.5)", and it records
+   `shared.cache.record_source_hash(module, hash)` +
+   `shared.cache.record_compiled(module, hash, {})` (`try_branch_b` likewise
+   `record_source_hash`s). These are **live writes into `shared.cache`**, a
+   substrate the foreground import path consumes verbatim (`is_cache_valid` →
+   deserialise the index-written `.meta` → install entries without
+   re-typechecking). An index-produced artifact that differs in any entry from
+   what the real Phase-1 writer would produce (the 0569 macro carve-out proves
+   the index result CAN be incomplete for a real import) is laundered into the
+   foreground world as a cache-hit. The `bit-and`-only fingerprint (never the
+   identically-shaped `bit-or`/`bit-xor` beside it) fits a **per-module
+   artifact race** — one module's `.meta`/manifest entry published or read
+   back at a scheduling-dependent instant — better than a systematic resolver
+   write.
+2. **The live `&shared.prelude_fallback` thread.** The one live SharedState
+   handle still threaded into the "isolated" index typecheck. Audited
+   read-only today, but it is a live map read concurrently with foreground
+   writes and a standing invitation for a future write leak — tightened to a
+   private snapshot by the isolation contract (§3.2 there).
+
+**"Fires with `--no-cache` + cleared cache" reconciliation.** §1's "not a
+cache defect" boundary was drawn against *stale-cache-content* explanations
+(a poisoned artifact surviving between runs). It does NOT exclude the §25.5
+channel: the suspect race is an **intra-session** artifact publish/consume
+between the background feed and the foreground import, so per-run cache
+clearing does not sever it. Whether `--no-cache` gates the index feed's OWN
+`.meta` writes and the foreground's index-`.meta` reads is exactly what the
+trace sweep must establish — if BOTH are provably disabled under `--no-cache`
+and the phantom still fires, the residual writer is on the **foreground**
+import/prelude path and the feed is only the timing perturbation
+(`index-worker-isolation.md` §4 names that re-scope arm explicitly; the
+attribution then moves and this record is amended again, per
+verify-fix-not-symptom).
+
+**Locate before patching (binding on the S110 fix).** The ≥25-iteration
+`CRANELISP_MODULE_TRACE=1` sweep of the deterministic recipe (§3) runs FIRST
+and must LOCATE the residual writer — confirming (or refuting) the cache
+channel — before `/dev` patches anything. A fix that merely perturbs
+scheduling until the symptom quiets is the named false-green failure mode.
 
 **Fingerprint of a concurrent mis-attribution** (not a systematic resolver
 bug): only `bit-and` leaks — never the identically-shaped `bit-or` / `bit-xor`
