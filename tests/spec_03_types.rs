@@ -1305,32 +1305,48 @@ fn bare_var_inferred_constraint_not_held_abstract() {
     );
 }
 
-// --- R10 (RED, neg) — a returned polymorphic fn is poly-as-value, unsupported --
+// --- R10 (REWRITE→accept, W6.3.1 reversal) — a returned rank-1 poly fn ACCEPTS -
 
-// spec: spec/03-types.md §3.3.4 + §3.10 — MUST (f), row 10: a written var that
-// would leave a function polymorphic in a VALUE position (returned, stored) is
-// rank-2 polymorphism, which Cranelisp does not support. `(defn mk [] (fn [:b y]
-// y))` returns a still-polymorphic `∀b. (Fn [b] b)` → MUST be a clear type
-// error, not silent mis-inference. Contrast R9: a polymorphic `fn` APPLIED in
-// place is fine (application instantiates it). Never a codegen frame.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck generalization boundary (the §3.10 rank-1 gate is absent for a RETURNED still-polymorphic fn — the fn is accepted and displayed as `(Fn [] (Fn [a] a))`) found=S109 owner=/dev
+// spec: spec/03-types.md §3.3.4 — MUST (f), row 10 (rewritten §3.3.5): a rank-1
+// polymorphic function value may be RETURNED — every `∀` sits at the enclosing
+// definition's own boundary (prenex). `(defn mk [] (fn [:b y] y))` is ACCEPTED
+// with scheme `∀a. (Fn [] (Fn [a] a))`; each `(mk)` instantiates `a` fresh. A
+// written `:b` is NOT special — written ≡ unwritten: the unwritten twin
+// `(defn mkid [] (fn [y] y))` has the SAME scheme. This REVERSES the W6.3 eager
+// poly-as-value rejection (removed by `/dev` at `eb6c94e6`); the earlier
+// `returned_polymorphic_fn_rejected_neg` verdict is superseded (no defect exists
+// at this cell — the acceptance is spec).
 #[test]
-fn returned_polymorphic_fn_rejected_neg() {
+fn returned_rank1_polymorphic_fn_accepted() {
+    // Written `:b` on the returned lambda's param.
     let out = repl_prims("(defn mk [] (fn [:b y] y))\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("codegen") && !combined.contains("__expr"),
-        "the poly-as-value rejection MUST be a clean type error, never a codegen \
-         frame (§3.3.4/§3.10 MUST (f)); got:\n{combined}"
+        !combined.contains("cannot be returned or stored")
+            && !combined.contains("rank-2")
+            && !combined.to_lowercase().contains("poly-as-value"),
+        "a rank-1 poly-return MUST be accepted, not rejected as poly-as-value \
+         (§3.3.4 MUST (f), row 10); got:\n{combined}"
     );
     assert!(
-        !out.stdout.contains(":(Fn [] (Fn [a] a)) user/mk"),
-        "a RETURNED still-polymorphic `fn` MUST be rejected as poly-as-value, NOT \
-         silently accepted as `(Fn [] (Fn [a] a))` (§3.3.4/§3.10 MUST (f), \
-         rank-1); got:\n{}",
+        out.stdout.contains(":(Fn [] (Fn [a] a)) user/mk"),
+        "`(defn mk [] (fn [:b y] y))` MUST be accepted with scheme \
+         `∀a. (Fn [] (Fn [a] a))` (§3.3.4 MUST (f), row 10); got:\n{}",
         out.stdout
     );
 
+    // written ≡ unwritten: the unwritten twin `mkid` has the SAME scheme.
+    let twin = repl_prims("(defn mkid [] (fn [y] y))\n");
+    assert!(
+        twin.stdout.contains(":(Fn [] (Fn [a] a)) user/mkid"),
+        "the unwritten twin `(defn mkid [] (fn [y] y))` MUST have the SAME scheme \
+         `∀a. (Fn [] (Fn [a] a))` — written `:b` ≡ unwritten (§3.3.4 MUST (f)); \
+         got:\n{}",
+        twin.stdout
+    );
+
+    // --run: a program that returns the rank-1 poly fn compiles and runs
+    // (mk is code-less until concretely used — §3.11.3 disposition 1).
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
@@ -1338,9 +1354,9 @@ fn returned_polymorphic_fn_rejected_neg() {
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
-        !run.status.success(),
-        "--run: returning a still-polymorphic `fn` MUST be rejected (§3.10 \
-         rank-1, no first-class polymorphism); got success:\n{rcomb}"
+        run.status.success(),
+        "--run: returning a rank-1 polymorphic `fn` MUST compile and run \
+         (§3.3.4 MUST (f)); got failure:\n{rcomb}"
     );
 }
 
@@ -1416,81 +1432,115 @@ fn lambda_applied_in_place_at_generic_arg_accepted() {
     .assert_all_equal(7);
 }
 
-// --- B-1 fence (GREEN, neg) — the held-as-value trio STAYS rejected -----------
+// --- W6.3.1 rank-model: the ex-"held-as-value trio" RECLASSIFIED ---------------
 //
-// Non-regression fence for the 0596 fix (Table 2b B-1): the narrowing that flips
-// f1/f2 green MUST NOT un-reject the genuine poly-as-value cases. R10's
-// `returned_polymorphic_fn_rejected_neg` already pins the RETURNED leg (`mk`);
-// this pins the two remaining trio members — let-stored-and-returned (`mk3`) and
-// passed-uninstantiated (`mk4`) — which were previously unpinned. All three are
-// GREEN (correctly rejected) at `c3008d1f` and MUST stay so: a fix regressing
-// either is a mis-narrowing.
+// Under the settled rank model (§3.3.4, rewritten; W6.3.1 reversal, `/dev`
+// `eb6c94e6`) the W6.3-era "held-as-value trio stays rejected" fence is GONE: a
+// rank-1 polymorphic function value may be RETURNED or contained. `mk` (returned,
+// above) and `mk3` (let-stored-and-returned, below) both ACCEPT — same scheme.
+// `mk4` (passed uninstantiated to a callee that never applies it) is NOT a
+// rank-1 return: the closure reaches codegen (an argument passed to an evaluated
+// function, §3.11.1) with a free type var that nothing pins, so it is the §3.11
+// ambiguity error (MUST (k) family, like D-3) — NOT an acceptance. The genuine
+// "no first-class polymorphism" enforcement now lives entirely at the USE —
+// value restriction (R18), rank-2 argument (R19), §3.11 ambiguity (D-3/mk4).
 
-// spec: spec/03-types.md §3.3.4/§3.10 — MUST (f): a written variable that would
-// leave a function polymorphic in a VALUE position — stored in a `let` and
-// returned, or passed uninstantiated to another function — is rank-2 and MUST be
-// rejected. `(defn mk3 [] (let [g (fn [:b y] y)] g))` (stored then returned) and
-// `(defn mk4 [] (takes (fn [:b y] y)))` (passed uninstantiated) both hold the
-// `fn` as a value with `b` free → both rejected. The arg axis is moot: the value
-// never reaches an application, so it is NOT instantiation-at-use.
+// spec: spec/03-types.md §3.3.4 — MUST (f): a rank-1 polymorphic `fn` stored in a
+// syntactic-value `let` and RETURNED is still a rank-1 poly-return — the `let`
+// binding is generalized (§3.3.4 ¶1) and the returned value is the `fn` itself.
+// `(defn mk3 [] (let [g (fn [:b y] y)] g))` → ACCEPTED as `∀a. (Fn [] (Fn [a] a))`,
+// the SAME scheme as `mk`. This REVERSES the W6.3-era `mk3`-rejected fence.
 #[test]
-fn held_as_value_polymorphic_fn_variants_stay_rejected_neg() {
-    // let-stored-and-returned.
-    let mk3 = repl_prims("(defn mk3 [] (let [g (fn [:b y] y)] g))\n");
-    let c3 = format!("{}{}", mk3.stdout, mk3.stderr);
+fn let_stored_rank1_fn_returned_accepted() {
+    let out = repl_prims("(defn mk3 [] (let [g (fn [:b y] y)] g))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c3.contains("codegen") && !c3.contains("__expr"),
-        "the poly-as-value rejection MUST be a clean type error, never a codegen \
-         frame (§3.3.4/§3.10); got:\n{c3}"
+        !combined.contains("cannot be returned or stored") && !combined.contains("rank-2"),
+        "a let-stored-and-returned rank-1 poly `fn` MUST be accepted, not rejected \
+         as poly-as-value (§3.3.4 MUST (f)); got:\n{combined}"
     );
     assert!(
-        !mk3.stdout.contains("user/mk3 ; defn"),
-        "a `fn` stored in a `let` and RETURNED is poly-as-value — `mk3` MUST be \
-         REJECTED, not silently defined (§3.3.4 MUST (f)); got:\n{}",
-        mk3.stdout
+        out.stdout.contains(":(Fn [] (Fn [a] a)) user/mk3"),
+        "`(defn mk3 [] (let [g (fn [:b y] y)] g))` MUST be accepted as \
+         `∀a. (Fn [] (Fn [a] a))`, the same scheme as `mk` (§3.3.4 MUST (f)); \
+         got:\n{}",
+        out.stdout
     );
 
-    // passed-uninstantiated (to a function that never applies it).
-    let mk4 = repl_prims(
-        "(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n",
-    );
-    let c4 = format!("{}{}", mk4.stdout, mk4.stderr);
-    assert!(
-        !c4.contains("codegen") && !c4.contains("__expr"),
-        "the poly-as-value rejection MUST be a clean type error, never a codegen \
-         frame (§3.3.4/§3.10); got:\n{c4}"
-    );
-    assert!(
-        !mk4.stdout.contains("user/mk4 ; defn"),
-        "a `fn` PASSED uninstantiated is poly-as-value — `mk4` MUST be REJECTED, \
-         not silently defined (§3.3.4 MUST (f)); got:\n{}",
-        mk4.stdout
-    );
-
-    // --run: both rejections hold end-to-end.
+    // --run: defining the returning `fn` compiles and runs (code-less until used).
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user(
-            "(defn mk3 [] (let [g (fn [:b y] y)] g))\n\
-             (defn main [] (Pure 0))\n",
-        )
+        .user("(defn mk3 [] (let [g (fn [:b y] y)] g))\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        run.status.success(),
+        "--run: a let-stored-and-returned rank-1 poly `fn` MUST compile and run \
+         (§3.3.4 MUST (f)); got failure:\n{rcomb}"
+    );
+}
+
+// spec: spec/03-types.md §3.11 — MUST (k): a rank-1 poly `fn` PASSED
+// uninstantiated to a callee that never applies it is NOT a rank-1 return — the
+// closure is a codegen-reaching value (an argument passed to an evaluated
+// function, §3.11.1) whose type variable no use pins, so it is the §3.11
+// ambiguity error, the sibling disposition of an unpinned `[]`. `takes` ignores
+// its argument, so `(defn mk4 [] (takes (fn [:b y] y)))` leaves the closure's var
+// free at codegen → ambiguous. This is the empirically-verified + spec-correct
+// disposition at `eb6c94e6`. (NOTE: §L Table 1b row D-1 expected `mk4` to ACCEPT;
+// that expectation is a plan error — `mk4` is the §3.11/MUST-(k) family, like
+// D-3 — flagged to /qa via FIXME.) A clean §3.11 error, never a codegen frame.
+#[test]
+fn passed_uninstantiated_poly_fn_unpinned_ambiguity_neg() {
+    let out = repl_prims("(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("GOT slot")
+            && !combined.contains("__expr")
+            && !combined.contains("codegen error"),
+        "the unpinned passed-closure rejection MUST be a clean §3.11 ambiguity, \
+         never a backend GOT-slot/__expr/codegen frame (§3.11.1 / MUST (k)); \
+         got:\n{combined}"
+    );
+    assert!(
+        combined.contains("ambiguous"),
+        "a rank-1 poly `fn` passed uninstantiated, its var unpinned at codegen, \
+         MUST be the §3.11 ambiguous-type error (§3.11.1 / MUST (k)); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains("user/mk4 ; defn"),
+        "`mk4` MUST NOT be silently defined — the passed closure's free var \
+         reaches codegen unpinned (§3.11.1); got:\n{}",
+        out.stdout
+    );
+
+    // --run: the ambiguity holds end-to-end (mode-uniform).
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n(defn main [] (Pure 0))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
         !run.status.success(),
-        "--run: a let-stored-and-returned still-polymorphic `fn` MUST be rejected \
-         (§3.10 rank-1); got success:\n{rcomb}"
+        "--run: a passed-uninstantiated poly `fn` with an unpinned var MUST be \
+         rejected as §3.11 ambiguity; got success:\n{rcomb}"
+    );
+    assert!(
+        rcomb.contains("ambiguous"),
+        "--run: the rejection MUST be the §3.11 ambiguous-type error; got:\n{rcomb}"
     );
 }
 
 // --- B-1 fence (GREEN, pos) — a let-stored `fn` APPLIED in place is accepted ---
 //
-// The other side of the fence: the fix must not OVER-narrow. A `fn` stored in a
-// `let` and then APPLIED in place is pinned by the use (§3.10) — `b` is
-// instantiated, no value stays polymorphic — so it MUST stay accepted. Contrast
-// `mk3` above (stored + returned, rejected): storage alone is not the trigger,
-// escaping-as-a-value is. GREEN PIN at `c3008d1f`.
+// A `fn` stored in a `let` and then APPLIED in place is pinned by the use
+// (§3.10) — `b` is instantiated, so the result is `(Fn [] Int)`, a monomorphic
+// value. Under the settled rank model both this and `mk3` above accept, by
+// different mechanisms: `mk3` (stored + RETURNED) is a rank-1 poly-return
+// `∀a. (Fn [] (Fn [a] a))` (§3.3.4 MUST (f)); `f3` (stored + APPLIED) is pinned
+// by the use to `(Fn [] Int)` (§3.10). GREEN PIN.
 
 // spec: spec/03-types.md §3.3.4/§3.10 — MUST (h): `(defn f3 [] (let [g (fn [:b
 // y] y)] (g 3)))` stores the polymorphic `fn` then APPLIES it in place; the
@@ -1522,6 +1572,145 @@ fn let_stored_polymorphic_fn_applied_in_place_accepted() {
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
+}
+
+// =============================================================================
+// §3.3.4 [S109 W6.3.1] — retained genuine restrictions (Table 1b R18/R19/D-3).
+// The rank-model reversal ACCEPTS rank-1 poly-returns; the "no first-class
+// polymorphism" guarantee is now enforced ENTIRELY at the USE by three
+// mechanisms that already exist — value restriction (i), rank-2 argument (j),
+// §3.11 ambiguity (k). These GREEN PINs (verified rejecting at `eb6c94e6`) pin
+// each so a future "simplification" cannot quietly drop them. Free-standing
+// `Pair2` (a two-field product ctor) stands in for the spec's `pair`.
+// =============================================================================
+
+// --- R18 (GREEN PIN, neg) — value restriction: one instance, two types --------
+
+// spec: spec/03-types.md §3.3.4 — MUST (i), row 18 (value restriction): the
+// result of an application bound by `let` is ONE monomorphic instance, NOT
+// generalized. Using that instance at two distinct types is a unification
+// conflict. `(defn mkid [] (fn [y] y))` then
+// `(let [f (mkid)] (Pair2 (f "x") (f 5)))` MUST be rejected — the single instance
+// `f` cannot be both `(Fn [String] String)` and `(Fn [Int] Int)`. A type error,
+// never a codegen frame. This was the real enforcement all along, not the
+// (removed) eager definition-time check.
+#[test]
+fn single_poly_instance_used_at_two_types_value_restriction_neg() {
+    let out = repl_prims(
+        "(deftype (Pair2 a b) [:a x :b y])\n\
+         (defn mkid [] (fn [y] y))\n\
+         (let [f (mkid)] (Pair2 (f \"x\") (f 5)))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("GOT slot")
+            && !combined.contains("__expr")
+            && !combined.contains("codegen error"),
+        "the value-restriction rejection MUST be a clean type error, never a \
+         backend frame (§3.3.4 MUST (i)); got:\n{combined}"
+    );
+    assert!(
+        combined.to_lowercase().contains("type")
+            && (combined.contains("mismatch") || combined.to_lowercase().contains("error")),
+        "one application-result instance `f` used at String AND Int MUST be a \
+         unification conflict (value restriction, §3.3.4 MUST (i), row 18); \
+         got:\n{combined}"
+    );
+}
+
+// --- R19 (GREEN PIN, neg) — rank-2 argument: one param, two types -------------
+
+// spec: spec/03-types.md §3.3.4 — MUST (j), row 19 (rank-2 argument): a function
+// parameter carries a single monotype for the body-check, so a body that applies
+// one parameter at two distinct types is rejected by unification.
+// `(defn apply2 [f] (Pair2 (f "x") (f 5)))` MUST be rejected — `f` cannot serve
+// both `String` and `Int`. This is the §3.10 "no rank-2 polymorphism"
+// restriction. A type error, never a codegen frame.
+#[test]
+fn rank2_argument_applied_at_two_types_neg() {
+    let out = repl_prims(
+        "(deftype (Pair2 a b) [:a x :b y])\n\
+         (defn apply2 [f] (Pair2 (f \"x\") (f 5)))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("GOT slot")
+            && !combined.contains("__expr")
+            && !combined.contains("codegen error"),
+        "the rank-2-argument rejection MUST be a clean type error, never a \
+         backend frame (§3.3.4 MUST (j)); got:\n{combined}"
+    );
+    assert!(
+        !out.stdout.contains("user/apply2 ; defn"),
+        "`apply2` MUST be REJECTED — the param `f` is one monotype, applied at \
+         String AND Int (rank-2 argument, §3.3.4 MUST (j), row 19); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        combined.to_lowercase().contains("type")
+            && (combined.contains("mismatch") || combined.to_lowercase().contains("error")),
+        "the rank-2-argument use MUST be a unification failure (§3.3.4 MUST (j)); \
+         got:\n{combined}"
+    );
+}
+
+// --- D-3 (GREEN PIN, neg) — result-only var → §3.11 ambiguity, not rank-1 ------
+
+// spec: spec/03-types.md §3.11.3 — MUST (k), row D-3 (result-only var): a
+// definition whose result carries a free type variable that NO argument fixes is
+// admitted at the definition (sound, code-less until instantiated — §3.11.3
+// disposition 1), but a codegen-reaching USE that leaves the variable unpinned is
+// the §3.11 ambiguity error — NOT a rank-1 rejection of the returning definition.
+// `(defn constf [x] (fn [y] x))` is admitted; the use `(defn g [] (constf 5))` —
+// `g`'s result var is nobody's argument-carried quantifier — errors as §3.11
+// ambiguous. AUTHORING NOTE (per plan D-3 verify-first): the surfaced message IS
+// the §3.11 "ambiguous … pin the type" class, mode-uniform, with NO
+// GOT-slot/__expr/codegen-error leak — so NO `check-gate-leak` defect line rides
+// this row (contrast R16, whose §3.11 gate DID leak a backend frame). The message
+// legitimately reads "reached a codegen position" — that is §3.11 prose, not a
+// backend leak.
+#[test]
+fn result_only_var_unresolved_use_ambiguity_not_rank1_neg() {
+    let out = repl_prims("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains(":(Fn [a] (Fn [b] a)) user/constf"),
+        "the returning definition `constf` MUST be admitted (sound, code-less \
+         until instantiated — §3.11.3 disposition 1 / MUST (k)); got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("GOT slot")
+            && !combined.contains("__expr")
+            && !combined.contains("codegen error")
+            && !combined.contains("rank-2")
+            && !combined.contains("cannot be returned"),
+        "the unpinned-use rejection MUST be the §3.11 ambiguity class, never a \
+         backend frame nor a rank-1/return rejection (§3.3.4 MUST (k)); got:\n{combined}"
+    );
+    assert!(
+        combined.contains("ambiguous"),
+        "an unpinned result-only var reaching codegen MUST be the §3.11 \
+         ambiguous-type error, NOT a rank-1 rejection (§3.3.4 MUST (k), D-3); \
+         got:\n{combined}"
+    );
+
+    // --run: mode-uniform — the same §3.11 ambiguity, no backend leak.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))\n(defn main [] (Pure 0))\n")
+        .output();
+    let rcomb = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success(),
+        "--run: an unpinned result-only var reaching codegen MUST be rejected \
+         (§3.11 / MUST (k)); got success:\n{rcomb}"
+    );
+    assert!(
+        rcomb.contains("ambiguous") && !rcomb.contains("GOT slot") && !rcomb.contains("__expr"),
+        "--run: the rejection MUST be the §3.11 ambiguity, no backend leak \
+         (§3.3.4 MUST (k)); got:\n{rcomb}"
+    );
 }
 
 // --- R11 (RED→pass) — a bare value-position `:a` pins to the concrete type -----
