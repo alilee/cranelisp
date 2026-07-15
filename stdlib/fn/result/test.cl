@@ -1,7 +1,7 @@
 ;; fn/result/test.cl — self-tests for fn.result (module fn.result.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Uses the in-language harness (`testing.assertions` does NOT
+;; `(mod- test)`. Uses the in-language harness (`testing.assertions` does NOT
 ;; depend on `fn.result`, so no load cycle). `(Ok …)`/`(Err …)` are annotated
 ;; with the full `(Result Int String)` so the unused partner type var is pinned.
 

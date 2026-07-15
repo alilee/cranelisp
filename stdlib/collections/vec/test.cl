@@ -2,7 +2,7 @@
 ;; collections.vec.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the curated Clojure verbs (count/get/conj/assoc),
+;; `(mod- test)`. Exercises the curated Clojure verbs (count/get/conj/assoc),
 ;; the vec combinators, and the new eager `range` (gap G3). Vec values reduce
 ;; to Int scalars (count/get/vec-reduce) for assert-eq.
 

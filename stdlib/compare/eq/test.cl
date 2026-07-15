@@ -3,8 +3,8 @@
 ;; Authored as a SEPARATE backing file (not an inline `(mod test …)` body) so
 ;; the compiler's one-time inline-submodule EXTRACTION (spec §8.2.5) cannot
 ;; strip it: an inline body is extracted to this path on first compile and the
-;; parent left with a bare `(mod test)`; authoring the file directly is the
-;; durable, extraction-stable form. The parent declares `(mod test)`.
+;; parent left with a bare `(mod- test)`; authoring the file directly is the
+;; durable, extraction-stable form. The parent declares `(mod- test)`.
 ;;
 ;; HARNESS-FREE: `testing.assertions` depends on `compare.eq` (its `assert-eq`
 ;; carries an `Eq` bound), so importing the harness here would form a load

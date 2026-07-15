@@ -1,7 +1,7 @@
 ;; num/float/test.cl — self-tests for num.float (module num.float.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Float has Eq + Display so assert-eq is used.
+;; `(mod- test)`. Float has Eq + Display so assert-eq is used.
 
 (import [super [abs-float sign-float negate-float min-float max-float clamp-float]])
 (import [testing.assertions [assert-eq]])

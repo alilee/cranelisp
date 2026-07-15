@@ -127,7 +127,7 @@
         (Cons yh yt) (Cons (f xh yh) (zip-with f xt yt))])]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): exercises the list operations
+;; `(mod- test …)` submodule (S87 Stage C.2): exercises the list operations
 ;; with the in-language harness. Tests reduce list values to Int/Bool first
 ;; (via `length`/`empty?`/`fold`) so assert-eq compares scalars.
 

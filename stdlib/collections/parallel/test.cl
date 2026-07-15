@@ -2,7 +2,7 @@
 ;; collections.parallel.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. These assert SEQUENTIAL-IDENTITY: par-* must produce the same
+;; `(mod- test)`. These assert SEQUENTIAL-IDENTITY: par-* must produce the same
 ;; result as the sequential vec-* counterparts. Because parallelism is
 ;; semantically transparent (pure code), correctness is checked serially —
 ;; the result is the contract, the speed-up is a separate, transparent property.

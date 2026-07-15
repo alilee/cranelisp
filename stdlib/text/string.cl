@@ -112,7 +112,7 @@
   (replace-at s idx ch))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): exercises the string helpers with
+;; `(mod- test …)` submodule (S87 Stage C.2): exercises the string helpers with
 ;; the in-language harness (String has Eq + Display).
 
 (mod- test)

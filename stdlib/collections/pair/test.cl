@@ -2,7 +2,7 @@
 ;; collections.pair.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the pair accessors via the in-language harness.
+;; `(mod- test)`. Exercises the pair accessors via the in-language harness.
 
 (import [super [Pair first second swap map-first]])
 (import [testing.assertions [assert-eq]])

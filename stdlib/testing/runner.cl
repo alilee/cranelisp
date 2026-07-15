@@ -38,7 +38,7 @@
 ;; test-discovery.md §4.5 dev-session-only framing). The pure helpers below
 ;; (run-one / present-one / tally / report / passed?) work in every mode.
 ;;
-;; SELF-TESTS now ship as a `(mod test …)` submodule again (S82 Phase 6). Two
+;; SELF-TESTS now ship as a `(mod- test …)` submodule again (S82 Phase 6). Two
 ;; defects that S81 had to route around are FIXED: a parent→child `super` import
 ;; resolves the parent's symbols (0342, int load-ordering), and loading a module
 ;; whose source carries a `(mod test …)` body no longer clobbers the backing
@@ -180,7 +180,7 @@
     [(Tally _ f x) (if (eq-i64 f 0) (eq-i64 x 0) false)]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; The `(mod test)` body lives in the SEPARATE backing file
+;; The `(mod- test)` body lives in the SEPARATE backing file
 ;; `testing/runner/test.cl` (module testing.runner.test) — authored as a file
 ;; rather than an inline body so the compiler's one-time inline-submodule
 ;; EXTRACTION (spec §8.2.5) cannot strip it. It super-imports the runner's

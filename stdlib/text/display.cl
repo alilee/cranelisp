@@ -24,7 +24,7 @@
   (defn show [x] x))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): super-imports `show` and checks
+;; `(mod- test …)` submodule (S87 Stage C.2): super-imports `show` and checks
 ;; each primitive's rendering. HARNESS-FREE by necessity: `testing.assertions`
 ;; depends on `text.display` (for `assert-eq`'s `Display` bound), so importing
 ;; the harness here forms a load cycle

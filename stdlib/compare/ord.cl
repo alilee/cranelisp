@@ -34,7 +34,7 @@
   (defn >= [a b] (if b a true)))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): super-imports the Ord methods
+;; `(mod- test …)` submodule (S87 Stage C.2): super-imports the Ord methods
 ;; and exercises Int + Bool ordering. (String ordering is omitted by design,
 ;; see the note below, so there is no String self-test.)
 

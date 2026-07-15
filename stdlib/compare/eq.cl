@@ -29,11 +29,11 @@
   (defn != [a b] (not (str-eq a b))))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): imports the parent trait + its
+;; `(mod- test …)` submodule (S87 Stage C.2): imports the parent trait + its
 ;; methods via `super` (D4 path — the trait is seeded into the child's
 ;; constraint scope). The S86 trait-bedrock blockers (D3 child re-defines
 ;; parent trait; D4 super-trait not in child scope; the `neq-string` String
-;; `!=` codegen) are all FIXED — this is a real, runnable `(mod test)`.
+;; `!=` codegen) are all FIXED — this is a real, runnable `(mod- test)`.
 ;;
 ;; HARNESS-FREE by necessity: `testing.assertions` itself depends on
 ;; `compare.eq` (its `assert-eq` carries an `Eq` bound), so a self-test that

@@ -1,7 +1,7 @@
 ;; compare/ord/test.cl — self-tests for compare.ord (module compare.ord.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. HARNESS-FREE inline-`if` shape (None = pass). String ordering
+;; `(mod- test)`. HARNESS-FREE inline-`if` shape (None = pass). String ordering
 ;; is omitted by design (see compare/ord.cl), so there is no String self-test.
 
 (import [super [Ord < > <= >=]])

@@ -1,7 +1,7 @@
 ;; num/num/test.cl — self-tests for num.num (module num.num.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. `num.num` is not a harness dependency, so assert-eq is used
+;; `(mod- test)`. `num.num` is not a harness dependency, so assert-eq is used
 ;; (Int has Eq + Display).
 
 (import [super [Num + - * /]])

@@ -112,7 +112,7 @@
         (redf left right))))                                                    ;; combine = let body (post-barrier, no spark)
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test)` — backing file collections/parallel/test.cl (extraction-stable
+;; `(mod- test)` — backing file collections/parallel/test.cl (extraction-stable
 ;; per spec §8.2.5). The tests assert sequential-identity against vec-map /
 ;; vec-reduce: parallelism is transparent, so correctness is checkable serially.
 

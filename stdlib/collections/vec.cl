@@ -174,7 +174,7 @@
     (range-loop (add-i64 i 1) hi (vec-push acc i))))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): exercises the curated Clojure
+;; `(mod- test …)` submodule (S87 Stage C.2): exercises the curated Clojure
 ;; verbs (count/get/conj/assoc) and the vec combinators with the harness.
 ;; Vec values reduce to Int scalars (via count/get/vec-reduce) for assert-eq.
 

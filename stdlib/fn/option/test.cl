@@ -1,7 +1,7 @@
 ;; fn/option/test.cl — self-tests for fn.option (module fn.option.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. HARNESS-FREE: `testing.assertions` depends on `fn.option`
+;; `(mod- test)`. HARNESS-FREE: `testing.assertions` depends on `fn.option`
 ;; (returns `(Option String)`), so importing the harness here forms a load
 ;; cycle. Tests construct/match Some & None and return `(Option String)`.
 

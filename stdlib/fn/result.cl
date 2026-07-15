@@ -47,7 +47,7 @@
      (Err e) (Err e)]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 Stage C.2): exercises the Result combinators
+;; `(mod- test …)` submodule (S87 Stage C.2): exercises the Result combinators
 ;; with the in-language harness (`testing.assertions` does NOT depend on
 ;; `fn.result`, so there is no load cycle).
 

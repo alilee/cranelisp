@@ -2,7 +2,7 @@
 ;; testing.runner.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the runner's pure helpers (run-one / present-one /
+;; `(mod- test)`. Exercises the runner's pure helpers (run-one / present-one /
 ;; tally-line / passed?) via the in-language harness.
 
 (import [super [run-one present-one tally-line passed?

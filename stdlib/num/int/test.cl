@@ -1,7 +1,7 @@
 ;; num/int/test.cl — self-tests for num.int (module num.int.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the Int helpers via the in-language harness.
+;; `(mod- test)`. Exercises the Int helpers via the in-language harness.
 
 (import [super [rem abs sign negate even? odd? min-int max-int clamp]])
 (import [testing.assertions [assert-true assert-false assert-eq]])

@@ -1,7 +1,7 @@
 ;; text/string/test.cl — self-tests for text.string (module text.string.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the string helpers plus the new `char-to-digit`/
+;; `(mod- test)`. Exercises the string helpers plus the new `char-to-digit`/
 ;; `digit-to-char` (gap G4) and `replace-at`/`str-assoc` (gap G5).
 
 (import [super [blank? repeat-str index-of reverse-str pad-left pad-right

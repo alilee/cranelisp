@@ -1,7 +1,7 @@
 ;; fn/compose/test.cl — self-tests for fn.compose (module fn.compose.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the combinators via the in-language harness.
+;; `(mod- test)`. Exercises the combinators via the in-language harness.
 
 (import [super [identity compose pipe flip]])
 (import [testing.assertions [assert-eq]])

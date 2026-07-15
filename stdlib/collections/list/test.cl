@@ -2,7 +2,7 @@
 ;; collections.list.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. List values are reduced to Int/Bool first (length/empty?/fold)
+;; `(mod- test)`. List values are reduced to Int/Bool first (length/empty?/fold)
 ;; so assert-eq compares scalars.
 
 (import [super [List Nil Cons empty? length first rest fold reverse

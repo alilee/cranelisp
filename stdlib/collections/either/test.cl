@@ -2,7 +2,7 @@
 ;; collections.either.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises the Either eliminators via the in-language harness.
+;; `(mod- test)`. Exercises the Either eliminators via the in-language harness.
 ;;
 ;; DEFECT (S87 Stage C.2): these tests LOAD and TYPECHECK cleanly and each
 ;; PASSES when called directly, but running them through the test-discovery

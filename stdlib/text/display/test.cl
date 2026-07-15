@@ -1,7 +1,7 @@
 ;; text/display/test.cl — self-tests for text.display (module text.display.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. HARNESS-FREE: `testing.assertions` depends on `text.display`
+;; `(mod- test)`. HARNESS-FREE: `testing.assertions` depends on `text.display`
 ;; (assert-eq's `Display` bound), so importing the harness here forms a load
 ;; cycle. Tests return `(Option String)` directly via inline `if` over `str-eq`.
 
