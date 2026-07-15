@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
-    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr,
+    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQSymbol,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant, MonoExpr,
     NotConcrete, ResolvedCall, Scheme,
     Span, Symbol, Type,
@@ -189,6 +189,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &mangled_name,
             &mono_expr_types,
             &mut resolutions,
+            &state.current_module,
         );
 
         // === P6 — build annotated mono defn ===
@@ -210,6 +211,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &concrete_param_types,
             &concrete_ret_ty,
             defn.span,
+            &resolutions.resolved_targets,
         )?;
 
         Ok(Some(mono_defn))
@@ -356,6 +358,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// concrete types would have been a distinct hop already minted in P4.
     ///
     /// This is a pure `resolutions` mutation — no `state.subst` touch.
+    #[allow(clippy::too_many_arguments)]
     fn record_self_recursion_dispatch(
         &self,
         wrap_defn: &Defn,
@@ -364,6 +367,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         mangled_name: &str,
         mono_expr_types: &HashMap<Span, Type>,
         resolutions: &mut MethodResolutions,
+        current_module: &ModuleFullPath,
     ) {
         let mut self_calls = Vec::new();
         collect_self_apply_calls(wrap_defn.body(), fn_name, &mut self_calls);
@@ -385,6 +389,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     *self_span,
                     ResolvedCall::SigDispatch {
                         mangled_name: JitSymbol::from(mangled_name),
+                    },
+                );
+                // S110 0583 leg 1 (mono self-recursion carrier, FIXME 0616):
+                // the mono variant is registered in the caller's current module
+                // (`register_mono_entry`), so the storage FQ is
+                // `{current_module, mangled_name}` — the SigDispatch home
+                // `resolved_call_to_fqsymbol` derives.
+                resolutions.resolved_targets.insert(
+                    *self_span,
+                    FQSymbol {
+                        module: current_module.clone(),
+                        symbol: Symbol::from(mangled_name),
                     },
                 );
             }
@@ -479,6 +495,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// S84 Phase-3 (FIXME 0392): the `MonoDefnVariant` built here is the
     /// entry's `codegen_view` — set ON the mono instance's `ModuleEntry::Def`
     /// at `register_mono_entry` (single source of truth, Principle 7).
+    #[allow(clippy::too_many_arguments)]
     fn finalize_mono_codegen_view(
         &self,
         state: &mut CheckState,
@@ -487,8 +504,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
         defn_span: Span,
+        resolved_targets: &HashMap<Span, FQSymbol>,
     ) -> Result<MonoDefn, CranelispError> {
-        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets) {
+        // `resolved_targets` (S110 0583 leg 1, FIXME 0616) is the PER-INSTANCE
+        // mono `resolutions.resolved_targets`, NOT `state.method_resolutions`:
+        // `recheck_body_for_mono` restored the enclosing map before this seam,
+        // and the enclosing map carries no mono-time dispatch SELECTIONS (a
+        // self-call / sig-dispatch is minted per instance — `f$Int` vs `f$Float`
+        // at the SAME template span, so a shared map would collide). The local
+        // map carries the mono body's Var-ref carriers (recheck infer_var) AND
+        // the dispatch carriers (P4/P5 seams). `pattern_ctors` stays on the
+        // enclosing map: template ctors are instance-INVARIANT (same span → same
+        // ctor), so the original template check's entries serve every instance.
+        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &state.method_resolutions.pattern_ctors, resolved_targets) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
                 MonoDefnVariant {
@@ -809,6 +837,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     mangled_name: JitSymbol::from(inner_mangled.as_str()),
                 },
             );
+            // S110 0583 leg 1 (inner constrained-call carrier, FIXME 0616): the
+            // inner mono variant registers in the caller's current module, so
+            // its storage FQ is `{current_module, inner_mangled}`.
+            resolutions.resolved_targets.insert(
+                *inner_call_span,
+                FQSymbol {
+                    module: state.current_module.clone(),
+                    symbol: Symbol::from(inner_mangled.as_str()),
+                },
+            );
         }
     }
 
@@ -942,6 +980,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     *inner_span,
                     ResolvedCall::SigDispatch {
                         mangled_name: JitSymbol::from(mono.defn.name.as_ref()),
+                    },
+                );
+                // S110 0583 leg 1 (inner parametric-hop carrier, FIXME 0616):
+                // `register_mono_entry` stored this instance in the caller's
+                // current module — key its carrier there.
+                resolutions.resolved_targets.insert(
+                    *inner_span,
+                    FQSymbol {
+                        module: state.current_module.clone(),
+                        symbol: Symbol::from(mono.defn.name.as_ref()),
                     },
                 );
             }

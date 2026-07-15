@@ -507,12 +507,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.unify(state, p, a, *span)?;
                 }
                 self.unify(state, ret_type_var, ret_ty, *span)?;
-                state.method_resolutions.resolved_calls.insert(
-                    *span,
-                    ResolvedCall::SigDispatch {
-                        mangled_name: JitSymbol::from(mangled_name.as_ref()),
-                    },
-                );
+                let resolution = ResolvedCall::SigDispatch {
+                    mangled_name: JitSymbol::from(mangled_name.as_ref()),
+                };
+                // S110 0583 leg 1: sig-dispatch carrier at the Apply span.
+                self.record_dispatch_target(state, *span, &resolution);
+                state.method_resolutions.resolved_calls.insert(*span, resolution);
             } else if exact_matches.len() > 1 {
                 return Err(CranelispError::TypeError {
                     message: format!(

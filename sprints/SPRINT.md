@@ -902,6 +902,65 @@ deleted; lenient relocation is byte-identical (empty sidecars ⇒ `None`).
 Next skills: `/dev` (typecheck, 0616 top-up), `/sprint` (0617 re-pin), then
 `/testing` KC-W0-2/KC-W0-6 before the W0.b flip and W1.
 
+### /dev (W0.1) — 0616 producer top-up (2026-07-15, LANDED)
+
+Resolved Blocker FIXME 0616 (the three carrier legs the W0 writer missed) +
+folded in the "Resolve once" consolidation. Typecheck-internal, value-only —
+**same schema-19 window** (no `CACHE_SCHEMA_VERSION` bump), zero public-API
+movement, behaviour-invariant (carrier still WRITE-ONLY — nothing reads
+`resolved_target` until W1). Applied "recording happens where resolution
+happens" (§1.1), NOT a parallel re-probe.
+
+- **Leg 1 (Apply-span dispatch writer).** New `dispatch_target_fq` +
+  `record_dispatch_target` beside `resolved_call_to_fqsymbol` (single-sourced
+  module derivation — the `callees` projection, extended with the `BuiltinFn`
+  arm the operator leg needs). Wired at EVERY dispatch-selection seam that
+  writes through `state` (infer.rs 655/845/912 trait/primitive + deferred +
+  value-position; register.rs multi-sig; mono_collect.rs sig-dispatch ×2 +
+  auto-curry) AND the three mono-recheck seams writing the per-instance local
+  `resolutions` (monomorphise.rs self-recursion + inner-constrained +
+  inner-parametric-hop). `finalize_mono_codegen_view` now reads
+  `resolved_targets` from the PER-INSTANCE `resolutions` (the enclosing map
+  carries no mono-time dispatch selections — `f$Int`/`f$Float` collide at one
+  template span); `pattern_ctors` stays on the enclosing map (instance-invariant).
+  `(+ 1 2)` → `primitives/add-i64` at the Apply span (the named W1 failure).
+- **Leg 2 (self-recursion carve-out).** New `CheckState.current_defn`
+  (installed by `check_defn_body`, torn down on exit; deliberately NOT during
+  the mono/impl recheck — its self-dispatch is the leg-1 SigDispatch writers).
+  `record_reference_target` records the enclosing defn's own storage FQ for an
+  env-shadowed self-reference — explicitly diverging from the `callees`
+  self-edge skip (the two feeds' gates are semantically different).
+- **Leg 3 (dotted `Type.member`).** New `resolve_dotted_member_fq` +
+  `dotted_member_identity` core (single-sources the entry + FQ readers,
+  Principle 7); `infer_var` records `(fqtn.module, member_key)` for a dotted
+  ref (invisible to the bare-name `scope_resolve`). Feeds only `resolved_targets`
+  (dotted refs are `callees` residue).
+- **Consolidation (the Important mirror).** Deleted `resolve_user_fn_ref_fq`/
+  `user_fn_fq_of`/`resolved_target_fq`/`def_terminal_fq`/`record_user_fn_ref`/
+  `record_resolved_target`; `infer_var` now resolves each name ONCE via
+  `resolve_ref_target` → records `resolved_targets`, derives the `callees` edge
+  as a `UserFn`-filtered projection (Principles 7/24). `def_resolved` is the ONE
+  chain-follow both feeds + the `BuiltinFn` home probe share.
+
+Pins (typecheck `#[cfg(test)]`, one per leg): `resolved_target_operator_call_
+carries_primitive_fq_at_apply_span`, `resolved_target_self_recursion_carries_
+own_fq_at_var_span`, `resolved_target_dotted_ctor_carries_member_key_at_var_span`.
+Suite: **4562 run, 4549 pass, 13 fail (the unchanged pre-existing S110 REDs),
+1 skip** — +3 new green pins, zero new failures. `cargo check`/`--tests`/clippy
+clean (added `#[allow(clippy::too_many_arguments)]` to the two seams that grew a
+param). `cranelisp-types`/typecheck/backend baselines: zero movement.
+
+§1.1 deviation flagged to `/arch` (do-not-improvise): `dispatch_target_fq`
+derives the TraitMethod/SigDispatch module from `resolved_call_to_fqsymbol` =
+`current_module` (the shipped `callees` model, whose own rustdoc notes the
+pending "Step 5: look up the impl's defining module"). For a **cross-module**
+user trait-method dispatch (impl in module B, called from A) the mangled entry
+lives in B while the carrier records A — the backend's W1 keyed read would
+entry-miss. This is a PRE-EXISTING modelling gap shared with `callees` (masked
+today by the backend's global-fallback scan), NOT introduced here; W1's keyed
+read is where it surfaces. Recorded for `/arch` to rule on the correct
+storage-module derivation before W1 flips the trait-method leg.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

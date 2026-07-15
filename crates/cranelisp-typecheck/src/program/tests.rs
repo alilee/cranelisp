@@ -2,7 +2,7 @@
     use super::finalize::AmbiguousForm;
     use crate::checker::TestFixture;
     use cranelisp_types::{CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName,
-        ModuleEntry, ModuleFullPath, Symbol,
+        ModuleEntry, ModuleFullPath, MonoDefnVariant, MonoExpr, Symbol,
         TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
 
@@ -2050,6 +2050,257 @@
             dispatches.iter().any(|d| d == "test/id$Int"),
             "main's codegen_view must carry the post-mono SigDispatch{{test/id$Int}} \
              for the (id 7) call; found dispatches: {dispatches:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // S110 0583 producer top-up (FIXME 0616) — the three carrier legs the W0
+    // writer missed. Each pins `resolved_target: Some(fq)` at the RIGHT span in
+    // the concrete codegen view; the carrier rides UNREAD (W0.1 is
+    // behaviour-invariant), so these assert the PRODUCER, not backend consumption.
+    // spec: design/arch/backend-keyed-consumer.md §1.1
+    // ---------------------------------------------------------------------
+
+    /// Walk a `MonoExpr` collecting `(node_label, resolved_target)` for every
+    /// `Var` (labelled by its `name`) and `Apply` (labelled `"@apply"`) node.
+    fn collect_resolved_targets(
+        e: &MonoExpr,
+        out: &mut Vec<(String, Option<FQSymbol>)>,
+    ) {
+        match e {
+            MonoExpr::Var { name, resolved_target, .. } => {
+                out.push((name.as_ref().to_string(), resolved_target.clone()));
+            }
+            MonoExpr::Apply { callee, args, resolved_target, .. } => {
+                out.push(("@apply".to_string(), resolved_target.clone()));
+                collect_resolved_targets(callee, out);
+                for a in args {
+                    collect_resolved_targets(a, out);
+                }
+            }
+            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+                collect_resolved_targets(cond, out);
+                collect_resolved_targets(then_branch, out);
+                collect_resolved_targets(else_branch, out);
+            }
+            MonoExpr::Let { bindings, body, .. } => {
+                for (_, b) in bindings {
+                    collect_resolved_targets(b, out);
+                }
+                collect_resolved_targets(body, out);
+            }
+            MonoExpr::Lambda { body, .. } => collect_resolved_targets(body, out),
+            MonoExpr::Match { scrutinee, arms, .. } => {
+                collect_resolved_targets(scrutinee, out);
+                for arm in arms {
+                    collect_resolved_targets(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn main_codegen_view_of(tc: &TestFixture, name: &str) -> MonoDefnVariant {
+        match tc.symbol_table().get(name) {
+            Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+            other => panic!("{name} has no codegen_view: {other:?}"),
+        }
+    }
+
+    // Leg 1 (dispatch/operator): an operator call — a trait method the primitive
+    // short-circuit collapses to `add-i64` — carries its dispatch-leg carrier at
+    // the APPLY span (`primitives/add-i64`). `(+ 1 2)` is the named W1 failure
+    // scenario; the W0 writer produced NO Apply-span carrier at all.
+    #[test]
+    fn resolved_target_operator_call_carries_primitive_fq_at_apply_span() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        // (defn main [] (+ 1 2))
+        let program = vec![TopLevel::Defn(make_defn(
+            "main",
+            vec![],
+            vec![],
+            Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("+"), span(10, 11))),
+                args: vec![
+                    Expr::IntLit { value: 1, span: span(12, 13), inferred_type: None },
+                    Expr::IntLit { value: 2, span: span(14, 15), inferred_type: None },
+                ],
+                span: span(9, 16),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(0, 17),
+        ))];
+        tc.check_program_self(&program).unwrap();
+
+        let view = main_codegen_view_of(&tc, "main");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let apply_fq = targets
+            .iter()
+            .find(|(label, _)| label == "@apply")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            apply_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: Symbol::from("add-i64"),
+            }),
+            "operator (+ 1 2) Apply must carry resolved_target primitives/add-i64 \
+             (leg 1); collected: {targets:?}"
+        );
+    }
+
+    // Leg 2 (self-recursion): a concrete recursive fn's self-call resolves the
+    // env-shadowed recursion LOCAL, yet the backend keys it through the fn's own
+    // storage slot — so the self-reference `Var` carries the enclosing defn's own
+    // FQ (`test/fact`). The env-shadow gate skipped it entirely in W0.
+    #[test]
+    fn resolved_target_self_recursion_carries_own_fq_at_var_span() {
+        let mut tc = tc_with_prims();
+        // (defn fact [n] (if (eq-i64 n 0) 1 (mul-i64 n (fact (sub-i64 n 1)))))
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("fact"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("n"), None)],
+                body: Expr::If {
+                    cond: Box::new(Expr::Apply {
+                        callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(20, 26))),
+                        args: vec![
+                            Expr::var(Symbol::from("n"), span(27, 28)),
+                            Expr::IntLit { value: 0, span: span(29, 30), inferred_type: None },
+                        ],
+                        span: span(19, 31),
+                        resolved_call: None,
+                        inferred_type: None,
+                    }),
+                    then_branch: Box::new(Expr::IntLit { value: 1, span: span(33, 34), inferred_type: None }),
+                    else_branch: Box::new(Expr::Apply {
+                        callee: Box::new(Expr::var(Symbol::from("mul-i64"), span(36, 43))),
+                        args: vec![
+                            Expr::var(Symbol::from("n"), span(44, 45)),
+                            Expr::Apply {
+                                callee: Box::new(Expr::var(Symbol::from("fact"), span(47, 51))),
+                                args: vec![Expr::Apply {
+                                    callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(53, 60))),
+                                    args: vec![
+                                        Expr::var(Symbol::from("n"), span(61, 62)),
+                                        Expr::IntLit { value: 1, span: span(63, 64), inferred_type: None },
+                                    ],
+                                    span: span(52, 65),
+                                    resolved_call: None,
+                                    inferred_type: None,
+                                }],
+                                span: span(46, 66),
+                                resolved_call: None,
+                                inferred_type: None,
+                            },
+                        ],
+                        span: span(35, 67),
+                        resolved_call: None,
+                        inferred_type: None,
+                    }),
+                    span: span(15, 68),
+                    inferred_type: None,
+                },
+                span: span(0, 69),
+            }],
+            visibility: Visibility::Public,
+            span: span(0, 69),
+        })];
+        tc.check_program_self(&program).unwrap();
+
+        let view = main_codegen_view_of(&tc, "fact");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let self_fq = targets
+            .iter()
+            .find(|(label, _)| label == "fact")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            self_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: Symbol::from("fact"),
+            }),
+            "self-call `fact` Var must carry resolved_target test/fact (leg 2); \
+             collected: {targets:?}"
+        );
+    }
+
+    // Leg 3 (dotted `Type.member`): a dotted ctor reference resolves through the
+    // inverted-model member core, invisible to the W0 bare-name re-probe. It
+    // carries `(fqtn.module, member_key)` at the Var span. `(Maybe.Some 3)` is
+    // the always-works dotted spelling (S109); the type-only-import failure
+    // scenario shares this producer path.
+    #[test]
+    fn resolved_target_dotted_ctor_carries_member_key_at_var_span() {
+        let mut tc = tc_with_prims();
+        // (deftype Maybe Nothing (Some [:Int v]))  then  (defn use-some [] (Maybe.Some 3))
+        let program = vec![
+            TopLevel::TypeDef {
+                name: TypeName::from("Maybe"),
+                docstring: None,
+                type_params: vec![],
+                constructors: vec![
+                    cranelisp_types::ConstructorDef {
+                        name: Symbol::from("Nothing"),
+                        docstring: None,
+                        fields: vec![],
+                        span: Span::SYNTHETIC,
+                    },
+                    cranelisp_types::ConstructorDef {
+                        name: Symbol::from("Some"),
+                        docstring: None,
+                        fields: vec![cranelisp_types::FieldDef {
+                            name: Symbol::from("v"),
+                            type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                                None,
+                                TypeName::from("Int"),
+                            )),
+                            span: Span::SYNTHETIC,
+                        }],
+                        span: Span::SYNTHETIC,
+                    },
+                ],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            },
+            TopLevel::Defn(make_defn(
+                "use-some",
+                vec![],
+                vec![],
+                Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("Maybe.Some"), span(80, 90))),
+                    args: vec![Expr::IntLit { value: 3, span: span(91, 92), inferred_type: None }],
+                    span: span(79, 93),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Visibility::Public,
+                span(70, 94),
+            )),
+        ];
+        tc.check_program_self(&program).unwrap();
+
+        let view = main_codegen_view_of(&tc, "use-some");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let dotted_fq = targets
+            .iter()
+            .find(|(label, _)| label == "Maybe.Some")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            dotted_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: cranelisp_types::member_key(&TypeName::from("Maybe"), "Some"),
+            }),
+            "dotted `Maybe.Some` Var must carry resolved_target test/Maybe.Some \
+             (leg 3); collected: {targets:?}"
         );
     }
 

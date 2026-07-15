@@ -632,8 +632,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         state.rigid_vars = rigid;
         state.written_var_scope = Some(written_var_scope);
-
-        // The fallible body runs inside one closure so the per-body state is
+        // Install the enclosing defn's name so `record_reference_target`'s
+        // self-recursion carve-out (S110 0583 leg 2) can record the fn's own
+        // storage FQ for a self-call — the recursion name is env-shadowed here
+        // (bound below for recursion typing), so the ordinary carrier path
+        // skips it. Torn down with the rest of the per-body state on every exit.
+        let prev_defn = state.current_defn.replace(defn.name.clone());
         // torn down at ONE restore point regardless of how it exits (FIXME
         // 0599 — the pre-existing `?` exits previously leaked
         // `rigid_vars`/`written_var_scope`/the scope frame, so a failed
@@ -686,6 +690,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // outside its own body a written var is an ordinary quantified var).
         state.rigid_vars = prev_rigid;
         state.written_var_scope = prev_scope;
+        state.current_defn = prev_defn;
         self.pop_scope(state);
 
         result

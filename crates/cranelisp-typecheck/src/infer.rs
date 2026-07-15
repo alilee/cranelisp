@@ -332,20 +332,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
-        // FIXME 0470 (S101): record a statically-resolved user-fn reference —
-        // call-position and value-position alike — into the `Def.callees`
-        // edge feed. Placed after every rejection gate above so only a
-        // successfully-typed reference records an edge. See
-        // `record_user_fn_ref` for the gates (local-shadow skip, UserFn-kind
-        // filter, chain-follow to the home module).
-        self.record_user_fn_ref(state, name.as_ref(), span);
-
-        // S110 0583 (the F1 chokepoint): record the reference's STORAGE identity
-        // — every table-resolved kind, not just user fns — into
-        // `MethodResolutions.resolved_targets`, keyed at the `Var` span, so the
-        // backend keys ONE fetch on it and never re-resolves the name
-        // (Principle 24). Rides UNREAD in W0 (behaviour-invariant).
-        self.record_resolved_target(state, name.as_ref(), span);
+        // Reference-recording feeds, placed after every rejection gate above so
+        // only a successfully-typed reference records. ONE resolution serves
+        // both (Principle 24 — the "Resolve once" consolidation, FIXME 0616):
+        //  - S110 0583 `resolved_targets` — the backend keyed-consumer carrier
+        //    (rides UNREAD until W1, behaviour-invariant);
+        //  - S101 `Def.callees` — a `UserFn`-filtered projection of the same
+        //    resolution.
+        // A dotted `Type.member` form (`Maybe.Some`) resolved through the dotted
+        // core, not `scope_resolve`, so record its canonical member FQ directly
+        // (leg 3, carrier only — dotted refs are `callees` residue); every other
+        // name goes through the shared bare/qualified recorder (which also owns
+        // the local-shadow gate + the self-recursion carve-out, leg 2).
+        if let Some(fq) = self.resolve_dotted_member_fq(state, name.as_ref()) {
+            state.method_resolutions.resolved_targets.insert(span, fq);
+        } else {
+            self.record_reference_target(state, name.as_ref(), span);
+        }
 
         let ty = self.instantiate(state, &scheme);
         let resolved = self.apply_subst(state, &ty);
@@ -652,13 +655,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 self.try_resolve_trait_method(state, name, &resolved_args, span)?
             {
                 // Trait method resolution (Ring 2): operators like +, -, =, <
+                // S110 0583 leg 1: record the dispatch-leg carrier at the Apply
+                // span alongside the `resolved_calls` insert (FIXME 0616).
+                self.record_dispatch_target(state, span, &resolution);
                 state.method_resolutions.resolved_calls.insert(span, resolution);
             } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, name) {
                 // Named primitive resolution (Ring 0-3): add-i64, str-concat,
                 // macros/sconcat, quote-sexp, etc.
-                state.method_resolutions
-                    .resolved_calls
-                    .insert(span, ResolvedCall::BuiltinFn { name: jit_name });
+                let resolution = ResolvedCall::BuiltinFn { name: jit_name };
+                self.record_dispatch_target(state, span, &resolution);
+                state.method_resolutions.resolved_calls.insert(span, resolution);
             }
         }
 
@@ -842,6 +848,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Ok(Some(resolution)) =
                 self.try_resolve_trait_method(state, name, &resolved_args, *span)
             {
+                // S110 0583 leg 1 (deferred dispatch): carrier at the Apply span.
+                self.record_dispatch_target(state, *span, &resolution);
                 state.method_resolutions.resolved_calls.insert(*span, resolution);
             }
         }
@@ -909,6 +917,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 if let Ok(Some(resolution)) =
                     self.try_resolve_trait_method(state, name, &resolved_params, *span)
                 {
+                    // S110 0583 leg 1 (value-position trait method): the carrier
+                    // rides the SAME Var span the resolved_call keys (this Var is
+                    // a value, not an Apply callee — the backend's fn-as-value
+                    // wrapper keys it here). FIXME 0616.
+                    self.record_dispatch_target(state, *span, &resolution);
                     state.method_resolutions.resolved_calls.insert(*span, resolution);
                 }
             }

@@ -212,4 +212,63 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
+    /// Derive the STORAGE FQ the backend keys its ONE fetch on for a
+    /// dispatch-leg selection (S110 0583, `design/arch/backend-keyed-consumer.md`
+    /// §1.1) — the Apply-span `resolved_targets` carrier the W0 writer never
+    /// produced (FIXME 0616 leg 1). Called alongside every `resolved_calls`
+    /// insert at a dispatch-selection seam ("recording happens where resolution
+    /// happens", Principle 24).
+    ///
+    /// Unlike [`Self::resolved_call_to_fqsymbol`] (the `callees` projection,
+    /// which drops builtins as non-dependencies) this INCLUDES the `BuiltinFn`
+    /// arm: the primitive/operator leg is the named W1 failure scenario
+    /// (`(+ 1 2)` — operators are trait methods short-circuited to `add-i64`).
+    /// The module derivation for TraitMethod / SigDispatch / AutoCurry is
+    /// single-sourced on `resolved_call_to_fqsymbol` (Principle 7), so the
+    /// carrier and the `callees` edge agree on the mangled entry's home.
+    pub(crate) fn dispatch_target_fq(
+        &self,
+        state: &CheckState,
+        resolved: &ResolvedCall,
+    ) -> Option<FQSymbol> {
+        match resolved {
+            ResolvedCall::BuiltinFn { name } => {
+                Some(self.builtin_storage_fq(state, name))
+            }
+            other => self.resolved_call_to_fqsymbol(other, &state.current_module),
+        }
+    }
+
+    /// Record the dispatch-leg carrier for a just-inserted `ResolvedCall`
+    /// (FIXME 0616 leg 1) — the ONE-line companion of a
+    /// `state.method_resolutions.resolved_calls.insert(span, resolved)` at a
+    /// seam that writes through `state`. Keyed at the same (Apply) span.
+    pub(crate) fn record_dispatch_target(
+        &self,
+        state: &mut CheckState,
+        span: Span,
+        resolved: &ResolvedCall,
+    ) {
+        if let Some(fq) = self.dispatch_target_fq(state, resolved) {
+            state.method_resolutions.resolved_targets.insert(span, fq);
+        }
+    }
+
+    /// Storage FQ of a `BuiltinFn` primitive name (`add-i64`, `sconcat`, …).
+    /// The primitives bootstrap keys entries by their jit name in the synthetic
+    /// `primitives` module (Decision 48); a qualified macro primitive
+    /// (`macros/sconcat`) lives in its own module. Resolve to the exact home
+    /// through the shared `def_resolved` point when the name is reachable in
+    /// scope, else default to `primitives` — the operator/primitive home the
+    /// design pins (§1.4). No second resolver: `def_resolved` is the same
+    /// chain-follow the carrier's Var-span leg uses.
+    fn builtin_storage_fq(&self, state: &CheckState, name: &Symbol) -> FQSymbol {
+        self.def_resolved(state, name.as_ref(), Span::default())
+            .map(|r| r.fq)
+            .unwrap_or_else(|| FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: name.clone(),
+            })
+    }
+
 }

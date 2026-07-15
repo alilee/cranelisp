@@ -223,6 +223,19 @@ pub struct CheckState {
     /// This is ALL a bare written var carries — a name for relating occurrences,
     /// never rigidity (W6.3 backs out the W6.2 rigid-bare model).
     pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
+    /// The name of the definition whose body is CURRENTLY being checked, when
+    /// that body was entered through `check_defn_body` (the ordinary
+    /// concrete/generic Pass-2 body). Installed + torn down there; `None`
+    /// otherwise (top level, and deliberately during the `check_defn_body_with_
+    /// types` mono/impl-method recheck, whose self-dispatch is recorded by the
+    /// monomorphise-seam SigDispatch writers instead — S110 0583 leg 2).
+    ///
+    /// Sole consumer: the self-recursion carve-out in
+    /// [`TypeCheckEnv::record_reference_target`] — a self-call resolves the
+    /// recursion LOCAL (env-shadowed), yet the backend keys it through the
+    /// fn's own storage slot, so its `resolved_targets` carrier is the
+    /// enclosing defn's own FQ. Compared by name only (`as_deref`).
+    pub(crate) current_defn: Option<Symbol>,
 }
 
 impl CheckState {
@@ -244,6 +257,7 @@ impl CheckState {
             pending_overload_resolutions: Vec::new(),
             deferred_accessor_collisions: Vec::new(),
             synthesised_accessor_names: std::collections::HashSet::new(),
+            current_defn: None,
             accessor_owning_types: HashMap::new(),
             current_module: module,
             rigid_vars: HashSet::new(),
@@ -1334,39 +1348,42 @@ where
         (None, None)
     }
 
-    /// Record a statically-resolved reference to a module-resident user fn
-    /// (FIXME 0470, S101 — the `Def.callees` completeness contract,
-    /// `tests/plan/s101-coverage-postmortem.md` §2.1).
+    /// Record a bare/qualified reference's storage identity into the two
+    /// reference-recording feeds, resolving the name EXACTLY ONCE (Principle 24
+    /// — the "Resolve once" consolidation folded in by the W0.1 top-up, 0616).
+    /// Called from `infer_var` for every successfully-typed non-dotted
+    /// `Expr::Var`.
     ///
-    /// Called from `infer_var` for every successfully-typed `Expr::Var`, so
-    /// call-position callees and value-position references (HOF argument,
-    /// returned, stored, curried, nested-lambda) are recorded UNIFORMLY —
-    /// consumers of `callees` cannot distinguish them
-    /// (`design/int/session-transaction.md` §3.2).
+    /// - **`resolved_targets`** — the backend keyed-consumer carrier (S110
+    ///   0583, `design/arch/backend-keyed-consumer.md` §1.1). Keyed at the
+    ///   referencing `Var` span, the value is `resolved.fq` — "whichever
+    ///   storage key HIT" — for EVERY table-resolved kind (user fn, primitive,
+    ///   constructor, platform effect, host-promised extern, mangled/mono
+    ///   variants a chain-follow lands on — any terminal `ModuleEntry::Def`).
+    ///   Rides UNREAD in W0/W0.1 (behaviour-invariant); W1 keys the backend's
+    ///   ONE fetch on it.
+    /// - **`user_fn_refs`** — the `Def.callees` edge feed (FIXME 0470, S101).
+    ///   The SAME `FQSymbol`, kept only when the terminal is a `DefKind::UserFn`
+    ///   `Def` (a `UserFn`-filtered PROJECTION of the single resolution).
+    ///   `BuiltinFn` is always available (no codegen dependency); non-`UserFn`
+    ///   redefinition falls back to module-grain reload
+    ///   (session-transaction §10 trigger T1).
     ///
-    /// Gates, in order:
-    /// - a LOCAL binding (fn param, `let`, `match`, lambda param) shadows
-    ///   module scope — a shadowed name is not a module reference, no edge;
-    /// - the name must resolve — chain-follow to the defining (home) module,
-    ///   prelude-fallback-aware; for a qualified `mod/sym` the
-    ///   child-of-current-module candidate is probed before the absolute
-    ///   path, mirroring [`Self::lookup`] — to a `ModuleEntry::Def` whose
-    ///   kind is `DefKind::UserFn` (any `fn_state`). Primitives,
-    ///   constructors, macros, overloaded bases, special forms, and trait
-    ///   decls record NO edge: `BuiltinFn` is always available (no codegen
-    ///   dependency), and non-`UserFn` redefinition falls back to
-    ///   module-grain reload (session-transaction §10 trigger T1).
+    /// This single resolution replaces the former THREE probes of one name
+    /// (`lookup` + `resolve_user_fn_ref_fq` + `resolved_target_fq`) — the F1
+    /// chokepoint the S101 `record_user_fn_ref` established, now widened + made
+    /// resolve-once.
     ///
-    /// Self-edges (recursion) are SKIPPED — the documented cheap disposition
-    /// (FIXME 0470 allows either): `check_defn_body` binds the recursion name
-    /// as a LOCAL (`mono(fn_type)`), so the local-shadow gate above filters
-    /// it with zero extra checks. The transaction's SCC condensation is
-    /// indifferent and `save.rs::dependency_sort` filters self-edges anyway.
-    ///
-    /// Residue (documented, monotone-safe under the module-grain fallbacks):
-    /// dotted `Type.member` accessor references are not recorded (accessors
-    /// regenerate with their `deftype`, which is T1 module-grain anyway).
-    pub(crate) fn record_user_fn_ref(
+    /// Gates: a LOCAL binding (fn param, `let`, `match`, lambda param) shadows
+    /// module scope — a shadowed name records NEITHER feed — with ONE
+    /// carve-out: the enclosing defn's own recursion binding records the
+    /// `resolved_targets` carrier (see below). Self-edges stay OUT of `callees`
+    /// (the documented cheap disposition — `save.rs::dependency_sort` filters
+    /// them). Dotted `Type.member` references are recorded by the dedicated
+    /// [`Self::resolve_dotted_member_fq`] leg in `infer_var` (they never
+    /// resolve through `scope_resolve`) and, per the S101 residue, feed only
+    /// `resolved_targets`, never `callees`.
+    pub(crate) fn record_reference_target(
         &self,
         state: &mut CheckState,
         name: &str,
@@ -1374,132 +1391,82 @@ where
     ) {
         // Local scope shadows module scope (spec §8.6.1 resolution order).
         if state.env.lookup(name).is_some() {
+            // Self-recursion carve-out (S110 0583 leg 2, FIXME 0616):
+            // `check_defn_body` binds the enclosing defn's OWN name as a
+            // recursion LOCAL, so the env-shadow gate fires — but the backend
+            // compiles a non-tail self-call through `resolve_got_target` on the
+            // fn's own name (the recursion local is NOT a backend local). So
+            // record the enclosing defn's own storage FQ as the carrier,
+            // EXPLICITLY diverging from the `callees` self-edge skip: the two
+            // feeds' gates are semantically different — a self-edge is unwanted
+            // in the call graph, yet the self-call IS a table reference the
+            // backend keys. `resolved_targets` only; never `callees`.
+            if state.current_defn.as_deref() == Some(name) {
+                let fq = FQSymbol {
+                    module: state.current_module.clone(),
+                    symbol: Symbol::from(name),
+                };
+                state.method_resolutions.resolved_targets.insert(span, fq);
+            }
             return;
         }
-        if let Some(fq) = self.resolve_user_fn_ref_fq(state, name, span) {
-            state.user_fn_refs.insert(span, fq);
-        }
-    }
-
-    /// Record a statically-resolved reference's STORAGE identity into
-    /// `MethodResolutions.resolved_targets` (S110 0583, the F1 chokepoint;
-    /// `design/arch/backend-keyed-consumer.md` §1.1). Keyed at the referencing
-    /// `Var` span, the value is `resolved.fq` — "whichever storage key HIT"
-    /// (module + the exact symbol-table key the chain-follow terminated at).
-    ///
-    /// Records for EVERY table-resolved reference kind — user fn, primitive,
-    /// constructor (incl. construction position), platform effect, host-promised
-    /// extern, and the mangled/mono variants a chain-follow lands on — i.e. any
-    /// terminal `ModuleEntry::Def`. A LOCAL variable / lambda param is skipped by
-    /// the env-shadow gate (it is not table-resolved and carries no entry). The
-    /// carrier rides UNREAD in W0 (behaviour-invariant); W1 makes the backend key
-    /// its ONE fetch on it (Principle 24 — resolve once).
-    pub(crate) fn record_resolved_target(
-        &self,
-        state: &mut CheckState,
-        name: &str,
-        span: Span,
-    ) {
-        // Local scope shadows module scope (spec §8.6.1) — a local is not a
-        // table reference, so it has no storage identity to record.
-        if state.env.lookup(name).is_some() {
-            return;
-        }
-        if let Some(fq) = self.resolved_target_fq(state, name, span) {
-            state.method_resolutions.resolved_targets.insert(span, fq);
-        }
-    }
-
-    /// Terminal storage-FQ probe for [`Self::record_resolved_target`]: mirrors
-    /// [`Self::resolve_user_fn_ref_fq`]'s qualified-name candidate order
-    /// (child-of-current-module before absolute path) but keeps the terminal FQ
-    /// for ANY resolved `ModuleEntry::Def` kind (not just `UserFn`).
-    fn resolved_target_fq(
-        &self,
-        state: &CheckState,
-        name: &str,
-        span: Span,
-    ) -> Option<FQSymbol> {
-        if let Some(slash_pos) = name.find('/') {
-            let module_part = &name[..slash_pos];
-            let name_part = &name[slash_pos + 1..];
-            if !module_part.is_empty() && !name_part.is_empty() {
-                let child = format!(
-                    "{}.{}/{}",
-                    state.current_module, module_part, name_part,
-                );
-                if let Some(fq) = self.def_terminal_fq(state, &child, span) {
-                    return Some(fq);
-                }
-            }
-        }
-        self.def_terminal_fq(state, name, span)
-    }
-
-    /// Resolve one candidate spelling through the shared chain-follow +
-    /// prelude-fallback primitive and keep the terminal FQ when it lands on a
-    /// `ModuleEntry::Def` of any kind (S110 0583). Unlike
-    /// [`Self::user_fn_fq_of`] this does NOT filter on `DefKind` — the backend
-    /// discriminates the kind off the fetched entry (Principle 24).
-    fn def_terminal_fq(
-        &self,
-        state: &CheckState,
-        name: &str,
-        span: Span,
-    ) -> Option<FQSymbol> {
-        let resolved = self.scope_resolve(state, name, span).ok()?;
-        match &resolved.entry {
-            ModuleEntry::Def { .. } => Some(resolved.fq),
-            _ => None,
-        }
-    }
-
-    /// Resolve `name` to the FQ identity of a module-resident `UserFn` `Def`,
-    /// or `None` for anything else. Mirrors [`Self::lookup`]'s qualified-name
-    /// candidate order (child-of-current-module before absolute path) so the
-    /// recorded edge agrees with the scheme the reference type-checked
-    /// against.
-    fn resolve_user_fn_ref_fq(
-        &self,
-        state: &CheckState,
-        name: &str,
-        span: Span,
-    ) -> Option<FQSymbol> {
-        if let Some(slash_pos) = name.find('/') {
-            let module_part = &name[..slash_pos];
-            let name_part = &name[slash_pos + 1..];
-            if !module_part.is_empty() && !name_part.is_empty() {
-                let child = format!(
-                    "{}.{}/{}",
-                    state.current_module, module_part, name_part,
-                );
-                if let Some(fq) = self.user_fn_fq_of(state, &child, span) {
-                    return Some(fq);
-                }
-            }
-        }
-        self.user_fn_fq_of(state, name, span)
-    }
-
-    /// Terminal-entry probe for [`Self::resolve_user_fn_ref_fq`]: resolve one
-    /// candidate spelling through the shared chain-follow +
-    /// prelude-fallback primitive and keep it only when the canonical entry
-    /// is a `DefKind::UserFn` `Def`.
-    fn user_fn_fq_of(
-        &self,
-        state: &CheckState,
-        name: &str,
-        span: Span,
-    ) -> Option<FQSymbol> {
-        let resolved = self.scope_resolve(state, name, span).ok()?;
-        match &resolved.entry {
-            ModuleEntry::Def { kind, .. }
-                if matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) =>
+        // Ordinary bare/qualified reference: resolve ONCE, record both feeds
+        // (any-`Def` for the carrier; `UserFn`-filtered projection for callees).
+        if let Some(resolved) = self.resolve_ref_target(state, name, span) {
+            state
+                .method_resolutions
+                .resolved_targets
+                .insert(span, resolved.fq.clone());
+            if let ModuleEntry::Def { kind, .. } = &resolved.entry
+                && matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
             {
-                Some(resolved.fq)
+                state.user_fn_refs.insert(span, resolved.fq);
             }
-            _ => None,
         }
+    }
+
+    /// Resolve `name` to its terminal storage `Resolved` for the
+    /// reference-recording feeds, mirroring [`Self::lookup`]'s qualified
+    /// candidate order (child-of-current-module before absolute path) so the
+    /// recorded identity agrees with the scheme the reference type-checked
+    /// against. Resolves ONCE (Principle 24); the caller projects the kind
+    /// filter each feed needs. Returns `None` for a non-`Def` terminal (a
+    /// local, a type, a special form, an unresolved name).
+    fn resolve_ref_target(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<cranelisp_types::Resolved<C>> {
+        if let Some(slash_pos) = name.find('/') {
+            let module_part = &name[..slash_pos];
+            let name_part = &name[slash_pos + 1..];
+            if !module_part.is_empty() && !name_part.is_empty() {
+                let child = format!(
+                    "{}.{}/{}",
+                    state.current_module, module_part, name_part,
+                );
+                if let Some(r) = self.def_resolved(state, &child, span) {
+                    return Some(r);
+                }
+            }
+        }
+        self.def_resolved(state, name, span)
+    }
+
+    /// One chain-follow + prelude-fallback resolution of a single candidate
+    /// spelling, kept only when it terminates at a `ModuleEntry::Def` of ANY
+    /// kind (S110 0583 — the backend discriminates the kind off the fetched
+    /// entry; Principle 24). Does NOT filter on `DefKind`; the caller applies
+    /// any projection.
+    pub(crate) fn def_resolved(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<cranelisp_types::Resolved<C>> {
+        let resolved = self.scope_resolve(state, name, span).ok()?;
+        matches!(&resolved.entry, ModuleEntry::Def { .. }).then_some(resolved)
     }
 
     /// Resolve a dotted `Type.member` field-accessor reference to its accessor
@@ -1555,6 +1522,36 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
+        self.dotted_member_identity(state, name).map(|(_, entry)| entry)
+    }
+
+    /// The STORAGE FQ of a dotted `Type.member` reference (S110 0583 leg 3,
+    /// FIXME 0616) — the canonical `(fqtn.module, member_key(Type, member))`
+    /// key `resolve_dotted_member_entry` probes, recorded into
+    /// `resolved_targets`. The reference resolves via the dotted core, NOT
+    /// `scope_resolve`, so the W0 bare-name re-probe missed it whenever only a
+    /// type-only import was present (`(import [m [Maybe]])` then
+    /// `(Maybe.Some 3)` — the always-works dotted spelling, S109). `None` when
+    /// `name` is not a dotted member of a type in scope. Feeds only
+    /// `resolved_targets` (dotted member refs are `callees` residue).
+    pub(crate) fn resolve_dotted_member_fq(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<FQSymbol> {
+        self.dotted_member_identity(state, name).map(|(fq, _)| fq)
+    }
+
+    /// Shared core of [`Self::resolve_dotted_member_entry`] /
+    /// [`Self::resolve_dotted_member_fq`] (single source of truth, Principle 7):
+    /// resolve a dotted `Type.member` form to `(storage FQ, terminal entry)`.
+    /// The identity is `(fqtn.module, member_key(Type, member))` — exactly what
+    /// the entry probe hits.
+    fn dotted_member_identity(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<(FQSymbol, ModuleEntry<C>)> {
         // A `Type.member` form: exactly one `.`, both sides non-empty. A
         // module-qualified `m/Type` head carries a `/`, which the `/`-split
         // path owns — restrict the dotted member to a bare type head here.
@@ -1581,7 +1578,10 @@ where
         let key = cranelisp_types::member_key(&fqtn.name, member_part);
         let entry = self.probe_module_entry_owned(&fqtn.module, key.as_ref())?;
         match crate::adt::committed_member_owner(&entry) {
-            Some(owner) if owner == fqtn => Some(entry),
+            Some(owner) if owner == fqtn => Some((
+                FQSymbol { module: fqtn.module, symbol: key },
+                entry,
+            )),
             _ => None,
         }
     }

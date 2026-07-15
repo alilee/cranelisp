@@ -264,10 +264,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
-                state.method_resolutions.resolved_calls.insert(
-                    *call_span,
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
-                );
+                let resolution =
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() };
+                self.record_dispatch_target(state, *call_span, &resolution);
+                state.method_resolutions.resolved_calls.insert(*call_span, resolution);
                 continue;
             }
 
@@ -276,10 +276,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                state.method_resolutions.resolved_calls.insert(
-                    *call_span,
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
-                );
+                let resolution =
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() };
+                self.record_dispatch_target(state, *call_span, &resolution);
+                state.method_resolutions.resolved_calls.insert(*call_span, resolution);
                 seen.insert(key, mangled);
                 mono_defns.push(mono);
             }
@@ -708,15 +708,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
 
-            state.method_resolutions.resolved_calls.insert(
-                span,
-                ResolvedCall::AutoCurry {
-                    target_name: name,
-                    applied_count,
-                    total_count,
-                    trait_resolution: trait_resolution.map(Box::new),
-                },
-            );
+            let resolution = ResolvedCall::AutoCurry {
+                target_name: name,
+                applied_count,
+                total_count,
+                trait_resolution: trait_resolution.map(Box::new),
+            };
+            // S110 0583 leg 1: auto-curry carrier at the Apply span (derived
+            // from the inner trait/primitive resolution, else the target fn).
+            self.record_dispatch_target(state, span, &resolution);
+            state.method_resolutions.resolved_calls.insert(span, resolution);
         }
     }
 
