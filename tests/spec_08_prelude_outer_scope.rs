@@ -629,3 +629,125 @@ fn ctor_value_and_pattern_position_prelude_provided_twin() {
     leg_a.assert_exit(7);
     leg_b.assert_exit(7);
 }
+
+// =============================================================================
+// 6. `super`-imported wrapper vs implicit prelude — the num.bits hygiene twin
+//
+// The blessed `stdlib/num/bits` hygiene (§8.6.4, the "standard-library
+// consequence" para): a module DEFINES its own `bit-and` wrapper and
+// FULLY-QUALIFIES `primitives/bit-and` in the body (a qualified USE is not a
+// re-export). Its private `(mod- test)` submodule reaches the wrapper via
+// `(import [super [bit-and]])` (§8.3.8). The bare name `bit-and` in the
+// submodule then has ONE terminal — the parent's wrapper `bits/bit-and` —
+// UNLESS the implicit prelude ALSO provides `bit-and` (a distinct terminal),
+// in which case §8.6.5 poisons the bare name (globs are peers of specifics).
+//
+// The two legs below pin that the poison is a pure function of WHETHER the
+// prelude provides the name:
+//   * SPECIFIC prelude export (real stdlib shape) → no prelude terminal → clean
+//   * GLOB prelude export (`[primitives [*]]`)    → prelude terminal → poison
+// =============================================================================
+
+// spec: spec/08-modules.md §8.6.4/§8.6.5 + §8.3.8 — a `(mod- test)` submodule
+//   that `(import [super [bit-and]])`s a wrapper its PARENT defines MUST compile
+//   clean when the prelude does NOT provide `bit-and`. The real stdlib prelude
+//   SPECIFICALLY exports only [Int Bool Float String] and never the raw
+//   primitive `bit-and`, so the super-import has the single terminal
+//   `bits/bit-and` — no §8.6.5 collision, and `main` runs (12 & 10 = 8).
+//
+// GREEN regression guard. It pins the CORRECT behaviour that the live num.bits
+// super-import defect breaks INTERMITTENTLY: against the full real stdlib the
+// `prelude` module's LIVE table racily acquires a PHANTOM `bit-and →
+// primitives/bit-and` binding it never exports (i.e. the specific-export prelude
+// starts behaving like the glob-export `_neg` twin below), which then fires the
+// §8.6.5 prelude-overlap poison SPURIOUSLY and fails `num.bits.test` with
+// "ambiguous bare name 'bit-and' — provided by distinct sources
+// 'num.bits/bit-and' and 'primitives/bit-and'". Reproduced live (racy, under the
+// concurrent background file-index feed over the full stdlib); the deterministic
+// WRITE trigger could NOT be reduced free-standing — this leg holds the correct
+// pole and goes RED if the phantom write ever becomes deterministic here.
+// FIXME(/dev): the phantom-prelude write is unlocalized. Only `bit-and` leaks
+//   into `prelude`, never the identically-shaped `bit-or`/`bit-xor` wrappers, so
+//   it is a concurrent mis-attribution — a bare `bit-and → primitives/bit-and`
+//   edge written into the `prelude` module's table during the racy background
+//   index of the full stdlib. Trace with CRANELISP_MODULE_TRACE over `stdlib/`.
+//   The seam where the poison FIRES is src/imports.rs::insert_detecting_ambiguity
+//   (prelude-overlap branch, ~L547-560, via `prelude_terminal`); the ROOT is the
+//   WRITE into prelude's table, not the fire. Attribution owed to /qa.
+// defect: class=enumeration-miss locus=src/imports.rs::insert_detecting_ambiguity found=S109 owner=/dev
+#[test]
+fn super_import_wrapper_over_specific_prelude_compiles_clean() {
+    Cranelisp::new()
+        .prelude("(export [primitives [Int Bool Float String]])\n")
+        .file(
+            "bits.cl",
+            "(import [prelude []])\n\
+             (import [primitives [Int Pure]])\n\
+             (defn bit-and \"AND of a and b\" [:Int a :Int b] :Int (primitives/bit-and a b))\n\
+             (defn main [] (Pure (bit-and 12 10)))\n\
+             (mod- test)",
+        )
+        .file(
+            "bits/test.cl",
+            "(import [super [bit-and]])\n\
+             (import [primitives [Int]])\n\
+             (defn test-and [] :Int (bit-and 12 10))",
+        )
+        .run("bits.cl")
+        .output()
+        // CORRECT: the prelude does not provide `bit-and`, so the super-imported
+        // wrapper is the sole terminal; the project compiles and `main` exits 8.
+        .assert_exit(8);
+}
+
+// spec: spec/08-modules.md §8.6.5 + §8.3.8 — WHEN the prelude legitimately
+//   provides `bit-and` (here via a glob `(export [primitives [*]])`, which
+//   re-exports every raw primitive INCLUDING `bit-and`), a submodule that ALSO
+//   `(import [super [bit-and]])`s its parent's DISTINCT wrapper has two distinct
+//   terminals for the bare name — `prelude`→`primitives/bit-and` vs
+//   `super`→`bits/bit-and` — and the name MUST be poisoned. The implicit prelude
+//   glob is a PEER of the explicit super-import; there is no precedence tier.
+//
+// GREEN negative anchor. This is the deterministic twin of the guard above and
+// the SEAM the num.bits defect abuses: it reproduces the EXACT real error
+// signature, but here the prelude LEGITIMATELY provides `bit-and`, so the poison
+// is spec-CORRECT. The defect is that the real (SPECIFIC-export) prelude fires
+// this same poison SPURIOUSLY (see the twin's FIXME) — the difference between
+// the two legs is exactly the phantom prelude binding.
+#[test]
+fn super_import_wrapper_collides_when_prelude_globs_primitive_neg() {
+    let out = Cranelisp::new()
+        .prelude("(export [primitives [*]])\n")
+        .file(
+            "bits.cl",
+            "(import [prelude []])\n\
+             (import [primitives [Int Pure]])\n\
+             (defn bit-and \"AND of a and b\" [:Int a :Int b] :Int (primitives/bit-and a b))\n\
+             (defn main [] (Pure (bit-and 12 10)))\n\
+             (mod- test)",
+        )
+        .file(
+            "bits/test.cl",
+            "(import [super [bit-and]])\n\
+             (import [primitives [Int]])\n\
+             (defn test-and [] :Int (bit-and 12 10))",
+        )
+        .run("bits.cl")
+        .output();
+    let lower = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        lower.contains("ambiguous"),
+        "prelude-glob-provided `bit-and` + super-imported distinct wrapper MUST \
+         poison the bare name (§8.6.5 distinct terminals);\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr,
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(8),
+        "the poisoned bare name MUST NOT silently resolve to one terminal \
+         (must not run to 8);\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr,
+    );
+}
