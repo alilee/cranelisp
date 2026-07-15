@@ -744,6 +744,49 @@ covered by existing `operator_as_first_class_value` (verify-first).
 - **IF-7 `class=shared-state-write-race` retro-tag** — applied WITH the 0604 fix
   (post-fix, per the row), not now.
 
+### /qa (P5-S1 attribution) — SG-1 + SG-2 verdicts (2026-07-15, COMPLETE)
+
+Both P5-S1 flags attributed; record `tests/plan/s110-attribution-sg1-sg2.md`;
+FIXMEs 0613/0614/0615 filed; PLAN §E rows + risks.md (S110-10 amended, S110-11
+added) updated.
+
+**SG-1 (`derive`): REAL DEFECT — layered, two owners. NOT an enumeration
+refinement.** The gate did its job; excluding `derive` would recreate the 0605
+blindness.
+- **Layer 1, compiler (`/dev`, FIXME 0613):** quote/quasiquote are NEVER
+  desugared outside macro-clause compilation — sole production caller of
+  `expand_quasiquotes` is `src/process_form/macro_clause.rs:53`, vs the stated
+  desugar-on-every-form contract (frontend `lib.rs:48`,
+  `design/frontend/frontend.md:127`); likely dropped in the S76 W-Macro
+  migration. Minimal repro (stdlib-free, REPL ≡ `--run`):
+  ``(defn helper [x] `(if ~x 1 0))`` → `unexpected quasiquote
+  form — should have been expanded`. This is what derive.cl:5306 (line 166,
+  first `defn-` template) hits — no macro invocation involved. One-line /spec
+  user confirmation requested (0613); default disposition is the fix.
+- **Layer 2, stdlib (`/stdlib`, FIXME 0614):** fixing layer 1 does NOT green
+  the gate — derive.cl's macros call ~30 same-module `defn-` helpers, which
+  §9.3.4 forbids and the compiler ENFORCES (probe-verified diagnostic). The
+  module has never compiled on the v4 pipeline; its S87 tail comment
+  mis-attributes the failure.
+- **Disposition:** gate stays RED, failing-not-ignored, tracing to 0613+0614.
+  **Fix-vs-carry: CARRY both to S111** (uninvoked module, broad sprint, 0613
+  wants a small seam ruling — int chokepoint vs inside `build_form`; `/sprint`
+  may pull 0613 into W-SRC if slack). In-sprint obligation: `/testing` commits
+  the 1-line narrow repro + quote-family matrix (0613 §/testing request).
+
+**SG-2 (`agent_flag` interleave): build-artifact provenance race — `/testing`
+infra, FIX in-sprint (rides the planned W-GATE lane). FIXME 0615.** The
+harness hardcodes `target/debug/cranelisp` (`e2e.rs:368–371`); the agent lane
+rebuilds that SAME path, so an interleaved `--features agent` build swaps the
+binary mid-suite and feature-OFF guards exec a feature-ON binary. Deterministic
+in binary provenance — not an assertion flake (forbidden dispositions don't
+apply). Fix shape: agent-lane `CARGO_TARGET_DIR=target/agent` via a committed
+launcher script + lane-aware binary resolution in `materialise()` — a nextest
+setup-script ordering fix alone CANNOT cure a between-invocations race.
+Acceptance: /testing's 3×-consecutive bar + a deliberate dual-build clobber
+check, scheduled when no other agent is testing. **Separate root from 0604**
+(build substrate vs runtime SharedState) — not folded.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
