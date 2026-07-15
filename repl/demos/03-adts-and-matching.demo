@@ -6,6 +6,17 @@
 (deftype Color (Red) (Green) (Blue))
 Red
 
+; Two types can share a constructor name. A dotted Type.Ctor names the one
+; you mean, and the REPL echoes it back in that same clean Type.Ctor form:
+
+(deftype Light (Red) (Amber) (Green))
+Color.Red
+Light.Red
+; match dispatches on the dotted patterns, so the two Reds never collide:
+(defn stop? [l] (match l [Light.Red true Light.Amber true Light.Green false]))
+(stop? Light.Red)
+(stop? Light.Green)
+
 ; Variants can carry fields. match binds the fields and dispatches:
 
 (deftype Shape (Circle [:Int r]) (Rect [:Int w :Int h]))

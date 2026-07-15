@@ -407,7 +407,7 @@ Examples:
 | `:user/Color Color.Red` | [Tested tests/repl_introspection::display_int_result] |
 | `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_introspection::display_int_result] |
 | `:(Fn [a] a) <closure>` (anonymous — no bound name) | [Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (named function value — qualified name, never `<closure>`; §1.5, 0572) | [S109 — FIXME repro owed] |
+| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (name-bearing reference — a bare/qualified symbol resolving to a named function shows the FQ name, never `<closure>`; §1.5, 0572) | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -490,27 +490,29 @@ Values are runtime results and have no module scope. They are displayed bare.
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
 | Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Named function value | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — never `<closure>` | 1 | [S109 — 0572; FIXME repro owed] |
-| Anonymous closure value | `<closure>` — only when the value has **no** bound name | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
+| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `<closure>` | 1 | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
+| Function value with no recoverable name | `<closure>` — a literal `(fn …)`, a captured closure, or a named function that has passed through computation and lost its binding (`(id double)`, `(let [f double] f)`) | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
 | List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
 | Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
-**A function value carries its qualified name, not `<closure>` (S109 — FIXME 0572).** When a
-function *value* the REPL displays has a **known bound name** — a module-qualified function
-referenced as a value, e.g. evaluating `primitives/vec-len` or `user/double` bare — the value slot
-MUST show that value's **fully-qualified name** (`primitives/vec-len`), in the same qualified form
-every other name-bearing display uses (§1.4, the self-documenting-REPL rule that names are always
-fully qualified). The opaque token `<closure>` is a **placeholder for the absence of a name** and is
-reserved **only** for a genuinely anonymous function value — the result of a literal `(fn [x] …)` or
-a captured closure that was never bound to a name. Showing `<closure>` where a qualified name is
-available (the reported `:(Fn [(primitives/Vec a)] primitives/Int) <closure>` for `primitives/vec-len`)
-violates the self-documenting contract: the value slot should carry a meaningful identity when one
-exists. This is the value-display facet of the 0572 unification — a bare-symbol value lookup and a
-`/search`/`/info` row of the same function agree on the qualified name because they render through
-the one canonical envelope (§1.1). [S109]
+**A name-bearing reference carries its qualified name; a value that lost its binding shows `<closure>` (S109 — 0572).**
+The qualified-name rule applies to a **name-bearing reference expression** — a bare or qualified
+symbol that resolves to a named function, evaluated as a value (e.g. entering `primitives/vec-len`
+or `user/double` bare at the prompt). When the *displayed expression is itself* such a reference, the
+value slot MUST show the value's **fully-qualified name** (`primitives/vec-len`), in the same
+qualified form every other name-bearing display uses (§1.4, the self-documenting-REPL rule that names
+are always fully qualified). The opaque token `<closure>` is a **placeholder for the absence of a
+*recoverable* name**, and it is **correct — required** — for a function value that has no runtime name
+identity: a literal `(fn [x] …)`, a captured closure, or a **named function that has passed through
+computation and lost its binding** (`(id double)`, `(let [f double] f)` — the value genuinely has no
+recoverable name, so `<closure>` is the honest display). The distinction is about the *displayed
+expression*, not the value's origin: a name-bearing reference shows the name; a value that arrived by
+computation shows `<closure>`. This is the value-display facet of the 0572 unification — a bare-symbol
+value lookup and a `/search`/`/info` row of the same function agree on the qualified name because they
+render through the one canonical envelope (§1.1). [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] [S109]
 
 > **Aspirational** (not currently required): A future revision MAY introduce a type-directed pretty-printer that recognises `List` and `Seq` and renders them as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)` (forcing up to a small bound). This would require either (a) a display protocol/trait the stdlib opts into per type, or (b) compiler-seeded recognition of named types from a known stdlib path. No such protocol exists today, so the generic ADT form is normative. These forms are promoted to MUST only once the display-protocol mechanism lands — tracked by `design/arch/fixmes/0050-*.md` (owner `/int`, with `/arch` on the protocol and `/stdlib` on List/Seq opt-in).
 
@@ -689,8 +691,7 @@ constructor exactly as bare+canonical field accessors would. A constructor appea
 exactly once, under its `Type.Ctor` name. (The per-type `; match:` related-symbol drawer of a bare
 **type** lookup, §1.1, is a different surface — it lists that one type's own constructors and is
 unambiguous within the type; this rule governs the flat category listing where cross-type
-same-named ctors would otherwise collide.) [S109 — couples with the bucket-2 RED guard; `/testing`
-twin owed]
+same-named ctors would otherwise collide.) [Tested tests/repl_introspection::list_types_includes_constructor_rows_under_canonical_dotted_form, tests/repl_introspection::list_shows_ctor_once_canonical]
 
 **Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/repl_introspection::list_empty_session] This distinguishes "command worked on empty module" from a failed command.
 
@@ -701,7 +702,7 @@ twin owed]
 - No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names) [R4 S15]
 - Constructors MUST appear in Types, not in Fns [Tested+Neg tests/repl_introspection::list_empty_session]
 - A field accessor MUST appear only once, under its canonical `Type.field` name; the bare-field alias (`v`) MUST NOT appear as a second, separate accessor entry [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
-- A constructor MUST appear only once, under its canonical `Type.Ctor` name; the bare-ctor alias (`Some` for `Maybe.Some`) MUST NOT appear as a second, separate constructor entry [S109 — `/testing` twin owed]
+- A constructor MUST appear only once, under its canonical `Type.Ctor` name; the bare-ctor alias (`Some` for `Maybe.Some`) MUST NOT appear as a second, separate constructor entry [Tested tests/repl_introspection::list_shows_ctor_once_canonical]
 
 **Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
@@ -1130,6 +1131,13 @@ For single-constructor types where the constructor name matches the type name, t
 user> Point
 :(Fn [primitives/Int primitives/Int] user/Point) user/Point ; deftype
 ```
+
+**Dotted-input parity — no type-segment doubling.** A constructor entered in its
+dotted `Type.Ctor` form (e.g. `Color.Red`) MUST render the **same** canonical
+qualified home as the bare form (`Red`) — `:user/Color user/Color.Red ; deftype`,
+never `:user/Color user/Color.Color.Red ; deftype`. The value slot carries the
+constructor's home exactly once (`module/Type.Ctor`); the dotted-input path and the
+bare-input path render through one canonical home and MUST NOT diverge. [Tested tests/repl_introspection::dotted_nullary_constructor_input_does_not_double_type_segment]
 
 #### 4.1.3 Types (deftype) [Tested tests/repl_introspection::bare_type_lookup_includes_match_section]
 
@@ -3247,7 +3255,10 @@ how-to targets the constructor's home type/module as usual. A search that double
 constructor once canonically and once bare is a conformance defect against this rule. This couples
 with the value-display side (§1.5): the value `Maybe.Some 3` renders `(Maybe.Some 3)` in the
 canonical dotted form, and its `/search`/`/list` rows name it the same canonical way — one identity,
-one listing. [S109 — couples with the bucket-2 RED guard; `/testing` twin owed]
+one listing. The canonical-once rule is guarded on the `/list` face (each constructor listed once
+under its `Type.Ctor` form, no bare-alias second row); because `/search`/`/list`/`/exports` render
+through the shared canonical renderer (§1.1), the rule holds across the sibling surfaces by
+construction. [Tested tests/repl_introspection::list_types_includes_constructor_rows_under_canonical_dotted_form, tests/repl_introspection::list_shows_ctor_once_canonical]
 
 #### 17.19.3 Eager Background Index — Partial Results While Indexing [S90 re-pin]
 
