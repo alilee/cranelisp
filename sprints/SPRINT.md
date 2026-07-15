@@ -1415,7 +1415,14 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | P3 | /spec | §3.5.5 polymorphism-boundary sidenote (0612) | (shim §II.3) | (shim) | — `41d8e32b`: monomorphic-`let` normative + movable; hedge retired; capability parked |
 | P5-S1 | /testing | sprint-wide QA-first failing tests (PLAN §S110) | (shim §II.3) | (shim) | — `c31b6050`: 13 REDs RED-for-right-reason, no regressions; SG-1 `derive` gate catch |
 | P5-S1 | /qa | SG-1/SG-2 attribution | (shim §II.3) | (shim) | — `9ae05c2a`: SG-1 = REAL layered defect (0613 /dev quasiquote-not-desugared + 0614 /stdlib helper-violation); SG-2 = build-artifact race (0615 /testing) |
-| W0 | /dev | 0583 producer (types+typecheck+backend) | (shim §II.3) | (shim) | — `41fab350`: carriers+`from_expr`+F1 producer+cache 18→19+R-2 typecheck half+lenient relocation; baseline holds 13 REDs; **W0.b full totalization DEFERRED** (gated on KC-W0-2 golden-CLIF; needed before W3, not W1/W2) |
+| W0 | /dev | 0583 producer (types+typecheck+backend) | (shim §II.3) | (shim) | — `41fab350`: carriers+`from_expr`+F1 producer+cache 18→19+R-2 typecheck half+lenient relocation; baseline holds 13 REDs; W0.b totalization DEFERRED |
+| W0 rev | /review | W0 producer change-set | (shim §II.3) | (shim) | — `7c943300`: **2 Blockers** — B1/0616 producer misses Apply/self-rec/dotted legs; B2/0617 W0.b flip must precede W1 |
+| W0.1 | /dev | producer top-up (0616, typecheck) | (shim §II.3) | (shim) | — `635f364b`: 3 legs captured at resolving seams + triple-probe consolidated (Resolve-once); baseline holds; flagged cross-module trait-method module gap → /arch |
+| W0.1 rule | /arch | cross-module storage-module ruling | (shim §II.3) | (shim) | — `b48902ab`: trait bodies live in impl-WRITER's module (D45 amended); `impl_module` carrier; completeness sweep found +2 gaps (AutoCurry, fn-value rewrite); W1 blocked until W0.1b |
+| W0.1b | /dev | cross-module storage fix (types+tc+int) | (shim §II.3) | (shim) | — `144828d1`: `TraitImpl.impl_module` + `ResolvedCall::TraitMethod.impl_module` (schema-19 window) + AutoCurry transport + mono-rewrite sidecar; baseline holds; 6 producer pins |
+| prod rev | /review | producer W0.1+W0.1b | (shim §II.3) | (shim) | — `8a72d320`: **GO, 0 Blockers** — storage-module correct all cross-module shapes; deviation sound; consolidation clean. Findings 0618 (/arch doc) + 0619 (/dev; item 1 Important) |
+| W0.2 | /testing | KC-W0-2 golden-CLIF gate | (shim §II.3) | (shim) | — `f5d0197f`: 5 goldens byte-verbatim (class-06 backend-unit-only); KC-W0-6 reds-first; gate for W0.b |
+| W0.b | /dev | totalization flip (typecheck+backend) | (shim §II.3) | (shim) | — `7e8972c3`: typecheck sole mono-view producer + backend hard-error arm; **golden 5/5 byte-identical**; KC-W0-6 helper + 0619 items 1/3/4; ownership-universe pin (→/arch note); baseline holds. **W0 FRONT CLOSED** |
 
 ## Notes
 
