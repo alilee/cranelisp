@@ -640,6 +640,18 @@ family as return-type dispatch). Essence (why `weird` accepts but `g` doesn't):
 (`b` is nobody's quantifier — no argument carries it), verified via `callid`
 (arg-flowing var defers) vs `g` (result-only var can't).
 
+**W6 CLOSED (2026-07-15, `/review` CLEAN on `eb6c94e6`):** the poly-annotation saga
+is complete on the settled rank model. `/review` verified adversarially that the
+eager-check removal un-rejected NOTHING genuine (value restriction / rank-2 /
+result-only-var / ignored-closure all still reject); rank-1 poly-returns accept
+written≡unwritten end-to-end through codegen; clean removal; prior model (bare-flex,
+constraint-rigidity, co-reference, value-position) intact; pub-API unchanged. Suite
+7 REDs = carried set (R16/R17, C-4, 2 vec-assoc, 2 carries) — no regression. Commits:
+`c3008d1f` (rigid+model) → `750471ac` (0596–0599 review fixes) → `eb6c94e6` (poly-as-
+value reversal). **One residual — 0603 (`/spec`, Important, safe direction):** §3.3.4
+mech-1 parenthetical claims a `let` binding generalizes, contradicting §3.4 monomorphic-
+let (behavior agrees with §3.4). Actioning in-sprint (`/spec` + `/qa` PLAN D-1 rationale).
+
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
 `/dev` implemented the arch-ruled canonical-key-is-real/bare-alias model; mechanism
