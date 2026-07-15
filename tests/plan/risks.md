@@ -18,6 +18,13 @@ Ranked depth allocation: rows guarding S109-1/-2/-3 are authored FIRST
 (arch-pre-flagged boundaries + spec MUSTs before happy paths, per the S108
 Inc2 rule recorded in `tests/CLAUDE.md` §"QA-first targeting").
 
+### S109 Phase-6 addendum (2026-07-15, /qa attribution dispatch)
+
+| # | Risk | Severity | Why silent | Guard |
+|---|---|---|---|---|
+| S109-7 | **Racy background stdlib file-index feed** — `index_worker.rs` branch (c) typechecks THROUGH the live tables (mutate-then-undo, R13-by-cleanup); a concurrent mis-attributed write injected a phantom `bit-and → primitives/bit-and` into the live `prelude` table, spuriously firing the (correct) §8.6.5 poison and making `num.bits` unimportable. Same feed behind the #4 `/search` leak (surfacing fixed `fff94fa7`; WRITE-race persists) | HIGH | Scheduling-dependent (16/16 in one environment, 0/140 in another) — most CI runs pass; fires in user sessions. Poison-consumer is spec-correct, so the failure masquerades as a legitimate ambiguity error | Attribution record `s109-attribution-index-feed-race.md`; FIXME 0604 (`/dev` src/int, S110 fix + ≥25-iteration fail-on-revert sweep in the fixing change-set); GREEN twins `tests/spec_08_prelude_outer_scope.rs::super_import_wrapper_*` pin the two poles |
+| S109-8 | **Stdlib-compile CI blindness** — stdlib self-tests are not in `cargo nextest` (Stdlib-separation is correct for `tests/`, but no paired conformance gate exists), so a compiler regression that breaks stdlib compilation/importability ships with zero signal (27 `num.bits` self-tests were failing invisibly) | HIGH (gate gap) | Nothing in the suite imports the stdlib module surface; the failure lives outside every test binary | FIXME 0605 (`/testing`, S110): stdlib-compile smoke gate via `use_workspace_stdlib_for_stdlib_conformance_only()`, enumerating every top-level stdlib module; self-test execution gate as sized follow-on |
+
 ---
 
 Historical baseline risk assessment below (ring-era; surviving load-bearing
