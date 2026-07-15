@@ -49,7 +49,12 @@ for `program/tests.rs`), `ast-annotation.md` (the AST-co-located annotation mode
 subordinate to `adt.md`), `s87-traits-decomposition.md` (the `traits/` module cut +
 `monomorphise_call` phase boundaries — retained as the active decomposition
 **precedent**, cited by the `program.rs` split design), `program-decomposition.md`
-(the S109 `program.rs` module-cut sign-off).
+(the S109 `program.rs` module-cut sign-off),
+`type-expr-resolver-convergence.md` (S110 FIXME 0590 — the four-mirror `TypeExpr`
+resolver single-source refactor → subordinate to `inference.md` + `traits.md`),
+`return-poly-dispatch-signal.md` (S110 R16/R17 — the unresolved-return-poly
+dispatch signal + the typecheck→int carrier → subordinate to `traits.md` +
+`monomorphisation.md`).
 
 **Historical working docs** (`HISTORICAL`-bannered; completed/superseded, audit
 trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `implementation-slice-s66.md`,
