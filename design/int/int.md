@@ -68,65 +68,78 @@ Three structural notes about the surface worth naming:
 
 ---
 
-## 3. Current-state summary (per file)
+## 3. Current-state summary (structural map) — AS-BUILT S110
 
-Direct read of `src/` at **Sprint 81** (post-S78 restructure; the S64 FIXMEs + S76 W-Macro/W-Collapse + S77/S78 cluster-atomic restructure have all landed). The two god-files (`session_v4.rs` 6,201, `worker.rs` 6,074) account for ~43% of the 28,592-LOC crate and remain the audit-F1/F2 decomposition target (FIXME 0109 Wave D).
+> **S110 currency pass (FIXME 0607).** This section was rewritten from the S81-era snapshot
+> it carried (which cited "Total today: 28,592 LOC", a `session_v4.rs` 6,452 / `worker.rs`
+> 2,868 god-file pair, a phantom `observability.rs → src/scheduler_trace/` rename that never
+> happened, and FIXME-0109 "Wave D carried"). **Wave D has since LANDED** — `eval.rs` and
+> `repl.rs` are split out of `session_v4.rs`, which is now a thin lifecycle facade over a
+> `session_v4/` submodule directory — and the S101 dev-session transaction landed as
+> `redefine.rs`. Per-file LOC is deliberately **not** re-pinned (it rots; the memory lesson
+> — counts are knowable from `wc -l src/**/*.rs`, not durable in docs). The map below is by
+> **subsystem + module home**, current as of S110.
 
-> **S81 staleness correction (was: the S64 snapshot).** The pre-S81 table below claimed `lib.rs` ≈ 25 LOC / 18 public modules, `session.rs` was "legacy v3 session, delete", and listed pending relocations (`code.rs` → backend, `trace.rs`/`io_trace.rs` arrivals, `display.rs` merge) as future work. Those relocations **landed**: `code.rs` (166 LOC) is now the `SessionSymbolTable`/`SessionModuleEntry` alias home (the `Code` enum lives in `cranelisp-backend`, re-exported); `src/trace.rs` was **deleted** (the trace family relocated to `cranelisp-intrinsics`, 2026-06-04 ruling); `display.rs` did NOT merge into `pretty.rs` (both live). Most consequentially, **`session.rs` is no longer the v3 god-file** — see its row + §3.4. The LOC figures + status notes in the table rows below carry the **pre-S81 snapshot**; treat the per-FIXME notes added in §3.4 + §16 as the current overlay until a full /design refresh re-tabulates them.
+The two structural facts that dominate the tree today:
 
-| File | LOC | Primary responsibility | As-designed status |
-|---|---:|---|---|
-| `lib.rs` | 83 | Module registry — 5 binary-facing `pub mod` (`observability`, `session_v4`, `got_trace`, `io_trace`, `style` — all `main.rs` imports) + 3 facade-cited `pub mod` (`cluster`, `worker_pool`, `cache`) + `pub(crate) mod` for the rest (now incl. `process_form`, `session_setup`). | **FIXME 0109 Wave B re-confirmed (S81).** Every `pub mod` is justified by a `main.rs` `use cranelisp::…` import or a `facades/int.md` citation; the rest are `pub(crate)`. Already narrowed in the S67 hack-back; Wave B verified the split still holds (a `dead_code`/visibility audit, no structural change). No baseline impact (binary crate). |
-| `main.rs` | 405 | CLI parsing + dispatch to Run / Link / REPL via `CompilerSession`. | Stable. The single mode-dispatcher; one path for Run/Link/REPL per Principle 11. |
-| `session_v4.rs` | 6,452 | `CompilerSession` god-file: REPL UX, eval, dep registration, watcher, introspection, trace setup, worker lifecycle, link control, tests inline. | **Audit F1 (HIGH).** Decomposition target — split into `eval.rs` + `repl.rs` per §3.3 module map below. **Wave D (carried)** — the slash-command `handle_*` methods are `impl CompilerSession` over many private fields; a `repl.rs` split requires widening field visibilities to `pub(crate)` first (substantial churn), so it is deferred with Wave D, not forced under the S81 carry boundary. |
-| `worker.rs` | 2,868 | Priority worker loop + nice worker loop + codegen/cache subsystem (`derive_codegen_batch`, `inline_jit_codegen_*`, `load_cached_module_via_linker`, `handle_cached_codegen`), the macro-compile state helpers, typecheck-dispatch shims (`build_program_compat`, `check_program_compat*`, `process_cluster_with_staging`), and the shared infra types `ModuleCompiler` / `ModuleCheckAccumulator` / `ClusterOnce`. | **FIXME 0109 Wave C LANDED (S81):** the cluster/per-form family (`process_cluster_once`, `process_regular_form` + ~40 family-private helpers) moved to `src/process_form.rs` (~3.0k LOC), shrinking worker.rs from 6,074 → 2,868. Residual Audit-F2 mirrored-path collapse (`_with_state`/`_inline`) is **Wave D (carried)**. |
-| `process_form.rs` | 3,466 | **FIXME 0109 Wave C (S81):** the gap-orchestration form-processing family extracted from worker.rs — `process_cluster_once` (whole-cluster Pass-0/1/2 core, the worker/eval entry), `process_regular_form` (per-form expand→build→check), structural-form classification + handlers (`classify_form`, `handle_import`/`handle_export`/`handle_mod`/`handle_platform`), macro recognition + on-demand clause compile (`SymbolTableMacroResolver`, `compile_macro_*`), Pass-1 registration, Pass-2 expand-then-check, dependency driving (`drive_module_dep`, `register_dep`, cache-hit load), module prep/cleanup (`inject_prelude_if_needed`, `clear_module_codegen`, `wrap_exprs_as_defns`). | The permanent Wave-D seam named in §3.3. Sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7). Shared infra types stay in `worker.rs` and are reached via `crate::worker::*`; `process_cluster_once`/`process_regular_form` are `pub`/`pub(crate)` and called by `cluster.rs` + `session_v4::process_single_form`. Has its own `#[cfg(test)] mod tests` (recognize / gap-target / module-alias / layout-hash / splice unit tests moved here). |
-| `scheduler.rs` | 2,361 | `CompileScheduler` — work dispatch + per-symbol/module wait/release. | Stable. The single coordination authority. |
-| `pipeline.rs` | 446 | Reusable pipeline helpers extracted from session_v4. | Stable; gathers helpers used by both worker and eval paths. |
-| `expander.rs` | 517 | Macro-resolver glue between `cranelisp_frontend::expand` and the symbol table. | **FIXME 0098 Phase 4** — `expand_sexp_recursive` migrates to `cranelisp-frontend/src/expand.rs`; what stays in int is the `MacroEnv` adapter (subject to Frontend FIXME 6's "possibly dead" check). |
-| `code.rs` | 397 | `Code` enum (legacy location). | **Decision 41 — relocates to `cranelisp-backend/src/code.rs`.** int retains a `pub use cranelisp_backend::Code;` re-export. The `SessionSymbolTable` / `SessionModuleEntry` aliases stay here (or migrate to `session_v4.rs`). |
-| `observability.rs` | 1,362 | Scheduler/worker event log; trace flush guards; structured event taxonomy. | Stable. Renames to `src/scheduler_trace/` to fit the three-instance `*_trace` pattern (parallel to `src/io_trace/` and `src/got_trace/`). |
-| `platform.rs` | 793 | DLL load (`load_platform_dll`), `resolve_platform_path`, `parse_type_sig`, manifest validation. | **FIXME 0104** — `load_platform_dll` constructs structured `PlatformError` per Decision 42; `Sess::format_error` adds a `Platform(PlatformError)` arm. Stringly-typed errors today; structured tomorrow. |
-| `pretty.rs` | 662 | REPL display / value formatting. | Joins `display.rs` post-FIXME 0108; both are "REPL display orchestration" per BC §6 and want to live together. |
-| `marshal.rs` | 493 | Sexp marshaling helpers used by macro pipeline. | Stable. |
-| `cache_writer.rs` | 219 | Background `.o` + `.meta.json` emit thread (cache-write side, Sprint 56+). | Stable. |
-| `save.rs` | 493 | `regenerate_backing_file` per Decision 39 — walks `defn_order`, reads `introspection[fq].source`, atomic write. | Stable. The `module_sources` field is gone; per-defn source on `Introspection.source` is the only source store. |
-| `watch.rs` | 181 | `notify`-based file watcher; emits `FileChangeEvent`; polled at REPL prompt boundary. | Stable. |
-| `exe.rs` | 695 | `--link` mode: alias-`.o` emission, system linker invocation. | Stable. Lives next to `crates/cranelisp-exe-bundle/`. |
-| `bind_chain_analysis.rs` | 849 | §10.12 auto-IO-scheduling: post-expansion AST→AST transform inserting `Expr::ParBind` for data-independent, non-`Sequential` `bind!`-chain pairs. | **S84 (FIXME 0367): being WIRED LIVE.** Pre-S84 this pass was `#[allow(dead_code)]` with zero pipeline callers (no `Par` node ever emitted from user source). S84 wires `apply_bind_chain_analysis` into `process_form::finalize_cluster` over `expanded_program`/`final_working`, before `check_program_compat`, mode-uniform across `--run`/`--link`/REPL (single `process_cluster_once` core). Algorithm stable; the wiring is the work. See `design/int/bind-chain-analysis.md` §5 (live seam) + §5b (PO-0367.1 contract) + §5c (flag). |
-| `style.rs` | 131 | Terminal style helpers (colours, attributes). | Stable. |
-| `thread_util.rs` | 36 | Thread-naming helper for worker spawn. | Stable. |
-| `session_setup.rs` | 525 | **Renamed from `session.rs` (FIXME 0109 Wave A, S81).** Session-construction helpers independent of `CompilerSession`: `CacheState`, `ProjectConfig` + `load_project_config_lib_dirs`, `assemble_lib_dirs`, `assemble_platform_dirs`, `resolve_prelude`, `determine_exit_code`, `apply_bind_chain_analysis`. | **FIXME 0109 Wave A LANDED (S81).** Verified no v3 `CompilerSession`/`Session` type remained (the only `struct CompilerSession` is `session_v4`'s); these helpers are live (callers: `cache.rs`, `platform.rs`, `session_v4.rs`, `worker.rs`). Renamed `session.rs` → `session_setup.rs` to shed the misleading "v3 lingering" connotation. `pub(crate)`-internal; no baseline impact. **S84 correction:** `apply_bind_chain_analysis` was the one *dead* helper in this list (`#[allow(dead_code)]`, zero callers); S84/FIXME 0367 wires it into `process_form::finalize_cluster` and drops the attribute — see `bind-chain-analysis.md` §5.3. |
+1. **The former `session_v4.rs` god-file is decomposed.** `session_v4.rs` is now a small
+   facade; its substance lives under `src/session_v4/` (`lifecycle.rs` — the largest,
+   `CompilerSession` construction/register/link/trampoline/watcher; `shared_state.rs`;
+   `index_worker.rs` — the `/search` background indexer, `index-worker-isolation.md`;
+   `nice_worker.rs`; `test_runner.rs`; `types.rs`; plus per-concern `*_tests.rs` submodules).
+   REPL eval split to `src/eval.rs`; the REPL command/display surface split to `src/repl.rs`.
+2. **`repl.rs` is the new god-file** (~5.2k LOC, ~185 fns, six mixed responsibilities) — the
+   S110 decomposition target (FIXME 0606; the cut is signed off in
+   `design/int/repl-decomposition.md`, mechanical move by `/dev`). It absorbed S108's
+   `/search` UI and S109's display unification without being re-cut.
 
-**Total today**: 28,592 LOC across `src/`. The S64-snapshot relocations (above) have all landed; the headline god-files (`session_v4.rs` 6,201, `worker.rs` 6,074) remain the audit-F1/F2 decomposition targets (FIXME 0109 Wave D, carried to the next arc sprint per the S81 Phase-2 R1 carry boundary).
+### 3.1 Subsystem map (module homes)
 
-### 3.3 Target module map (FIXME 0109 Wave D — CARRIED)
-
-The full decomposition target for the two god-files. **This is Wave D and is NOT in S81 scope** (the S81 Phase-2 R1 carry boundary; Principle 8 — a partial god-file split is itself interim debt). Recorded here so the carry is legible.
-
-| Module | Responsibility |
+| Subsystem | Module home(s) |
 |---|---|
-| `session_v4.rs` (residual) | `CompilerSession` struct + lifecycle; `SharedState` construction; `Drop`; worker-pool spawn + join |
-| `worker.rs` (residual) | `priority_worker_loop` + `nice_worker_loop`; per-cluster processing on `&SharedState` |
-| `src/process_form.rs` | The shared gap-orchestration form chain — **LANDED (Wave C, S81)**: `process_cluster_once` + `process_regular_form` + ~40 family-private helpers. The permanent seam; Wave D builds on it, does not rework it. |
-| `src/eval.rs` | REPL eval — wraps the form chain + appends `defn_order` for defining forms; trampolines expression forms |
-| `src/repl.rs` | Slash-command dispatch, prompt formatting, banner, line-editor wrapper |
+| CLI + mode dispatch | `main.rs` (the single Run/Link/REPL dispatcher, Principle 11) |
+| Module registry / visibility | `lib.rs` (5 binary-facing `pub mod` for `main.rs` imports + `cluster`/`worker_pool`/`cache`; everything else `pub(crate)`) |
+| Session lifecycle + shared state | `session_v4.rs` (facade) + `session_v4/{lifecycle,shared_state,nice_worker,types}.rs`; `session_setup.rs` (construction helpers independent of `CompilerSession`) |
+| Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
+| Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
+| Cluster-atomic typecheck | `cluster.rs` (`ProcessedCluster` + `process_cluster`/`insert_cluster`) |
+| REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
+| REPL command/display surface | `repl.rs` (slash dispatch + `handle_*` battery + `/search` UI + `_doc` formatters + prompt/banner/editor) — **decomposition target, §3.3** |
+| Dev-session transaction | `redefine.rs` — the S101 dependent-recompilation machinery (`session-transaction.md`): `AbiSurface` summary-diff, `RedefKind`, on-demand `ReverseIndex`, reverse-topo recompile, `mark_broken`/trap-stubs, `TransactionReport` |
+| Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/CLAUDE.md` §"Prelude as a resolution FALLBACK") |
+| Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
+| Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
+| Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
+| Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §Degraded startup) |
+| Cache orchestration | `cache.rs`; `cache_writer.rs` (background `.o`/`.meta` emit) |
+| `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
+| Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
+| Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` transform (wired live S84; `bind-chain-analysis.md`) |
+| Observability sinks | `observability.rs` (+ `observability/tests.rs`) scheduler/worker event log; `io_trace.rs`; `got_trace.rs`; `sched_dump.rs` — all env-var-gated ring buffers. **(The S81-era "renames to `src/scheduler_trace/`" plan never happened and is retired; `observability.rs` is the stable home.)** |
+| Embedded agent | `src/agent/` (fully `#[cfg(feature = "agent")]`; `agent.md`) |
+| `Code` carrier + aliases | `code.rs` — `SessionSymbolTable`/`SessionModuleEntry` aliases; `Code` is re-exported from `cranelisp-backend` (Decision 41) |
+| Pipeline helpers | `pipeline.rs` (`resolve_module_file`, shared worker/eval helpers) |
+| File watcher | `watch.rs` |
 
-Wave D's extraction sequence (when it runs): `eval.rs` → `repl.rs` → residual `session_v4.rs`; for `worker.rs`, collapse the remaining mirrored paths into single implementations.
+### 3.3 REPL decomposition target (FIXME 0606, S110) — the current cut
 
-### 3.4 FIXME 0109 Waves A/B/C — LANDED (S81); Wave D carried
+FIXME 0109 (the S81 `session_v4.rs`/`worker.rs` decomposition) is **fully landed** — Waves
+A/B/C plus the once-carried Wave D (`eval.rs` + `repl.rs` split out of `session_v4.rs`, and
+the further `session_v4/` submodule split). The `src/CLAUDE.md` §"Session/REPL module map" is
+the as-built allocation. The **current** decomposition target is the new god-file `repl.rs`:
 
-S81 landed the three terminal-shaped sub-steps of FIXME 0109 (A/B/C). Each is independently complete (a rename, a visibility re-confirmation, a clean extraction) and leaves the tree green (1252 passed / 0 failed / 1 skipped); none is a stepping-stone Wave D reworks (Principle 8). The carry boundary is: **A/B/C landed S81; Wave D + the dependent runtime/observability harvest cluster (FIXMEs 0116/0128/0129/0130/0132/0133/0135) co-carry to the next arc sprint** (the harvested tests need the post-Wave-D `#[cfg(test)]` module homes — `process_form.rs` already has one, established by Wave C).
+| Module | Responsibility (target) |
+|---|---|
+| `repl/search.rs` | The `/search` UI subsystem — `handle_search`, `render_search_row*`, settle/scheme/referer helpers (the UI half of `session_v4/index_worker.rs`) |
+| `repl/format.rs` | The `_doc` producer formatter family — `format_def_entry_doc`, `format_eval_result*`, `format_type_display`/`format_trait_display`, `describe_symbol` |
+| `repl/commands.rs` | The `handle_*` slash-command battery (folds in `handle_imports`/`handle_exports`) |
+| `repl.rs` (residual) | Slash dispatch (`dispatch_command`) + prompt/banner/line-editor + the shared resolution/referer toolbox (the bottom layer) |
 
-- **Wave A — `session.rs` → `session_setup.rs` (LANDED, rename).** Confirmed by grep that no v3 `CompilerSession`/`Session` type remained (the only `struct CompilerSession` is `session_v4`'s) and no `crate::session::CompilerSession`/`Session` reference exists. The file held only live `CompilerSession`-independent construction helpers, so Wave A was the cosmetic rename (not a deletion): `git mv session.rs session_setup.rs`, updated the 6 `crate::session::` use-sites (in `cache.rs`, `platform.rs`, `session_v4.rs`, `worker.rs`) and `lib.rs`'s `pub(crate) mod` line. `pub(crate)`-internal; no baseline impact.
-
-- **Wave B — narrow `lib.rs` (re-confirmed).** Re-confirmed the split against `facades/int.md` §"Public surface" + the actual `use cranelisp::…` imports in `main.rs`. The 5 binary-facing `pub mod` (`observability`, `session_v4`, `got_trace`, `io_trace`, `style`) are all `main.rs` imports; the 3 remaining `pub mod` (`cluster`, `worker_pool`, `cache`) are facade-cited; everything else is `pub(crate)` (incl. the new `process_form` + renamed `session_setup`). No demotion needed — the S67 hack-back split still holds. No baseline impact (binary crate).
-
-- **Wave C — extract the `process_form` family (LANDED, clean extraction).** Extracted `process_cluster_once` (the whole-cluster Pass-0/1/2 core, the worker/eval entry) + `process_regular_form` (per-form expand→build→check) + their ~40 family-private helpers (structural-form classify/handlers, macro recognition + on-demand clause compile via `SymbolTableMacroResolver`, Pass-1 registration, Pass-2 expand-then-check, dependency driving, module prep/cleanup) into `src/process_form.rs`. The shared infra types (`ModuleCompiler`, `ModuleCheckAccumulator`, `ClusterOnce`) + the typecheck-dispatch shims (`build_program_compat`, `check_program_compat*`, `ensure_typecheck_product`, `leading_annotation_len`) stay in `worker.rs` (referenced by both the family and the codegen path / external callers) and are reached from `process_form.rs` via `crate::worker::*`. `worker.rs` shrank 6,074 → 2,868 LOC; `process_form.rs` is ~3.0k LOC. The recognize / gap-target / module-alias / layout-hash / splice **unit tests moved with the code** into `process_form.rs`'s new `#[cfg(test)] mod tests`; the private-submodule + introspection tests stayed in `worker.rs` (they share `mk_writer_test_ctx`, a worker-side `ModuleCompiler` builder) and reach the moved `check_private_submodule_import` / `has_code_ptr` / `record_*` via `use crate::process_form::{…}` (these four are `pub(crate)`). `cluster.rs` + `session_v4::process_single_form` call `process_form::process_cluster_once`; `session_v4` calls `process_form::compile_macro_for_repl`. Tree green; `pub(crate)`-internal, no baseline impact.
-
-**Wave D — NOT landed (carried, per the carry boundary).** The `eval.rs` + `repl.rs` split out of `session_v4.rs` (6,452 LOC) was assessed and deferred: the slash-command `handle_*` methods are `impl CompilerSession` methods reaching many *private* fields of `CompilerSession`. Moving them to a sibling `repl.rs` requires first widening those field visibilities to `pub(crate)` (Rust field privacy is module-scoped) — substantial churn that risks the green suite, exactly the ballooning the S81 carry boundary guards against (Principle 8). The `worker.rs` mirrored-path collapse (`compile_macro_clause_with_state` / `_inline`) is likewise carried. Wave C's extraction already established the `process_form.rs` module home the harvest cluster needs, so the carry of Wave D does not block the harvested-test homes for the `process_form` family.
-
-**Carry-boundary non-interim-debt argument (Principle 8).** A/B/C did not produce scaffolding Wave D tears out: A was a rename of an unrelated helper file; B was a visibility re-confirmation Wave D inherits unchanged; C extracted a module that §3.3 *names as a permanent home* (`src/process_form.rs`). Wave D, when it runs, moves `eval.rs`/`repl.rs` OUT of `session_v4.rs` and collapses `worker.rs`'s mirrored paths — it does not undo C's extraction. The partial split is along a seam the full split also respects; there is no rework.
+The precise function→file boundaries, the shared-toolbox placement, the test split, and the
+behaviour-invariant / zero-baseline-diff acceptance contract are signed off in
+**`design/int/repl-decomposition.md`** (the 0580 `program.rs` template: cut first, mechanical
+move by `/dev` last). This int.md map and the `src/CLAUDE.md` map update in the same
+change-set as the move (couples with FIXME 0607).
 
 ---
 

@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # S78 int restructure — implementation-ready companion
 
 **Status:** PHASE 3 DESIGN — RECONCILED TO AS-BUILT (S78 Wave 5, 2026-06-11; FIXME 0311 resolved). Implementation companion to `design/int/s77-int-restructure.md`.

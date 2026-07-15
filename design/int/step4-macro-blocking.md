@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # Step 4: Macro Expansion Blocking — Implementation Design
 
 Sprint 42, Wave 1. Owned by `/int`. Revised for Decision 21 and Wave 2 review findings (I-1 through I-4, S-1 through S-3). Revised again to replace suspension/resumption with inline compile-and-continue (per `pipeline-v4-roadmap.md` line 122: single-threaded worker alternates typecheck and priority codegen on the same thread).

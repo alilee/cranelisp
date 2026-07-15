@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # Int — S76 implementation plan (facade-arc wash-through + parallel-JIT collapse + W-Macro)
 
 Owner: `/design (int)`. Phase-3 implementation plan for the S76 int scope, subordinate to `design/int/int.md` (master) and bound by `design/arch/facades/int.md` (LIVE — retirement is a separate late-phase capstone, NOT in this plan) + `design/arch/bounded-contexts.md` §6.

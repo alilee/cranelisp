@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # S77 int restructure — target cluster-atomic orchestration + in-call-stack dependency threading
 
 **Status:** DESIGN PROPOSAL — S78 centerpiece. Concurrency-sensitive. No code changes yet. **Phase-2 actioned 2026-06-10** (`/arch`): FIXME 0310 folded in — §2.3 + §5 + §7 corrected to record that the sexps-onto-packet move is NOT a separable "Step 0" (it is entangled with the resume kernel and folds into the indivisible Steps 1+2). OQ-1 settled to (b) block-on-scheduler; OQ-3 settled to delete-the-guard-gated-on-H5-test (Phase-1 user sign-off, both reflected in §3.3 / §3.5).

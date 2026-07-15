@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # Pipeline Convergence Analysis
 
 Evaluation of Options A and B from `design/backend/module-caching.md` section 8, "Path unification strategy", for reducing REPL/batch code divergence. Written by `/int` as Sprint 22 Wave 2 deliverable.

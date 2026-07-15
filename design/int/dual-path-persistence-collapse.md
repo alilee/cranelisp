@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded / completed working doc (triaged S110, FIXME 0607).** A
+> point-in-time record retained for the audit trail only; NOT current design intent. The
+> durable design is `int.md` (master) plus the subsystem docs indexed in
+> `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the current source
+> or the master, the source and master win.
+
 # Dual-Path Persistence Collapse (Workstream A, Sprint 59)
 
 > Status: DESIGN (Phase 3, Sprint 59 Workstream A)

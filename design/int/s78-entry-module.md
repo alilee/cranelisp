@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # S78 — Entry-module de-special-casing (target design)
 
 **Status:** AUDIT-FIRST TARGET DESIGN — for user sign-off. NO code/test changes enacted. §2 reshaped to the **settled** prelude-as-outer-scope model (user, 2026-06-11) + blast-radius walked. **§2 shadow-*conclusion* re-anchored 2026-07-04 (FIXME 0515, S103): the prelude carries NO exemption — def/distinct-terminal-shadow over a loaded prelude name is a compile-time error, not a silent shadow; the outer-scope resolution *mechanism* is unchanged; the impl seam is FIXME 0514.**

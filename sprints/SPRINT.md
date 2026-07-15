@@ -437,6 +437,76 @@ stays computable and unflagged (the S109-revert fence); `/arch` ratifies the
 FIXME-0611 carrier before the Phase-5 wave. Both are design-only this phase —
 Phase-5 `/dev` (typecheck) + `/dev`/`/design` (int) implement.
 
+### /design (int)
+
+**Task.** Three design-doc deliverables authored (no source touched); all in `design/int/`.
+
+1. **FIXME 0604 — index-feed write-race isolation contract.**
+   `design/int/index-worker-isolation.md` (new; subordinate to `int.md` +
+   the `heisenbug-race-closure.md`→`signature-body-prepass.md` isolation lineage).
+   Records the **isolation-by-construction** cure: the background stdlib indexer's
+   only output is the in-memory `importable_indices` rows; every intermediate
+   (symbol tables / aliases / prelude-fallback / staging) is a function-local
+   **discard substrate**, and the feed writes **no foreground-consumable cache
+   artifact**. R13 becomes true by construction, not by cleanup. **Key finding:**
+   the S91 refactor (`9ba2ca91`) already isolated the *in-memory* tables
+   (`checked_typecheck_module` → `private_tables`), so the FIXME/attribution's named
+   seam (mutate-live-then-undo in `index_branch_c`) is already cured — yet the defect
+   still reproduces, because the feed still writes the **shared cache**
+   (`shared.cache.record_source_hash`/`record_compiled` + a `.meta`) that a later
+   real `/import` consumes as a cache-hit (§25.5). §3.3 severs that persistent-artifact
+   channel; §3.1 flags the still-stale `index_branch_c` docstrings (retired
+   mutate-live model) for `/dev` rewrite; §3.2 tightens the live `&shared.prelude_fallback`
+   thread to a private snapshot. **Reviewer-greppable invariant** in §5 (zero
+   `&shared.*` map into any install/typecheck/register call; zero `shared.cache`
+   write on any index branch). **Contingency (Phase-2 Rev on 0604) evaluated and does
+   NOT fire** — the substrate needs no new types-level staging primitive (a cloned
+   `PreludeFallback` DashMap; the existing `SymbolTableAccess::cluster` view), so **no
+   `/arch` FIXME filed**. Verify-first: `/dev`+`/testing` run the ≥25× trace sweep to
+   LOCATE the residual writer (prime suspect = the cache channel) BEFORE patching
+   (verify-fix-not-symptom).
+
+2. **FIXME 0607 — `design/int/` currency pass.** (a) `int.md §3` rewritten to
+   as-built (S81→S110 restructures: Wave-D landed → `eval.rs`/`repl.rs` split out;
+   `session_v4/`+`process_form/`+`worker/` submodule dirs; `redefine.rs` transaction;
+   phantom `scheduler_trace/` rename retired; per-file LOC no longer pinned — a
+   subsystem+module-home map instead). (b) **Surgical `agent.md §2.2` fix**: the
+   retired symbol-resolution classifier + its now-wrong "MUST NOT" warning replaced
+   with the as-built **form-count rule** (`forms.len()==1 → Repl` else `Agent`,
+   `symbol_is_known` NOT consulted; user ruling 2026-07-12, `src/agent/mod.rs:70-148`),
+   the MUST-NOT now protecting the LIVE invariant. (c) HISTORICAL banners on 18
+   superseded slice/working docs; a **doc-index** added to `design/int/CLAUDE.md`
+   (0578 template: master / durable subsystem / active subordinate / reference
+   lineage / historical). The full `agent.md` restructure stays deferred.
+
+3. **FIXME 0606 — `repl.rs` decomposition cut sign-off.**
+   `design/int/repl-decomposition.md` (new; the 0580 `program.rs` template — cut
+   signed off first, mechanical move by `/dev` in Phase 5). The 5,234-line god-file
+   cuts to `repl/search.rs` (the `/search` UI) + `repl/format.rs` (the `_doc`
+   formatters) + `repl/commands.rs` (the `handle_*` battery, incl. `handle_imports`)
+   + residual `repl.rs` (dispatch + prompt/banner/editor + the shared
+   resolution/referer toolbox). Precise function→file boundaries with current line
+   ranges, the shared-toolbox placement (§1.5), the `fq_arg_tests` three-way test
+   split (§2), the FORMAT layout-render pressure valve (§1.6), and the
+   behaviour-invariant / zero-library-baseline-diff acceptance contract (§4). Couples
+   with deliverable 2 (`int.md §3.3` + `src/CLAUDE.md` module map update with the move).
+
+**Refs.** `design/int/index-worker-isolation.md`; `design/int/repl-decomposition.md`;
+`design/int/int.md §3`; `design/int/agent.md §2.2`; `design/int/CLAUDE.md`;
+`design/arch/fixmes/{0604,0606,0607}-*.md`;
+`tests/plan/s109-attribution-index-feed-race.md`; sources cited:
+`src/session_v4/index_worker.rs`, `src/imports.rs`, `src/agent/mod.rs`, `src/repl.rs`,
+`src/CLAUDE.md` §"Session/REPL module map".
+
+**Acceptance.** 0604: the §5 grep is the `/dev`/`/review` structural criterion; the
+≥25× real-stdlib sweep + write-seam unit test land WITH the fix (fail-on-revert);
+twin guards stay green. 0607: `int.md §3` matches the tree (spot-check `session_v4/`,
+`process_form/`, `repl.rs`); every superseded doc carries a banner; `agent.md §2.2`
+describes the form-count rule. 0606: the cut is mechanical-and-behaviour-invariant
+(golden REPL e2e green, zero library-baseline diff, no `repl/` file over ~1,500 lines).
+All design-only this phase — Phase-5 `/dev` (src/) implements 0604's fix + 0606's move;
+`/design` (int) updates the int.md/CLAUDE.md maps with the move.
+
 ## Notes
 
 - **Phase 1 (2026-07-15):** scope drafted between sprints (S109 closed, archived). The

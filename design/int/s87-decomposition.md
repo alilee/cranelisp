@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # S87 — `src/` module decomposition (Wave 5: `process_form.rs` + `session_v4.rs`)
 
 > **Status.** Design phase (Sprint 87, Wave 5). `/design` authors the module

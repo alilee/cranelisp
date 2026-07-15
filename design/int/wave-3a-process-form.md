@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # Sprint 66 Wave 3a — int `process_form` shape-pivot + Waves A/B/C + D43 source migration
 
 > **Superseded 2026-05-13:** This document's references to the two-pass typecheck surface (`check_form_signatures` + `check_form_body`) are **superseded by Decision 44's 2026-05-13 third amendment** — `int::process_cluster` now makes one `cranelisp_typecheck::check_forms` call per cluster (not two). On `Err(Gap)` the orchestrator drops staging and retries the whole `check_forms` call (whole-cluster retry; no per-form retry granularity). `ProcessedCluster` carries `warnings`/`resolved_imports`/`introspection_records` in addition to staged entries; the int-side `ModuleCheckAccumulator` stub authored in this design's first implementation pass is removed in favour of those fields on `ProcessedCluster`. Cluster-atomic protocol (staging owner, drain-on-Ok, drop-on-Err) is unchanged. The canonical orchestration shape is `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop". `/dev (int)` will refresh §1 of this document in detail when implementing the collapsed shape.

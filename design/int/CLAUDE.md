@@ -59,6 +59,50 @@ refusal, and reads the optional `/strand` dev sink. It never reaches into reacto
 - **`bind-chain-analysis.md`** — the compile-time automatic-IO-scheduling pass (§10.12); its
   finer ownership is an open FIXME 0486 question, left here pending that ruling.
 
+## Document index (durable vs historical) — the triage of record
+
+Maintained by `/design` (int); triaged S110, FIXME 0607 (the S109 typecheck 0578 template).
+An agent designing against this surface reads the **durable** docs; the **historical** docs
+are retained for the audit trail only and each carries a top-of-file `HISTORICAL` banner — do
+not treat them as current design intent. When a durable doc, a historical doc, and the current
+source disagree, the **source + the master win**.
+
+**Master.** `int.md` — the single source of design intent for the binary surface; every other
+doc is subordinate.
+
+**Durable subsystem docs** (one-per-subsystem, current):
+`concurrency-architecture.md` (the compiler-internal scheduling axis),
+`signature-body-prepass.md` (the S93 two-phase barrier — the durable race cure),
+`session-transaction.md` (S101 dev-session dependent-recompilation; `redefine.rs`),
+`session-persistence.md`, `symbol-table-cache.md`, `cache-hit-loading.md`,
+`io-integration.md` (host-side IO forcing + platform-DLL wiring),
+`bind-chain-analysis.md` (compile-time auto-IO scheduling; §10.12),
+`observability.md` (the trace/event sinks), `macro-resolver-impl.md`, `cranelisp-toml.md`,
+`repl-lifecycle.md`, `agent.md` (the embedded-agent + `/search` index design — large, active),
+`terminal-styling.md` (the `styled::render` role-span seam).
+
+**Active subordinate feature docs** (scoped, live):
+`index-worker-isolation.md` (S110, FIXME 0604 — the index-feed isolation contract),
+`repl-decomposition.md` (S110, FIXME 0606 — the `repl.rs` module-cut sign-off),
+`multi-sig-introspection.md`, `private-submodule-import.md`, `symbol-table-generics.md`,
+`bare-primitive-value-path.md`.
+
+**Reference lineage** (heavy race/audit records — load-bearing as precedent, not day-to-day
+design intent): `heisenbug-race-closure.md` (S61 per-interleaving-treadmill record — the
+lineage `index-worker-isolation.md` and `signature-body-prepass.md` cite), `concurrency-audit.md`,
+`concurrency-risks.md`, `concurrency-test-strategy.md`, `concurrent-workers.md`,
+`persistent-workers.md`, `concurrency/`.
+
+**Historical working / slice docs** (`HISTORICAL`-bannered S110; completed or superseded,
+audit trail only): `step4-macro-blocking.md`, `step5-lazy-discovery.md`, `step7-repl-eval.md`,
+`step8-platform-registry.md`, `step9-error-cascade.md`, `s76-implementation-plan.md`,
+`s77-int-restructure.md`, `s78-implementation.md`, `s78-entry-module.md` (its §2
+prelude-fallback mechanism is now canonical in `design/arch/prelude-import-convergence.md` +
+`src/CLAUDE.md`), `s87-decomposition.md`, `s102-defect-wave.md`, `wave-3a-process-form.md`,
+`implementation-slice-s66.md`, `phase2-codegen-convergence.md`, `pipeline-convergence.md`,
+`dual-path-persistence-collapse.md`, `cache-prelude-restoration-repro.md`,
+`platform-registry-removal.md`.
+
 ## Cross-references
 
 - `design/arch/bounded-contexts.md` §6 — canonical int bounded context (cadences, handoffs, constraints).

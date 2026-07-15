@@ -1,3 +1,9 @@
+> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
+> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
+> current design intent. The durable design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
+> current source or the master, the source and master win.
+
 # Step 5+6: Lazy Dependency Discovery + MacroExpander Removal — Implementation Design
 
 Sprint 43. Owned by `/int`. Covers pipeline-v4-roadmap Steps 5 and 6.
