@@ -507,6 +507,66 @@ describes the form-count rule. 0606: the cut is mechanical-and-behaviour-invaria
 All design-only this phase — Phase-5 `/dev` (src/) implements 0604's fix + 0606's move;
 `/design` (int) updates the int.md/CLAUDE.md maps with the move.
 
+### /arch — 0583 design + Principle 24 + R-2 builder (2026-07-15, COMPLETE)
+
+**Task**: execute Phase-2 "Next skills" item 1 — author the 0583 working design
+doc, Principle 24, the BC edits; land the R-2 builder; pin the W0 producer diff.
+
+**Landed** (two commits on main):
+1. **R-2 ADT-entry builder** — `cranelisp_types::{AdtCtorSpec, build_adt_entries}`
+   (`crates/cranelisp-types/src/adt_build.rs` + 4 unit tests; additive, no
+   consumers; no serde/cache impact; `public-api.txt` regenerated +16 lines;
+   `interfaces.md` §"ADT-entry builder" + BC §7 paragraph). Caller wiring
+   (typecheck `adt.rs` + `src/bootstrap.rs` become thin callers) = ONE
+   coordinated Phase-5 `/dev` change-set, behaviour-invariant.
+2. **`design/arch/backend-keyed-consumer.md`** — the 0583 working design:
+   one-carrier contract (§1: `resolved_targets` sidecar + 2 mono fields +
+   REQUIRED `from_expr` param; per-kind "whichever storage key HIT" table),
+   Rev-2 no-soft-fallback per-wave REJECT criterion (§1.2), backend `entry_at`
+   end-state reader (§1.3), backend-synthesized-name treatment (§1.4),
+   re-verified per-site inventory S1–S24 with wave assignment (§3 — the
+   Phase-2 "26" reconciled; the SET binds, W3 grep gate is the criterion),
+   four wave briefs (§4), the 0585 W2 guard (§7).
+3. **W3 residual RULED** (§5): thread-carriers wins, executed as **typecheck
+   = sole mono-view producer** (W0.b view totalization) — Phase-3 findings:
+   the lenient arm's reach is full-spectrum (scoped-helper proof is FALSE for
+   `__expr`/macro-clause bodies), synthetic bodies are `Span::SYNTHETIC` (span
+   transport structurally unavailable → ctor identities populated DIRECTLY at
+   synthesis, which also deletes match_codegen.rs:263/600's fallback need),
+   and `jit.rs::compile_defn` has NO live caller (unit-harness only; stale
+   rustdoc corrected in W3). `lenient_mono_from_expr` deletes in W3.
+4. **Principle 24 "Resolve once"** authored (`principles/24-resolve-once.md` +
+   index row + ALL FOUR import blocks arch/design/dev/review, same commit;
+   **ratification = Phase-7 close**). BC §3 invariant 10 (backend pure
+   keyed-lookup consumer) + BC §2 producer-obligation/0585 note +
+   `overview.md` backend sentence + `design/arch/CLAUDE.md` row landed now
+   (BC edits are not register changes).
+
+**Pinned, NOT landed**: the full W0 producer diff (design doc §8) — carrier
+fields, `from_expr` signature, typecheck `record_resolved_target` chokepoints,
+W0.b totalization, backend test-harness sidecar population, and
+`CACHE_SCHEMA_VERSION` **18→19** — ONE coordinated Phase-5 `/dev` deployment
+(cross-crate atomicity: the signature change + bump must ride the typecheck
+producer; carrier fields alone were deliberately NOT pre-landed).
+
+**Acceptance/refs**: suite untouched by the landed change-set (additive;
+`cargo check --workspace` clean; types unit tests green). Phase-2 impact table
+refined honestly in §5: W0 grows by the lenient-builder relocation (types) +
+the backend `lib.rs:905` view-selection flip (backend-internal); "W1–W3 zero
+baseline movement" claim preserved.
+
+**Interface completeness for `/qa`**: CONFIRMED — the design doc §9 enumerates
+the acceptance surface (per-site checklist §3 = per-wave flip sets; §1.1
+hard-miss negative families; §1.2 REJECT criterion; §4 per-wave verification
+obligations incl. W0 byte-identity and the W2 0585 value-position × {mint,die}
+matrix; §6 R-2 behaviour-invariance). `/qa` can draft the 0583 per-wave
+acceptance rows from it directly.
+
+**Next skills**: per Phase-2 §"Next skills" — `/design` (typecheck) 0590 +
+R16/R17 proposal; `/design` (int) 0604/0607/0606; `/qa` acceptance rows; then
+`/sprint` Phase-4 wave pinning (§8 serial chains; W0.a+W0.b are one schema
+window).
+
 ## Notes
 
 - **Phase 1 (2026-07-15):** scope drafted between sprints (S109 closed, archived). The
