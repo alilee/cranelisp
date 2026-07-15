@@ -850,6 +850,58 @@ totalization. Recommend it lands as a follow-on W0.b change-set gated on the
 KC-W0-2 golden-CLIF harness, before W3. `lenient_from_expr` is already relocated
 so that follow-on is a backend-`lib.rs` + typecheck-view-population edit only.
 
+### /review (W0) — 0583 producer change-set review (2026-07-15, COMPLETE)
+
+Reviewed `41fab350` against `backend-keyed-consumer.md` §1/§3/§4/§8/§9. **Verdict:
+NOT clean to build W1 on as sequenced** — the crate-level machinery is sound and
+behaviour-invariant (keep it), but the producer is incomplete on three reference
+legs and the W0.b deferral under-claims W1's dependency. Two Blockers filed:
+
+- **Blocker — FIXME 0616 (`target: /dev`, typecheck): producer records only a
+  subset of the resolutions `lookup` performs.** (1) NO Apply-span writer exists —
+  all dispatch-selection seams write `resolved_calls` only, so
+  `MonoExpr::Apply.resolved_target` is structurally always `None`; post-W1 every
+  trait-method/sig-dispatch/auto-curry call (incl. operators) hard-fails.
+  (2) Self-recursive references are filtered by the env-shadow gate
+  (`body.rs:652` binds the defn name as a local) — every recursive fn hard-fails
+  at W1; the `record_user_fn_ref` self-edge skip must NOT be mirrored here.
+  (3) Dotted `Type.member` refs resolved via `resolve_dotted_member_entry` (the
+  home-module probe) are invisible to `record_resolved_target`'s narrower
+  `scope_resolve` re-probe — a type-only import + `(Maybe.Some 3)` gets no
+  carrier. Root cause shared: the writer is a SECOND, narrower resolution probe
+  instead of capture-at-the-resolving-seam (§1.1's binding property; Principle
+  24 applied to the producer itself). Same-sprint fix: W0 top-up change-set in
+  the same schema-19 window (0472 precedent), before W1.
+- **Blocker — FIXME 0617 (`target: /sprint`): W0.b flip must precede W1, not
+  merely W3.** Lenient-built bodies (generic templates, `__expr` disp-3,
+  macro-clause — §5 finding 1: full reference-kind spectrum) get EMPTY sidecars
+  from the backend delegator; W1's flipped sites serve those bodies and Rev-2
+  forbids the per-body hybrid. Re-pin: KC-W0-2 harness → W0.b flip → W1.
+- **Important:** (a) `resolved_target_fq`/`def_terminal_fq` is a verbatim mirror
+  of `resolve_user_fn_ref_fq`/`user_fn_fq_of` and `infer_var` now resolves the
+  same name up to 3× — consolidate (folded into 0616). (b) Backend unit-harness
+  fixture sidecars are still EMPTY maps (design §4 pinned population into W0;
+  it moved to `/testing` Stage-1 KC-W0-6) — W1 additionally gates on that landing.
+- **Minor:** `adt/tests.rs` scheme-shape tests now pin the `#[cfg(test)]`
+  replica of `build_constructor_scheme`, not the production derivation inside
+  `build_adt_entries` (builder has own coverage; replica can drift).
+
+Verified clean: carrier contract exactly matches the §8 pinned diff (types
+baseline: sidecar + 2 mono fields + `from_expr` −1/+1 + `lenient_from_expr`,
+nothing beyond; backend/typecheck baselines zero movement); `from_expr` third
+param is structurally unforgettable and all call sites thread it; W0 is
+write-only (zero production backend reads of `resolved_target`; all `None`
+constructions sit in `#[cfg(test)]`); no soft fallback anywhere (Rev-2 clean);
+schema 18→19 correct with the KC-W0-3 stale-cache guard (const-asserted) +
+CLAUDE.md updated; R-2 rewiring verified faithful arm-by-arm — `build_adt_entries`
+reproduces tag order, GOT-slot order, scheme shapes, product facet + docstring
+fallback, entry ordering, and `install_bare_ctor_alias` EXTRACTS (does not fork)
+the §8.6.5 contest classifier; the `register_constructors` mirror is actually
+deleted; lenient relocation is byte-identical (empty sidecars ⇒ `None`).
+
+Next skills: `/dev` (typecheck, 0616 top-up), `/sprint` (0617 re-pin), then
+`/testing` KC-W0-2/KC-W0-6 before the W0.b flip and W1.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
@@ -891,10 +943,19 @@ order-flexible within the serial spine.
   Value/Var refs read the carrier; the slot-less-template value read hard-`CodegenError`s
   (the 0585 loud backstop); **vec-assoc UAF ×2 fix rides here** (`heap.rs`/`apply.rs` open —
   RC premature-free). → `/review`.
-- **W3 — backend delete + residue** (`/dev` backend, S19–S24). Resolve the outside-`from_expr`
-  view-builder residual (subsumed by W0.b), then delete `resolve_driven` + `resolve_chain` +
-  the `symbol_tables.iter()` scan + all ten entry points + `lookup_constructor`. **W3 grep
-  gate: zero `resolve_*` in backend** (structural acceptance, `/review` + audit). → `/review`.
+- **W0.b flip (follow-on, before W3)** — the FULL totalization deferred within W0
+  (`41fab350`): backend `lib.rs:905` view-selection hard-error arm + typecheck populating
+  `codegen_view` for ALL codegen-reached entries (ctors/accessors) + synthetic
+  `resolved_ctor`-at-synthesis. **Gated on KC-W0-2** (the golden-CLIF byte-identity harness,
+  `/testing`) — a passing suite ≠ byte-identical CLIF, so this flip needs the harness to
+  ship safely. Sequence: **KC-W0-2 harness (`/testing`) → W0.b flip (`/dev`) → W3**.
+  `lenient_from_expr` is already relocated, so the flip reduces to a backend-`lib.rs` +
+  typecheck-view-population edit. → `/review`.
+- **W3 — backend delete + residue** (`/dev` backend, S19–S24). **Depends on W0.b flip landing.**
+  Resolve the outside-`from_expr` view-builder residual (subsumed by W0.b), then delete
+  `resolve_driven` + `resolve_chain` + the `symbol_tables.iter()` scan + all ten entry points
+  + `lookup_constructor`. **W3 grep gate: zero `resolve_*` in backend** (structural acceptance,
+  `/review` + audit). → `/review`.
 - **W-TC — 0590 resolver convergence** (`/dev` typecheck; after W0 on the serial typecheck
   chain). Blast-radius scout FIRST (the never-error `Named`-fabrication deletion), then the
   `TypeExprCtx` single-source collapse; FV-13/FV-14 fence holds. → `/review`.
@@ -931,7 +992,9 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | P3 | /design (int) | 0604 isolation + 0607 currency + 0606 cut | (shim §II.3) | (shim) | — `061c54a2`: 0604 attribution CORRECTED (cache channel, not live-write) |
 | P3 | /qa | sprint-wide PLAN §S110 (exit gate) | (shim §II.3) | (shim) | — `ffdaa4b9`: buckets A–J; 0609 ruled UNREACHABLE→delete; 0605 recursive-enum |
 | P3 | /spec | §3.5.5 polymorphism-boundary sidenote (0612) | (shim §II.3) | (shim) | — `41d8e32b`: monomorphic-`let` normative + movable; hedge retired; capability parked |
-| P5-S1 | /testing | sprint-wide QA-first failing tests (PLAN §S110) | (shim §II.3) | (shim) | — Stage-1 gate; e2e REDs buckets A–J + verify-first pins |
+| P5-S1 | /testing | sprint-wide QA-first failing tests (PLAN §S110) | (shim §II.3) | (shim) | — `c31b6050`: 13 REDs RED-for-right-reason, no regressions; SG-1 `derive` gate catch |
+| P5-S1 | /qa | SG-1/SG-2 attribution | (shim §II.3) | (shim) | — `9ae05c2a`: SG-1 = REAL layered defect (0613 /dev quasiquote-not-desugared + 0614 /stdlib helper-violation); SG-2 = build-artifact race (0615 /testing) |
+| W0 | /dev | 0583 producer (types+typecheck+backend) | (shim §II.3) | (shim) | — `41fab350`: carriers+`from_expr`+F1 producer+cache 18→19+R-2 typecheck half+lenient relocation; baseline holds 13 REDs; **W0.b full totalization DEFERRED** (gated on KC-W0-2 golden-CLIF; needed before W3, not W1/W2) |
 
 ## Notes
 
