@@ -22,8 +22,8 @@ user> (Point.x (Point 3 4))
 ```
 
 `Point.x` has type `(Fn [Point] Int)`. Like any function it is first-class — you can
-pass it as an argument or bind it to a variable. (This mirrors how constructors are
-named: `Option.Some` is the canonical name of the `Some` constructor.)
+pass it as an argument or bind it to a variable. Constructors follow the same
+canonical-vs-alias pattern — see [`constructors.md`](constructors.md).
 
 ## The bare name is a convenience alias
 
