@@ -121,8 +121,15 @@ so Phase 4 pins an order. R-2 is not here — it folds into the centrepiece (§1
 - **0589** (frontend type-var routing — in-crate backstop landed, no live bug),
   **0595** (rigid-unify structural hardening) — W6 residuals; low-pri, ride 0590's wave
   if that lands.
-- **0603** — spec §3.3.4 let-generalize parenthetical (safe direction, `/spec`) — verify
-  whether S109 landed it; if not, tiny `/spec` fix.
+- **0603** — RESOLVED S109 (no FIXME file; §3.3.4 parenthetical now consistent with
+  §3.4 monomorphic-`let`, `03-types.md:222`).
+- **0612 (`/spec`)** — polymorphism-boundary sidenote. **USER-RULED 2026-07-15:** the
+  monomorphic-`let` / rank-1 boundary is a deliberate language-definition line (retire the
+  §3.5:388 "current implementation" hedge); `/spec` authors a detailed "supported vs
+  decisively-not-supported" sidenote framing it as a **movable** boundary, then the
+  *capability* (let-generalisation) is **PARKED** until a real limiting scenario appears.
+  Doc-only, no compiler change, behaviour already GREEN-pinned. Dispatched S110; FIXME
+  closes on sidenote landing.
 
 ### Out of scope (deferred, with rationale)
 - **0577 threads C/D** (primer→99%, gap loop) — deferred WITH scenario testing; mine the
