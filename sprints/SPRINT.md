@@ -1,6 +1,6 @@
 # Sprint 110: Backend pure keyed-lookup consumer — the resolution-boundary centrepiece
 
-**Status**: PHASE 4 WAVE ORG — COMPLETE; PHASE 5 READY (build awaits user go)
+**Status**: PHASE 5 LANGUAGE (ACTIVE)
 
 **Goal**: Land the user-directed S110 **centrepiece (0583)** — make the backend a
 **pure keyed-lookup consumer**: typecheck emits fully-qualified SYMBOLS *and*
@@ -662,6 +662,88 @@ would have been a false gate — recursive enumeration required.
 draft every failing test sprint-wide; `/testing` has a complete authoring
 order (PLAN §S110 "Phase-5 sequencing note"). → `/sprint` Phase-4 wave org.
 
+### /testing (P5-S1) — QA-first failing set (2026-07-15, COMPLETE)
+
+Authored the sprint-wide failing e2e set from PLAN §S110, failing-not-ignored,
+RED-for-right-reason at HEAD. Full suite: **4557 tests, 4544 pass, 13 fail, 1
+skip** (~81s). Every RED traces to an in-scope S110 row or a pre-existing open
+defect — **no genuine regressions**.
+
+**6 NEW REDs authored (RED-for-right-reason confirmed):**
+- **§B 0585 VP-3/4/5 die legs** (`generic_value_use_mono.rs`):
+  `generic_value_in_if_branch_indeterminate_neg`,
+  `…_in_match_arm_indeterminate_neg`, `…_as_vec_element_indeterminate_neg` — each
+  leaks `undefined variable: gcount` at codegen instead of the §3.11 ambiguity
+  (`check-gate-leak`); land green under W2. The 3 MINT legs
+  (`…_mints_and_runs`) are GREEN (pin S109 0571.2's fix; must-hold).
+- **§C 0590 TX-1** (`spec_07_traits.rs`) `trait_method_sig_bare_user_type_resolves`
+  — bare user type in a trait-method sig errors `unknown type: MyType`
+  (mirror-1 `wrong-reject`); green post-convergence.
+- **§C 0590 TX-5** `hkt_trait_sig_unknown_named_errors_neg` — an unknown Named in
+  an HKT trait sig is silently fabricated (deftrait "succeeds"); must ERROR
+  post-convergence (mirror-2 `silent-accept`).
+- **§E 0605 SG-1** (`stdlib_conformance.rs`, new file)
+  `stdlib_all_public_modules_compile_and_run` — recursive public-module enum
+  (37 modules; skips `prelude.cl` + `(mod- …)` subtrees, no hand-list) +
+  per-module `--run` subprocess loop + aggregated report. **36/37 compile
+  clean; `derive` FAILS** (`parse error … unexpected quasiquote form — should
+  have been expanded`, derive.cl:5306). Surfaced signal per PLAN "report, don't
+  skip" — see handoff below.
+
+**GREEN pins/fences authored (must-hold across their waves):** RD-3
+`arg_directed_dispatch_result_in_value_position_not_flagged` (the R16/R17
+false-positive fence, `(let [r (add2 3 4)] r)` → 7); TX-8
+`annotation_unknown_uppercase_named_still_errors_fence` (FV-13); TX-9
+`trait_path_resolution_unaffected_by_mint_fence` (FV-14).
+
+**Pre-existing S110-acceptance REDs verified RED-for-right-reason (flip at their
+waves):** RD-1/RD-2 (`spec_03_types`), C4-1
+(`multi_arity_call_from_main_batch_no_main_neg`), VA-1/VA-2
+(`vec_assoc_param_mutate_return_uaf`; VA-2 = `corrupted double-linked list`
+SIGABRT under `--link`). VA-4 inversion fence (`vec_cow_value_use_leak.rs`)
+GREEN; IF-4 0604 twins GREEN (poison intact). D-1 diagnostic rows (AL-3/AL-4 +
+`private_fq_member_errors_not_displays_mode_uniform_neg`) all GREEN — cover the
+0609-shim-backstopped behaviour before deletion. KC-K10 operator-as-value
+covered by existing `operator_as_first_class_value` (verify-first).
+
+**Deferred to /dev unit tier (enumerated):**
+- **TX-6** (0590 mirror-3, HKT impl method unknown Named) — NOT e2e-expressible
+  well-formed: an impl-method type annotation inherits the trait's `(f a)`, so
+  the fabricated empty-module ADT MISMATCHES rather than silently accepts,
+  masking the mechanism. Unit obligation over `resolve_type_expr_hkt_impl`: (i)
+  unknown Named leaf ERRORS `unknown type`; (ii) known in-scope Named resolves
+  (positive control); (iii) error names the unknown type. Comment in
+  `spec_07_traits.rs` records the enumeration.
+- **KC-N1..N6** (0583 hard-miss families) — unit-tier by construction (a
+  well-formed program never carries a missing carrier post-W0); enumeration is
+  the PLAN §A.2 table, handed to `/dev` (backend harness) at the W1/W2 gate.
+- **KC-W0-3** cache rows (18→19 stale-cache neg) — author IN the W0 change-set
+  (the schema bump doesn't exist on HEAD; a RED now would be meaningless);
+  DC-9/DC-14 template.
+- **KC-W0-4/5/6, TX-10, RD unit set, IF-2, VA-3, C4-2, AB-1/AB-4, D-2/D-3** —
+  `/dev` unit obligations per their PLAN rows (unchanged).
+
+**Handoffs / flags to /qa + /sprint:**
+- **SG-1 `derive` signal** → `/qa` attribution: `derive` (macro-support module,
+  `(import [prelude [])`, quasiquotes in `defn-` bodies) fails to compile via
+  `[*]` import with `unexpected quasiquote form — should have been expanded`.
+  NOTHING in the corpus imports/uses `derive` today, so it is uninvoked. This is
+  INDEPENDENT of the 0604 race SG-1 was expected to gate (it is a
+  quasiquote-handling/parse failure), so SG-1 will NOT auto-green when 0604
+  lands. `/qa` to attribute: real defect (→ `/dev`) vs enumeration refinement
+  (exclude `derive`). Gate lands RED per the "report, don't skip" directive.
+- **SG-2** (`agent_flag_errors_on_non_agent_build` build-interleave) → FLAGGED,
+  not actioned. The interleave (an `--features agent` build clobbering the
+  non-agent `target/debug/cranelisp` mid-suite) does not reproduce under a
+  single-profile `cargo nextest run` (the standard suite compiles only the
+  non-agent lane; the agent-feature tests are `#[cfg(feature = "agent")]`).
+  Fixing/validating a nextest-profile/target-dir isolation needs the dual-build
+  orchestration that isn't part of the standard run; an unvalidated
+  `.config/nextest.toml` change risks the suite. Routed to `/qa`/`/dev` with the
+  dual-build acceptance ("agent e2e family passes 3× consecutive, no retry").
+- **IF-7 `class=shared-state-write-race` retro-tag** — applied WITH the 0604 fix
+  (post-fix, per the row), not now.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
@@ -742,6 +824,8 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | P3 | /design (typecheck) | 0590 convergence + R16/R17 signal | (shim §II.3) | (shim) | — `99d6996f`: `TypeExprCtx` collapse; FIXME 0611 filed |
 | P3 | /design (int) | 0604 isolation + 0607 currency + 0606 cut | (shim §II.3) | (shim) | — `061c54a2`: 0604 attribution CORRECTED (cache channel, not live-write) |
 | P3 | /qa | sprint-wide PLAN §S110 (exit gate) | (shim §II.3) | (shim) | — `ffdaa4b9`: buckets A–J; 0609 ruled UNREACHABLE→delete; 0605 recursive-enum |
+| P3 | /spec | §3.5.5 polymorphism-boundary sidenote (0612) | (shim §II.3) | (shim) | — `41d8e32b`: monomorphic-`let` normative + movable; hedge retired; capability parked |
+| P5-S1 | /testing | sprint-wide QA-first failing tests (PLAN §S110) | (shim §II.3) | (shim) | — Stage-1 gate; e2e REDs buckets A–J + verify-first pins |
 
 ## Notes
 
@@ -816,3 +900,7 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
   the sprint" ask — the build (Phase 5: QA-first `/testing`, then the per-crate D/D/R
   cycles) awaits the user's go.** Planning arc (Phases 1–4) complete: scoped, arch-signed-off,
   designed (4 design commits on main incl. Principle 24 + R-2 builder), test-planned, waved.
+- **Phase 5 START (2026-07-15, user go):** Status → LANGUAGE (ACTIVE). **Stage 1 (QA-first)
+  dispatched** — one sprint-wide `/testing` invocation authoring the failing e2e set from
+  `PLAN §S110` (buckets A–J), failing-not-ignored, the gate before any consuming `/dev`
+  wave. On its green-for-right-reason return, Stage 2 begins on the serial spine, W0 first.

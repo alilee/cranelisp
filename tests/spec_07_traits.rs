@@ -1148,3 +1148,167 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
     .assert_stdout_contains(":primitives/Int 5")
     .assert_stdout_does_not_contain("user/primitives/Int");
 }
+
+// =============================================================================
+// S110 §D RD-3 — the R16/R17 false-positive fence (author FIRST; GREEN pin).
+// The outcome-grounded dispatch-ambiguity scan (R16/R17) must NOT re-fire on an
+// ARG-directed dispatch whose result span carries a residual type var but sits
+// in an ordinary value position. `(add2 3 4)` resolves its impl by ARGUMENT type
+// (Int) — the dispatch outcome is determined — even though the trait method's
+// recorded span type is the residual `:a`. The S109-revert class was a gate that
+// drifted back to surface-type concreteness (`!is_concrete()`) and false-flagged
+// exactly this cell; RD-3 pins that it stays computable and unflagged.
+// Plan: tests/plan/PLAN.md §S110 D / RD-3.
+// =============================================================================
+
+// spec: spec/03-types.md §3.3.3 — MUST (e) false-positive fence: an
+// arg-directed trait dispatch whose recorded result-span type is a residual var
+// but which is fully resolved by its ARGUMENTS is NOT the §3.11 ambiguity — it
+// evaluates. `(let [r (add2 3 4)] r)` binds the Int-impl result to `r` and
+// yields 7. The outcome-grounded scan MUST NOT flag it (no "ambiguous", no
+// GOT-slot/__expr leak). GREEN today; MUST STAY green across the R16/R17 wave.
+#[test]
+fn arg_directed_dispatch_result_in_value_position_not_flagged() {
+    let out = repl_prims(
+        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+         (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
+         (let [r (add2 3 4)] r)\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains(":a 7") || c.contains("7"),
+        "`(let [r (add2 3 4)] r)` is an arg-directed dispatch in an ordinary \
+         value position — it MUST evaluate to 7, NOT be flagged (§3.3.3 MUST (e) \
+         false-positive fence, RD-3); got:\n{c}"
+    );
+    assert!(
+        !c.contains("ambiguous"),
+        "an arg-directed dispatch whose result sits in a value position MUST NOT \
+         be flagged as the §3.11 ambiguity (RD-3, the S109-revert class); got:\n{c}"
+    );
+    assert!(
+        !c.contains("GOT slot") && !c.contains("__expr"),
+        "RD-3 MUST NOT leak a backend GOT-slot/__expr frame; got:\n{c}"
+    );
+}
+
+// =============================================================================
+// S110 §C — 0590 TypeExpr resolver convergence: the behaviour-tightening matrix
+// (TX rows) + the FV-13/FV-14 over-broadening fence. The convergence collapses
+// the four TypeExpr resolver mirrors onto the ONE canonical resolver:
+//   - mirror 1 (`resolve_trait_type_expr`, trait-method sigs) TODAY errors on a
+//     bare in-scope user type → post-convergence RESOLVES (TX-1, RED positive);
+//   - mirrors 2/3 (`resolve_type_expr_hkt{,_impl}`, HKT trait/impl sigs) TODAY
+//     fabricate an empty-module ADT for an unknown Named (never error) →
+//     post-convergence ERROR (TX-5/TX-6, RED negatives).
+// FV-13/FV-14 (TX-8/TX-9) pin what must NOT broaden. Design:
+// design/typecheck/type-expr-resolver-convergence.md §1. Spec: spec/07-traits.md
+// + spec/08-modules.md §8.5 (bare ≡ qualified-in-scope). Plan: PLAN.md §S110 C.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5 + spec/07-traits.md §7.1 — a BARE in-scope user
+// type named in a trait-method signature MUST resolve to that type (bare ≡
+// qualified-in-scope, §8.5), exactly as a qualified reference would. A local
+// `(deftype MyType Mk)` referenced as the parameter type of a trait method
+// `(m [:MyType x] Self)` MUST resolve; the impl registers and `(m Mk)`
+// dispatches, returning the `Self` value `Mk`.
+//
+// RED today (0590 mirror-1): `resolve_trait_type_expr` accepts only intrinsic
+// scalars or qualified-only Named leaves, so the bare user type `MyType` errors
+// `unknown type`. GREEN post-convergence (bare routes through the symbol table).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/type_resolve.rs::resolve_trait_type_expr (bare in-scope user type in a trait-method sig rejected as `unknown type` instead of resolving via the symbol table, §8.5) found=S110 owner=/dev
+#[test]
+fn trait_method_sig_bare_user_type_resolves() {
+    let out = repl_prims(
+        "(deftype MyType Mk)\n\
+         (deftrait Tt (m [:MyType x] Self))\n\
+         (impl Tt MyType (defn m [x] x))\n\
+         (m Mk)\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("unknown type"),
+        "a BARE in-scope user type in a trait-method sig MUST resolve via the \
+         symbol table (§8.5 bare ≡ qualified-in-scope), NOT error `unknown type` \
+         (TX-1, 0590 mirror-1 tightening); got:\n{c}"
+    );
+    assert!(
+        c.contains("Mk"),
+        "with the bare user type resolved, `(m Mk)` MUST dispatch and return the \
+         `Self` value `Mk` (TX-1); got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.2 + spec/03-types.md §3.7 — an UNKNOWN uppercase
+// `Named` type in a HIGHER-KINDED trait method signature MUST be rejected with an
+// `unknown type` error — a type reference that names nothing is a fault, not a
+// silently-fabricated empty-module ADT.
+//
+// RED today (0590 mirror-2): `resolve_type_expr_hkt` fabricates an empty-module
+// ADT for any unknown Named leaf and NEVER errors, so the bogus return type
+// `Ghosttype` is silently accepted and the `deftrait` "succeeds". GREEN
+// post-convergence (the fabrication arm is deleted; unknown Named errors).
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/traits/type_resolve.rs::resolve_type_expr_hkt (unknown uppercase Named in an HKT trait sig fabricates an empty-module ADT instead of erroring) found=S110 owner=/dev
+#[test]
+fn hkt_trait_sig_unknown_named_errors_neg() {
+    let out = repl_prims("(deftrait (Boxx f) (peek [:(f a) x] Ghosttype))\n");
+    let c = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        c.contains("unknown type") || c.contains("ghosttype"),
+        "an unknown uppercase Named in an HKT trait-method sig MUST error \
+         `unknown type Ghosttype`, NOT silently fabricate an empty-module ADT \
+         (TX-5, 0590 mirror-2 tightening); got:\n{c}"
+    );
+}
+
+// TX-6 (unknown uppercase Named × HKT IMPL method — mirror-3
+// `resolve_type_expr_hkt_impl` fabrication) is DEFERRED to /dev typecheck
+// unit tier (enumerated per the S108-Inc2 deferral discipline). Rationale: to
+// isolate the mirror-3 fabrication e2e, an HKT impl method must carry an unknown
+// Named in a type-annotation position — but an impl method annotation inherits
+// its type from the trait sig, so any unknown Named there either (a) unifies
+// with the trait's expected `(f a)` (fabrication) or (b) mismatches it — the
+// fabricated empty-module ADT does NOT unify with the trait's `(f a)`, so the
+// probe fails on a type MISMATCH, not the fabrication-vs-error behaviour under
+// test. A well-formed-except-for-the-unknown-Named HKT impl is not e2e-reachable
+// without masking the mechanism (verify-example-well-formed lesson). The
+// mirror-3 case is cleanly unit-testable over `resolve_type_expr_hkt_impl` in
+// isolation. Enumerated /dev (typecheck) unit obligation:
+//   (i)  an unknown Named leaf in an HKT impl method sig ERRORS `unknown type`
+//        (post-convergence) — the fabrication arm is deleted;
+//   (ii) a KNOWN in-scope Named in the same position resolves (the positive
+//        control, so the error is the unknown-ness, not the position);
+//   (iii) the error names the unknown type.
+// TX-5 (mirror-2) stands as the e2e representative of the fabrication-deletion
+// class. Plan: PLAN.md §S110 C TX-6.
+
+// spec: spec/03-types.md §3.11 — FV-13 over-broadening fence (TX-8): the
+// convergence's mint capability (a bare LOWERCASE name mints a fresh type var)
+// MUST NOT swallow an unknown uppercase TYPE in an annotation. `:Nonesuchzz 5`
+// MUST still error `unknown type` — the annotation resolver rejects unknown
+// uppercase Named leaves. GREEN today; MUST STAY green through the W-TC wave.
+#[test]
+fn annotation_unknown_uppercase_named_still_errors_fence() {
+    let out = repl_prims(":Nonesuchzz 5\n");
+    let c = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        c.contains("unknown type") || c.contains("nonesuchzz"),
+        "FV-13 fence (TX-8): an unknown uppercase Named in a value-position \
+         annotation MUST still error `unknown type` — the mint capability must \
+         not broaden to swallow unknown TYPES; got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — FV-14 over-broadening fence (TX-9): a trait
+// reference resolved through a module path is unaffected by the annotation mint
+// path. A trait method dispatched by argument type (`add2` over Int) still
+// resolves and yields 7. GREEN today; MUST STAY green through the W-TC wave.
+#[test]
+fn trait_path_resolution_unaffected_by_mint_fence() {
+    repl_prims(
+        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+         (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
+         (add2 3 4)\n",
+    )
+    .assert_stdout_contains(":a 7");
+}

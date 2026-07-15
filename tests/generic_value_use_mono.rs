@@ -363,3 +363,138 @@ fn prelude_provided_polymorphic_fn_monomorphises_twin() {
     leg_a.assert_exit(42);
     leg_b.assert_exit(42);
 }
+
+// =============================================================================
+// S110 §B — 0585 value-position × {mint, die} matrix (VP-3/4/5). Class record:
+// MINT — a generic value ref at a concretely-determined type mints a mono and
+// RUNS; DIE — an indeterminate generic value ref dies check-side with the §3.11
+// ambiguity message, never a codegen frame, never `undefined variable`. S109
+// 0571.2 fixed the if/match/vec instances via the uniform `for_each_child_expr`
+// collect; these rows pin the CLASS at each of the three positions so a 4th
+// cannot silently leak. All fixtures primitives-only, stdlib-free; the generic
+// value is `gcount : (Fn [(Vec a)] Int)` (element-polymorphic vec-len wrapper),
+// mirroring the FQ-D1 fixture. Plan: tests/plan/PLAN.md §S110 B.
+// =============================================================================
+
+// A local generic fn (element-polymorphic) + a same-type sibling, used as the
+// value the three positions carry. `(vec-len [1 2])` = 2 when a leg is applied.
+const GEN_VALUE_MODULE: &str = "(defn gcount [v] (vec-len v))\n\
+                                (defn gother [v] (vec-len v))\n";
+
+// --- VP-3 — if-branch value position -----------------------------------------
+
+// spec: spec/03-types.md §3.11 + spec/04-expressions.md §4.6.2 — a generic fn
+// carried through an `if` branch to a concretely-determined use MINTS a mono and
+// RUNS. `((if (lt-i64 0 1) gcount gother) [1 2])` applies the selected generic
+// value to `[1 2]`, concretising the element type → `:primitives/Int 2`. Pins
+// S109 0571.2's if-position collect fix; MUST NOT leak `undefined`/codegen.
+#[test]
+fn generic_value_in_if_branch_mints_and_runs() {
+    repl_prims(&format!(
+        "{GEN_VALUE_MODULE}((if (lt-i64 0 1) gcount gother) [1 2])\n"
+    ))
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 2")
+    .assert_stdout_does_not_contain("undefined")
+    .assert_stdout_does_not_contain("codegen");
+}
+
+// spec: spec/03-types.md §3.11 — DIE leg: a generic value carried through an `if`
+// branch with NO concrete use anywhere reaches a codegen-reaching value position
+// indeterminate → the §3.11 ambiguous-type error, NOT a codegen frame and NOT
+// `undefined variable`. The `if` result is a polymorphic fn value that nothing
+// concretises. RED-for-right-reason if the die path leaks instead of routing to
+// §3.11 (the 4th-position leak this row guards against).
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (indeterminate generic value ref in if-branch position not routed to the §3.11 ambiguity) found=S110 owner=/dev
+#[test]
+fn generic_value_in_if_branch_indeterminate_neg() {
+    let out = repl_prims(&format!(
+        "{GEN_VALUE_MODULE}(if (lt-i64 0 1) gcount gother)\n"
+    ));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        "an indeterminate generic value in if-branch position MUST NOT leak a \
+         codegen/undefined-variable frame — it dies check-side (VP-3 die, §3.11); \
+         got:\n{c}"
+    );
+    assert!(
+        c.contains("ambiguous"),
+        "an indeterminate generic value in if-branch position MUST be the §3.11 \
+         ambiguous-type error (VP-3 die); got:\n{c}"
+    );
+}
+
+// --- VP-4 — match-arm value position -----------------------------------------
+
+// spec: spec/03-types.md §3.11 + spec/06-pattern-matching.md §6.3 — a generic fn
+// produced from a match arm to a concretely-determined use MINTS and RUNS.
+// `((match 1 [_ gcount]) [1 2])` → `:primitives/Int 2`. Pins 0571.2's match-arm
+// collect; MUST NOT leak.
+#[test]
+fn generic_value_in_match_arm_mints_and_runs() {
+    repl_prims(&format!(
+        "{GEN_VALUE_MODULE}((match 1 [_ gcount]) [1 2])\n"
+    ))
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 2")
+    .assert_stdout_does_not_contain("undefined")
+    .assert_stdout_does_not_contain("codegen");
+}
+
+// spec: spec/03-types.md §3.11 — DIE leg: a generic value produced from a match
+// arm with no concrete use is indeterminate → §3.11 ambiguity, never a codegen
+// frame / `undefined variable`.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (indeterminate generic value ref in match-arm position not routed to the §3.11 ambiguity) found=S110 owner=/dev
+#[test]
+fn generic_value_in_match_arm_indeterminate_neg() {
+    let out = repl_prims(&format!("{GEN_VALUE_MODULE}(match 1 [_ gcount])\n"));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        "an indeterminate generic value in match-arm position MUST NOT leak a \
+         codegen/undefined-variable frame (VP-4 die, §3.11); got:\n{c}"
+    );
+    assert!(
+        c.contains("ambiguous"),
+        "an indeterminate generic value in match-arm position MUST be the §3.11 \
+         ambiguous-type error (VP-4 die); got:\n{c}"
+    );
+}
+
+// --- VP-5 — vector-element value position -------------------------------------
+
+// spec: spec/03-types.md §3.11 + spec/04-expressions.md §4.6.2 — a generic fn
+// held as a vector element, extracted and concretely used, MINTS and RUNS.
+// `((vec-get [gcount] 0) [1 2])` → `:primitives/Int 2`. Pins 0571.2's
+// vec-element collect; MUST NOT leak.
+#[test]
+fn generic_value_as_vec_element_mints_and_runs() {
+    repl_prims(&format!(
+        "{GEN_VALUE_MODULE}((vec-get [gcount] 0) [1 2])\n"
+    ))
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 2")
+    .assert_stdout_does_not_contain("undefined")
+    .assert_stdout_does_not_contain("codegen");
+}
+
+// spec: spec/03-types.md §3.11 — DIE leg: a generic value held as a vector
+// element with no concrete use is indeterminate → §3.11 ambiguity, never a
+// codegen frame / `undefined variable`.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (indeterminate generic value ref in vec-element position not routed to the §3.11 ambiguity) found=S110 owner=/dev
+#[test]
+fn generic_value_as_vec_element_indeterminate_neg() {
+    let out = repl_prims(&format!("{GEN_VALUE_MODULE}[gcount]\n"));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("undefined variable") && !c.contains("codegen error") && !c.contains("GOT slot"),
+        "an indeterminate generic value in vec-element position MUST NOT leak a \
+         codegen/undefined-variable frame (VP-5 die, §3.11); got:\n{c}"
+    );
+    assert!(
+        c.contains("ambiguous"),
+        "an indeterminate generic value in vec-element position MUST be the §3.11 \
+         ambiguous-type error (VP-5 die); got:\n{c}"
+    );
+}
