@@ -91,6 +91,17 @@ struct IndicesInner {
     /// time `take_completion_notice` reports completion, so `search index
     /// complete.` is emitted at most once per session.
     announced: bool,
+    /// Full paths of PRIVATE `(mod- X)` submodules — hence their whole subtrees —
+    /// declared by any module enumerated at arm time (`private_submodule_paths`,
+    /// §8.2.3, 0570). A `/search` hit whose HOME lies within one of these subtrees
+    /// is surfaced ONLY to a searcher whose current module also lies within the
+    /// SAME subtree (`search_visible_from`). This is the SINGLE privacy
+    /// enforcement point over the ASSEMBLED index — the only place that sees the
+    /// searcher's module — so it covers EVERY feed uniformly (file worklist,
+    /// seeded, AND the loaded-module E3 feed), closing the 0570 residual where a
+    /// LOADED private submodule (`user.test`) bypassed the arm-time file-worklist
+    /// drop and leaked to an outside-subtree searcher.
+    private_roots: HashSet<ModuleFullPath>,
 }
 
 impl IndicesInner {
@@ -210,6 +221,33 @@ impl ImportableIndices {
         } else {
             false
         }
+    }
+
+    /// Record the PRIVATE `(mod- X)` submodule roots (`private_submodule_paths`)
+    /// so the search-time §8.2.3 subtree-visibility filter (`search_visible_from`)
+    /// can consult them. Merges into any prior set (idempotent; `arm` runs once).
+    pub(crate) fn record_private_roots(&self, roots: HashSet<ModuleFullPath>) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.private_roots.extend(roots);
+    }
+
+    /// §8.2.3 subtree visibility: may a symbol whose HOME is `home` be surfaced by
+    /// `/search` to a searcher whose current module is `searcher`? A symbol inside
+    /// a private-submodule subtree (`home` within some `private_roots` entry) is
+    /// visible ONLY when `searcher` is also inside that SAME subtree; every other
+    /// symbol is unconditionally visible. The declared-`mod-`-bit filter, NOT a
+    /// name probe (Principle 19) — mirrors the load-time import filter
+    /// (`imports::is_in_subtree`), applied here to the assembled index so no feed
+    /// can leak a private submodule to an outside-subtree searcher (0570 residual).
+    pub(crate) fn search_visible_from(
+        &self,
+        home: &ModuleFullPath,
+        searcher: &ModuleFullPath,
+    ) -> bool {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.private_roots
+            .iter()
+            .all(|p| !path_in_subtree(home, p) || path_in_subtree(searcher, p))
     }
 
     /// Enumerate the reachable set onto the `IndexModule` worklist (R17 — armed
@@ -519,12 +557,14 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
     // one. The import path enforces the same rule at load time
     // (`check_private_submodule_import`); this is the index-surface half.
     let private_roots = private_submodule_paths(&modules, &shared.project_root, &lib_dirs);
+    // Record the roots so the SEARCH-time §8.2.3 subtree-visibility filter
+    // (`search_visible_from`) can enforce privacy over the ASSEMBLED index — the
+    // single point that sees the searcher's module, so it covers the loaded-module
+    // E3 feed too (a LOADED private submodule bypasses the file-worklist drop
+    // below; that was the 0570 residual leak).
+    shared.importable_indices.record_private_roots(private_roots.clone());
     if !private_roots.is_empty() {
-        modules.retain(|m| {
-            !private_roots
-                .iter()
-                .any(|p| m == p || m.as_ref().starts_with(&format!("{p}.")))
-        });
+        modules.retain(|m| !private_roots.iter().any(|p| path_in_subtree(m, p)));
     }
 
     // The built-in SEEDED modules (spec §17.19 R10, S108) are indexed below by a
@@ -662,6 +702,14 @@ fn is_terminal(shared: &SharedState, module: &ModuleFullPath) -> bool {
 /// subtrees from the `/search` index. Parse/read errors on a file are skipped
 /// (the module is simply not treated as declaring privacy — the branch-b/c index
 /// pass surfaces any real error). Never typechecks — purely syntactic.
+/// Whether `module` lies within the subtree rooted at `ancestor` — itself, or a
+/// dotted descendant (`{ancestor}.…`). The §8.2.3 subtree predicate, shared by
+/// `search_visible_from` (sibling of `imports::is_in_subtree`, kept local so the
+/// index surface owns its own copy without widening the import module's API).
+fn path_in_subtree(module: &ModuleFullPath, ancestor: &ModuleFullPath) -> bool {
+    module == ancestor || module.as_ref().starts_with(&format!("{ancestor}."))
+}
+
 fn private_submodule_paths(
     modules: &[ModuleFullPath],
     project_root: &std::path::Path,
@@ -1323,6 +1371,47 @@ mod tests {
             !private.contains(&m("host")),
             "the parent module itself is not a private submodule; got {private:?}"
         );
+    }
+
+    // spec: spec/08-modules.md §8.2.3 (0570 residual) — the search-time
+    // subtree-visibility filter. A symbol whose home is inside a private
+    // `(mod- test)` subtree is visible ONLY to a searcher inside that same
+    // subtree; an OUTSIDE searcher (a sibling) MUST NOT see it (regardless of how
+    // the row entered the index — this is the single enforcement point over the
+    // loaded-module feed that bypasses the arm-time file-worklist drop). A
+    // non-private home is unconditionally visible.
+    #[test]
+    fn search_visible_from_hides_private_submodule_only_outside_its_subtree() {
+        let idx = ImportableIndices::default();
+        idx.record_private_roots(HashSet::from([m("user.test")]));
+        // A sibling OUTSIDE `user.test`'s subtree cannot see the private symbol.
+        assert!(
+            !idx.search_visible_from(&m("user.test"), &m("sibling")),
+            "a private submodule symbol MUST be hidden from an outside-subtree searcher"
+        );
+        // A DESCENDANT home is likewise hidden from outside.
+        assert!(
+            !idx.search_visible_from(&m("user.test.deep"), &m("user")),
+            "a private submodule's descendant is hidden from a searcher above the private root"
+        );
+        // A searcher INSIDE the subtree (the private module itself, or a
+        // descendant) CAN see it — the filter is subtree-relative, not absolute.
+        assert!(
+            idx.search_visible_from(&m("user.test"), &m("user.test")),
+            "a searcher in the private module itself sees its own symbols"
+        );
+        assert!(
+            idx.search_visible_from(&m("user.test"), &m("user.test.child")),
+            "a searcher deeper in the private subtree sees the symbol"
+        );
+        // A NON-private home is unconditionally visible.
+        assert!(
+            idx.search_visible_from(&m("mathx"), &m("sibling")),
+            "a non-private module's symbols are visible to any searcher"
+        );
+        // With NO private roots recorded, everything is visible.
+        let empty = ImportableIndices::default();
+        assert!(empty.search_visible_from(&m("user.test"), &m("sibling")));
     }
 
     // spec: design/int/agent.md §25.3 — Index A name lookup, exact match. An

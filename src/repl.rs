@@ -916,9 +916,17 @@ impl CompilerSession {
                 Some(SymbolCategory::Macro) => macros.push(name.to_string()),
                 Some(SymbolCategory::Trait) => traits.push(name.to_string()),
                 Some(SymbolCategory::Type) => types.push(name.to_string()),
+                // §3.3/§17.19.2b: each constructor is listed ONCE under its
+                // canonical dotted `Type.Ctor` form (`Color.Red`), grouped with
+                // its type under Types. Under the S109 canonical keying the
+                // Constructor `Def`'s table key IS `Type.Ctor` (the bare `Red`
+                // alias is a separate `Import` entry that `classify_listing_entry`
+                // returns `None` for, so it is never double-listed). A single-ctor
+                // product keys bare (`Point`) with type-name == ctor-name, so it
+                // still appears exactly once.
+                Some(SymbolCategory::Constructor) => types.push(name.to_string()),
                 Some(SymbolCategory::Fn) => fns.push(name.to_string()),
-                // Constructors are part of their type; special forms + imports
-                // are shown by /imports.
+                // Special forms + imports are shown by /imports.
                 _ => {}
             }
         }
@@ -1198,6 +1206,21 @@ impl CompilerSession {
         let mut rows: Vec<SearchRow> = hits
             .into_iter()
             .filter_map(|hit| {
+                // §8.2.3 subtree visibility (0570 residual): a private `(mod- X)`
+                // submodule's symbol is NOT importable from outside its subtree, so
+                // it must not be a `/search` row (whose import hint §8.2.3 rejects)
+                // for a searcher outside that subtree — regardless of match tier
+                // (an EXACT name match is no more importable). The single privacy
+                // enforcement point over the assembled index: covers every feed,
+                // including the loaded-module E3 feed that bypasses the arm-time
+                // file-worklist drop.
+                if !self
+                    .shared
+                    .importable_indices
+                    .search_visible_from(&hit.module, &current)
+                {
+                    return None;
+                }
                 let in_scope = self.is_already_in_scope(&hit.name, &hit.module, &current);
                 if hit.tier == MatchTier::ExactName || !in_scope {
                     Some(SearchRow { hit, in_scope })
@@ -2759,6 +2782,16 @@ impl CompilerSession {
                     DefKind::Constructor { type_name, type_def, .. } => {
                         let type_str = format_type_qualified(&scheme.ty);
                         let tn = TypeName::from(type_name.name.as_ref());
+                        // The display authority builds the ONE canonical
+                        // `module/Type.Ctor` form from the ctor's BARE name — so
+                        // BOTH REPL input shapes converge here: a bare `Red` and a
+                        // dotted `Color.Red` (the S109 canonical `Type.Ctor` key,
+                        // which the dotted-input introspection path carries verbatim
+                        // as `name`). `format_ctor_display` re-prepends `Type.`, so
+                        // strip any leading `Type.` segment first or the dotted path
+                        // doubles it to `Color.Color.Red` (§4.1.2/§1.5). One
+                        // formatter, no per-input special-casing.
+                        let bare_ctor = name.rsplit_once('.').map_or(name, |(_, c)| c);
                         // Resolve the type's `TypeDefInfo` so `format_ctor_display`
                         // can suppress the redundant `Type.Ctor` dot for a
                         // single-ctor product (`Point`, not `Point.Point`). A
@@ -2784,8 +2817,8 @@ impl CompilerSession {
                                 )
                             });
                             match info {
-                                Some(info) => crate::display::format_ctor_display(&tn, name, &info),
-                                None => format!("{tn}.{name}"),
+                                Some(info) => crate::display::format_ctor_display(&tn, bare_ctor, &info),
+                                None => format!("{tn}.{bare_ctor}"),
                             }
                         };
                         let mut doc = StyledDoc::new();
@@ -4437,6 +4470,104 @@ mod fq_arg_tests {
         assert!(
             sig.starts_with(":(Fn [primitives/Int] primitives/Int) user/dbl ; defn"),
             "primary line MUST be fully qualified in BOTH positions; got: {sig}"
+        );
+    }
+
+    /// Install a nullary constructor `Red` of the multi-ctor sum type
+    /// `(deftype Color Red Green Blue)` into `user`, under BOTH the S109
+    /// canonical dotted key `Color.Red` (the terminal ctor `Def`) and the bare
+    /// alias `Red` (an `Import` edge), mirroring how the typechecker registers a
+    /// sum ctor. Returns the terminal ctor `Def` entry.
+    fn install_color_red(s: &CompilerSession) -> ModuleEntry<Code> {
+        use cranelisp_types::{FQTypeName, TypeDefInfo, TypeName};
+        let user = s.current_module_path();
+        let fqtn = FQTypeName::new(user.clone(), TypeName::from("Color"));
+        let info = TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: Vec::new(),
+            // Multi-ctor sum ⇒ `format_ctor_display` KEEPS the `Color.` prefix
+            // (the doubling-prone case, unlike a single-ctor product).
+            constructors: vec![Symbol::from("Red"), Symbol::from("Green"), Symbol::from("Blue")],
+        };
+        let ctor = ModuleEntry::def(
+            Scheme {
+                type_vars: Vec::new(),
+                constraints: StdHashMap::new(),
+                ty: Type::ADT(fqtn.clone(), Vec::new()),
+            },
+            DefKind::Constructor {
+                got_slot: 0,
+                type_name: fqtn,
+                tag: 0,
+                field_count: 0,
+                internal: false,
+                type_def: Some(Box::new(info)),
+                mode_summary: None,
+            },
+        )
+        .visibility(Visibility::Public)
+        .build();
+        let alias = ModuleEntry::Import {
+            source: cranelisp_types::FQSymbol {
+                module: user.clone(),
+                symbol: Symbol::from("Color.Red"),
+            },
+            visibility: Visibility::Public,
+        };
+        if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
+            table.insert(Symbol::from("Color.Red"), ctor.clone());
+            table.insert(Symbol::from("Red"), alias);
+        } else {
+            let mut table = SessionSymbolTable::new_with_params(user.clone());
+            table.insert(Symbol::from("Color.Red"), ctor.clone());
+            table.insert(Symbol::from("Red"), alias);
+            s.shared.symbol_tables.insert(user.clone(), table);
+        }
+        ctor
+    }
+
+    // spec: repl/spec.md §4.1.2/§1.5 (0570-sibling display-envelope-mirror) — the
+    // constructor display authority renders the ONE canonical `user/Color.Red`
+    // for BOTH the bare-input `name = "Red"` and the dotted-input `name =
+    // "Color.Red"` (the S109 canonical key), never doubling the type segment to
+    // `user/Color.Color.Red`. Byte-equality of the two input shapes at the single
+    // `format_def_entry` seam guards the convergence (one formatter, no per-input
+    // special-case).
+    #[test]
+    fn constructor_display_bare_and_dotted_input_render_one_canonical_home() {
+        let s = session();
+        let ctor = install_color_red(&s);
+        let user = s.current_module_path();
+        let bare = s.format_def_entry(&ctor, "Red", &user, true);
+        let dotted = s.format_def_entry(&ctor, "Color.Red", &user, true);
+        assert_eq!(
+            bare, dotted,
+            "bare `Red` and dotted `Color.Red` MUST render the identical §4.1.2 \
+             constructor line; got bare={bare:?} dotted={dotted:?}"
+        );
+        assert!(
+            dotted.contains("user/Color.Red") && !dotted.contains("Color.Color.Red"),
+            "the dotted input MUST render the single canonical `user/Color.Red`, \
+             never the doubled `user/Color.Color.Red`; got: {dotted}"
+        );
+    }
+
+    // spec: repl/spec.md §3.3/§17.19.2b — /list groups each constructor under its
+    // canonical dotted `Type.Ctor` form beneath Types (the bare alias is an
+    // `Import`, never a second row). The enumeration seam MUST surface `Color.Red`.
+    #[test]
+    fn list_surfaces_constructor_under_canonical_dotted_form() {
+        let s = session();
+        install_color_red(&s);
+        let out = s.handle_list("");
+        assert!(
+            out.contains("Color.Red"),
+            "/list MUST list the constructor under its canonical `Color.Red` form; \
+             got:\n{out}"
+        );
+        assert!(
+            !out.contains("Color.Color.Red"),
+            "/list MUST NOT double the type segment; got:\n{out}"
         );
     }
 
