@@ -961,6 +961,64 @@ today by the backend's global-fallback scan), NOT introduced here; W1's keyed
 read is where it surfaces. Recorded for `/arch` to rule on the correct
 storage-module derivation before W1 flips the trait-method leg.
 
+### /arch (W0.1 cross-module ruling) — storage-module derivation RULED (2026-07-15)
+
+Ruling authored into `design/arch/backend-keyed-consumer.md` **§1.1.1** (per-leg
+derivation rules + completeness sweep + pinned types diff); Decision 0045
+amended in place; `design/arch/CLAUDE.md` synced.
+
+**The ruling.** Trait-impl method `Def`s live in the **impl-WRITER's module**
+(ground truth verified: `finalize_impl_method_writeback` writes via
+`current_symbol_table_mut` after the module restore, `impl_check.rs:514–518`;
+only the `TraitImpl` SHELL goes to the trait's home). This placement is
+structurally FORCED — `compile_to_module` hard-errors unless a compiled defn's
+entry + GOT slot are in the compiling module's own table (backend
+`lib.rs:939–947`), and the method bodies compile in the writer's batch — so
+D45's method-co-location clause is **amended**, not enforced. The writer's
+module is knowable at the dispatch seam only from the shell ⇒ a
+`cranelisp-types` change IS needed (PINNED, not landed — enum-field additions
+force cross-crate atomicity): `ModuleEntry::TraitImpl.impl_module` (durable
+discovery→storage pointer, written from `state.current_module` at the shell
+construction) + `ResolvedCall::TraitMethod.impl_module` (resolution product,
+populated by `try_resolve_trait_method` from the exact-key shell probe;
+consumers read, never re-derive — resolves the callees.rs "Step 5" note AND
+repairs the S101 reverse-index edges for cross-module trait calls). Both
+required fields, no serde default; **same schema-19 window, no new bump**.
+
+**Completeness sweep (the load-bearing part; full table in §1.1.1):** all
+mono-minted SigDispatch legs are CORRECT (record `current_module` where
+`register_mono_entry` stores — caller's table, verified ×4); overload
+SigDispatch correct-by-reach (the pending gate is run-local — cross-module
+multi-sig dispatch doesn't exist today, a latent pre-existing language gap,
+not a 0583 blocker); Var-leg user fn / primitive / ctor / dotted / effect /
+extern / self-recursion / synthetic all correct. **Two MORE producer gaps
+found**: (a) AutoCurry plain leg records `{current_module, target}` for
+possibly-imported targets — fix by transporting the callee Var's
+already-recorded carrier through `pending_auto_curry` (resolve-once,
+shadow-correct); (b) the fn-value mono rewrite (`mono_collect.rs:79–88`)
+renames the AST Var without updating `resolved_targets[arg_span]` — post-W2
+the 0585 guard would hard-fail a valid program; fix = sidecar insert at the
+rename.
+
+**`/dev` action (W0.1b — fix, NOT fold into W1):** one coordinated `/dev`
+change-set (typecheck-led; types + typecheck + `src/repl.rs::impl_entry`
+fixture): the two `impl_module` fields + writer at the shell construction +
+`try_resolve_trait_method` population + `dispatch_target_fq`/
+`resolved_call_to_fqsymbol` reading the field + the AutoCurry and
+fn-value-rewrite fixes; types `public-api.txt` regen + `interfaces.md` +
+rustdoc in the same change-set; one unit pin per fixed leg (cross-module
+trait dispatch; imported-target curry; fn-value rewrite). **W1 is GATED on
+W0.1b** — the gap is broad, not corner-case: every non-primitive impl of a
+prelude-provided trait called from user code entry-misses (the 0185
+short-circuit covers only the primitive operator table), and every curry of
+an imported fn misses. Recommended order: **W0.1b → KC-W0-2/KC-W0-6 → W0.b →
+W1** (W0.1b slots into the existing W0-completion front; Rev-2 forbids
+discovering producer gaps via backend hard-misses, and W1 is backend-narrow
+while this fix is cross-crate).
+
+Next skills: `/dev` (typecheck, W0.1b per the §1.1.1 pinned diff), then
+`/review` (narrow, typecheck+types), then the W0-completion front as re-pinned.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

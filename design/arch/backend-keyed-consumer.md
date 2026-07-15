@@ -66,15 +66,19 @@ display name. Per kind:
 | Product ctor | `m/Type` (the dual-facet single key) | same `Constructor` arm (`type_def: Some`) |
 | Platform effect | `m/effname` (defining entry) | `DefKind::PlatformEffect { got_slot, poll_shape, scheduling_class }` — poll vs blocking vs stamp all off the ONE fetched entry |
 | Host-promised extern | `primitives/discover-tests` | `DefKind::PrimitiveExtern` → `fq.symbol` IS the ABI key (`Linkage::Import`) |
-| Trait-method / sig-dispatch leg | the module-bearing FQ of the SELECTED mangled impl entry (`m/Trait.method$Type`, `m/f$Int+Int`) | same concrete-fn arm |
+| Trait-method / sig-dispatch leg | the module-bearing FQ of the SELECTED mangled impl entry (`m/Trait.method$Type`, `m/f$Int+Int`) — storage module per §1.1.1: the impl-WRITER's module for trait legs (read off the `TraitImpl` shell), the CALLER's module for mono-minted SigDispatch | same concrete-fn arm |
 | Local variable / lambda param | `None` (not table-resolved) | backend's local-`variables` check precedes the keyed read, unchanged |
 | Slot-less `Polymorphic` template referenced as a value | the template's storage key | W2's 0585 hard error (§7) — a template entry at a value read is the LOUD backstop, never a silent leak |
 
-`ResolvedCall` is left **untouched** — it stays supplementary dispatch metadata
-(inline-builtin intercepts, auto-curry counts, trait resolution for the
-as-value wrapper). Preferred over widening `ResolvedCall` because one carrier
-gives one backend read for every kind; `ResolvedCall` has no module leg and
-carries mangled *names*, not storage identities. (Phase-2 §2 pin.)
+`ResolvedCall` stays supplementary dispatch metadata (inline-builtin
+intercepts, auto-curry counts, trait resolution for the as-value wrapper) —
+the backend never reads it as the keyed-lookup carrier; `resolved_targets` is
+the ONE carrier. (Phase-2 §2 pin.) **Amended by §1.1.1 (W0.1 ruling):** the
+Phase-2 "left untouched" wording is narrowed — `ResolvedCall::TraitMethod`
+gains an `impl_module` field so the resolution PRODUCT carries the storage
+module the carrier writer needs (recording happens where resolution happens);
+this does not make `ResolvedCall` a backend carrier — the backend still reads
+only `resolved_target`.
 
 **Producer chokepoints (typecheck).** One writer helper (working name
 `CheckState::record_resolved_target(span, fq)`), called from the seams where
@@ -94,6 +98,146 @@ the storage identity is in hand:
 `/design` (typecheck) may refine the exact seam list; the binding property is
 **recording happens where resolution happens** (Principle 24) — never a second
 post-hoc resolution pass.
+
+### 1.1.1 Storage-module derivation for dispatch legs (S110 W0.1 `/arch` ruling)
+
+**The question (W0.1 deviation, `sprints/SPRINT.md` §"/dev (W0.1)"):**
+`dispatch_target_fq` derives the TraitMethod/SigDispatch carrier module as
+`current_module` (the shipped `callees` model, whose rustdoc carries the
+pending "Step 5: look up the impl's defining module" note). For a
+cross-module dispatch the mangled entry may live elsewhere; the backend's W1
+keyed read would entry-miss where today's global-order scan silently finds it.
+
+**Ground truth — where each dispatch-selected entry actually lives (verified
+against source, this ruling):**
+
+- **Trait-impl method `Def`s** (`Trait.method$m/Type` — explicit, default, and
+  HKT alike) are written by `finalize_impl_method_writeback`
+  (`crates/cranelisp-typecheck/src/traits/impl_check.rs:652–677`) via
+  `current_symbol_table_mut` with `state.current_module` deliberately RESTORED
+  to the **impl-writer's module** (`impl_check.rs:514–518`) — the module whose
+  source contains the `(impl …)` form. Only the `ModuleEntry::TraitImpl`
+  **shell** goes to the trait's defining module (`impl_check.rs:153`,
+  Decision 45 discovery). This placement is **forced, not accidental**: the
+  method bodies compile in the writer module's codegen batch, and
+  `compile_to_module` structurally requires every compiled defn's entry (and
+  GOT slot) in the compiling module's OWN table — it hard-errors on absence
+  (`crates/cranelisp-backend/src/lib.rs:939–947`) and writes the finalized
+  code ptr into THAT module's GOT (`lib.rs:999–1006`). **Decision 0045's
+  method-co-location clause ("the method `Defn` entries live in the same
+  module that holds the `TraitImpl` entry") is therefore AMENDED**: the shell
+  lives at the trait's home (the chain-follow discovery record); the method
+  bodies live with the writer (the compilation record). Moving the bodies to
+  the trait's home is structurally impossible under the definition-side
+  invariant (and would push per-impl GOT-slot writes into shared tables —
+  the 0604 write-race surface).
+- **Mono instances** (every mono-minted SigDispatch: the pass-4 drive, mono
+  self-recursion P5, inner-constrained, inner-parametric-hop) register in the
+  **caller's module** (`register_mono_entry` →
+  `current_symbol_table_mut`, after `recheck_body_for_mono` restores
+  `current_module`). The mangled NAME embeds the defining home (0519) but the
+  STORAGE is the caller's table. Every one of the four writers records
+  `state.current_module` at the same moment the entry registers there —
+  correct by construction.
+- **Multi-sig overload variants** register in the defining module
+  (`register_mangled_variants` during that module's own check). The pending
+  gate (`state.overloads`) is run-local + same-module-rehydrated
+  (`form.rs:211–235` reads only the current module's own `Overloaded` Defs,
+  no chain-follow), so an overload `SigDispatch` is only ever recorded when
+  caller module == defining module — recorded `current_module` == storage.
+  (Cross-module multi-sig dispatch does not exist today — a latent,
+  pre-existing language gap, NOT a 0583 producer gap and not a W1 blocker.)
+
+**The derivation rules (binding on the producer):**
+
+| Leg | Carrier FQ | Source at the seam |
+|---|---|---|
+| TraitMethod — call, deferred, value-position, and AutoCurry-inner | `{ impl_module, mangled_name }` | `impl_module` read off the `TraitImpl` shell at `try_resolve_trait_method` (the shell probe that proves impl existence), carried on `ResolvedCall::TraitMethod.impl_module` |
+| SigDispatch — all mono-minted legs | `{ current_module, mangled }` | correct as shipped (storage is the caller's table) |
+| SigDispatch — overload pending | `{ current_module, mangled }` | correct by reach (gate is same-module-only) |
+| AutoCurry — plain fn target | the callee Var's already-recorded `resolved_targets` entry, transported by callee span through `pending_auto_curry`; `None` for a local-binding target | resolve-once + shadow-correct: `infer_var` already recorded the target's terminal storage FQ (or nothing, for locals); do NOT re-resolve the bare name at drain time |
+| BuiltinFn | `builtin_storage_fq` (`def_resolved` chain-follow, `primitives` fallback) | correct as shipped |
+
+**The `cranelisp-types` diff (PINNED for the W0.1b `/dev` change-set — not
+landed by `/arch` alone because adding enum-variant fields breaks every
+construction site, forcing cross-crate atomicity; the §8 W0 precedent):**
+
+1. `ModuleEntry::TraitImpl` gains `impl_module: ModuleFullPath` — the module
+   whose table holds this impl's mangled method `Def`s and their GOT slots
+   (the impl-writer's module). Written at the shell construction
+   (`impl_check.rs:149–161`) from `state.current_module` (the writer IS
+   current there). Required field, NO `#[serde(default)]`: a defaulted `""`
+   module is a representable-invalid state (Principle 20), and construction
+   sites must be forced to supply it (Principle 18). Rustdoc states the
+   amended D45 model (shell = discovery record at the trait's home;
+   `impl_module` = where the bodies live).
+2. `ResolvedCall::TraitMethod` gains `impl_module: ModuleFullPath` — the
+   resolution product. Populated by `try_resolve_trait_method` from the shell
+   that grounds the selected mangle (probe the trait home's table with the
+   exact key `impl${fq_for_mangle}${fq_trait_name}` — a direct keyed get;
+   bare-match fallback mirroring `has_impl_in_home` for the intrinsic-receiver
+   case). Downstream consumers (`dispatch_target_fq`,
+   `resolved_call_to_fqsymbol`) READ the field, never re-derive — this
+   **resolves the callees.rs "Step 5" pending note** (the answer: the impl's
+   module is the WRITER's, knowable only from the shell, carried on the
+   resolution). Note the callees fix also repairs the S101 session-transaction
+   reverse index for cross-module trait calls (its edges currently name the
+   wrong module — a silent affected-set starvation).
+3. Cascade in the same change-set: `into_concrete` arm (`module.rs:569`), the
+   int display fixture (`src/repl.rs::impl_entry`), typecheck fixtures, types
+   `public-api.txt` regen, `interfaces.md` narrative. **No new
+   `CACHE_SCHEMA_VERSION` bump**: lands inside the schema-19 window (the 0472
+   precedent); `BUILD_ID` staleness covers dev-cache skew across compiler
+   rebuilds.
+
+**Two further producer gaps the sweep surfaced (typecheck-only, same
+change-set):**
+
+- **AutoCurry plain leg** (`resolve_auto_curry`, mono_collect.rs:711–721):
+  records `{current_module, target_name}` for a possibly-IMPORTED target whose
+  `Def` lives in its home module. Fix per the table above (callee-span
+  transport; widen the typecheck-private `pending_auto_curry` tuple with the
+  callee span).
+- **Fn-value mono rewrite** (mono_collect.rs:79–88): `rename_var_at_span`
+  repoints the stored AST `Var` at the caller-local mangled mono but leaves
+  `resolved_targets[arg_span]` at the slot-less template's FQ (or absent) —
+  post-W2 the 0585 guard would hard-fail a VALID program. Fix: insert
+  `{current_module, mangled_sym}` at `arg_span` alongside the rename (and the
+  W0.b view-totalization must rebuild/patch the enclosing view from the
+  renamed AST so the carrier reaches codegen).
+
+**Completeness sweep — every kind W1/W2 will key-read, against the §1.1
+producer inventory:**
+
+| Reference kind (carrier leg) | Writer seam | Recorded module | Actual storage | Verdict |
+|---|---|---|---|---|
+| Concrete user fn / value ref (Var span) | `infer_var` → `resolve_ref_target` (`def_resolved` chain-follow) | terminal home | terminal home | correct |
+| Self-recursive ref (Var span) | `record_reference_target` + `current_defn` | enclosing defn's module | same | correct |
+| Primitive / operator (BuiltinFn, Apply span) | `builtin_storage_fq` | terminal home (`primitives` fallback) | `primitives` / `macros` | correct |
+| Trait method — call / deferred / value-position / curry-inner | `dispatch_target_fq` TraitMethod arm | caller's module | **impl-writer's module** | **GAP — fix 1+2 above** |
+| SigDispatch — overload pending | `resolve_pending_overloads` | current (= defining, by the run-local gate) | defining module | correct by reach |
+| SigDispatch — pass-4 mono mint / dedup | `drive_call_site_monomorphisation` | caller | caller (`register_mono_entry`) | correct |
+| SigDispatch — mono self-recursion / inner-constrained / inner-hop | monomorphise.rs 399/843/988 | caller (explicit) | caller | correct |
+| AutoCurry — plain fn target | `resolve_auto_curry` | caller's module | target's home | **GAP — callee-span transport** |
+| Fn-value mono rewrite (Var at arg position) | `rename_var_at_span` — no carrier update | stale template FQ / absent | caller (minted mono) | **GAP — sidecar update at rename** |
+| Ctor construction/reference + dotted `Type.member` (Var span) | `instantiate_ctor` / `dotted_member_identity` | storage key that HIT / `fqtn.module` | same (S109 canonical keying) | correct |
+| Pattern ctors (sidecar) | S109 §10 | storage key that HIT | same | correct |
+| Platform effect / extern (Var span; plain Apply keys off the callee Var) | Var leg | terminal home | platform / `primitives` module | correct |
+| Synthetic bodies (accessors / ctor `ConstrADT`) | direct at synthesis (W0.b) | just-registered canonical key | same | correct by construction |
+
+**Gating verdict.** W1 must NOT flip until the W0.1b top-up lands. The
+trait-method gap is BROAD, not a corner case: every non-primitive impl of a
+prelude-provided trait called from user code (`(show (Some 3))` — impl
+written in the prelude, caller in `user`) records the caller's module while
+the entry lives in the writer's; the FIXME-0185 primitive short-circuit
+covers only the Int/Float/Bool/String operator table. The AutoCurry gap hits
+every curry of an imported fn. Both would surface as hard `CodegenError`s on
+valid programs at W1/W2 flip. **Fix shape: W0.1b, one coordinated `/dev`
+change-set (types + typecheck + int fixture), in the W0-completion front
+BEFORE W1** — not folded into W1 (cross-crate where W1 is backend-narrow, and
+Rev-2 forbids discovering producer gaps via backend misses). One unit pin per
+fixed leg (cross-module trait dispatch carrier; imported-target curry
+carrier; fn-value rewrite carrier), mirroring the W0.1 pins.
 
 ### 1.2 The no-soft-fallback REJECT criterion (Rev-2 — binding on every wave)
 
@@ -491,6 +635,14 @@ Cache-impact summary: ONE bump (18→19) for the whole initiative — W0.a's fie
 additions and W0.b's population-extent change land inside the same schema
 window (the S101 0472 precedent). W1–W3: no types/public-API/cache impact
 (backend-internal flips + deletions).
+
+**W0.1b addendum (post-W0.1 `/arch` ruling, §1.1.1):** a second pinned types
+diff rides the same schema-19 window — `ModuleEntry::TraitImpl.impl_module` +
+`ResolvedCall::TraitMethod.impl_module` (both required fields, no serde
+default) + the §1.1.1 typecheck derivation fixes (trait-leg module off the
+shell; AutoCurry callee-span transport; fn-value rewrite sidecar update).
+Baseline regen + `interfaces.md` + rustdoc ride that change-set. Still no
+additional schema bump.
 
 ---
 

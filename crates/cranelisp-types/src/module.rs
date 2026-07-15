@@ -1090,23 +1090,28 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// Keyed by synthetic name `impl$FQTypeName$FQTraitName` on the SymbolTable.
     /// Always public (spec §5.11: impls are visible wherever both trait and type are in scope).
     ///
-    /// **Storage placement (Decision 0045).** `(impl Trait Type method-defns…)`
-    /// written in module M lands HERE — in M's symbol table. The trait's
-    /// defining module and the type's defining module are NOT mutated by the
-    /// impl write; only M is. Discovery from the importer side is via an
-    /// import-chain walk (Principle 17): readers searching for an impl walk
-    /// the current module's transitive import closure and probe each named
-    /// module's table for the synthetic key. This keeps typecheck writes
-    /// local (Principle 1) and the canonical store single-sourced
-    /// (Principle 7); cluster atomicity (Decision 44) follows because the
-    /// staging table for cluster mode is M's table, the same one
-    /// `ctx.current_symbol_table_mut()` already targets.
+    /// **Storage placement (Decision 0045 pattern (b), as amended S110 W0.1 —
+    /// `design/arch/backend-keyed-consumer.md` §1.1.1).** An `(impl Trait Type
+    /// method-defns…)` form written in module M splits across two placements:
     ///
-    /// The associated method bodies are written to M as ordinary
-    /// `ModuleEntry::Def` entries with mangled names (e.g.,
-    /// `Display.show$Option$Int`); the `methods: Vec<Symbol>` field below
-    /// lists the local names so importers can dereference back to the bodies
-    /// in M.
+    /// - **This shell entry — the DISCOVERY record — lands in the TRAIT's
+    ///   defining module** (resolved by chain-following the trait reference
+    ///   from M at write time; `impl_check.rs` `check_trait_impl`). Importers
+    ///   discover the impl by the same per-symbol chain-follow (Principle 17
+    ///   shape 1) back to the trait's home and an `O(1)` probe for the
+    ///   synthetic key — no closure walk, no cycle detection.
+    /// - **The method bodies — the COMPILATION record — land in M** (the
+    ///   writer's module) as ordinary `ModuleEntry::Def` entries with mangled
+    ///   names (`Trait.method$m/Type`, the S102 FQ-head grain). This is
+    ///   structurally forced: the bodies compile in M's codegen batch, and
+    ///   `compile_to_module` requires every compiled defn's entry + GOT slot
+    ///   in the compiling module's OWN table. The `methods: Vec<Symbol>`
+    ///   field lists the local names.
+    ///
+    /// The pending W0.1b field `impl_module: ModuleFullPath` (pinned,
+    /// `backend-keyed-consumer.md` §1.1.1) is the pointer from the discovery
+    /// record to the storage module, so trait-method dispatch derives the
+    /// selected method entry's home with one keyed probe — never a scan.
     TraitImpl {
         trait_name: FQTraitName,
         impl_type: FQTypeName,

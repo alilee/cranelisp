@@ -5,13 +5,28 @@ status: pre-implementation
 filed: sprint 66 (Phase 3 FIXME 0168 resolution; superseded by Wave 3a-α post-mortem 2026-05-10)
 canonical_location: design/arch/facades/types.md §"`ModuleEntry::TraitImpl`"; design/arch/facades/typecheck.md §"Bounded-context invariants" item 10; crates/cranelisp-types/src/module.rs `ModuleEntry::TraitImpl` doc-comment
 amends: []
-amended_by: []
+amended_by: ["S110 W0.1 ruling — design/arch/backend-keyed-consumer.md §1.1.1 (method-body placement clause corrected)"]
 retracts: []
 reframes: []
 filed_by_fixme: 0168
 ---
 
 # 0045 — TraitImpl storage placement: trait's defining module canonical; chain-follow discovery
+
+> **S110 AMENDMENT (W0.1 cross-module ruling, 2026-07-15 —
+> `design/arch/backend-keyed-consumer.md` §1.1.1).** The Statement's third
+> paragraph (method `Defn` entries live in the SAME module as the `TraitImpl`
+> entry) is **corrected**: as-built — and structurally forced — the mangled
+> method `Def`s live in the **impl-writer's module** (the module whose source
+> contains the `(impl …)` form and whose codegen batch compiles the bodies;
+> `compile_to_module` requires entry + GOT slot in the compiling module's own
+> table, backend `lib.rs:939–947`). Only the `TraitImpl` **shell** lives at
+> the trait's defining module — the chain-follow DISCOVERY record, unchanged
+> and still canonical. The shell gains `impl_module: ModuleFullPath` (the
+> pointer from the discovery record to the storage module) so dispatch derives
+> the method entry's home without any scan. Everything else in this Decision
+> (pattern (b), chain-follow, shell placement, synthetic modules,
+> cluster-atomicity of the shell write) stands.
 
 ## Statement
 
