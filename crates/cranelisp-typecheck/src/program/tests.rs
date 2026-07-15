@@ -1418,6 +1418,38 @@
         );
     }
 
+    // spec: 03-types §3.3.1 / §3.3.5 row 4 [S109 W6.3] (0588) — a bare written
+    // param var `:a` and a body VALUE-POSITION annotation `:a "hello"` carrying
+    // the SAME name CO-REFER within one definition boundary, via the
+    // `written_var_scope` threaded from `register_defn_signature` into
+    // `infer_annotate`. The body annotation therefore pins the PARAM to
+    // `String`: `(defn f [:a x] :a "hello")` → concrete `(Fn [String] String)`,
+    // and `(f 3)` is a unification error. This is the distinguishing cell of
+    // 0588 — co-reference held only "when unification incidentally connects
+    // them" would leave the param as a free `a` here (`(Fn [a] String)`); the
+    // shared scope makes it `String`. Fails on a revert to per-Annotate fresh
+    // var maps.
+    #[test]
+    fn u1b_bare_param_corefers_body_annotation_pins_param_row4() {
+        let mut tc = tc_with_prims();
+        let sexps =
+            cranelisp_frontend::parse("(defn f [:a x] :a \"hello\")").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .expect("a body `:a` annotation co-referring the param `:a` MUST be accepted (row 4)");
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("f") else {
+            panic!("f not found");
+        };
+        assert!(scheme.type_vars.is_empty(), "the param `a` MUST be pinned, not quantified");
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(vec![Type::String], Box::new(Type::String)),
+            "param↔body co-reference MUST pin the param to String → `(Fn [String] String)`; got {:?}",
+            scheme.ty
+        );
+    }
+
     // spec: 03-types §3.3.2 [S109 W6.3] (U3) — a CONSTRAINT at a parameter
     // position (`:C x`) is held ABSTRACT over `C` for the body-check, at the
     // program seam. R5 (accepted): `(defn f5 [:Num2 x] (nadd x x))` uses only the
