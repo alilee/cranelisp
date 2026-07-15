@@ -171,6 +171,7 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // sum of sub-test pass counts = 4 → exit 4 (verified by /examples on the
         // direct run and reproduced under the harness, 2026-07-10).
         ("34-async-io-leaf.cl", &[4]),
+        ("35-ctor-disambiguation.cl", &[100]),
     ]
 }
 
