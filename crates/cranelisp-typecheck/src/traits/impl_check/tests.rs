@@ -66,10 +66,10 @@ fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
 
 // spec: 07-traits §7.3 + 08-modules §8.6.2 — an `(impl <trait> <type> …)` form
 // resolves its bare `trait_name` in module scope WITH the implicit-prelude
-// outer-scope hop: a PRELUDE-GLOBBED trait (reachable only via the implicit
+// fallback hop: a PRELUDE-GLOBBED trait (reachable only via the implicit
 // prelude glob, no `Import` edge) must be resolvable, exactly as a bare-name
 // lookup already reaches prelude-provided names (S78 §2). This is the seam pin
-// for E9 (S108) — the CHECK-path face of the E3/E8/0558 prelude-outer-scope-hop
+// for E9 (S108) — the CHECK-path face of the E3/E8/0558 prelude-fallback-hop
 // class; the e2e guard is
 // `tests/repl_introspection.rs::impl_of_prelude_globbed_trait_resolves_trait_name`.
 //
@@ -98,7 +98,7 @@ fn impl_of_prelude_globbed_trait_resolves_via_outer_scope_hop() {
         .unwrap();
 
     // 2. Switch to `user`. It does NOT import `Display`; the only path to the
-    //    trait is the implicit-prelude outer scope. With the bit OFF, prove the
+    //    trait is the implicit-prelude fallback. With the bit OFF, prove the
     //    pre-fallback state: the impl-form lookup misses (the E9 bug).
     tc.set_current_module(user.clone());
     assert!(
@@ -110,12 +110,12 @@ fn impl_of_prelude_globbed_trait_resolves_via_outer_scope_hop() {
     //    `inject_prelude_if_needed` does for an ordinary entry module).
     tc.prelude_fallback.insert(user.clone(), true);
 
-    // Facet 1: the impl-form trait-name lookup now hops to the prelude outer
-    // scope and finds `Display` — and the whole `(impl Display Int …)`
+    // Facet 1: the impl-form trait-name lookup now hops to the prelude
+    // fallback and finds `Display` — and the whole `(impl Display Int …)`
     // registers without `unknown trait`.
     assert!(
         tc.resolve_trait_decl(&TraitName::from("Display")).is_some(),
-        "bit ON: the prelude-globbed trait `Display` must resolve via the outer-scope hop"
+        "bit ON: the prelude-globbed trait `Display` must resolve via the prelude-fallback hop"
     );
     tc.register_trait_impl_self(&int_op_impl("Display", "show"))
         .expect("`(impl Display Int …)` of a prelude-globbed trait must register via the hop");

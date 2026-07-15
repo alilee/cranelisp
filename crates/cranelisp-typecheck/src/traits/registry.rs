@@ -132,7 +132,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Register each method with a constrained polymorphic scheme. The
         // method binding inherits the trait's visibility (a Private trait's
         // methods are Private Defs) so a private trait does not leak its
-        // operators as bare names through the prelude outer-scope fallback
+        // operators as bare names through the prelude fallback
         // (`/review` I-1); within the trait's own subtree they stay reachable
         // (the `cranelisp_types::resolve` visibility check honours `in_subtree`).
         for method in &decl.methods {

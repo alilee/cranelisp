@@ -250,7 +250,7 @@ check is exactly this probe (the §8.6.4 name-freedom question already ran at th
 - **`is_internal_constructor_check_with_state`** — the internal-ctor reject gate
   (used by `infer.rs` value position + `check_constructor_pattern`). After the
   current-module gate misses, it re-resolves via the fallback-aware
-  `resolve_entry_in_current_module` (now a projection over `scope_resolve`) and
+  `resolve_entry_scoped` (now a projection over `scope_resolve`) and
   reads `internal` off the **terminal** `DefKind::Constructor`. **GOTCHA**:
   `Bind`/`Pure`/`Effect` are registered `Visibility::Public` in `primitives` —
   the I-1 public filter must NOT hide `Bind`. What rejects `Bind` is its
@@ -356,6 +356,6 @@ Unit tests live in-crate (`#[cfg(test)]`), driven by `TestFixture`
 the `IO` ADT with `Pure`/`Effect`/`Bind`-internal, Ring 0/1/3 primitives) built
 on `cranelisp-types` only (no `cranelisp-primitives` dep). Seed the
 `prelude_fallback` bit directly (`tf.prelude_fallback.insert(module, true)`) to
-exercise the outer-scope fallback. Registering a type def with typed fields in a
+exercise the prelude fallback. Registering a type def with typed fields in a
 bare module needs the field types reachable there — use **nullary** ctors in
 prelude-resident test ADTs to avoid an `Int`-not-in-scope setup failure.

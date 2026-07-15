@@ -18,7 +18,7 @@ pub(crate) struct TestFixture {
     /// Session-level module-alias table (§8.6.6). Tests that exercise
     /// alias-resolution seed this directly; most leave it empty.
     pub module_aliases: cranelisp_types::ModuleAliases,
-    /// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
+    /// Session-level per-module prelude-fallback flags (S78 §2.7; S108 Wave G).
     /// Tests that exercise the implicit-prelude fallback seed this directly
     /// (`module → true`); most leave it empty (all-OFF).
     pub prelude_fallback: crate::checker::PreludeFallback,

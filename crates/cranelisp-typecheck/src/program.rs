@@ -3849,14 +3849,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // DEF-1 (S86): resolve the bare callee through the **prelude-fallback**
         // scope resolve (`resolve_terminal_fq_scoped`), NOT the
         // current-module-only `resolve_terminal_entry_and_home`. A polymorphic fn
-        // provided ONLY via the implicit-prelude outer scope (no explicit import)
-        // is invisible to a current-module-rooted lookup, so its concrete mono
-        // was never minted in the consuming module → codegen `undefined function`.
-        // The fallback-aware resolver applies the same I-1 public-only filter the
-        // value/type/ctor/trait chokepoints use, and reports the terminal `home`
-        // (the prelude — `!= current_module`), so the cross-module mono path fires
-        // exactly as it does for the explicit-import control (S78 outer-scope
-        // discipline; the mono-collection chokepoint had been missed).
+        // provided ONLY via the implicit prelude (an implicit `(import [prelude
+        // [*]])`, no explicit import) is invisible to a current-module-rooted
+        // lookup, so its concrete mono was never minted in the consuming module →
+        // codegen `undefined function`. The fallback-aware resolver applies the
+        // same I-1 public-only filter the value/type/ctor/trait chokepoints use,
+        // and reports the terminal `home` (the prelude — `!= current_module`), so
+        // the cross-module mono path fires exactly as it does for the
+        // explicit-import control (S78 prelude-fallback discipline; the
+        // mono-collection chokepoint had been missed).
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && !constrained_fn_names.contains(name)

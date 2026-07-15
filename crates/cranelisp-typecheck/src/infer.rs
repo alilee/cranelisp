@@ -233,7 +233,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // alternatives.
         if scheme.is_none()
             && matches!(
-                self.resolve_entry_in_current_module(state, name),
+                self.resolve_entry_scoped(state, name),
                 Some(ModuleEntry::Ambiguous { .. })
             )
         {
@@ -298,7 +298,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
         if !state.in_call_position
-            && let Some(entry) = self.resolve_entry_in_current_module(state, name)
+            && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
                 kind.as_ref(),
@@ -319,7 +319,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Multi-sig (overloaded) functions cannot be used as bare values.
         // They must be called so the dispatch can select the correct variant.
         if !state.in_call_position
-            && let Some(entry) = self.resolve_entry_in_current_module(state, name)
+            && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(kind.as_ref(), cranelisp_types::DefKind::Overloaded { .. })
         {
@@ -795,7 +795,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         // Unqualified name: resolve in current module (returns owned entry)
-        let entry = self.resolve_entry_in_current_module(state, name)?;
+        let entry = self.resolve_entry_scoped(state, name)?;
         if let ModuleEntry::Def { kind, .. } = &entry {
             // Per Decision 48: the symbol-table key IS the JIT linker name for
             // primitives. Return the bare entry name.
@@ -1093,7 +1093,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // alternatives (spec §6.2.1 "poison only when the scrutinee type
             // cannot disambiguate").
             if matches!(
-                self.resolve_entry_in_current_module(state, name.as_ref()),
+                self.resolve_entry_scoped(state, name.as_ref()),
                 Some(ModuleEntry::Ambiguous { .. })
             ) {
                 let owners = self.reconstruct_accessor_alternatives(state, name.as_ref());

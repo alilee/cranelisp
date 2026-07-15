@@ -5847,7 +5847,7 @@
     }
 
     // spec: spec/08-modules.md §8.8.1 — a pure-parametric polymorphic fn provided
-    //   ONLY through the implicit-prelude OUTER SCOPE (bare call, no explicit
+    //   ONLY through the implicit prelude (bare call, no explicit
     //   import) must mint its concrete mono in the CONSUMING module, exactly like
     //   the explicit-import path. DEF-1 (S86): the mono-collection chokepoint
     //   `collect_imported_constrained_calls` resolved the callee with
@@ -5902,7 +5902,7 @@
         }
 
         // --- BUILD the CONSUMER module -----------------------------------------
-        // The consumer turns the implicit-prelude OUTER SCOPE on (the
+        // The consumer turns the implicit-prelude fallback on (the
         // `PreludeFallback` bit) but does NOT import `count` — exactly the
         // bare/glob path. `vec-len` etc. are NOT in the consumer's table; the
         // bare `count` call must resolve through the prelude fallback hop.

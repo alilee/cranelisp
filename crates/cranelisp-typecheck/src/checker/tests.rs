@@ -913,9 +913,9 @@
         );
     }
 
-    // spec: 08-modules §8.6.4 prelude-as-outer-scope + arch Decision 45 +
+    // spec: 08-modules §8.6.4 prelude-as-implicit-import + arch Decision 45 +
     // FIXME 0315 — trait-method dispatch + impl discovery fall back to the
-    // implicit-prelude OUTER SCOPE. A bare operator (`+`) backed by a
+    // implicit-prelude fallback. A bare operator (`+`) backed by a
     // prelude `deftrait Num` + `impl Num Int` must resolve from a user
     // module that does NOT import the trait, GATED on the per-module
     // prelude-fallback bit. With the bit OFF (prelude refusal / selective
@@ -939,7 +939,7 @@
             .unwrap();
 
         // 2. Switch to `user`. It does NOT import `Num` — the only path to
-        //    the trait is the implicit-prelude outer scope. Prove the
+        //    the trait is the implicit-prelude fallback. Prove the
         //    pre-fallback state first: with the bit OFF, the bare `+` is
         //    invisible (this is the regression FIXME 0315 captured).
         tf.set_current_module(user.clone());
@@ -958,11 +958,11 @@
         //    `inject_prelude_if_needed` does for an ordinary entry module).
         tf.prelude_fallback.insert(user.clone(), true);
 
-        // method→trait origin now resolves via the outer scope.
+        // method→trait origin now resolves via the prelude fallback.
         assert_eq!(
             tf.method_to_trait(&Symbol::from("+")),
             Some(TraitName::from("Num")),
-            "bit ON: bare `+` resolves to prelude trait `Num` via the outer scope"
+            "bit ON: bare `+` resolves to prelude trait `Num` via the prelude fallback"
         );
         // impl discovery now finds the prelude-resident `impl Num Int`.
         assert!(
@@ -1109,7 +1109,7 @@
         }
     }
 
-    // --- S78 §2.7: implicit-prelude outer-scope fallback ---
+    // --- S78 §2.7: implicit-prelude fallback ---
 
     /// Seed a public value `name` (a zero-arg `UserFn` of type `Int`) into
     /// module `path`. Returns the fixture to the previously-current module is
@@ -1132,9 +1132,10 @@
         tf.prelude_fallback.insert(ModuleFullPath::from(module), true);
     }
 
-    // spec: 08-modules §8.6.4 / §8.8.1 — the implicit prelude is an OUTER SCOPE.
-    // With the fallback bit ON, a bare name absent from module M's own table
-    // resolves against the `prelude` module's table (value/scheme path).
+    // spec: 08-modules §8.6.4 / §8.8.1 — the implicit prelude is an implicit
+    // `(import [prelude [*]])`, resolved via the prelude fallback (not an
+    // "outer scope"). With the fallback bit ON, a bare name absent from module
+    // M's own table resolves against the `prelude` module's table (value/scheme path).
     #[test]
     fn prelude_fallback_resolves_bare_value_when_bit_on() {
         let mut tf = tf();
@@ -1148,7 +1149,7 @@
         let (scheme, _gap) = tf.env().lookup(&state, "map");
         assert!(
             scheme.is_some(),
-            "bare `map` must resolve via the prelude outer-scope fallback when the bit is ON"
+            "bare `map` must resolve via the prelude fallback when the bit is ON"
         );
     }
 
@@ -1172,7 +1173,7 @@
     }
 
     // spec: 08-modules §8.6.1 — a local/explicit definition shadows the
-    // implicit prelude (inner scope consulted before the outer fallback).
+    // implicit prelude (the current module is consulted before the fallback).
     #[test]
     fn prelude_fallback_inner_definition_shadows_prelude() {
         let mut tf = tf();
@@ -1187,12 +1188,12 @@
         let state = CheckState::new(m.clone());
         let entry = tf
             .env()
-            .resolve_entry_in_current_module(&state, "map")
+            .resolve_entry_scoped(&state, "map")
             .expect("map resolves (inner def present)");
         // M's own entry is a canonical Def (not an Import to prelude).
         assert!(
             matches!(entry, ModuleEntry::Def { .. }),
-            "inner definition must shadow the prelude outer scope"
+            "inner definition must shadow the prelude fallback"
         );
     }
 
@@ -1280,7 +1281,7 @@
         // Entry path: chain-follows to the terminal canonical Def in `prims`.
         let entry = tf
             .env()
-            .resolve_entry_in_current_module(&state, "add-i64")
+            .resolve_entry_scoped(&state, "add-i64")
             .expect("add-i64 resolves to its terminal entry");
         assert!(
             matches!(entry, ModuleEntry::Def { .. }),
@@ -1313,7 +1314,7 @@
     }
 
     // spec: 08-modules §8.6.4 — the prelude module itself does not fall back
-    // onto itself (no self-referential outer scope). A bare miss in `prelude`
+    // onto itself (no self-referential fallback). A bare miss in `prelude`
     // with the bit (hypothetically) ON does not loop.
     #[test]
     fn prelude_module_does_not_fall_back_onto_itself() {
@@ -1373,7 +1374,7 @@
 
     // --- S78 §2 / `/review` I-1: prelude private-symbol visibility ---
     //
-    // The implicit-prelude OUTER SCOPE exposes only PUBLIC prelude bindings as
+    // The implicit-prelude fallback exposes only PUBLIC prelude bindings as
     // bare names in a user module. A Private top-level def in prelude's own
     // table must NOT be bare-reachable through the fallback (a future private
     // prelude helper would otherwise silently leak into every user module's
@@ -1397,7 +1398,7 @@
 
     // spec: 08-modules §8.7.3 — a PRIVATE prelude def is NOT reachable as a
     // bare name from a user module, even with the fallback bit ON. Value path
-    // (`lookup`) AND entry path (`resolve_entry_in_current_module`) both miss.
+    // (`lookup`) AND entry path (`resolve_entry_scoped`) both miss.
     #[test]
     fn prelude_private_def_not_bare_reachable_value_path() {
         let mut tf = tf();
@@ -1414,7 +1415,7 @@
             "a PRIVATE prelude def must NOT resolve as a bare name (I-1 visibility leak)"
         );
         assert!(
-            tf.env().resolve_entry_in_current_module(&state, "secret").is_none(),
+            tf.env().resolve_entry_scoped(&state, "secret").is_none(),
             "a PRIVATE prelude def must NOT resolve via the entry chokepoint either"
         );
     }
@@ -1435,7 +1436,7 @@
         let state = CheckState::new(m.clone());
         let entry = tf
             .env()
-            .resolve_entry_in_current_module(&state, "helper")
+            .resolve_entry_scoped(&state, "helper")
             .expect("user's own `helper` resolves (inner scope)");
         // The user's own canonical Def wins; the private prelude binding is
         // neither returned nor consulted (inner hit before the fallback).
@@ -1478,7 +1479,7 @@
         );
         let entry = tf
             .env()
-            .resolve_entry_in_current_module(&state, "add-i64")
+            .resolve_entry_scoped(&state, "add-i64")
             .expect("public re-export resolves to its terminal Def");
         assert!(matches!(entry, ModuleEntry::Def { .. }));
     }
@@ -1554,17 +1555,17 @@
     }
 
     // --- S78 §2 / FIXME 0317: constructor-resolution chokepoints fall back to
-    // the implicit-prelude OUTER SCOPE ---
+    // the implicit-prelude fallback ---
     //
     // The two ctor chokepoints the §2 work missed:
     //  - `lookup_constructor_type_with_state` (the pattern-ctor `exists` gate)
     //  - `is_internal_constructor_check_with_state` (the internal-ctor reject gate)
-    // both rooted at `current_module` with no outer-scope retry. With the prelude
+    // both rooted at `current_module` with no prelude-fallback retry. With the prelude
     // no longer flattened, a primitives ADT ctor re-exported through prelude is
     // not an Import entry in the user table, so these paths missed it.
 
     // spec: 08-modules §8.6.4 — (a) a PUBLIC prelude ctor resolves in PATTERN
-    // position via the outer-scope fallback. A bare ctor name absent from the
+    // position via the prelude fallback. A bare ctor name absent from the
     // user module resolves its parent type through the prelude fallback when the
     // bit is ON — exactly as it does in value position.
     #[test]
@@ -1639,8 +1640,8 @@
         let mut tf = tf_macros();
         // A user module that has NOT imported `macros` — the clause-fn body's
         // resolution context. No prelude fallback bit is set, so the qualified
-        // reference cannot leak in via the outer scope; it must resolve purely
-        // through the FQ `module/name` split.
+        // reference cannot leak in via the prelude fallback; it must resolve
+        // purely through the FQ `module/name` split.
         let m = ModuleFullPath::from("user");
         tf.set_current_module(m.clone());
         let state = CheckState::new(m.clone());

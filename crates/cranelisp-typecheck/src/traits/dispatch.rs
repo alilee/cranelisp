@@ -367,14 +367,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
     /// Shared bulk trait-decl scan (S87 Finding S87-5 dedup): find the first
     /// `TraitDecl` visible from `state.current_module` (with the implicit-prelude
-    /// outer-scope fallback) that declares a method named `method_name`, and
+    /// fallback) that declares a method named `method_name`, and
     /// return `read(method)`.
     ///
     /// Per Principle 17 shape 4 (bulk introspection — current-module-only):
     /// iterates the current module's symbol table; `Import`/`Reexport` entries
     /// are chain-followed to their terminal `TraitDecl` so traits imported
     /// (e.g. via the prelude) are reachable. On a current-module miss, consults
-    /// the prelude outer scope iff the bit is ON (`prelude_fallback_target`;
+    /// the prelude fallback iff the bit is ON (`prelude_fallback_target`;
     /// absence-is-OFF, never self-fallback) with `public_only = true` — only
     /// PUBLIC prelude `TraitDecl`s are reachable as a bare method (`/review`
     /// I-1).
@@ -396,18 +396,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             return Some(r);
         }
-        // Inner miss — consult the prelude outer scope iff the bit is ON.
+        // Inner miss — consult the prelude fallback iff the bit is ON.
         let prelude = self.prelude_fallback_target(&state.current_module)?;
         self.find_trait_method_decl_in_module(state, &prelude, method_name, true, &read)
     }
 
     /// Iterate `module_path`'s symbol table for a `TraitDecl` carrying
     /// `method_name`, returning `read(method)`. Shared by the current-module
-    /// probe and the prelude outer-scope fallback in
+    /// probe and the prelude fallback in
     /// [`Self::find_trait_method_decl`].
     ///
     /// `public_only` filters the scanned `module_path` bindings to PUBLIC heads
-    /// only — set for the prelude outer-scope fallback hop so a Private prelude
+    /// only — set for the prelude fallback hop so a Private prelude
     /// `TraitDecl` does not leak its methods as bare names (`/review` I-1).
     fn find_trait_method_decl_in_module<R>(
         &self,

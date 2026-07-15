@@ -1003,8 +1003,8 @@
     }
 
     /// The no-exception ruling (2026-07-04): a `defn` over a PRELUDE-provided
-    /// public name is the same compile-time error — the prelude outer scope is
-    /// checked exactly like an explicit import.
+    /// public name is the same compile-time error — the prelude (an implicit
+    /// import) is checked exactly like an explicit import.
     #[test]
     fn def_over_prelude_rejected_at_seam() {
         let modules = modules();
