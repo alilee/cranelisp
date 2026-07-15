@@ -1,6 +1,6 @@
 # Sprint 109: Agent observability + REPL/search/resolution batch + dotted-Ctor capability
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE)
+**Status**: PHASE 7 CLOSE (pending user approval) — Phases 5 + 6 complete; Outcome authored below
 
 **Goal**: Land the agent-context **observability** substrate as the lead, plus the
 REPL/search/resolution/persistence defect batch surfaced through S108 testing, the
@@ -856,10 +856,24 @@ under time pressure — reinforces 0583.
 ## Outcome (Phase 7)
 
 ### Delivered
-- {tbd}
+- **W6 — written-type-var semantics (foundational, 3 user-driven reversals):** settled §3.3.1–§3.3.5 model — bare `:a` = flexible named inference var (lexical co-reference), constraint `:C x` = rigid at parameter positions, rank-1 poly-returns legitimate. Landed clean (`/review` CLEAN on `eb6c94e6`); crate CLAUDE.md + design record (`inference.md`, 0594) current.
+- **Bucket 1 — agent-context observability (lead):** six §17.20.3a JSONL log fields + Thread-B probe channel (`e83810bf`, `#[cfg(feature="agent")]`).
+- **Bucket 2 — dotted-`Type.Ctor` full capability:** same-named ctors across types coexist + disambiguate in value AND pattern position; canonical-key coordinate model (`3d449b7b`/`01c8062b`) + DC-11 seam cure (`c1e399e4`); `CACHE_SCHEMA_VERSION` 16→18.
+- **Bucket 3 — REPL/search/resolution/persistence defect batch:** 0567 (resolved P3), 0568/0569/0571/0573 (fixed + reconciled).
+- **Bucket 4 — settled-semantics + error quality:** `fn` single-arity (§4.5) + multi-arity `defn` independent clauses (§5.1.2) scribed; diagnostics name the offending clause/param (0575/0576, `5764b538`).
+- **Bucket 5 — module visibility (0570):** stdlib test submodules marked `(mod- test)`; `/search`/import honor `mod-` (`5ccd6e73`).
+- **Bucket 6 — S108 typecheck-audit hygiene:** 0578 (traits.md rewrite), 0579 (resolution doc/naming sweep, `68774c8b`), 0580 (`program.rs` 4,204→8 submodules ≤992 lines, public-api byte-identical, `1d65fdbd`), 0581 (S87 residue, `2c3b7056`).
+- **Phase 6 (user-facing):** exemplar green in all modes (integration canary); dotted-ctor validated end-to-end (`/examples`, `/docs`); `/audit` src/ rotation (`src-s109.md`, `3f1d93c7`). 6b artifacts: new `user/guide/{constructors,functions}.md`, `examples/35-ctor-disambiguation.cl`, REPL demo beat + narrowed closure claim (user-ruled), stdlib comment hygiene.
+- **Phase-6 defect fixes:** #2 dotted nullary-ctor display doubling, #3 constructors in `/list`, #4 `/search` private-submodule subtree filter — all fixed + guarded (`fff94fa7`, `e755cce6`, `cfb9cf6b`).
+- **FIXME reconciliation:** 28 → 15 open (done-but-undeleted drained; W6-residuals disposed against the shipped model).
 
 ### Deferred (with rationale)
-- {tbd}
+- **#1 index-feed phantom-prelude-write race → S110 (FIXME 0604), USER-RULED.** A scheduling-dependent race in the background file-index feed injects a phantom public `bit-and → primitives/bit-and` into the live `prelude` table (only `bit-and` leaks — concurrent mis-attribution), which spuriously poisons `num.bits.test`'s legitimate `super`-import and blocks its 27 self-tests. Same class as #4's underlying write-race (`fff94fa7` cured only search-surfacing) and the S61→S93 heisenbug lineage. Carried NOT for size but because a rushed race-fix risks a false-green from perturbation (verify-behaviorally discipline); contained blast radius (nothing on the hot path imports `num.bits`). Durable record: `/testing` GREEN twin guards (`ea77dad8`) + deterministic repro recipe + attribution doc (`tests/plan/s109-attribution-index-feed-race.md`). NOT masked at the stdlib layer (would destroy the S110 trigger).
+- **Stdlib-compile smoke gate → S110 (FIXME 0605).** The coverage gap that let #1 ship — stdlib self-tests are not in `cargo nextest`. `/qa`-designed enumerating gate.
+- **W6 residuals → S110:** 0589 (frontend type-var routing, in-crate backstop landed, no live bug), 0590 (four-mirror resolver convergence), 0595 (rigid-unify structural hardening).
+- **0583 backend-pure-consumer CENTREPIECE + 0585 value-position uniform mint → S110** (index/resolution seam; 0583 explicitly distinct from 0604 — backend BC violation vs int shared-state isolation).
+- **0577 threads C/D** (primer→99%, gap loop) → deferred WITH scenario testing (mine the observability signal first).
+- **Standing carries (failing-not-ignored repros = the record):** R16/R17 (return-type-poly ambiguity error *quality*, coordinated typecheck+int), C-4 (multi-arity call-from-main "no main" misdirect), vec-assoc UAF ×2 (backend), 0528, S107 deftype_ctor_trailing, 0553, 0463, 0050/0052.
 
 ### Findings (record in FIXMEs if not already)
 - **Infra (P5) — `agent_flag_errors_on_non_agent_build` build-interleave race.** The
@@ -894,4 +908,34 @@ under time pressure — reinforces 0583.
   should have caught the class.
 - Process (I-3): W1's code committed ahead of its acceptance tests (uncommitted
   working-tree) — the S109 suite must be committed as the durable record once the
-  W1.2 Blocker negative is green.
+  W1.2 Blocker negative is green. **RESOLVED** — suite committed across the sprint.
+
+**Phase 6 findings (2026-07-15):**
+- **Coverage gap (→ 0605):** stdlib self-tests are not in `cargo nextest`, so the #1
+  regression (which blocked 27 `num.bits` self-tests) passed the whole workspace suite
+  clean. A stdlib-compile smoke gate would have caught it. This is the highest-signal
+  process finding of the sprint — the internal suite is blind to stdlib-breaking
+  compiler regressions.
+- **#1 mis-framing corrected by empirical investigation:** the defect was initially
+  framed (by `/stdlib` + my first pass) as a "super-import surface leak / quick
+  resolver fix," and `/testing`'s first pass wrongly concluded "not a defect
+  (prelude-overlap, spec-correct)." Direct empirical re-runs (deterministic 16/16,
+  `--no-cache`, prelude-provides-no-`bit-and`) falsified both — it is a scheduling-
+  dependent index-feed race. Reinforces the standing lesson: verify a subagent's
+  attribution against direct evidence before acting on it.
+- **`/audit` boundary lens working:** the S109 "bounded-context responsibility"
+  addition (0583) surfaced a real instance in `src/` — `bootstrap.rs::register_synth_adt`
+  mirrors typecheck's ADT registrar (R-2), the same registration family implicated in
+  the #1/#4 race. `src-s109.md` findings (repl.rs god-file R-1, stale `design/int/`
+  R-3, over-budget-fn tail) → next-sprint Phase-1 disposition.
+- **`concurrency_capacity` flake:** `same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks`
+  observed pass/fail/pass in isolation (timing). Logged as a verify-after-0604-fix
+  candidate (NOT asserted same-root — different subsystem).
+- **Hygiene (next-sprint):** `agent_trace.txt` un-gitignored at repo root (`/audit` R-6);
+  a stray repo-root `user.cl` REPL-persistence artifact (~131 KB) poisons the `user`
+  module for repo-root REPL eval (`/stdlib` finding) — both dev-environment noise, not
+  compiler defects.
+- **Frontmatter-vs-table audit (mechanical, Phase 7):** PASS — `.claude/agents/*.md`
+  = 5×fable + 9×opus[1m], matching `artefacts.md §II.3`.
+- **Infra stability:** two `/dev` subagent API stalls (mid-`program.rs`-split file move)
+  recovered by inspection + amend; no logic loss.
