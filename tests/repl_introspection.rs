@@ -4163,11 +4163,15 @@ fn list_shows_ctor_once_canonical() {
     let out = repl_prims(
         "(deftype (Maybe a) Nil (Some [:a v]))\n/list\n",
     );
+    // Count the canonical dotted form `Maybe.Some` — the deftype echo's
+    // `; match:` hint prints the bare `Some`, so counting bare would double-count
+    // the hint and the (now-required) /list constructor row. The canonical form
+    // appears ONLY in the /list Types block.
     assert_eq!(
-        out.stdout.matches("Some").count(),
+        out.stdout.matches("Maybe.Some").count(),
         1,
-        "the constructor `Some` MUST be listed ONCE in /list, never duplicated as \
-         a bare-alias second row (§17.19.2b, E4); got:\n{}",
+        "the constructor `Maybe.Some` MUST be listed ONCE in /list, never duplicated \
+         as a bare-alias second row (§17.19.2b, E4); got:\n{}",
         out.stdout
     );
 }
