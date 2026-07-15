@@ -46,6 +46,7 @@ fn resolved_call_variants_serde_roundtrip() {
             method_name: Symbol::from("show"),
             impl_type: fq_type("primitives", "Int"),
             mangled_name: JitSymbol::from("Display.show$Int"),
+            impl_module: ModuleFullPath::from("core.fmt"),
         },
         ResolvedCall::SigDispatch {
             mangled_name: JitSymbol::from("add$Int+Int"),

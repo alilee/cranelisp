@@ -663,9 +663,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         accumulator: &mut ModuleCheckAccumulator,
     ) {
-        accumulator.method_resolutions.extend(
-            std::mem::take(&mut state.method_resolutions).resolved_calls,
-        );
+        let taken = std::mem::take(&mut state.method_resolutions);
+        accumulator.method_resolutions.extend(taken.resolved_calls);
+        // S110 W0.1b (§1.1.1): post-pass `resolved_targets` inserts (the
+        // fn-value mono-rewrite carrier; the finalize-drained auto-curry leg)
+        // land in `state.method_resolutions.resolved_targets` AFTER the per-form
+        // snapshots that feed `accumulator.resolved_targets`. Sweep them into the
+        // accumulator so the finalize view-rebuild
+        // (`finalize_annotations_and_publish`) sees them — the carrier rides
+        // UNREAD until W1, so this is behaviour-invariant.
+        accumulator.resolved_targets.extend(taken.resolved_targets);
         accumulator.expr_types.extend(
             std::mem::take(&mut state.expr_types),
         );

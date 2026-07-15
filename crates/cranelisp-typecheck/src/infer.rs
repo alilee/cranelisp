@@ -750,6 +750,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // The trait_resolution (6th element) starts as None; it is filled in
         // by infer_apply after try_auto_curry returns (if types are concrete),
         // or by resolve_auto_curry when draining (if types get pinned later).
+        // Capture the callee `Var` span so the drain (`resolve_auto_curry`) can
+        // transport its already-recorded storage carrier for a plain-fn curry
+        // (S110 W0.1b, §1.1.1). `callee` is a `Var` here (the `callee_name`
+        // match above errors on any non-`Var` callee).
+        let callee_var_span = match callee {
+            Expr::Var { span, .. } => Some(*span),
+            _ => None,
+        };
         state.pending_auto_curry.push((
             span,
             callee_name,
@@ -757,6 +765,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             params.len(),
             callee_ty.clone(),
             None,
+            callee_var_span,
         ));
 
         let ty = self.apply_subst(state, &curry_ret);

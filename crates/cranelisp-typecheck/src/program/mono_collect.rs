@@ -85,6 +85,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
                 }
             }
+            drop(st);
+            // S110 W0.1b (§1.1.1, fn-value mono-rewrite carrier): the rename
+            // repoints the arg-position `Var` at the caller-local mangled mono,
+            // but the span-keyed carrier still names the slot-less template (or
+            // is absent). Update the sidecar to the minted instance's STORAGE
+            // identity — the caller's module (`register_mono_entry` registers
+            // the mono in `current_module`, even for an imported generic whose
+            // mangle embeds its home). Without this, the W2 0585 keyed read
+            // would hard-fail this VALID program on the stale template carrier.
+            for (_enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
+                state.method_resolutions.resolved_targets.insert(
+                    *arg_span,
+                    FQSymbol {
+                        module: current_module.clone(),
+                        symbol: mangled_sym.clone(),
+                    },
+                );
+            }
         }
 
         // S84 Phase-3 (FIXME 0392): the concrete-boundary `MonoExpr` view of
@@ -688,7 +706,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// backend can use for codegen.
     pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
-        for (span, name, applied_count, total_count, callee_ty, mut trait_resolution) in pending {
+        for (span, name, applied_count, total_count, callee_ty, mut trait_resolution, callee_var_span)
+            in pending
+        {
             // If the trait resolution wasn't determined earlier (types were
             // still unresolved vars during try_auto_curry), attempt it now.
             // Later unifications (e.g., from a call site like `(make-adder 10)`)
@@ -708,15 +728,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
 
+            let has_inner = trait_resolution.is_some();
             let resolution = ResolvedCall::AutoCurry {
                 target_name: name,
                 applied_count,
                 total_count,
                 trait_resolution: trait_resolution.map(Box::new),
             };
-            // S110 0583 leg 1: auto-curry carrier at the Apply span (derived
-            // from the inner trait/primitive resolution, else the target fn).
-            self.record_dispatch_target(state, span, &resolution);
+            // S110 0583 leg 1 + W0.1b (§1.1.1): auto-curry carrier at the Apply
+            // span. A trait/primitive curry derives from the inner resolution
+            // (TraitMethod now reads `impl_module`). A PLAIN-fn curry instead
+            // TRANSPORTS the callee `Var`'s already-recorded storage carrier
+            // (resolve-once, shadow-correct) — the old `{current_module,
+            // target}` derivation was wrong for an imported target. `None` for
+            // a local-binding target (`infer_var` recorded nothing).
+            if has_inner {
+                self.record_dispatch_target(state, span, &resolution);
+            } else if let Some(cvs) = callee_var_span
+                && let Some(fq) = state.method_resolutions.resolved_targets.get(&cvs).cloned()
+            {
+                state.method_resolutions.resolved_targets.insert(span, fq);
+            }
             state.method_resolutions.resolved_calls.insert(span, resolution);
         }
     }

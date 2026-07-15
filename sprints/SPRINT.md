@@ -1019,6 +1019,66 @@ while this fix is cross-crate).
 Next skills: `/dev` (typecheck, W0.1b per the §1.1.1 pinned diff), then
 `/review` (narrow, typecheck+types), then the W0-completion front as re-pinned.
 
+### /dev (W0.1b) — cross-module storage-module fix (2026-07-15, LANDED)
+
+Landed `/arch`'s §1.1.1 ruling as ONE coordinated types+typecheck+int change-set,
+**same schema-19 window (no `CACHE_SCHEMA_VERSION` bump)** — verified the
+reasoning holds: the two enum-field additions force cross-crate atomicity, but
+they land inside the schema-19 window and `BUILD_ID` staleness + the 0472
+precedent cover dev-cache skew (no serde meaning-change to an existing field;
+new required fields on fresh builds only). Behaviour-invariant — the carrier is
+WRITE-ONLY until W1, so the suite holds the **13-RED baseline** exactly.
+
+Per-leg:
+- **Trait-method (main).** `ModuleEntry::TraitImpl` gains `impl_module:
+  ModuleFullPath` (required, no serde default; rustdoc = amended D45: shell =
+  discovery record at the trait's home, `impl_module` = where the bodies live),
+  written from `state.current_module` at the shell construction
+  (`impl_check.rs` — verified current is the WRITER there, before the per-method
+  module switch). `ResolvedCall::TraitMethod` gains `impl_module` (required),
+  populated by `try_resolve_trait_method` via a new
+  `checker::impl_module_in_home` helper (exact canonical-key probe
+  `impl${fq_for_mangle}${fq_trait_name}` at the trait home, bare-name fallback
+  for the intrinsic-receiver head skew; degrades to `current_module` only on a
+  pathological miss). `resolved_call_to_fqsymbol` now READS `impl_module` (the
+  callees.rs "Step 5" answer — also repairs the S101 reverse index for
+  cross-module trait calls). SigDispatch mono legs untouched.
+- **AutoCurry plain leg.** `pending_auto_curry` widened with the callee `Var`
+  span; `resolve_auto_curry` transports the callee's already-recorded
+  `resolved_targets` carrier for a plain-fn curry (resolve-once, shadow-correct;
+  `None` for a local target), replacing the wrong `{current_module, target}`
+  derivation. Trait/builtin curries still derive from the inner resolution.
+- **Fn-value mono rewrite.** `pass4_monomorphise` inserts `{current_module,
+  mangled_sym}` at `arg_span` alongside the `rename_var_at_span` — so the W2
+  0585 keyed read sees the minted instance's storage, not the slot-less template.
+
+Cascade: `into_concrete` arm, `src/repl.rs::impl_entry` fixture, `check/tests.rs`
+serde-roundtrip + typecheck/backend test constructors, `cranelisp-types/CLAUDE.md`
++ backend CLAUDE.md already at schema-19, `public-api.txt` regen (+2 lines, the
+two new fields only). One unit pin per fixed leg (all green):
+`traits::dispatch::tests::resolved_target_cross_module_trait_method_records_impl_writer_module`,
+`program::tests::resolved_target_autocurry_imported_target_records_targets_home`,
+`program::tests::resolved_target_fn_value_mono_rewrite_carries_mangled_carrier`.
+Suite: **4565 run, 4552 pass, 13 fail (unchanged S110 REDs), 1 skip** (+3 pins,
+zero new failures). `cargo check --workspace --tests`/clippy clean.
+
+**§1.1.1 deviation flagged to `/arch` (do-not-improvise): ONE plumbing step
+beyond the literal leg-3 insert.** The design attributed "the carrier reaches
+codegen" for the fn-value rewrite to W0.b's view-totalization. But the enclosing
+concrete defn's `codegen_view` is ALREADY rebuilt post-mono at
+`finalize_annotations_and_publish` (`finalize.rs`) from the RENAMED AST +
+`accumulator.resolved_targets`; the only missing plumbing was that
+`sweep_post_pass_outputs` discarded `state.method_resolutions.resolved_targets`
+(swept only `resolved_calls`), so pass-4 carriers never reached the accumulator.
+I extended the sweep to carry `resolved_targets` into the accumulator (behaviour-
+invariant — the field rides unread until W1). This makes the leg-2 finalize-drain
+and leg-3 fn-value carriers reach the EXISTING enclosing-view rebuild NOW (and is
+what makes the leg-3 pin observable). The LENIENT/synthetic-body totalization
+(`Span::SYNTHETIC` bodies, ctor/accessor direct population) remains W0.b as
+ruled. `interfaces.md` is `/arch`-owned — the two new fields likely want a
+one-line narrative there (`ResolvedCall`/`ModuleEntry` sections); FLAGGED, not
+edited.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

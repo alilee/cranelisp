@@ -2304,6 +2304,81 @@
         );
     }
 
+    // ---------------------------------------------------------------------
+    // S110 W0.1b (§1.1.1) — the two further producer legs the cross-module
+    // ruling fixed. Behaviour-invariant (carriers ride UNREAD until W1); these
+    // assert the PRODUCER writes the right STORAGE module.
+    // spec: design/arch/backend-keyed-consumer.md §1.1.1
+    // ---------------------------------------------------------------------
+
+    // W0.1b AutoCurry plain leg: a partial application of an IMPORTED fn carries
+    // the TARGET's storage home at the auto-curry Apply span (transported from
+    // the callee Var's already-recorded carrier), NOT the caller's module. The
+    // pre-W0.1b `{current_module, target}` derivation named the caller ("test")
+    // for an imported target whose Def lives in "lib".
+    #[test]
+    fn resolved_target_autocurry_imported_target_records_targets_home() {
+        let mut tc = tc_with_prims();
+        // `adder` (2-arg concrete) lives in module `lib`.
+        tc.set_current_module(ModuleFullPath::from("lib"));
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn adder [a b] (add-i64 a b))");
+        // Back in `test`: import `adder`, then curry-apply it: ((adder 10) 20).
+        tc.set_current_module(ModuleFullPath::from("test"));
+        seed_specific_import(&mut tc, &ModuleFullPath::from("lib"), &["adder"]);
+        check_src(&mut tc, "(defn main [] ((adder 10) 20))");
+
+        let view = main_codegen_view_of(&tc, "main");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let want = FQSymbol {
+            module: ModuleFullPath::from("lib"),
+            symbol: Symbol::from("adder"),
+        };
+        assert!(
+            targets
+                .iter()
+                .any(|(label, fq)| label == "@apply" && fq.as_ref() == Some(&want)),
+            "the auto-curry Apply of imported `adder` must carry lib/adder (leg 2), \
+             not the caller's module; collected: {targets:?}"
+        );
+    }
+
+    // W0.1b fn-value mono-rewrite carrier: a generic fn passed as a VALUE into a
+    // HOF is minted as `test/iden$Int` and its arg-position `Var` rewritten; the
+    // span-keyed carrier is updated to the minted instance's STORAGE identity
+    // (caller's module) so the rebuilt codegen view names the mono, not the
+    // slot-less template. Without the fix the carrier stayed stale/absent and
+    // the W2 0585 keyed read would hard-fail this valid program.
+    #[test]
+    fn resolved_target_fn_value_mono_rewrite_carries_mangled_carrier() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn iden [x] x)\n\
+             (defn call1 [f x] (f x))\n\
+             (defn use1 [] (call1 iden 5))",
+        );
+        let view = main_codegen_view_of(&tc, "use1");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let want = FQSymbol {
+            module: ModuleFullPath::from("test"),
+            symbol: Symbol::from("test/iden$Int"),
+        };
+        let got = targets
+            .iter()
+            .find(|(label, _)| label == "test/iden$Int")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            got,
+            Some(want),
+            "the rewritten fn-value Var `test/iden$Int` must carry its mono \
+             storage carrier test/test/iden$Int at the arg span (leg 3); \
+             collected: {targets:?}"
+        );
+    }
+
     // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {

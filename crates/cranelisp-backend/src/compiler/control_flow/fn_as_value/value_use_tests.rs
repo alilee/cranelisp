@@ -341,6 +341,7 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
                     cranelisp_types::TypeName::from("String"),
                 ),
                 mangled_name: cranelisp_types::JitSymbol::from("Eq.=$String"),
+                impl_module: module.clone(),
             },
         )),
         inferred_type: Some(Box::new(Type::Fn(

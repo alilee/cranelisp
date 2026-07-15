@@ -566,8 +566,8 @@ impl ModuleEntry<()> {
             // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
             // lives on the platform module's own SymbolTable.dll
             // (see `design/arch/bounded-contexts.md` §7).
-            ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility } => {
-                ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility }
+            ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility } => {
+                ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility }
             }
             ModuleEntry::Ambiguous { visibility } => ModuleEntry::Ambiguous { visibility },
         }
@@ -1108,13 +1108,25 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     ///   in the compiling module's OWN table. The `methods: Vec<Symbol>`
     ///   field lists the local names.
     ///
-    /// The pending W0.1b field `impl_module: ModuleFullPath` (pinned,
+    /// The `impl_module: ModuleFullPath` field (S110 W0.1b,
     /// `backend-keyed-consumer.md` §1.1.1) is the pointer from the discovery
-    /// record to the storage module, so trait-method dispatch derives the
-    /// selected method entry's home with one keyed probe — never a scan.
+    /// record to the storage module — the impl-WRITER's module, whose table
+    /// holds this impl's mangled method `Def`s and their GOT slots. Written
+    /// from `state.current_module` at the shell construction
+    /// (`impl_check.rs` `check_trait_impl`), so trait-method dispatch derives
+    /// the selected method entry's home with one keyed probe — never a scan
+    /// (resolves the callees.rs "Step 5" note; repairs the S101
+    /// session-transaction reverse index for cross-module trait calls). It is
+    /// a REQUIRED field (no `#[serde(default)]`): a defaulted `""` module is a
+    /// representable-invalid state (Principle 20), and construction sites are
+    /// forced to supply it (Principle 18).
     TraitImpl {
         trait_name: FQTraitName,
         impl_type: FQTypeName,
+        /// The module whose table holds this impl's mangled method `Def`s and
+        /// their GOT slots (the impl-writer's module). See the variant rustdoc
+        /// above — the discovery→storage pointer for the amended Decision 45.
+        impl_module: ModuleFullPath,
         /// Method names defined in this impl (local names, not mangled).
         methods: Vec<Symbol>,
         /// Always `Public` per spec §5.11.1 (impls are visible wherever both

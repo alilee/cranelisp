@@ -146,6 +146,7 @@ fn test_try_resolve_trait_method_success() {
         method_name,
         impl_type,
         mangled_name,
+        impl_module,
     }) = result
     {
         assert_eq!(trait_name.name.as_ref(), "TestTrait");
@@ -154,6 +155,60 @@ fn test_try_resolve_trait_method_success() {
         // S102 4th lossy-head cure: the `$Type` suffix carries FQ nominal
         // identity (`primitives/Int`), lock-step with the definition side.
         assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$primitives/Int");
+        // S110 W0.1b (§1.1.1): the carrier's storage module is the impl-writer's
+        // module, read off the `TraitImpl` shell. `tc_with_prims` sets the
+        // fixture's current module to `test`, where both trait + impl are
+        // written, so the same-module storage is `test`.
+        assert_eq!(impl_module.as_ref(), "test");
+    }
+}
+
+// spec: design/arch/backend-keyed-consumer.md §1.1.1 — a CROSS-module trait
+// method call records the impl-WRITER's module (read off the `TraitImpl`
+// shell), NOT the caller's `current_module`. The pin inserts a shell whose
+// `impl_module` is a third module ("writermod") distinct from both the trait's
+// home ("test") and the resolving `current_module` ("test"); a correct read
+// yields "writermod", the pre-W0.1b bug yielded "test".
+#[test]
+fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
+    let mut tc = tc_with_prims();
+    let decl = make_test_trait_decl();
+    tc.register_trait_decl_self(&decl).unwrap();
+
+    // Insert the discovery shell into the trait's home ("test") with an
+    // `impl_module` pointing at a distinct writer module. (Canonical key +
+    // bare-name fallback both reach it; the writer module carries the mangled
+    // method Defs in production.)
+    tc.symbol_table_mut().insert(
+        Symbol::from("impl$primitives/Int$test/TestTrait"),
+        cranelisp_types::ModuleEntry::TraitImpl {
+            trait_name: cranelisp_types::FQTraitName::new(
+                cranelisp_types::ModuleFullPath::from("test"),
+                TraitName::from("TestTrait"),
+            ),
+            impl_type: cranelisp_types::FQTypeName::new(
+                cranelisp_types::ModuleFullPath::from("primitives"),
+                TypeName::from("Int"),
+            ),
+            impl_module: cranelisp_types::ModuleFullPath::from("writermod"),
+            methods: vec![Symbol::from("test-op")],
+            visibility: Visibility::Public,
+        },
+    );
+
+    let result = tc
+        .try_resolve_trait_method_self(&Symbol::from("test-op"), &[Type::Int, Type::Int], Span::SYNTHETIC)
+        .expect("should not error");
+    match result {
+        Some(ResolvedCall::TraitMethod { impl_module, mangled_name, .. }) => {
+            assert_eq!(
+                impl_module.as_ref(),
+                "writermod",
+                "carrier must name the impl-writer's module, not current_module"
+            );
+            assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$primitives/Int");
+        }
+        other => panic!("expected a TraitMethod resolution, got {other:?}"),
     }
 }
 

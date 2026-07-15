@@ -60,6 +60,7 @@ fn row_traitmethod_is_summarised_by_mangled_name() {
         method_name: Symbol::from("eq"),
         impl_type: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Int")),
         mangled_name: JitSymbol::from("Eq.eq$Int"),
+        impl_module: ModuleFullPath::from("user"),
     };
     let got = classify_call(Some(&rc), &var("eq"), |_| None);
     assert_eq!(got, CallClass::Summarised(Symbol::from("Eq.eq$Int")));

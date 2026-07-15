@@ -866,6 +866,7 @@
                         ModuleFullPath::from("primitives"),
                         TypeName::from("Int"),
                     ),
+                    impl_module: l.clone(),
                     methods: vec![Symbol::from("ch-op")],
                     visibility: Visibility::Public,
                 },

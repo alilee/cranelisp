@@ -308,6 +308,7 @@ pub cranelisp_types::ModuleEntry::TraitDecl::docstring: core::option::Option<all
 pub cranelisp_types::ModuleEntry::TraitDecl::info: cranelisp_types::TraitDeclInfo
 pub cranelisp_types::ModuleEntry::TraitDecl::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::TraitImpl
+pub cranelisp_types::ModuleEntry::TraitImpl::impl_module: cranelisp_types::ModuleFullPath
 pub cranelisp_types::ModuleEntry::TraitImpl::impl_type: cranelisp_types::FQTypeName
 pub cranelisp_types::ModuleEntry::TraitImpl::methods: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::ModuleEntry::TraitImpl::trait_name: cranelisp_types::FQTraitName
@@ -654,6 +655,7 @@ pub cranelisp_types::ResolvedCall::BuiltinFn::name: cranelisp_types::Symbol
 pub cranelisp_types::ResolvedCall::SigDispatch
 pub cranelisp_types::ResolvedCall::SigDispatch::mangled_name: cranelisp_types::JitSymbol
 pub cranelisp_types::ResolvedCall::TraitMethod
+pub cranelisp_types::ResolvedCall::TraitMethod::impl_module: cranelisp_types::ModuleFullPath
 pub cranelisp_types::ResolvedCall::TraitMethod::impl_type: cranelisp_types::FQTypeName
 pub cranelisp_types::ResolvedCall::TraitMethod::mangled_name: cranelisp_types::JitSymbol
 pub cranelisp_types::ResolvedCall::TraitMethod::method_name: cranelisp_types::Symbol

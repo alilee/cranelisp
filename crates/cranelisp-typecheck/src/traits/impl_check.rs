@@ -155,6 +155,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ModuleEntry::TraitImpl {
                 trait_name: fq_trait_name,
                 impl_type: fq_impl_type.clone(),
+                // S110 W0.1b (§1.1.1): the discovery→storage pointer. The shell
+                // lands in the trait's home (`trait_home`), but the mangled
+                // method `Def`s + GOT slots land in the WRITER's module — which
+                // is `state.current_module` here (no per-method module switch
+                // has happened yet; the switch is in `check_impl_method_with_sig`).
+                impl_module: state.current_module.clone(),
                 methods: method_names,
                 visibility: Visibility::Public,
             },

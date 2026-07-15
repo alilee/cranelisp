@@ -5,8 +5,8 @@ use std::collections::HashMap;
 mod tests;
 
 use crate::{
-    Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, TraitMethodSig,
-    TraitName, Type,
+    Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, Scheme, Span, Symbol,
+    TraitMethodSig, TraitName, Type,
 };
 
 /// Per-Span resolved-stage data produced by typecheck, consumed by backend.
@@ -132,6 +132,17 @@ pub enum ResolvedCall {
         method_name: Symbol,
         impl_type: FQTypeName,
         mangled_name: JitSymbol,
+        /// The module whose table stores the selected mangled method `Def`
+        /// (the impl-WRITER's module — S110 W0.1b,
+        /// `design/arch/backend-keyed-consumer.md` §1.1.1). This is the
+        /// resolution PRODUCT: `try_resolve_trait_method` reads it off the
+        /// `ModuleEntry::TraitImpl` shell that grounds the selected mangle, so
+        /// the storage-module carrier (`resolved_targets`) and the `callees`
+        /// edge derive the method entry's true home — never `current_module`,
+        /// which is wrong for a cross-module trait call (impl written in B,
+        /// called from A). Downstream consumers READ this field, never
+        /// re-derive. REQUIRED (no `#[serde(default)]`, Principles 18/20).
+        impl_module: ModuleFullPath,
     },
     /// Resolved to a specific multi-sig variant (Ring 2)
     SigDispatch { mangled_name: JitSymbol },

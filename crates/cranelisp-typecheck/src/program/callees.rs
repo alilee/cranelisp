@@ -174,11 +174,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         current_module: &ModuleFullPath,
     ) -> Option<FQSymbol> {
         match resolved {
-            ResolvedCall::TraitMethod { mangled_name, .. } => {
-                // The impl method lives in the current module for now (Step 4).
-                // Step 5 will look up the impl's defining module from the trait registry.
+            ResolvedCall::TraitMethod { mangled_name, impl_module, .. } => {
+                // S110 W0.1b (§1.1.1): the mangled method `Def` is STORED in the
+                // impl-WRITER's module, carried on the resolution as
+                // `impl_module` (read off the `TraitImpl` shell in
+                // `try_resolve_trait_method`). This is the callees.rs "Step 5"
+                // resolution — never `current_module`, which is wrong for a
+                // cross-module trait call. Also repairs the S101 reverse index.
                 Some(FQSymbol {
-                    module: current_module.clone(),
+                    module: impl_module.clone(),
                     symbol: Symbol::from(mangled_name.as_ref()),
                 })
             }

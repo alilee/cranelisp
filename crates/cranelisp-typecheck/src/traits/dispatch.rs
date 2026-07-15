@@ -97,7 +97,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let trait_defining_module = self
             .resolve_trait(state, trait_name.as_ref(), span)
             .map_err(cranelisp_types::CranelispError::from)?;
-        let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name.clone());
+        let fq_trait_name = FQTraitName::new(trait_defining_module.clone(), trait_name.clone());
 
         // Build FQTypeName for the impl type — works for both ADT and
         // intrinsic targets (Phase B Part 5).
@@ -117,11 +117,30 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &fq_for_mangle,
         );
 
+        // S110 W0.1b (§1.1.1): the STORAGE module of the selected mangled
+        // method `Def` is the impl-WRITER's module, recorded on the
+        // `ModuleEntry::TraitImpl` shell at the trait's home (`impl_module`).
+        // Read it off the shell via the exact canonical key (bare-name fallback
+        // for an intrinsic-receiver head skew). `has_impl_with_state` succeeded
+        // above, so the shell exists; degrade to `current_module` only on a
+        // pathological miss. Consumers (`dispatch_target_fq`,
+        // `resolved_call_to_fqsymbol`) READ this — never re-derive.
+        let impl_key = format!("impl${}${}", fq_for_mangle, fq_trait_name);
+        let impl_module = self
+            .impl_module_in_home(
+                &trait_defining_module,
+                &impl_key,
+                &trait_name,
+                &impl_type_name,
+            )
+            .unwrap_or_else(|| state.current_module.clone());
+
         Ok(Some(ResolvedCall::TraitMethod {
             trait_name: fq_trait_name,
             method_name: callee_name.clone(),
             impl_type: fq_impl_type,
             mangled_name: JitSymbol::from(mangled.as_str()),
+            impl_module,
         }))
     }
 }

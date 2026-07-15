@@ -163,8 +163,18 @@ pub struct CheckState {
     /// Used to suppress the "constrained fn as value" error for direct calls.
     pub(crate) in_call_position: bool,
     /// Pending auto-curry resolutions for single-arity functions.
-    /// (call_span, function_name, applied_arg_count, total_param_count, callee_type, target_resolution)
-    pub(crate) pending_auto_curry: Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>)>,
+    /// (call_span, function_name, applied_arg_count, total_param_count,
+    /// callee_type, target_resolution, callee_var_span).
+    ///
+    /// `callee_var_span` (S110 W0.1b, §1.1.1) is the span of the callee `Var`,
+    /// used at drain time to transport the callee's already-recorded
+    /// `resolved_targets` storage carrier for a PLAIN-fn curry (resolve-once,
+    /// shadow-correct — `infer_var` recorded the target's terminal storage FQ,
+    /// or nothing for a local binding). `None` when the callee is not a `Var`
+    /// (auto-curry requires a `Var` callee, so this is always `Some` in
+    /// practice).
+    pub(crate) pending_auto_curry:
+        Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>, Option<Span>)>,
     /// Multi-sig overload table: base name → [(internal_name, arity)].
     /// Populated during pass 1 when a `Defn` has multiple variants.
     pub(crate) overloads: HashMap<Symbol, Vec<(Symbol, usize)>>,
@@ -2389,6 +2399,51 @@ where
                 && &it.name == impl_type
             {
                 found = true;
+            }
+        });
+        found
+    }
+
+    /// Read the `impl_module` (storage of the mangled method `Def`s — the
+    /// impl-WRITER's module) off the `ModuleEntry::TraitImpl` shell in the
+    /// trait's ALREADY-RESOLVED home (S110 W0.1b,
+    /// `design/arch/backend-keyed-consumer.md` §1.1.1). Probes the exact
+    /// canonical shell key first (a direct staging-aware keyed get), then falls
+    /// back to a bare-name match (mirroring [`Self::has_impl_in_home`]) for an
+    /// intrinsic-receiver head skew between the dispatch-site `fq_for_mangle`
+    /// and the definition-site `fq_impl_type`. Returns `None` only if no shell
+    /// exists — the caller (which has already proven the impl exists via
+    /// `has_impl_with_state`) degrades to `current_module`.
+    pub(crate) fn impl_module_in_home(
+        &self,
+        trait_home: &ModuleFullPath,
+        impl_key: &str,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> Option<ModuleFullPath> {
+        // Exact canonical-key probe (staging-aware).
+        if let Some(ModuleEntry::TraitImpl { impl_module, .. }) =
+            self.probe_module_entry_owned(trait_home, impl_key)
+        {
+            return Some(impl_module);
+        }
+        // Bare-name fallback for a head skew (intrinsic receiver), mirroring
+        // `has_impl_in_home`.
+        let mut found = None;
+        self.for_each_in_module(trait_home, |_key, entry| {
+            if found.is_some() {
+                return;
+            }
+            if let ModuleEntry::TraitImpl {
+                trait_name: tn,
+                impl_type: it,
+                impl_module,
+                ..
+            } = entry
+                && &tn.name == trait_name
+                && &it.name == impl_type
+            {
+                found = Some(impl_module.clone());
             }
         });
         found

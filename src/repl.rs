@@ -4744,6 +4744,9 @@ mod fq_arg_tests {
                 home.clone(),
                 cranelisp_types::TypeName::from(type_name),
             ),
+            // S110 W0.1b: this fixture models a same-module impl (shell + method
+            // bodies co-located at `home`), so `impl_module == home`.
+            impl_module: home.clone(),
             methods: vec![],
             visibility: Visibility::Public,
         }
