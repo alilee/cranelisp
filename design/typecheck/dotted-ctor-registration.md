@@ -350,25 +350,70 @@ motivates them):
 
 ---
 
-## 6. Blast radius — everything that keys on bare ctor names today
+## 6. Blast radius — everything that keys on bare ctor names (CORRECTED to the landed coordinate model)
 
-Audited; each item is either handled above, covered-by-construction, or flagged:
+> **This §6 was empirically wrong** (FIXME 0582, filed by `/arch`). Its original
+> table scoped the audit to **typecheck** consumers of bare ctor keys and marked
+> the int/backend rows "unaffected / covered-by-construction". The W1.1a landing
+> attempt measured **73 regressions** — the "unaffected" rows were the failures.
+> The **cross-crate authority is `design/arch/dotted-ctor-canonical-keys.md`**
+> (the W1.1a COORDINATE re-ruling, user-ruled P5): §3 (reader inventory), §1
+> (uniform writers), §10 (DC-11 sidecar cure). This §6 is the typecheck-surface
+> census pointing at that authority for the int/backend rows; where they overlap,
+> the arch note wins.
+
+**The audit lesson (record it, it is the durable takeaway).** A symbol-table
+**keying change's blast radius is every crate's raw `table.get` probe, not the
+owning crate's**. The failure was the §6 audit *method* — grepping typecheck —
+not any individual row. A bare→canonical key flip is a cross-crate contract:
+every reader that probes a ctor `Def` by bare key or follows aliases only one hop
+must be found and widened in the **same change-set** as the writers, or the
+readers and writers disagree on one name grammar (the Principle-8 "no landing
+where they disagree" violation).
+
+**Writer inventory — the uniformity the first landing missed (arch note §1).**
+Keying is **uniform across every constructor writer**, not just `adt.rs`. All
+writers mint the canonical `member_key(Type, Ctor)` `Def` + a same-module bare
+`Import` alias (a **product** ctor keeps its single type-name key, no dotted key,
+no alias):
+
+| Writer | Site |
+|---|---|
+| User `deftype` | `cranelisp-typecheck/src/adt.rs::register_constructors` |
+| Typecheck fixture seeds | `cranelisp-typecheck/src/builtins.rs::register_{slist,sexp}_type` (via `register_constructors`) — the fixture MUST mirror the live `bootstrap.rs` shape it stands in for |
+| Int session seeds | `src/bootstrap.rs::register_synth_adt` — `Option`, `Result`, `IO` (`Pure`/`Effect`), `Trace`, the `macros` `SList`/`Sexp` families (`Pair` is product, unchanged) |
+| The hand-appended `IO.Bind` | `src/bootstrap.rs::register_io_type` — canonical `IO.Bind` + bare alias like every sum ctor; `internal: true` rides the `Def` |
+
+A seeded/user keying split is exactly the "100 such decisions would be chaos"
+the user ruled out — no writer may keep bare-keyed sum-ctor `Def`s.
+
+**The cross-crate census** (each row: handled here, or the cross-crate row the
+original table got wrong / omitted — see arch note §3 for the fix mechanism):
 
 | Site | Reads bare ctor how | Disposition |
 |---|---|---|
 | **`defined_symbols()` / codegen emission** | ctor `Def` under bare key → compiled | **Handled by construction.** Canonical `Def` is `defined_symbols()`-visible (only `Import`/`Ambiguous` are excluded); the bare alias adds no compiled fn. Ctor emitted once under `Maybe.Some` — proven by the `Box.v` accessor precedent. |
-| **Tag dispatch / `ConstrADT` codegen** | reads `DefKind::Constructor.{type_name,tag,field_count}` off the resolved entry | **Unaffected** — metadata rides the `Def`, not its key; dotted and bare reach the identical `Def`/GOT slot (arch note: no ABI/GOT impact). |
+| **Backend tag dispatch — pattern position** (`match_codegen.rs::compile_constructor_pattern`) | ~~metadata rides the `Def`, dotted and bare reach the identical `Def`/GOT slot~~ | **WAS WRONG — the row that broke.** Backend `CompileContext::lookup_constructor` (`context.rs:146`) followed the import chain **exactly ONE hop** and its global fallback probed **bare keys**, so an imported bare ctor (`user.Nil → home.Nil-alias → home."List.Nil"`, 2 hops) MISSED → `unknown constructor: Nil` — the **root of the entire prelude cascade** (~30 regressions via `collections.list.test`). **Cure (LANDED, arch §10 DC-11):** typecheck records the canonical **storage key** in `MethodResolutions.pattern_ctors`, transported to codegen on a new `MonoMatchArm.resolved_ctor: Option<FQSymbol>` (populated via a **required** `MonoExpr::from_expr` `pattern_ctors` param — unforgettable, P18). Pattern codegen now does a **direct keyed read** `CompileContext::ctor_meta_at(&FQSymbol)` and **hard-errors** on a miss — no context-free re-resolution, no DashMap-order global fallback (the run-to-run wrong-tag nondeterminism class). `CACHE_SCHEMA_VERSION` 17→18. `lookup_constructor` is no longer called from pattern position. |
+| **Backend ctor-as-value — nullary tag path** (`lookup_constructor` value position) | tag path misses on the 2-hop chain, falls through to fn-as-value closure wrap | **WAS WRONG — the silent class.** A cross-module bare nullary ctor value missed the tag path and compiled as a **fn-value closure** (CLIF-verified) → runtime "match failed", **silent wrong value**. **Cure (LANDED):** `lookup_constructor` collapsed onto the ONE backend resolution driver (`resolution.rs::resolve_driven`, multi-hop + alias-substitution + global fallback) with a ctor-extracting closure, and the driver's qualified/global arms made canonical-key-aware. Do NOT widen the one-hop copy in place (the P7 two-resolvers-one-name defect). |
+| **Int value display** (`src/display.rs::ctor_field_types` :521) | raw `table.get(bare_ctor)` for `Def{scheme}` → alias → `None` | **WAS MISSING.** Data ctors rendered with **fields dropped** (`(Cons 2 …)` shows `List.Cons`; the `display_*` class). **Cure (LANDED):** probe `member_key(fqtn.name, ctor)` **canonical-first**, bare fallback for the product facet. |
+| **Int member-glob import** (`src/imports.rs::collect_member_glob`) | scans `public_symbols()` for `Def{Constructor}` matching the parent type | **WAS MISSING.** Post-change it collects the CANONICAL (dotted) names, but bare aliases are `Import` edges and are **skipped**, so a member-glob importer loses bare ctor references. **Cure:** for each matched canonical member also install the bare-alias edge (mirroring the home module's binding shape; §8.6.5 ambiguity handling at the importer unchanged). |
+| **SEEDED constructor writers** (`src/bootstrap.rs::register_synth_adt` + `IO.Bind`; `builtins.rs` fixture) | keep bare keys → seeded/user keying split | **WAS MISSING.** A seeded-vs-user split is a third keying. **Cure (LANDED):** every writer mints canonical + alias uniformly (writer inventory above). |
 | **`match` exhaustiveness** | `type_def.constructors` (bare) vs covered patterns; per-ctor `internal` probe | **§4 — two REQUIRED edits, same change-set.** |
-| **`instantiate_ctor`** (`infer.rs:137`) | `info.constructors[tag]`, tag-indexed on `TypeDefInfo` | **Unaffected** — bare-name list, tag-driven; no key probe. |
+| **`instantiate_ctor`** (`infer.rs:137`) | `info.constructors[tag]`, tag-indexed on `TypeDefInfo` | **Unaffected** — bare-name list, tag-driven; no key probe. Note the sidecar single-mint point IS `instantiate_ctor` (arch §10.1): it probes canonical-then-bare and records **whichever key HIT** into `pattern_ctors`. |
 | **`type_ctor_names` + backend heap classifiers** (`value_layout`, `is_mixed_adt`, `classify_adt`) | `type_ctor_names` → `table.get(key)` | **Obligation A** (§5) — walk returns canonical keys; soundness-coupled (`value_layout`), so must land together. |
+| **Sparkability ctor-exclusion** (`let_if.rs::collect_module_constructors` vs `sparkability.rs::is_worth_sparking`) | storage keys vs source-written callee names | **Heuristic-only** (arch §10.4). Sum-ctor calls silently dropped from the exclusion set (spark-heuristic noise, not correctness). **Cure (LANDED):** both sides go through the ONE grammar `cranelisp_types::bare_member_name`. |
 | **Mono collection** | mono keys on *fn* names / mangled variants | **Unaffected** — ctors are not monomorphised (concrete-per-instantiation via `ConstrADT`); `callees` explicitly does not record dotted member refs (typecheck CLAUDE.md). |
-| **`public_symbols()` → `/list`/`/exports`/glob-import/agent harvest/`/search`** | surfaces Public entries | **Behaviourally preserved, DISPLAY flagged.** Canonical `Maybe.Some` (Public) + bare `Some` alias (Public, §2.4) both surface. Bare-import reach (`(import [m [Some]])`) is preserved (alias Public). `/list` would show BOTH `Maybe.Some` and `Some` (double-count) — a REPL-experience call, **flag to `/repl`** to mirror the accessor listing ruling (FIXME 0438 / `fixme-0365 §1.6.5`) and the E4 unified-display seam (bucket 6 / 0572). Not a typecheck correctness item. |
-| **`instantiate_ctor` / `is_internal_constructor`** dotted input | strips `/` prefix, not `.` | Dotted `Maybe.Some` resolves through the new `resolve_constructor_entry` arm (§3.3); `is_internal_constructor` reads `internal: false` off the terminal ctor `Def` — admitted, not rejected. **Unaffected** (internal ctors never written dotted). |
+| **`public_symbols()` → `/list`/`/exports`/glob-import/agent harvest/`/search`** | surfaces Public entries | **Behaviourally preserved, DISPLAY flagged.** Canonical `Maybe.Some` (Public) + bare `Some` alias (Public, §2.4) both surface; bare-import reach (`(import [m [Some]])`) preserved. `/list` would show BOTH (double-count) — a REPL-experience call, **flag to `/repl`** (FIXME 0438 / `fixme-0365 §1.6.5`; E4 unified-display seam, bucket 6 / 0572). Not a typecheck correctness item. |
+| **`instantiate_ctor` / `is_internal_constructor`** dotted input | strips `/` prefix, not `.` | Dotted `Maybe.Some` resolves through the `resolve_constructor_entry` arm (§3.3); `is_internal_constructor` reads `internal: false` off the terminal ctor `Def` — admitted, not rejected. **Unaffected** (internal ctors never written dotted). |
 
-**Sites that would silently break without the flagged edits:** exhaustiveness
-(§4, both) and the `type_ctor_names`/`value_layout` heap classifiers (§5,
-Obligation A — soundness-coupled, a UAF class if the walk and keying diverge).
-Everything else is unaffected or covered-by-construction.
+**Sites that silently break without the coordinate edits:** the two backend
+resolvers (pattern position → `unknown constructor` cascade; nullary value → the
+silent wrong-value class), int value display (fields dropped), member-glob
+(lost bare refs), the seeded-writer split, exhaustiveness (§4), and the
+`type_ctor_names`/`value_layout` heap classifiers (§5, Obligation A —
+soundness-coupled, a UAF class). The landing is ONE `/dev` deployment, two
+commits: **reader-widening (behaviour-invariant)** then **writer-flip + cache
+bump + RED flips** (arch note §4).
 
 ---
 

@@ -52,6 +52,153 @@ This is the textbook behaviour of monomorphic let-rec-group inference: **sound b
 
 **Design ruling — generalize-before-cross-defn-use, NOT polymorphic recursion.** The fix is to give cross-defn call sites a *generalized* (instantiable) view of the callee. It is **NOT** to make a function's self-reference polymorphic — `check_defn_body` binds the recursion name `mono(fn_type)` (line 1947) and that is **correct and must stay**: polymorphic recursion is undecidable in HM, and the spec's `let`/`fn` polymorphism (spec §3.5.3 / §5) generalizes at the *binding group* boundary, not within a body. The correct seam is to **generalize each defn immediately after its body is checked (in `check_form_body_single_defn`, after line 832 where `trial_scheme` is already computed) and write the generalized scheme back to the symbol-table entry**, so a later-source sibling that calls it instantiates a fresh copy. The same writeback must also cover the *caller-before-callee* source order: a caller checked before its callee's body still sees the monomorphic entry, so the durable correctness guarantee is "generalize the binding group as a unit and re-expose generalized schemes to any cross-defn reference." The minimal implementation is the per-defn post-body writeback (it fixes the common callee-before-caller order and the fold repro); the complete implementation generalizes the strongly-connected-component group and instantiates non-self references. The unit test pins the *observable* contract (correct inferred scheme + a green call), leaving the implementation free to choose the minimal-vs-complete mechanism so long as the scheme is right.
 
+## Written type variables (spec §3.3.1–§3.3.5, shipped model S109 W6.3)
+
+A source author may **write** a type variable in a parameter or return annotation
+(`(defn id [:a x] x)`, `:a "hello"`, `:(Box a)`). The engine's treatment of a
+written var is fixed by spec §3.3.1–§3.3.5; this section records how that model
+is realized in the inference engine and — as important — **what it is not**, so a
+future reader does not re-introduce the discarded intermediate models.
+
+### Design evolution — three states, only the last shipped
+
+The model went through three states within S109; **only W6.3 is the engine's
+behaviour**, and the two earlier states must not be transcribed back into the
+design:
+
+- **W6 (`e401cce9`)** — a written free var minted a *fresh quantified* var
+  (flexible-mint). SUPERSEDED.
+- **W6.2 (`b2bfb760`)** — a written var was a **rigid skolem EVERYWHERE**, bare
+  vars included, with a `suppress_rigid_annotations` flag guarding re-checks and
+  an eager `lambda_written_vars` poly-as-value escape check. SUPERSEDED — the
+  flag and the eager check are both **deleted from the source**; do not describe
+  them as live.
+- **W6.3 / W6.3.1 (`c3008d1f`, `750471ac`, `eb6c94e6`)** — the SHIPPED hybrid.
+
+### The shipped hybrid (W6.3)
+
+A written type var is treated on one of two paths, chosen by *what* is written:
+
+1. **Bare var = an ordinary FLEXIBLE inference var carrying a display name.**
+   `:a` (standing alone or nested in `:(Box a)`) is exactly an inference-generated
+   var that survives generalization, plus a name. The name does two things and no
+   more (§3.3.1): it **relates same-named occurrences** (lexical co-reference) and
+   it **documents** the displayed scheme. It carries **no rigidity and no checking
+   obligation** — the body MAY narrow it to a concrete type, and that is **never an
+   error** (spec §3.3.5 rows 2, 4, 11; `(defn f [:a x] :a "hello")` is
+   `(Fn [String] String)`). Two bare vars tied by the body simply **merge**.
+
+2. **Constraint at a parameter position = held abstract (rigid).** `:C x` where
+   `C` names a trait is a checkable claim (§3.3.2). At a quantified position the
+   var is **held abstract over `C`** for the body-check; the body narrowing it to
+   a concrete type is a **skolem escape** and is rejected (row 6). Rigidity lives
+   **only** on this constraint path.
+
+The one asymmetry between the two paths (a bare `:a` narrowed to `Int` is fine,
+row 2; a `:Num x` narrowed to `Int` is an error, row 6) is the whole reason the
+hybrid exists: a *caller* relies on the constraint, not on the name.
+
+### Realization in the engine
+
+- **`written_var_scope: Option<HashMap<Symbol, TypeId>>` threads LEXICAL
+  CO-REFERENCE only** (`CheckState`, `checker.rs`). It is built in Pass-1
+  (`register_defn_signature` → the accumulator's per-defn `defn_var_scopes`),
+  installed for the body in `check_defn_body` (`program/body.rs`), and **shared —
+  never reset — into nested `fn` closures** by `infer_lambda` (`infer.rs`), so a
+  body `:a` co-refers with a param `:a` and an inner `(fn [:a y] …)` co-refers
+  with the enclosing `a` (§3.3.1, row 8; FIXME 0588). This scope is *all* a bare
+  var carries — a name, never rigidity.
+
+- **`rigid_vars: HashSet<TypeId>` holds ONLY asserted-constraint param vars.**
+  `check_defn_body` seeds it, per body, from the param `Type::Var`s that **already
+  carry a constraint at Pass-2 entry** — i.e. `resolve_bound_param` recorded the
+  assertion `:C x` into `state.active_constraints` during Pass-1. A **bare** `:a`
+  param that merely *accrues* a `Num` constraint from body use (row 7) is **not**
+  seeded: its var has no constraint until body inference runs (after seeding), so
+  it stays **flexible** — the inferred-not-asserted distinction that separates row
+  7 (accepted, `Num`-polymorphic) from row 6 (rejected, skolem escape). The set is
+  scoped to the owning body and torn down on return (save/clear/restore in
+  `program/body.rs` and `traits/impl_check.rs`).
+
+- **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var` are the ONE
+  unification seam** (`unify.rs`; `self.unify` at `checker.rs` always threads
+  `state.rigid_vars`; the free 3-arg `unify` is a test-only helper). The asymmetry
+  is realized entirely in `unify_var`:
+  - a **flexible** var MAY bind to a rigid one — *use-acquisition*, sound;
+  - a **rigid** var MUST NOT unify with a **concrete type** — *skolem escape*,
+    rejected (row 6);
+  - **two rigid vars MERGE** (both stay abstract) — `(defn assert-eq [:Eq a :Eq b]
+    (= a b))` is a constraint-polymorphic scheme, **not** an error. (The W6.2
+    distinct-rigid-escape rule was removed.)
+
+- **Rigidity is TRANSIENT inference state.** `rigid_vars` and `written_var_scope`
+  live on `CheckState`, are per-body, and are **never serialized** — a var is
+  rigid only for the duration of one body-check. **No `cranelisp-types` type
+  carries rigidity**; there is no schema or cache impact from the model.
+
+### Rank-1 polymorphic returns — no eager check (§3.3.4/§3.10)
+
+A `defn` whose body **defines a rank-1 polymorphic function value** — returned
+(`(defn mk [] (fn [:b y] y))`), let-stored-and-returned, passed uninstantiated, or
+applied in place — is a legitimate value. The written `:b` is irrelevant: the
+written form is the **same thing** as its unwritten twin, and both are accepted
+(§3.3.4 MUST (f), row 10). The former eager `lambda_written_vars` free-var escape
+check (added `c3008d1f`, refined `750471ac`) over-rejected the written forms while
+their unwritten twins compiled; it was **removed at W6.3** and the
+`CheckState::lambda_written_vars` field is **gone** — do not re-add it, and
+`resolve_annotation_type_expr_in_module` returns just the `Type` (the minted-id
+list that fed the removed check is gone).
+
+The genuine rank-2 / value-restriction limits are enforced **elsewhere by the
+type system, not by an eager gate**:
+
+- a single poly instance used at two types (`(let [f (mkid)] (f "x") (f 5))`) →
+  the value restriction / **unification** (rows 18);
+- a poly value passed and used at two types inside a callee → **unification**
+  (rank-2 argument, row 19);
+- a result-only var held unresolved at a codegen-reaching use (`(zed)` with no
+  context, row 16) → the **§3.11 ambiguity gate** (the R16 result-var
+  monomorphisation family). Not yet landed as a check — reported to `/sprint` as a
+  coordinated seam (needs a "dispatch selected NO impl" signal; the `main` entry
+  leg additionally needs the int entry-validation seam, Principle 19).
+
+### Value-position annotations (§3.3.3)
+
+`infer_annotate` handles annotations on a concrete expression. A bare/concrete
+annotation (`:a "hello"`, `:Int (zed)`) is a **flexible unify** — the value's type
+unifies with the annotation (pins freely / resolves return-type dispatch). A bare
+name that resolves as a **trait** (`:Num 5`) is a **satisfaction check only**
+(MUST (c)): accepted **iff** the expr's type implements the trait, changing
+nothing — it does not disambiguate return-type dispatch. The check discriminates
+three cases on the resolved expr type (FIXME 0597): a **nominal concrete** type →
+`has_impl_in_home`; a **concrete but non-nominal** type (a `Fn` — implements
+nothing, impls are keyed by type name; `concrete_type_name == None`) → **reject**;
+still a `Type::Var` → leave the residual for the §3.11 gate.
+
+### Open design note — constraint-path rigidity in trait-impl method bodies
+
+**(Narrow residual from FIXME 0593; fenced, no live unsoundness — fold into the
+S110 FIXME-0590 resolver-convergence round.)** 0593's original worry — that a bare
+written-var ascription in an impl-method body would "silently acquire" flexibly —
+is **obsoleted by W6.3**: a bare var *is* flexible by design, and a body pinning it
+is the intended semantics (§3.3.5 row 4), the same in an ordinary defn body and an
+impl-method body (no per-variant divergence). The flag the concern hinged on
+(`suppress_rigid_annotations`) no longer exists.
+
+`check_defn_body_with_types` (`traits/impl_check.rs`) — the shared helper for
+trait-impl method bodies **and** the monomorphise re-check — receives
+already-concrete `param_types` and **clears** `rigid_vars` / `written_var_scope`
+for the body, so a body-only written var mints a plain flexible var with no
+co-reference and no rigidity. The only residual question is narrow: whether a
+constraint on a **non-`Self`** type variable carried by a trait-method signature
+should be **held abstract (rigid)** inside the impl-method body (an MUST (b) /
+§3.3.2 obligation the current concrete-param path does not seed). It is fenced
+today by a parse gap — body annotations do not parse inside impl-method defn
+bodies (`(impl Doubler Int (defn twice [n] :a "hello"))` → `parse error:
+annotation missing expression`, a FIXME-0591-class position gap). The trigger that
+would make it live is the parse-gap closure; resolve the constraint-in-impl-body
+question and add the impl-method-body row to the §L matrix (`/qa`) at that point.
+
 ## Unification
 
 Standard Algorithm W unification with occurs check:
