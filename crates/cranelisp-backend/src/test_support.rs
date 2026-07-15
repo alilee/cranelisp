@@ -357,6 +357,37 @@ pub(crate) fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp
     }
 }
 
+/// Build a `codegen_view` for a HAND-CONSTRUCTED fixture entry (KC-W0-6, S110
+/// W0.b `backend-keyed-consumer.md` §4 W0.b). After the totalization flip the
+/// backend hard-errors on a codegen-reached body with `codegen_view: None`, so
+/// every hand-built fixture that reaches `compile_to_module` MUST carry a view —
+/// the same obligation the typecheck producer satisfies for real programs.
+///
+/// TOTAL, mirroring `program::support::build_concrete_codegen_view`: strict
+/// `MonoExpr::from_expr` first, [`MonoExpr::lenient_from_expr`] fallback — so a
+/// synthetic ctor/accessor-style body (un-annotated `inferred_type: None` nodes)
+/// still yields a view. `resolved_targets` threads the W1 dispatch carriers a
+/// fixture computes directly from the tables it also builds (empty for
+/// value-only fixtures — carriers ride unread until W1 flips the keyed reads).
+pub(crate) fn test_codegen_view(
+    name: &Symbol,
+    variant: &cranelisp_types::DefnVariant,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+) -> cranelisp_types::MonoDefnVariant {
+    let empty_ctors = HashMap::new();
+    let body = cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, resolved_targets)
+        .unwrap_or_else(|_| {
+            cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, &empty_ctors, resolved_targets)
+        });
+    cranelisp_types::MonoDefnVariant {
+        name: name.clone(),
+        params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+        body,
+        span: variant.span,
+        mode_summary: None,
+    }
+}
+
 /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via
 /// `compile_to_module`, finalize JIT, execute, and return the i64 result.
 ///

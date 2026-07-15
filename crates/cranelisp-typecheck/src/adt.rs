@@ -190,7 +190,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility,
         );
 
-        for (key, entry) in entries {
+        for (key, mut entry) in entries {
+            // **W0.b totalization (`backend-keyed-consumer.md` §4 W0.b / §5).**
+            // Every codegen-reached ctor `Def` carries a `codegen_view` built at
+            // synthesis — typecheck is the SOLE mono-view producer, so the
+            // backend never rebuilds one via a lenient path. A ctor body is a
+            // synthetic `Expr::ConstrADT` (already FQ + tag, NO reference — empty
+            // sidecars), so the lenient view is byte-identical to the deleted
+            // backend build (`lib.rs:909`). The mono-view carrier is set directly
+            // here because the synthetic body's `Span::SYNTHETIC` is outside the
+            // span-keyed sidecar transport.
+            if let ModuleEntry::Def { ast: Some(v), codegen_view, .. } = &mut entry {
+                *codegen_view = Some(cranelisp_types::MonoDefnVariant {
+                    name: key.clone(),
+                    params: v.params.iter().map(|(n, _)| n.clone()).collect(),
+                    body: cranelisp_types::MonoExpr::lenient_from_expr(
+                        &v.body,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                    ),
+                    span: v.span,
+                    mode_summary: None,
+                });
+            }
             match &entry {
                 // The ONLY `Import` shape the builder returns is a sum ctor's
                 // bare-name alias onto its canonical `member_key(Type, Ctor)`
@@ -559,6 +581,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // real, there is NO poison re-mint / reconstruction (the as-built's
         // `remint_first_accessor_under_qualified_key` + poison-arm `Def`-minting
         // are DELETED — net deletion, Principle 6).
+        // **W0.b totalization (`backend-keyed-consumer.md` §4 W0.b / §5).** The
+        // synthesised accessor is a codegen-reached `Concrete{slot}` UserFn whose
+        // body — `(match self [(Ctor …) field])` — legitimately fails strict
+        // `from_expr` (its nodes are `inferred_type: None`). Build its lenient
+        // `codegen_view` HERE and carry the pattern arm's `resolved_ctor`
+        // DIRECTLY: the synthetic pattern's `Span::SYNTHETIC` is outside the
+        // span-keyed sidecar transport, but the identity is in hand — it is the
+        // owner product ctor's canonical STORAGE key. For a product that key is
+        // the bare type name (`ctor.name == fqtn.name`; the dual-facet key
+        // `build_adt_entries` inserts the ctor `Def` under), which
+        // `ctor_meta_at` resolves to the same `Def` as the deleted
+        // `lookup_constructor` fallback (byte-identical CLIF — the W0.b golden
+        // class 02). This CLOSES the backend's `resolved_ctor: None` synthetic
+        // fallback (S19, deleted W3).
+        let mut accessor_pattern_ctors = HashMap::new();
+        accessor_pattern_ctors.insert(
+            body_span,
+            FQSymbol { module: fqtn.module.clone(), symbol: ctor.name.clone() },
+        );
+        let accessor_view = cranelisp_types::MonoDefnVariant {
+            name: qualified_key.clone(),
+            params: vec![Symbol::from("self$accessor")],
+            body: cranelisp_types::MonoExpr::lenient_from_expr(
+                &ast.body,
+                &accessor_pattern_ctors,
+                &HashMap::new(),
+            ),
+            span: body_span,
+            mode_summary: None,
+        };
         let canonical_slot = self.current_symbol_table_mut(state).allocate_got_slot();
         let canonical = ModuleEntry::def(
             scheme,
@@ -569,6 +621,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         .visibility(Visibility::Public)
         .param_names(vec![Symbol::from("self$accessor")])
         .ast(ast)
+        .codegen_view(accessor_view)
         .docstring(format!(
             "Canonical field accessor `{}.{}` of type `{}`.",
             fqtn.name, accessor_name, fqtn.name

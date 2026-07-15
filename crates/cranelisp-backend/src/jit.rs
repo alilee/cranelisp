@@ -606,19 +606,23 @@ impl Jit {
         //
         // S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391):
         // the codegen walk is over `MonoExpr` (every node `ConcreteType`-typed).
-        // This JIT/REPL/dev-session path takes a bare enriched `&Defn` (NOT a
-        // `ModuleEntry`), so there is NO `codegen_view` to consume — it is exactly
-        // a "signature-driven path that legitimately has no codegen_view" per the
-        // S84 FIXME 0394/0395 close (the live `codegen_view` read lives on the
-        // `compile_to_module` `UserFn { Concrete{slot} }` path). It compiles
-        // ENRICHED `Defn`s directly — including the GENERIC defn template
-        // (`(defn id [x] x)` with `x: Var a`) that the REPL calls directly
-        // (`(id 7)` → bare `id`, no mono instance is minted for an interactive
-        // call). Such a body carries a residual `Var` at nodes whose type the
-        // codegen reads ONLY via `signature_heap_category` (Var→Mixed), so it is
-        // built LENIENTLY. `classify` stays total over `ConcreteType` (no `Var`
-        // arm); a genuine user-input ambiguity at a body-AST value position is
-        // caught upstream at the typecheck §3.11.1 check, not here.
+        // This path takes a bare enriched `&Defn` (NOT a `ModuleEntry`), so there
+        // is NO `codegen_view` to consume — it builds one LENIENTLY here.
+        //
+        // **NO LIVE CALLER (KC-W0-2 finding, 2026-07-15 call-site grep; design
+        // §5 finding 3).** `compile_defn` is reached ONLY from `#[cfg(test)]`
+        // harnesses (`jit/tests.rs`, `module_assembly_tests.rs`, the
+        // `*_codegen_tests.rs` siblings). The prior rustdoc's "the GENERIC defn
+        // template that the REPL calls directly" was STALE: the live REPL/`--run`
+        // path is `compile_to_module`, which post-W0.b consumes the
+        // typecheck-populated `codegen_view` (typecheck is the SOLE mono-view
+        // producer — `backend-keyed-consumer.md` §4 W0.b/§5) and hard-errors on a
+        // `None`; the lenient rebuild lives ONLY here. A bare generic template
+        // (`(defn id [x] x)` with `x: Var a`) is lowered only by this test helper;
+        // its residual `Var` nodes are read ONLY via `signature_heap_category`
+        // (Var→Mixed). W3 migrates this helper onto a `from_expr`-/typecheck-built
+        // view and deletes `lenient_mono_from_expr` + the backend lenient entry
+        // point entirely.
         let body = crate::lenient_mono_from_expr(defn.body());
         // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
         // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing

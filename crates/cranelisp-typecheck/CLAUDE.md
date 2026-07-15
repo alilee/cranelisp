@@ -148,10 +148,13 @@ consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
 - `ResolvedCall`-derived edges (`extract_call_graph_edges` — trait methods,
   sig-dispatch, auto-curry), unchanged;
 - `CheckState.user_fn_refs` — recorded at the `infer_var` chokepoint by
-  `checker::record_user_fn_ref` for every successfully-typed `Var` whose name
-  is NOT locally shadowed and resolves (chain-follow to home,
-  prelude-fallback-aware, `lookup`-mirroring qualified candidate order) to a
-  `DefKind::UserFn` `Def`.
+  `checker::record_reference_target` (the S110 W0.1 "resolve once" consolidation;
+  the former `record_user_fn_ref` was deleted — `infer_var` now resolves each
+  name ONCE via `resolve_ref_target`, writes `resolved_targets`, and derives the
+  `callees` edge as a `UserFn`-filtered projection of that resolution) for every
+  successfully-typed `Var` whose name is NOT locally shadowed and resolves
+  (chain-follow to home, prelude-fallback-aware, `lookup`-mirroring qualified
+  candidate order) to a `DefKind::UserFn` `Def`.
 
 Both channels are combined by the ONE shared **`harvest_callee_edges`** helper
 (the `codegen_view` all-seams precedent — FIXME 0472) at every body-check

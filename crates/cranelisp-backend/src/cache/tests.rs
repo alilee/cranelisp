@@ -235,7 +235,13 @@ fn test_compile_load_and_execute_cached_module() {
             trait_origin: None,
             seq: 0,
             ast: defn.variants.first().cloned(),
-            codegen_view: None,
+            // W0.b: every codegen-reached body carries a typecheck-populated view
+            // (KC-W0-6 fixture obligation; the backend hard-errors on None).
+            codegen_view: Some(crate::test_support::test_codegen_view(
+                &defn.name,
+                defn.variants.first().unwrap(),
+                &Default::default(),
+            )),
             code: None,
             value_use: false,
         },

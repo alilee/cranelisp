@@ -210,39 +210,45 @@ pub(super) fn annotate_expr_from_maps(
 /// §3.0). Shared by the single-sig, multi-sig-mangled, and trait-impl-method
 /// concrete-defn population sites.
 ///
-/// Returns `Some(view)` when `MonoExpr::from_expr` succeeds (every body node
-/// fully concrete) — the expected case for a body-checked concrete defn.
+/// Always returns `Some(view)` (S110 W0.b totalization,
+/// `design/arch/backend-keyed-consumer.md` §4 W0.b / §5): typecheck is the SOLE
+/// mono-view producer for every codegen-reached body, so this helper never
+/// yields `None` for a codegen-bound `Concrete` entry.
 ///
-/// **Returns `None` when `from_expr` fails** (a residual `Var` / un-annotated
-/// node reached a value position). Unlike the *mono-instance* seam — which hard-
-/// errors with the §3.11.1 ambiguity message because a minted mono instance MUST
-/// be concrete (Phase-4 part A) — an ordinary concrete defn's `ast` body can
-/// legitimately carry a residual `Var` at a node the **current `ast`-path
-/// codegen never reads its `inferred_type` for** (e.g. a multi-sig variant with
-/// an unconstrained param mangled `f$Var`, or the result var of a forward-
-/// reference Apply that the backend resolves via the symbol table, not the
-/// node). Hard-erroring here would reject programs the `ast` path compiles
-/// today. So the view is best-effort: `Some` populates the codegen-bound entry
-/// (the produces-but-unread Phase-3 input); `None` is the populate-gap signal
-/// the backend read-flip (FIXME 0391) handles via its single relocated backstop.
-/// **This `None`-vs-hard-error asymmetry between concrete defns and mono
-/// instances is a recorded finding — see FIXME 0393.**
+/// **Strict-first, lenient-fallback.** When `MonoExpr::from_expr` succeeds
+/// (every body node fully concrete — the universal real-program case) the strict
+/// view is returned. When it fails (a residual `Var` / un-annotated node reached
+/// a value position — a multi-sig variant with an unconstrained param mangled
+/// `f$Var`, or a body whose forward-reference `Apply` result var the backend
+/// resolves via the symbol table, not the node) it falls back to
+/// [`MonoExpr::lenient_from_expr`] — the SAME lenient walk the backend used to
+/// run on these bodies (`lib.rs:909`'s deleted arm), so codegen is byte-identical
+/// (the W0.b golden-CLIF gate `tests/golden_clif_w0b.rs`). The mono-instance seam
+/// stays hard-error (a minted instance MUST be concrete, §3.11.1); this
+/// best-effort/hard-error asymmetry is deliberate.
+///
+/// The backend no longer carries a lenient rebuild path: `compile_to_module`
+/// hard-errors on a `codegen_view: None` for a codegen-reached body (Principle
+/// 18). Synthetic ctor/accessor bodies (`Span::SYNTHETIC`, outside span-keyed
+/// transport) are populated DIRECTLY at their synthesis seams (`adt.rs`), not
+/// here.
 pub(crate) fn build_concrete_codegen_view(
     name: &Symbol,
     variant: &DefnVariant,
     pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> Option<cranelisp_types::MonoDefnVariant> {
-    match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors, resolved_targets) {
-        Ok(mono_body) => Some(cranelisp_types::MonoDefnVariant {
-            name: name.clone(),
-            params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
-            body: mono_body,
-            span: variant.span,
-            mode_summary: None,
-        }),
-        Err(_) => None,
-    }
+    let body = match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors, resolved_targets) {
+        Ok(mono_body) => mono_body,
+        Err(_) => cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, pattern_ctors, resolved_targets),
+    };
+    Some(cranelisp_types::MonoDefnVariant {
+        name: name.clone(),
+        params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+        body,
+        span: variant.span,
+        mode_summary: None,
+    })
 }
 
 

@@ -621,44 +621,20 @@ where
     .map_err(CompilationError::from)
 }
 
-/// The scoped backstop predicate (concrete-boundary-type.md §3.1.1, FIXME 0391 /
-/// 0393): a `DefKind` is a **body-AST-node-typed codegen target** — and so MUST
-/// carry a populated `codegen_view` — iff it is a `UserFn { Concrete{slot} }`
-/// (ordinary concrete defns + mono instances; mono instances register as exactly
-/// this kind, so the predicate is total over both). The signature-driven kinds
-/// (`Constructor` ctor/accessor, `Primitive`, `PrimitiveExtern`, `PlatformEffect`)
-/// legitimately carry `codegen_view: None` — they are codegen'd from the
-/// signature, never from a body node's type — so the `codegen_view`-must-be-`Some`
-/// `expect` is scoped to this predicate and never trips on them.
-///
-/// LIVE (S84, FIXME 0394/0395): `compile_to_module_impl` reads `codegen_view` on
-/// the live concrete-defn path for entries this predicate selects, with a located
-/// `expect` backstop. Non-selected entries fall through to the lenient builder.
-pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
-    matches!(
-        kind,
-        cranelisp_types::DefKind::UserFn {
-            fn_state: cranelisp_types::UserFnState::Concrete { .. }
-        }
-    )
-}
-
 /// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types —
 /// the LENIENT counterpart of the strict, choke-pointed
 /// [`cranelisp_types::MonoExpr::from_expr`].
 ///
-/// **Relocated (S110 W0.b, `design/arch/backend-keyed-consumer.md` §5).** The
-/// builder body now lives in `cranelisp-types` beside `from_expr`
-/// ([`cranelisp_types::MonoExpr::lenient_from_expr`]) so view construction has
-/// ONE home. This backend entry point is the thin fallback for entries reached
-/// with NO typecheck-built `codegen_view` (signature-driven ctor/accessor
-/// synthetic bodies; generic / best-effort templates; REPL `__expr`;
-/// non-concretized macro-clause bodies). The sidecars are empty at this site —
-/// synthetic bodies carry their ctor identities directly (§5), and any residual
-/// `Var`-typed node is read ONLY via `signature_heap_category`, never the
-/// deleted `classify(Var)` panic. Byte-identical to the former in-crate body
-/// (empty sidecars ⇒ `resolved_target`/`resolved_ctor` = `None`, exactly as
-/// before). Deleted in W3 once typecheck is the sole view producer.
+/// **W0.b retired the live-path use** (`design/arch/backend-keyed-consumer.md`
+/// §4 W0.b / §5): typecheck is the sole mono-view producer, so
+/// `compile_to_module` no longer rebuilds a lenient view — a codegen-reached
+/// body with `codegen_view: None` is a hard error. The ONLY surviving caller is
+/// the `#[cfg(test)]`-reachable `jit.rs::compile_defn` unit helper (design §5
+/// finding 3 — no live caller; W3 migrates it onto a typecheck-/`from_expr`-built
+/// view and deletes this entry point + `lenient_from_expr`). The builder body
+/// itself lives in `cranelisp-types` beside `from_expr` so view construction has
+/// ONE home. The sidecars are empty here (the test helper lowers a bare
+/// template); byte-identical to the former in-crate body.
 pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
     use std::collections::HashMap;
     cranelisp_types::MonoExpr::lenient_from_expr(expr, &HashMap::new(), &HashMap::new())
@@ -718,7 +694,7 @@ where
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 }
             })?;
-            let ModuleEntry::Def { ast, visibility, docstring, kind, codegen_view, .. } = entry else {
+            let ModuleEntry::Def { ast, visibility, docstring, codegen_view, .. } = entry else {
                 return Err(CranelispError::CodegenError {
                     message: format!(
                         "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
@@ -780,11 +756,29 @@ where
             // lenient builder shares the `ConcreteType::from_type` choke point with
             // the strict view, the structural guarantee (no `Type::Var` reaches
             // `classify`) holds on BOTH paths.
+            // **W0.b totalization flip (`backend-keyed-consumer.md` §4 W0.b /
+            // §5, Principle 18).** typecheck is the SOLE mono-view producer for
+            // EVERY codegen-reached body — ordinary concrete defns, mono
+            // instances, ctor/accessor synthetic bodies, `f$Var` multi-sig
+            // variants, `__expr`, macro-clause bodies. The `requires_codegen_view`
+            // bypass and the backend lenient rebuild (`lenient_mono_from_expr`)
+            // are retired from the live path: a codegen-reached entry with NO
+            // typecheck-populated `codegen_view` is a producer gap and a HARD
+            // error, never a silent lenient rebuild (Rev-2: no soft fallback).
             let (body, mode_summary) = match codegen_view {
-                Some(view) if requires_codegen_view(kind.as_ref()) => {
-                    (view.body.clone(), view.mode_summary.clone())
+                Some(view) => (view.body.clone(), view.mode_summary.clone()),
+                None => {
+                    return Err(CranelispError::CodegenError {
+                        message: format!(
+                            "compile_to_module: codegen-reached body '{name}' in module \
+                             '{module_path}' has no typecheck-populated codegen_view. Post-W0.b \
+                             typecheck is the sole mono-view producer (design/arch/\
+                             backend-keyed-consumer.md §4 W0.b/§5); a None here is a producer \
+                             gap (Principle 18), never a silent lenient rebuild."
+                        ),
+                        location: ErrorLocation::from_span(variant.span),
+                    });
                 }
-                _ => (lenient_mono_from_expr(&variant.body), None),
             };
 
             defns.push(defn);
@@ -1540,60 +1534,16 @@ mod concrete_boundary_phase3_tests {
     //! seams the migration introduced — the scoped `codegen_view` backstop
     //! predicate and the signature-path `Type → ConcreteType` conversion.
 
-    use super::requires_codegen_view;
     use crate::compiler::signature_heap_category;
     use crate::heap::HeapCategory;
-    use cranelisp_types::{
-        DefKind, FQTypeName, ModuleFullPath, SymbolTable, Type, TypeName, UserFnState,
-    };
+    use cranelisp_types::{ModuleFullPath, SymbolTable, Type};
 
-    // spec: concrete-boundary-type.md §3.1.1 — the backstop is scoped to
-    //   `UserFn { Concrete{slot} }` (body-AST-node-typed codegen targets). Those
-    //   MUST carry a populated `codegen_view`; the `expect` fires on a `None`
-    //   view there (a producer bug).
-    #[test]
-    fn concrete_userfn_requires_codegen_view() {
-        let kind = DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
-        };
-        assert!(
-            requires_codegen_view(&kind),
-            "a Concrete{{slot}} UserFn is a body-AST codegen target and must carry a view"
-        );
-    }
-
-    // spec: concrete-boundary-type.md §3.1.1 — NEGATIVE. The signature-driven
-    //   kinds (Constructor ctor/accessor, Primitive, PrimitiveExtern,
-    //   PlatformEffect) legitimately carry `codegen_view: None` — they are
-    //   codegen'd from the signature, never a body node's type — so the backstop
-    //   MUST NOT trip on them.
-    #[test]
-    fn signature_driven_kinds_do_not_require_codegen_view() {
-        let ctor = DefKind::Constructor {
-            got_slot: 0,
-            type_name: FQTypeName::new(
-                ModuleFullPath::from("user"),
-                TypeName::from("Box"),
-            ),
-            tag: 0,
-            field_count: 1,
-            internal: false,
-            type_def: None,
-            mode_summary: None,
-        };
-        assert!(
-            !requires_codegen_view(&ctor),
-            "a Constructor is signature-driven and legitimately carries codegen_view: None"
-        );
-        assert!(!requires_codegen_view(&DefKind::primitive(0)));
-        assert!(!requires_codegen_view(&DefKind::PrimitiveExtern));
-        assert!(!requires_codegen_view(&DefKind::PlatformEffect {
-            scheduling_class: cranelisp_types::SchedulingClass::Sequential,
-            poll_shape: false,
-            got_slot: 0,
-            mode_summary: None,
-        }));
-    }
+    // W0.b (`backend-keyed-consumer.md` §4 W0.b/§5) RETIRED the
+    //   `requires_codegen_view` bypass: typecheck now populates a `codegen_view`
+    //   for EVERY codegen-reached body (ctor/accessor synthetic bodies included),
+    //   and the backend hard-errors on a `None`. The two predicate tests that
+    //   pinned the "signature-driven kinds legitimately carry codegen_view: None"
+    //   asymmetry were deleted with the predicate.
 
     // spec: concrete-boundary-type.md §3.1.1 (FIXME 0391 sites 1-3, 0394) — the
     //   signature-path heap classification. A concrete field/binding `Type`

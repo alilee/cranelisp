@@ -2379,6 +2379,120 @@
         );
     }
 
+    // FIXME 0619 leg 1 (Important) — `builtin_storage_fq` must NOT capture a
+    // same-named USER fn when grounding a `BuiltinFn` jit name. In a
+    // prelude-suppressed module (no primitives glob) a local `(defn add-i64 …)`
+    // is legal (add-i64 is not in scope, §8.6.4 does not fire); `(+ 1 2)`
+    // short-circuits to `BuiltinFn { add-i64 }` (FIXME 0185), and the Apply-span
+    // carrier MUST ground at `primitives/add-i64` (the primitive the backend
+    // emits), never the shadowing local `test/add-i64`. The kind gate
+    // (Primitive/PrimitiveExtern only) is what rejects the user fn. Without the
+    // gate the carrier would name test/add-i64 → wrong dispatch at W1.
+    // spec: design/arch/backend-keyed-consumer.md §1.1.1 (BuiltinFn leg)
+    #[test]
+    fn resolved_target_builtin_fq_ignores_shadowing_user_fn() {
+        let mut tc = tc_with_prims();
+        // `+` dispatches to the Int impl (short-circuit → jit name add-i64).
+        register_num_trait_inline(&mut tc);
+        // Model the prelude-suppressed shadow: a local UserFn named `add-i64`
+        // (the primitive's JIT name) installed OVER the primitives-import in the
+        // test module. `builtin_storage_fq` resolves the jit name through this
+        // scope; the kind gate must reject this non-primitive Def and ground the
+        // carrier at `primitives/add-i64` regardless.
+        let local_add = cranelisp_types::ModuleEntry::def(
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: Default::default(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            },
+            cranelisp_types::DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 99,
+                    mode_summary: None,
+                },
+            },
+        )
+        .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+        .build();
+        tc.symbol_table_mut().insert(Symbol::from("add-i64"), local_add);
+        check_src(&mut tc, "(defn main [] (+ 1 2))");
+
+        let view = main_codegen_view_of(&tc, "main");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let apply_fq = targets
+            .iter()
+            .find(|(label, _)| label == "@apply")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            apply_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: Symbol::from("add-i64"),
+            }),
+            "builtin_storage_fq must ground the PRIMITIVE home, not the shadowing \
+             user fn test/add-i64 (FIXME 0619 leg 1); collected: {targets:?}"
+        );
+    }
+
+    // W0.b (§5 proof obligation 1) — every synthesised field accessor's
+    // codegen_view carries its pattern arm's `resolved_ctor` = the owner product
+    // ctor's canonical STORAGE key (the bare type name for a product), populated
+    // DIRECTLY at synthesis (`Span::SYNTHETIC` is outside span-keyed transport).
+    // This is what CLOSES the backend's S19 `resolved_ctor: None` synthetic
+    // fallback (byte-identical CLIF verified by golden class 02).
+    // spec: design/arch/backend-keyed-consumer.md §5
+    #[test]
+    fn w0b_synth_accessor_view_carries_resolved_ctor() {
+        let mut tc = tc_with_prims();
+        // (deftype Point [:Int x :Int y]) — a product (ctor name == type name).
+        check_src(&mut tc, "(deftype Point [:Int x :Int y])");
+        let accessor_key = cranelisp_types::member_key(&TypeName::from("Point"), "x");
+        let view = match tc.symbol_table().get(accessor_key.as_ref()) {
+            Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+            other => panic!("accessor {accessor_key} has no codegen_view: {other:?}"),
+        };
+        let ctor = match &view.body {
+            MonoExpr::Match { arms, .. } => arms.iter().find_map(|a| a.resolved_ctor.clone()),
+            other => panic!("accessor body is not a Match: {other:?}"),
+        };
+        assert_eq!(
+            ctor,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: Symbol::from("Point"),
+            }),
+            "accessor pattern arm must carry resolved_ctor test/Point at synthesis (§5)"
+        );
+    }
+
+    // W0.b (§5 proof obligation 2) — the TOTALIZATION pin: every codegen-reached
+    // `defined_symbols()` entry carries a codegen_view after check (the backend's
+    // view-absent hard error is the runtime twin). Ctor + accessor synthetic
+    // bodies and concrete defns must ALL be viewed — no `None` reaches codegen.
+    // spec: design/arch/backend-keyed-consumer.md §5
+    #[test]
+    fn w0b_every_codegen_reached_entry_carries_a_view() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype Box [:Int v])\n\
+             (deftype Color (Red) (Green))\n\
+             (defn main [] (v (Box 7)))",
+        );
+        let st = tc.symbol_table();
+        let missing: Vec<Symbol> = st
+            .defined_symbols()
+            .filter(|(_, e)| e.codegen_view().is_none())
+            .map(|(k, _)| k.clone())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "every codegen-reached entry must carry a codegen_view post-W0.b; \
+             missing: {missing:?}"
+        );
+    }
+
     // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {

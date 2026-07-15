@@ -136,6 +136,22 @@ where
 
 /// Collect the cluster's codegen-bound callables (a `Def` with a
 /// `codegen_view`), cloning the body + deriving param types from the scheme.
+///
+/// **W0.b universe pin (`backend-keyed-consumer.md` §4 W0.b / §5).** After the
+/// totalization flip EVERY codegen-reached entry carries a `codegen_view`
+/// (ctor/accessor synthetic bodies + best-effort concrete defns now included),
+/// so "has a view" no longer selects the analysable set. The ownership fixpoint
+/// must run over EXACTLY the pre-flip universe — genuine strict-concrete bodies
+/// — because pulling the new lenient/synthetic entries into the cluster fixpoint
+/// perturbs every summary (adding a ctor/accessor callee summary flips a
+/// caller's borrow/RC result), a codegen change the W0.b byte-identity gate
+/// forbids. The pre-flip predicate was "`build_concrete_codegen_view` returned
+/// `Some`" ⇔ strict `MonoExpr::from_expr` succeeds on the stored body; the
+/// lenient/synthetic classes fail it (residual `Var` / `inferred_type: None`
+/// nodes), so re-checking strict success on the entry's `ast` reproduces the
+/// pre-flip set exactly — ctors (Constructor kind, `ConstrADT` un-typed body),
+/// accessors (`(match self …)` un-typed body), and lenient-fallback concrete
+/// defns all excluded, mono instances and genuine concrete defns retained.
 fn collect_universe<C, L>(env: &TypeCheckEnv<C, L>, state: &CheckState) -> Vec<Callable>
 where
     C: cranelisp_types::CodeStore,
@@ -143,14 +159,16 @@ where
 {
     let read = env.current_symbol_table(state);
     let view = read.view();
+    let empty = HashMap::new();
     let mut out = Vec::new();
     for (key, entry) in view.iter() {
         let Some(cv) = entry.codegen_view() else { continue };
-        let scheme_ty = match entry {
-            ModuleEntry::Def { scheme, .. } => Some(scheme.ty.clone()),
-            _ => None,
-        };
-        let params = param_types(&cv.params, scheme_ty.as_ref());
+        let ModuleEntry::Def { scheme, ast: Some(ast_variant), .. } = entry else { continue };
+        // Pre-flip universe pin: only a STRICT-concrete body participates.
+        if MonoExpr::from_expr(&ast_variant.body, &empty, &empty).is_err() {
+            continue;
+        }
+        let params = param_types(&cv.params, Some(&scheme.ty));
         out.push(Callable { key: key.clone(), params, body: cv.body.clone() });
     }
     out

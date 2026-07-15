@@ -106,7 +106,14 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
             trait_origin,
             seq,
             ast,
-            codegen_view: None,
+            // W0.b: a codegen-reached ctor `Def` carries a (lenient) view built
+            // at synthesis by the typecheck producer; the fixture mirrors it
+            // (KC-W0-6 — the backend hard-errors on None).
+            codegen_view: Some(crate::test_support::test_codegen_view(
+                &Symbol::from("Some"),
+                ctor_defn.variants.first().unwrap(),
+                &Default::default(),
+            )),
             code,
             value_use: false,
         },

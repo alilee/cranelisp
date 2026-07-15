@@ -68,7 +68,33 @@
         let mut builder = ModuleEntry::def(synthetic_scheme(), kind)
             .visibility(Visibility::Public);
         if let Some(variant) = ast {
-            builder = builder.ast(variant);
+            // W0.b (`backend-keyed-consumer.md` §4 W0.b): typecheck is the sole
+            // mono-view producer, so `compile_to_module` hard-errors on a
+            // codegen-reached body with `codegen_view: None`. This int-side
+            // fixture mirrors the producer — a TOTAL view (strict `from_expr`
+            // first, lenient fallback) so ctor/macro-clause-style synthetic
+            // bodies still build. (`name`/`params`/`span` on the view are not
+            // read by codegen — only `body`/`mode_summary`.)
+            let body = cranelisp_types::MonoExpr::from_expr(
+                &variant.body,
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap_or_else(|_| {
+                cranelisp_types::MonoExpr::lenient_from_expr(
+                    &variant.body,
+                    &Default::default(),
+                    &Default::default(),
+                )
+            });
+            let view = cranelisp_types::MonoDefnVariant {
+                name: Symbol::from("__fixture"),
+                params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+                body,
+                span: variant.span,
+                mode_summary: None,
+            };
+            builder = builder.ast(variant).codegen_view(view);
         }
         builder.build()
     }

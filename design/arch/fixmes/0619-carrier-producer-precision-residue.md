@@ -10,8 +10,38 @@ status: open
 
 # 0583 carrier producer — three precision residues + one doc drift (typecheck)
 
+## Resolution status (S110 W0.b, /dev)
+
+- **Item 1 (Important) — LANDED.** `builtin_storage_fq` (`callees.rs`) now
+  kind-gates the scope probe: it grounds the builtin FQ only when the terminal
+  `Def` is `Primitive`/`PrimitiveExtern`, else falls through to the `primitives`
+  default. Pin: `program::tests::resolved_target_builtin_fq_ignores_shadowing_user_fn`.
+- **Item 3 (Minor) — LANDED.** The AutoCurry plain-arm callees edge in
+  `resolved_call_to_fqsymbol` no longer records `{current_module, target}`
+  (wrong home for an imported target); it records NO edge from that path —
+  the correct edge lands via `user_fn_refs` (the callee `Var` recorded at
+  `infer_var` with the terminal storage home, in agreement with the carrier's
+  callee-span transport). Guarded by the existing `callees_*` suite (all green).
+- **Item 4 (Minor) — LANDED.** `crates/cranelisp-typecheck/CLAUDE.md`
+  §"`Def.callees` completeness contract" updated: `record_user_fn_ref` →
+  `record_reference_target` (the W0.1 resolve-once consolidation).
+
+## Remaining — item 2 (Minor), DEFERRED to W1
+
+**Self-recursion carve-out over-matches a same-named local.**
+`checker.rs::record_reference_target`'s carve-out fires on `current_defn == name`
+whenever the name is env-shadowed — including a USER local of the same name
+(`(defn f [] (let [f (fn [x] x)] (f 3)))`, or a param named `f`). The Var span
+then carries the enclosing fn's storage FQ for what is actually a LOCAL
+reference (§1.1 "whichever storage key HIT": nothing hit). **Harmless ONLY
+while the backend's local-`variables` check precedes the keyed read** (§1.1
+local row). This is a **W1 invariant**, not a W0.b fix: the W1 brief must keep
+the backend locals-check BEFORE the `entry_at` keyed read, and MAY additionally
+tighten the carve-out to gate on the shadowing binding being the recursion
+binding (scope-depth / binding-provenance) rather than merely name-equal.
+
 ## Severity
-Important (item 1); Minor (items 2–4). None gates W1 — see the `/review`
+Important (item 1, LANDED); Minor (items 2–4). None gates W1 — see the `/review`
 (producer W0.1+W0.1b) SPRINT note for the gating analysis.
 
 ## Issue

@@ -193,16 +193,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     symbol: Symbol::from(mangled_name.as_ref()),
                 })
             }
-            ResolvedCall::AutoCurry { target_name, trait_resolution, .. } => {
+            ResolvedCall::AutoCurry { trait_resolution, .. } => {
                 // If there's an inner trait resolution, derive the edge from it.
                 if let Some(inner) = trait_resolution {
                     self.resolved_call_to_fqsymbol(inner, current_module)
                 } else {
-                    // Plain function curry — target is in current module.
-                    Some(FQSymbol {
-                        module: current_module.clone(),
-                        symbol: target_name.clone(),
-                    })
+                    // Plain-fn curry — NO edge from this path (FIXME 0619 leg 3).
+                    // The old `{current_module, target}` derivation was WRONG for
+                    // an imported curry target (target lives in its home module,
+                    // not the caller's) and spurious for a local target. The
+                    // correct edge lands via the OTHER channel: `infer_var`
+                    // records the callee `Var` into `user_fn_refs` with the
+                    // terminal storage home (the same source the carrier's
+                    // callee-span transport reads — `mono_collect::resolve_auto_curry`),
+                    // so the plain-fn curry callee is covered there, in agreement
+                    // with the carrier. Recording a wrong-module duplicate here
+                    // only starved/mis-named the S101 reverse index.
+                    None
                 }
             }
             ResolvedCall::BuiltinFn { .. } => {
@@ -266,8 +273,31 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// scope, else default to `primitives` — the operator/primitive home the
     /// design pins (§1.4). No second resolver: `def_resolved` is the same
     /// chain-follow the carrier's Var-span leg uses.
+    ///
+    /// **Kind-gated (FIXME 0619 leg 1).** A JIT/builtin name is NOT a
+    /// source-level reference — resolving it through USER scope can CAPTURE a
+    /// same-named user fn: a prelude-suppressed module with a local
+    /// `(defn add-i64 …)` (legal — `add-i64` is not in scope, so §8.6.4 does not
+    /// fire) plus `(import [primitives [+]])` and `(+ 1 2)` short-circuits to
+    /// `BuiltinFn { add-i64 }` (the FIXME 0185 static table), but the backend
+    /// emits the PRIMITIVE. Grounding the builtin FQ at the user fn would
+    /// mis-dispatch at W1. So the scope probe is accepted ONLY when it terminates
+    /// at a PRIMITIVE-shaped `Def` (`Primitive`/`PrimitiveExtern` — mirroring
+    /// `resolve_primitive_jit_name`'s own kind gate); any other terminal falls
+    /// through to the `primitives` default.
     fn builtin_storage_fq(&self, state: &CheckState, name: &Symbol) -> FQSymbol {
         self.def_resolved(state, name.as_ref(), Span::default())
+            .filter(|r| {
+                matches!(
+                    &r.entry,
+                    cranelisp_types::ModuleEntry::Def { kind, .. }
+                        if matches!(
+                            kind.as_ref(),
+                            cranelisp_types::DefKind::Primitive { .. }
+                                | cranelisp_types::DefKind::PrimitiveExtern
+                        )
+                )
+            })
             .map(|r| r.fq)
             .unwrap_or_else(|| FQSymbol {
                 module: ModuleFullPath::from("primitives"),

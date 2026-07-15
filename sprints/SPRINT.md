@@ -1218,6 +1218,83 @@ which presupposes the typecheck producer actually ran. Sequence KC-W0-6
 (fixture-sidecar population, incl. class-06's template fixtures) IN W0, before
 W1, as already pinned.
 
+### /dev (W0.b) — the totalization flip (2026-07-15, LANDED)
+
+Made typecheck the SOLE mono-view producer for every codegen-reached body;
+backend `lib.rs` view-selection now HARD-ERRORS on a `codegen_view: None`
+(Principle 18) instead of rebuilding a lenient view. **Golden gate GREEN,
+byte-identical per class; full suite = the 13-RED baseline UNCHANGED (zero new
+regressions); no `CACHE_SCHEMA_VERSION` bump.**
+
+**The flip mechanism (typecheck + backend).**
+- `program::support::build_concrete_codegen_view` made TOTAL — strict
+  `from_expr` first, `lenient_from_expr` fallback — so every concrete defn
+  (incl. best-effort bodies whose strict view previously failed, e.g. a `main`
+  calling a multi-sig `pick`) carries a view. Was `None`-on-fail.
+- **Synthetic bodies populated DIRECTLY at synthesis** (`Span::SYNTHETIC` is
+  outside span-keyed transport): ctor `Def`s in the `adt.rs::register_type_def_with_ctor_infos`
+  `build_adt_entries` return loop (`ConstrADT` body, empty sidecars); product
+  field accessors in `synthesise_one_accessor` — the accessor's single pattern
+  arm gets `resolved_ctor` = the owner product ctor's canonical STORAGE key (the
+  bare type name), which CLOSES the backend S19 `resolved_ctor: None` fallback.
+- Backend `lib.rs:905` region: the `requires_codegen_view` bypass RETIRED (fn +
+  its two predicate unit tests deleted); the match reads a present view for ALL
+  kinds and returns a precise `CodegenError` on `None`. `lenient_mono_from_expr`
+  survives only as the `#[cfg(test)]`-reachable `jit.rs::compile_defn` helper
+  (rustdoc corrected — no live caller, KC-W0-2 finding; W3 deletes both).
+
+**Ownership side-channel (the byte-identity subtlety, flagged as a §5 note to
+`/arch`).** Populating views pulls entries into the ownership fixpoint universe
+(`collect_universe` keyed on "has a view"); the accessor got a `self`-Borrowed
+summary → RC-drop elided → CLIF DIVERGED (golden class 02 RED), and the
+cluster-fixpoint perturbation cascaded into `main`. Cure: `collect_universe`
+now PINS the universe to the pre-flip set — a genuine STRICT-concrete body
+(`from_expr` succeeds on the stored `ast`), which the lenient/synthetic classes
+fail — so ctor/accessor/lenient-fallback views stay OUT of ownership,
+`mode_summary: None`, byte-identical. (The flip changes WHERE the view is built,
+not codegen; this keeps that true through the ownership seam too.) NOT a §5
+deviation in mechanism — the §5 ruling stands; this is the one non-obvious seam
+the byte-identity gate surfaced. Flagged for `/arch` awareness.
+
+**Golden-gate result (byte-identity confirmed per class).**
+`cargo nextest run --test golden_clif_w0b` = 5/5 GREEN, byte-identical: 01 ctor
+`Def`, 02 synth accessor (the `resolved_ctor` keyed read via `ctor_meta_at`
+lowers identically to the old `lookup_constructor` fallback — the DC-11 cure
+holds), 03 multi-sig (incl. the lenient `main`), 04 `__expr`, 05 macro-clause.
+No re-baseline.
+
+**KC-W0-6 (backend + int fixture-sidecar population).** Added
+`test_support::test_codegen_view` (total, threads `resolved_targets`) as the
+hand-built-fixture view helper. Fixed the two backend fixtures that hit the new
+hard-error (`cache::tests` `answer`, `fn_as_value` ctor `Some`) and the int-side
+`worker::tests::mk_def_with_got` (covered 4 int-test regressions — view-less
+macro-clause/defn fixtures). `jit.rs::compile_defn` "the REPL calls directly"
+rustdoc corrected (every caller `#[cfg(test)]`). Broad per-fixture
+`resolved_targets` FQ population is best co-landed WITH W1 (the reads validate
+them; a blind unread carrier risks silent mis-dispatch, anti-Principle-24) — the
+enabling helper is landed.
+
+**FIXME 0619 legs.** Item 1 (Important — `builtin_storage_fq` kind-gate,
+pinned), item 3 (Minor — AutoCurry plain-arm callees edge now via `user_fn_refs`,
+not the wrong caller-module), item 4 (Minor — CLAUDE.md `record_user_fn_ref` →
+`record_reference_target`) all LANDED. Item 2 (self-recursion carve-out over-
+matching a same-named local) DEFERRED to the W1 brief as a locals-check-before-
+keyed-read invariant (FIXME 0619 updated to carry only item 2).
+
+**New pins (typecheck `#[cfg(test)]`, all green):**
+`resolved_target_builtin_fq_ignores_shadowing_user_fn` (0619 leg 1),
+`w0b_synth_accessor_view_carries_resolved_ctor` (§5 obligation 1),
+`w0b_every_codegen_reached_entry_carries_a_view` (§5 obligation 2 — the
+totalization pin).
+
+**Acceptance.** `golden_clif_w0b` GREEN (byte-identical); backend + typecheck
+unit suites GREEN; full `--no-fail-fast` = 13-RED baseline unchanged (the 13 are
+the known S110 defect guards — `derive` quasiquote 0613, the `_neg` guards, vec
+UAF, etc.); `cargo check --workspace --tests` + clippy clean (no new lints); no
+`CACHE_SCHEMA_VERSION` bump (population-extent rides the schema-19 window +
+BUILD_ID, per design §8). W3 can now delete `lenient_mono_from_expr` + the
+lenient arm (both dead on the live path).
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
