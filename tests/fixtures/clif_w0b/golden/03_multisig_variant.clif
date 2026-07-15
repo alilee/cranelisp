@@ -1,0 +1,52 @@
+; === CLIF user::main ===
+function %main() -> i64 system_v {
+    gv0 = symbol userextname0
+    gv1 = symbol userextname0
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    fn0 = u0:0 sig2
+
+block0:
+    jump block1
+
+block1:
+    v0 = iconst.i64 5
+    v1 = global_value.i64 gv0
+    v2 = iadd_imm v1, 8
+    v3 = load.i64 notrap aligned v2
+    v4 = call_indirect sig0, v3(v0)  ; v0 = 5
+    v5 = iconst.i64 3
+    v6 = iconst.i64 4
+    v7 = global_value.i64 gv1
+    v8 = iadd_imm v7, 16
+    v9 = load.i64 notrap aligned v8
+    v10 = call_indirect sig1, v9(v5, v6)  ; v5 = 3, v6 = 4
+    v11 = iadd v4, v10
+    v12 = iconst.i64 16
+    v13 = call fn0(v12)  ; v12 = 16
+    v14 = iconst.i64 0
+    store notrap aligned v14, v13+16  ; v14 = 0
+    store notrap aligned v11, v13+24
+    return v13
+}
+; === end CLIF user::main ===
+; === CLIF user::pick$Int ===
+function %pick$Int(i64) -> i64 system_v {
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    return v1
+}
+; === end CLIF user::pick$Int ===
+; === CLIF user::pick$Int+Int ===
+function %pick$Int+Int(i64, i64) -> i64 system_v {
+block0(v0: i64, v1: i64):
+    jump block1(v0, v1)
+
+block1(v2: i64, v3: i64):
+    v4 = iadd v2, v3
+    return v4
+}
+; === end CLIF user::pick$Int+Int ===

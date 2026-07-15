@@ -1178,6 +1178,46 @@ Next skills: `/sprint` (dispose 0618/0619; advance the W0-completion front —
 W0.2 KC-W0-2/KC-W0-6 → W0.b flip → W1 as re-pinned), `/arch` (0618), `/dev`
 (typecheck, 0619 — can ride any pre-W1 typecheck slot).
 
+### /testing (KC-W0-2) — the W0.b golden-CLIF byte-identity gate (2026-07-15, LANDED)
+
+Built the W0.b shippability gate: `tests/golden_clif_w0b.rs` + corpus/goldens
+under `tests/fixtures/clif_w0b/` (MANIFEST there). GREEN at HEAD (producer state
+`144828d1`); 5 tests, 0.13s. **Gate name for the W0.b `/dev` wave:**
+`cargo nextest run --test golden_clif_w0b` (test prefix `golden_clif_w0b_*`).
+
+**Five live lenient classes pinned** (each an isolated free-standing fixture;
+frames byte-verbatim, sorted, via `CRANELISP_CODEGEN_DUMP='*'` + `--run
+--no-cache`, the L-B1 capture contract):
+1. ctor `Def` synthetic body — `user::Box.MkBox`
+2. synthesised accessor — `user::Point.x/.y`
+3. `f$Var` multi-sig variant — `user::pick$Int`, `user::pick$Int+Int`
+4. `__expr` §3.11.2-disposition-3 — `user::__expr`
+5. non-concretized macro-clause — `user::__macro_twice_clause_0`
+
+**Normalization = byte-verbatim, NO canonicalization** (the L-B1 precedent).
+Admissible because the dump is DETERMINISTIC — the harness double-captures and
+asserts identity BEFORE the golden compare, every run. Verified not a
+false-green: a single value-number tamper reds the gate; restore greens it. A
+RED under W0.b means real codegen drift (the wave is behaviour-invariant, so the
+expected delta is EMPTY); re-baseline is scoped+attributed only, per MANIFEST.
+
+**Class 06 "generic template reached by direct compile" is NOT in this e2e gate
+— it is structurally backend-unit-only.** Pure `Polymorphic`/`Constrained`
+templates are excluded from the codegen name-set (`src/worker.rs:896-902`) and
+produce no `.o`; the only path that lowers a bare template is `jit.rs::compile_defn`,
+which has ZERO live callers (all `#[cfg(test)]`; verified 2026-07-15, matching
+design §5 finding 3). `tests/` being e2e-only, that class's byte-identity guard
+IS the backend unit suite (folds into KC-W0-6 / W3 view-migration), not this gate.
+
+**KC-W0-6 red-first answer (dispatch question):** the **backend unit suite reds
+FIRST** on a missing carrier — it is the direct in-crate consumer with
+hand-built fixture tables/exprs and NO live producer to populate sidecars, so a
+W1 hard-miss flips it immediately (exactly what design §4 W0.a pins). This e2e
+gate reds LATER and on a different signal — byte-DIVERGENCE in the live path,
+which presupposes the typecheck producer actually ran. Sequence KC-W0-6
+(fixture-sidecar population, incl. class-06's template fixtures) IN W0, before
+W1, as already pinned.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

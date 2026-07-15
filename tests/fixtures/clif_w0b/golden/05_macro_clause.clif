@@ -1,0 +1,121 @@
+; === CLIF user::__macro_twice_clause_0 ===
+function %__macro_twice_clause_0(i64) -> i64 system_v {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol colocated userextname3
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64) -> i64 system_v
+    sig6 = (i64) -> i64 system_v
+    sig7 = (i64, i64) -> i64 system_v
+    fn0 = u0:11 sig0
+    fn1 = u0:0 sig1
+    fn2 = u0:0 sig2
+    fn3 = u0:0 sig3
+    fn4 = u0:0 sig4
+    fn5 = u0:0 sig5
+    fn6 = u0:0 sig6
+    fn7 = u0:2 sig7
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    jump block4
+
+block4:
+    v3 = iconst.i64 1024
+    v4 = icmp.i64 uge v1, v3  ; v3 = 1024
+    brif v4, block6, block5
+
+block6:
+    v5 = load.i64 notrap aligned v1+16
+    v6 = iconst.i64 1
+    v7 = icmp eq v5, v6  ; v6 = 1
+    brif v7, block7, block5
+
+block7:
+    v8 = load.i64 notrap aligned v1+24
+    v9 = load.i64 notrap aligned v1+32
+    v10 = global_value.i64 gv0
+    v11 = iconst.i64 7
+    v12 = call fn0(v10, v11)  ; v11 = 7
+    v13 = iconst.i64 16
+    v14 = call fn1(v13)  ; v13 = 16
+    v15 = iconst.i64 4
+    store notrap aligned v15, v14+16  ; v15 = 4
+    store notrap aligned v12, v14+24
+    v16 = iadd_imm v8, 8
+    v17 = iconst.i64 1
+    v18 = atomic_rmw.i64 add v16, v17  ; v17 = 1
+    v19 = iadd_imm v8, 8
+    v20 = iconst.i64 1
+    v21 = atomic_rmw.i64 add v19, v20  ; v20 = 1
+    v22 = iconst.i64 0
+    v23 = iconst.i64 24
+    v24 = call fn2(v23)  ; v23 = 24
+    v25 = iconst.i64 1
+    store notrap aligned v25, v24+16  ; v25 = 1
+    store notrap aligned v8, v24+24
+    store notrap aligned v22, v24+32  ; v22 = 0
+    v26 = iconst.i64 24
+    v27 = call fn3(v26)  ; v26 = 24
+    v28 = iconst.i64 1
+    store notrap aligned v28, v27+16  ; v28 = 1
+    store notrap aligned v8, v27+24
+    store notrap aligned v24, v27+32
+    v29 = iconst.i64 24
+    v30 = call fn4(v29)  ; v29 = 24
+    v31 = iconst.i64 1
+    store notrap aligned v31, v30+16  ; v31 = 1
+    store notrap aligned v14, v30+24
+    store notrap aligned v27, v30+32
+    v32 = iconst.i64 16
+    v33 = call fn5(v32)  ; v32 = 16
+    v34 = iconst.i64 5
+    store notrap aligned v34, v33+16  ; v34 = 5
+    store notrap aligned v30, v33+24
+    jump block2(v33)
+
+block5:
+    v35 = iconst.i64 0
+    v36 = iconst.i64 16
+    v37 = call fn6(v36)  ; v36 = 16
+    v38 = iconst.i64 0
+    store notrap aligned v38, v37+16  ; v38 = 0
+    store notrap aligned v35, v37+24  ; v35 = 0
+    jump block2(v37)
+
+block3:
+    v39 = global_value.i64 gv1
+    v40 = iconst.i64 12
+    v41 = call fn7(v39, v40)  ; v40 = 12
+    v42 = iconst.i64 0
+    return v42  ; v42 = 0
+
+block2(v2: i64):
+    return v2
+}
+; === end CLIF user::__macro_twice_clause_0 ===
+; === CLIF user::main ===
+function %main() -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0:
+    jump block1
+
+block1:
+    v0 = iconst.i64 5
+    v1 = iconst.i64 5
+    v2 = iadd v0, v1  ; v0 = 5, v1 = 5
+    v3 = iconst.i64 16
+    v4 = call fn0(v3)  ; v3 = 16
+    v5 = iconst.i64 0
+    store notrap aligned v5, v4+16  ; v5 = 0
+    store notrap aligned v2, v4+24
+    return v4
+}
+; === end CLIF user::main ===
