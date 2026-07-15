@@ -1,6 +1,6 @@
 # Sprint 110: Backend pure keyed-lookup consumer — the resolution-boundary centrepiece
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 4 WAVE ORG — COMPLETE; PHASE 5 READY (build awaits user go)
 
 **Goal**: Land the user-directed S110 **centrepiece (0583)** — make the backend a
 **pure keyed-lookup consumer**: typecheck emits fully-qualified SYMBOLS *and*
@@ -10,10 +10,12 @@ name resolution and **zero** bare-type-name resolution. This collapses the recur
 Plus the two S109-close items ruled into S110: the **stdlib-compile smoke gate (0605)**
 and the **index-feed write-race isolation fix (0604)**.
 
-**Audit**: {Phase 4 — the 0583 FIXME recommends pulling `cranelisp-backend` + the
-resolution seam forward in the rotation (the S107 backend audit MISSED the resolution
-boundary; the new "bounded-context responsibility boundary" lens is why). Candidate:
-`cranelisp-backend`. Confirm at Phase 4.}
+**Audit**: `cranelisp-backend` + the resolution seam (CONFIRMED Phase 4, per `/arch` §7).
+Rotation pulled forward because the S107 backend audit MISSED the resolution-boundary
+violation (0583 finding). Read-only, dispatched in the Phase 6/7 window — **ideally
+post-W3** so it assesses the end-state and its "bounded-context responsibility boundary"
+lens verifies the grep-zero (`resolve_*` gone). → `audits/cranelisp-backend-s110.md`;
+disposed S111 Phase 1.
 
 ## Scope (user-approved 2026-07-15 — breadth: BROAD)
 
@@ -653,6 +655,87 @@ would have been a false gate — recursive enumeration required.
 draft every failing test sprint-wide; `/testing` has a complete authoring
 order (PLAN §S110 "Phase-5 sequencing note"). → `/sprint` Phase-4 wave org.
 
+## Waves (Phase 4)
+
+**Constraint (binding).** Worktree isolation is broken → **source-touching work is
+SERIAL** (one editor at a time). The waves below are logical groupings on a **pinned
+linear execution order**; read-only / test-authoring / design-only / `/review` /
+`/audit` steps overlap freely. `/arch` §8 pinned the per-chain constraints; this is their
+linearisation. Every `/dev` wave is followed by a narrow `/review`. **Only W0 moves a
+library baseline** (the `cranelisp-types` carrier fields + R-2 builder already regen'd;
+W0 adds the schema bump) — W1–W3 and the src/ track are zero-public-API.
+
+### Stage 1 — QA-first (ONE `/testing` dispatch, sprint-wide) — FIRST
+`/testing` authors the full failing e2e/unit set from `PLAN.md §S110` (buckets A–J:
+0583 W0/kind-flip/hard-miss, 0585 if/match/vec, 0590 tightening + FV-13/14 fence, R16/R17
+incl. the RD-3 `(let [r (add2 3 4)] r)` false-positive fence, 0605 recursive-enum gate +
+SG-2 infra, 0604 twin-guards-stay-green, the already-committed vec-assoc/C-4 REDs verified,
+R-2 invariance). Author the S109 AL-3/AL-4/private-member diagnostic rows (D-1) **before**
+the 0609 shim deletion. Failing-not-ignored. Verify-first rows checked. Populates the
+backend unit-harness fixture sidecars (the W0/KC-W0-6 pin) so W1 doesn't red the backend
+unit suite.
+
+### Stage 2 — per-crate D/D/R (PINNED ORDER; serial on source)
+
+**The dependency backbone:** `W0` gates the entire backend chain (W1–W3 read the carriers)
+and the R16/R17 impl; `0611` (arch ratifies the R16/R17 carrier) gates the R16/R17 impl;
+`0606` (repl.rs decomposition) precedes `0608` (over-budget batch). Everything else is
+order-flexible within the serial spine.
+
+- **W0 — producer** (`/dev`, coordinated typecheck + types + backend-harness). Carrier
+  fields (`resolved_targets` sidecar + `MonoExpr::{Var,Apply}.resolved_target` `#[serde(default)]`)
+  + REQUIRED `from_expr` param + typecheck population at the resolution chokepoints for all
+  statically-resolved kinds + **W0.b totalization** (relocate `lenient_mono_from_expr` beside
+  `from_expr` in `cranelisp-types`; synthetic bodies get `resolved_ctor` at synthesis) +
+  **`CACHE_SCHEMA_VERSION` 18→19** + R-2 caller wiring (typecheck `adt.rs` → `build_adt_entries`)
+  + backend unit-harness fixture-sidecar population. Behaviour-invariant (suite green, CLIF
+  byte-identity across the six lenient entry classes). → `/review`. **GATES the backend chain.**
+- **W1 — backend call seam** (`/dev` backend, S1–S9). `resolved_target` → `entry_at` keyed
+  read; kind arms off the entry; ctor-`Apply` included. → `/review`.
+- **W2 — backend value seam + 0585 guard + vec-assoc fix** (`/dev` backend, S10–S18).
+  Value/Var refs read the carrier; the slot-less-template value read hard-`CodegenError`s
+  (the 0585 loud backstop); **vec-assoc UAF ×2 fix rides here** (`heap.rs`/`apply.rs` open —
+  RC premature-free). → `/review`.
+- **W3 — backend delete + residue** (`/dev` backend, S19–S24). Resolve the outside-`from_expr`
+  view-builder residual (subsumed by W0.b), then delete `resolve_driven` + `resolve_chain` +
+  the `symbol_tables.iter()` scan + all ten entry points + `lookup_constructor`. **W3 grep
+  gate: zero `resolve_*` in backend** (structural acceptance, `/review` + audit). → `/review`.
+- **W-TC — 0590 resolver convergence** (`/dev` typecheck; after W0 on the serial typecheck
+  chain). Blast-radius scout FIRST (the never-error `Named`-fabrication deletion), then the
+  `TypeExprCtx` single-source collapse; FV-13/FV-14 fence holds. → `/review`.
+- **W-RD — R16/R17 error quality** (`/arch` ratifies 0611 carrier shape → `/dev` coordinated
+  typecheck + int). Dispatch-outcome signal → §3.11 clean message; RD-3 false-positive fence.
+  → `/review`.
+- **W-604 — index-feed write-race isolation** (`/dev` int; must-have, schedule early in the
+  int/src spine). The ≥25× `CRANELISP_MODULE_TRACE=1` sweep **LOCATES the residual writer
+  first** (prime suspect: the shared-cache §25.5 channel per the corrected attribution), THEN
+  the isolation fix + unit pin at the true write seam. Twin guards stay green. → `/review`.
+- **W-SRC — src/ hygiene chain** (`/dev` src/, serial): **0606** repl.rs decomposition
+  (mechanical move, cut signed off) → **0608** over-budget batch worst-first + narrative
+  relocation → **0609** DELETE the phantom shim (`/qa` ruled UNREACHABLE; D-3 propagate the
+  abs hard error to make it structural) → **0610** hygiene (gitignore `agent_trace.txt`/`user.cl`
+  + refresh `lib.rs` comments) → **C-4** multi-arity-main fix (int batch path) + R-2 `bootstrap.rs`
+  caller wiring. Each step → `/review`. `int.md` map update rides 0606's move (0607 largely
+  landed Phase 3).
+- **W-GATE — stdlib-compile smoke gate** (`/testing`; tests/ only, parallel-safe lane).
+  Recursive-public-module enum + per-module subprocess loop + aggregated report; SG-2
+  `agent_flag` build-interleave infra fix rides it.
+
+**Wave gate (before each advance):** scan `design/arch/fixmes/` for `target: /skill-in-wave`
++ `status: open`; any match blocks. **Audit dispatch:** `/audit` on `cranelisp-backend` +
+the resolution seam (read-only) in the Phase 6/7 window, ideally **post-W3** so it assesses
+the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
+
+## Dispatch log
+
+| Wave | Agent | Surface | Model | Effort | Non-default reason |
+|---|---|---|---|---|---|
+| P2 | /arch | S110 broad scope review | (shim §II.3) | (shim) | — SIGN-OFF w/ 4 pinned revisions; type-axis mostly-closed finding |
+| P3 | /arch | backend-keyed-consumer.md + Principle 24 + R-2 builder | (shim §II.3) | (shim) | — `8170ea45`+`accde23c`: S1–S24 inventory, W3 residual ruled, R-2 landed |
+| P3 | /design (typecheck) | 0590 convergence + R16/R17 signal | (shim §II.3) | (shim) | — `99d6996f`: `TypeExprCtx` collapse; FIXME 0611 filed |
+| P3 | /design (int) | 0604 isolation + 0607 currency + 0606 cut | (shim §II.3) | (shim) | — `061c54a2`: 0604 attribution CORRECTED (cache channel, not live-write) |
+| P3 | /qa | sprint-wide PLAN §S110 (exit gate) | (shim §II.3) | (shim) | — `ffdaa4b9`: buckets A–J; 0609 ruled UNREACHABLE→delete; 0605 recursive-enum |
+
 ## Notes
 
 - **Phase 1 (2026-07-15):** scope drafted between sprints (S109 closed, archived). The
@@ -712,6 +795,17 @@ order (PLAN §S110 "Phase-5 sequencing note"). → `/sprint` Phase-4 wave org.
     delivered: 0607 currency pass (`int.md` as-built + surgical `agent.md §2.2` fix + 18
     doc banners + doc-index) and 0606 repl.rs cut sign-off (search/format/commands/residual,
     precise boundaries; mechanical move is Phase-5 `/dev`).
-  - **Remaining Phase-3 deliverable:** `/qa` sprint-wide test plan (interface set confirmed
-    complete by `/arch` — design doc §9 enumerates the acceptance surface). Dispatched
-    2026-07-15; on its return the Phase-3 exit gate is met → Phase 4 wave org.
+  - **`/qa`** (`ffdaa4b9`): `PLAN.md §S110` buckets A–J + `risks.md` S110 read. **0604
+    attribution correction LANDED** in the doc `/qa` owns (§2 now names the cache channel;
+    `class=shared-state-write-race` vocab added). Refinements: 0605 needs **recursive**
+    public-module enum (top-level-only would miss `num.bits` itself) + one enumerating test
+    with a per-module subprocess loop; **0609 ruled UNREACHABLE → DELETE the shim** (D-3:
+    propagate the abs hard error to make it structural); vec-assoc + C-4 repros **already
+    discharged** as committed REDs. **Phase-3 exit gate CONFIRMED.**
+- **Phase 4 (2026-07-15):** wave org written (§Waves). Serial-source spine with the
+  dependency backbone (W0 gates the backend chain + R16/R17; 0611 gates R16/R17 impl; 0606
+  before 0608). Audit rotation CONFIRMED = `cranelisp-backend` + resolution seam, post-W3.
+  Dispatch log seeded with the P2/P3 rows. **Held at the Phase-4→5 boundary per the "plan
+  the sprint" ask — the build (Phase 5: QA-first `/testing`, then the per-crate D/D/R
+  cycles) awaits the user's go.** Planning arc (Phases 1–4) complete: scoped, arch-signed-off,
+  designed (4 design commits on main incl. Principle 24 + R-2 builder), test-planned, waved.

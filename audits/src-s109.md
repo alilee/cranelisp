@@ -457,3 +457,26 @@ retired `facades/int.md`, `:108-114` describes `agent` as a Wave-2 placeholder.
 
 *(Appended at S110 Phase 1 by `/sprint` + the user — accepted → FIXME number,
 or declined + rationale. Not written by `/audit`.)*
+
+**Disposed 2026-07-15 (S110 Phase 1, `/sprint` + user). Breadth: broad —
+centrepiece + src-audit-debt drain. ALL SIX ACCEPTED.**
+
+- **R-1 (repl.rs god-file decomposition) — ACCEPTED → FIXME 0606** (`/dev` src/ +
+  `/design` int cut sign-off). src/-hygiene track.
+- **R-2 (bootstrap↔typecheck ADT-registration mirror) — ACCEPTED → folds into the
+  S110 centrepiece FIXME 0583** (backend pure keyed-lookup consumer). The one
+  ADT-entry builder in `cranelisp-types` is the natural vehicle; no separate FIXME
+  filed — the mirror is one instance of the class 0583 dissolves.
+- **R-3 (`design/int/` currency pass) — ACCEPTED → FIXME 0607** (`/design` int). The
+  `agent.md §2.2` correction is surgical + actively misleading; couples with R-1/R-4.
+- **R-4 (over-budget function batch) — ACCEPTED → FIXME 0608** (`/dev` src/). Broad
+  breadth chosen, so the mechanical refactor rides S110; SERIAL with R-1 (shared files).
+- **R-5 (S87 residue batch + phantom-shim question) — ACCEPTED → FIXME 0609** (`/dev`
+  src/ residue; `/qa` or `/design` typecheck for the shim reachability verdict).
+- **R-6 (repo/comment hygiene) — ACCEPTED → FIXME 0610** (`/dev` src/; the gitignore
+  line may ride `/sprint`'s next commit).
+
+**`/audit` calibration (0583 finding).** Accepted: the S110 rotation pulls
+`cranelisp-backend` + the resolution seam forward, and the "bounded-context
+responsibility boundary" lens (added S109, surfaced R-2 here) stays a standing audit
+category. Confirm the rotation at S110 Phase 4.
