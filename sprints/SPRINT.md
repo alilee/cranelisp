@@ -937,25 +937,40 @@ order-flexible within the serial spine.
   **`CACHE_SCHEMA_VERSION` 18→19** + R-2 caller wiring (typecheck `adt.rs` → `build_adt_entries`)
   + backend unit-harness fixture-sidecar population. Behaviour-invariant (suite green, CLIF
   byte-identity across the six lenient entry classes). → `/review`. **GATES the backend chain.**
+**W0-completion front (all BEFORE W1 — re-pinned after the W0 review's 2 Blockers, `7c943300`):**
+- **W0.1 — producer top-up (B1 / FIXME 0616, `/dev` typecheck).** The W0 producer
+  `record_resolved_target` is a SECOND narrow probe that misses three legs — fix by
+  **capturing at the resolving seams instead** (Principle 24, not a third probe): an
+  **`Apply`-span writer** at the dispatch-selection seams (`traits/monomorphise.rs`,
+  `infer.rs`, `program/register.rs`, `mono_collect.rs`) so trait / sig-dispatch / auto-curry /
+  operator calls carry `resolved_target` (today `MonoExpr::Apply.resolved_target` is
+  structurally always `None`); **self-recursion** capture (the env-shadow gate must not skip
+  the self-edge the backend keys via `resolve_got_target`); **dotted `Type.member`** capture
+  (`resolve_dotted_member_entry`). Consolidate the `infer_var` triple-probe into one (the
+  Important mirror). Same schema-19 window; one unit pin per leg. → `/review`.
+- **W0.2 — harnesses (`/testing`, before W1).** **KC-W0-2** golden-CLIF byte-identity harness
+  (the gate that makes the W0.b flip shippable) + **KC-W0-6** backend unit-harness
+  fixture-sidecar population (else the backend unit suite reds at W1). tests/ + backend-src;
+  serialize builds with the source waves.
+- **W0.b flip (`/dev`, before W1, gated on KC-W0-2).** The FULL totalization deferred within
+  W0 (`41fab350`): backend `lib.rs` view-selection hard-error arm + typecheck populating
+  `codegen_view` for ALL codegen-reached entries (ctors/accessors) + synthetic
+  `resolved_ctor`-at-synthesis. Lenient-built bodies (full reference-kind spectrum) get empty
+  sidecars today, so W1's flipped sites would hard-miss them and Rev-2 forbids the per-body
+  hybrid — **hence before W1, NOT W3** (B2 / FIXME 0617). `lenient_from_expr` already
+  relocated → reduces to a backend-`lib.rs` + typecheck-view-population edit. → `/review`.
+
 - **W1 — backend call seam** (`/dev` backend, S1–S9). `resolved_target` → `entry_at` keyed
   read; kind arms off the entry; ctor-`Apply` included. → `/review`.
 - **W2 — backend value seam + 0585 guard + vec-assoc fix** (`/dev` backend, S10–S18).
   Value/Var refs read the carrier; the slot-less-template value read hard-`CodegenError`s
   (the 0585 loud backstop); **vec-assoc UAF ×2 fix rides here** (`heap.rs`/`apply.rs` open —
   RC premature-free). → `/review`.
-- **W0.b flip (follow-on, before W3)** — the FULL totalization deferred within W0
-  (`41fab350`): backend `lib.rs:905` view-selection hard-error arm + typecheck populating
-  `codegen_view` for ALL codegen-reached entries (ctors/accessors) + synthetic
-  `resolved_ctor`-at-synthesis. **Gated on KC-W0-2** (the golden-CLIF byte-identity harness,
-  `/testing`) — a passing suite ≠ byte-identical CLIF, so this flip needs the harness to
-  ship safely. Sequence: **KC-W0-2 harness (`/testing`) → W0.b flip (`/dev`) → W3**.
-  `lenient_from_expr` is already relocated, so the flip reduces to a backend-`lib.rs` +
-  typecheck-view-population edit. → `/review`.
-- **W3 — backend delete + residue** (`/dev` backend, S19–S24). **Depends on W0.b flip landing.**
-  Resolve the outside-`from_expr` view-builder residual (subsumed by W0.b), then delete
-  `resolve_driven` + `resolve_chain` + the `symbol_tables.iter()` scan + all ten entry points
-  + `lookup_constructor`. **W3 grep gate: zero `resolve_*` in backend** (structural acceptance,
-  `/review` + audit). → `/review`.
+- **W3 — backend delete + residue** (`/dev` backend, S19–S24). **Depends on the W0-completion
+  front (W0.1 + W0.b) landing.** Resolve the outside-`from_expr` view-builder residual
+  (subsumed by W0.b), then delete `resolve_driven` + `resolve_chain` + the
+  `symbol_tables.iter()` scan + all ten entry points + `lookup_constructor`. **W3 grep gate:
+  zero `resolve_*` in backend** (structural acceptance, `/review` + audit). → `/review`.
 - **W-TC — 0590 resolver convergence** (`/dev` typecheck; after W0 on the serial typecheck
   chain). Blast-radius scout FIRST (the never-error `Named`-fabrication deletion), then the
   `TypeExprCtx` single-source collapse; FV-13/FV-14 fence holds. → `/review`.
