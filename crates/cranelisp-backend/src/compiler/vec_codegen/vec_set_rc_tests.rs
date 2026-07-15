@@ -28,6 +28,7 @@ use super::*;
 
 fn var(ty: ConcreteType) -> MonoExpr {
     MonoExpr::Var {
+        resolved_target: None,
         name: cranelisp_types::Symbol::from("v"),
         span: Span::SYNTHETIC,
         resolved_call: None,

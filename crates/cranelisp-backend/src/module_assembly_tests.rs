@@ -1418,7 +1418,7 @@ fn decision_23_got_data_size_matches_slot_count() {
         let codegen_view = variant.as_ref().map(|v| MonoDefnVariant {
             name: defn.name.clone(),
             params: vec![],
-            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new()).expect("concrete test body"),
+            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete test body"),
             span: v.span,
             mode_summary: None,
         });
@@ -1546,7 +1546,7 @@ fn decision_36_no_cross_module_function_imports() {
         Some(MonoDefnVariant {
             name: d.name.clone(),
             params: vec![],
-            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new()).expect("concrete test body"),
+            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete test body"),
             span: v.span,
             mode_summary: None,
         })

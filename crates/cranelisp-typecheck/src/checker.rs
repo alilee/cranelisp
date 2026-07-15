@@ -1381,6 +1381,79 @@ where
         }
     }
 
+    /// Record a statically-resolved reference's STORAGE identity into
+    /// `MethodResolutions.resolved_targets` (S110 0583, the F1 chokepoint;
+    /// `design/arch/backend-keyed-consumer.md` §1.1). Keyed at the referencing
+    /// `Var` span, the value is `resolved.fq` — "whichever storage key HIT"
+    /// (module + the exact symbol-table key the chain-follow terminated at).
+    ///
+    /// Records for EVERY table-resolved reference kind — user fn, primitive,
+    /// constructor (incl. construction position), platform effect, host-promised
+    /// extern, and the mangled/mono variants a chain-follow lands on — i.e. any
+    /// terminal `ModuleEntry::Def`. A LOCAL variable / lambda param is skipped by
+    /// the env-shadow gate (it is not table-resolved and carries no entry). The
+    /// carrier rides UNREAD in W0 (behaviour-invariant); W1 makes the backend key
+    /// its ONE fetch on it (Principle 24 — resolve once).
+    pub(crate) fn record_resolved_target(
+        &self,
+        state: &mut CheckState,
+        name: &str,
+        span: Span,
+    ) {
+        // Local scope shadows module scope (spec §8.6.1) — a local is not a
+        // table reference, so it has no storage identity to record.
+        if state.env.lookup(name).is_some() {
+            return;
+        }
+        if let Some(fq) = self.resolved_target_fq(state, name, span) {
+            state.method_resolutions.resolved_targets.insert(span, fq);
+        }
+    }
+
+    /// Terminal storage-FQ probe for [`Self::record_resolved_target`]: mirrors
+    /// [`Self::resolve_user_fn_ref_fq`]'s qualified-name candidate order
+    /// (child-of-current-module before absolute path) but keeps the terminal FQ
+    /// for ANY resolved `ModuleEntry::Def` kind (not just `UserFn`).
+    fn resolved_target_fq(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<FQSymbol> {
+        if let Some(slash_pos) = name.find('/') {
+            let module_part = &name[..slash_pos];
+            let name_part = &name[slash_pos + 1..];
+            if !module_part.is_empty() && !name_part.is_empty() {
+                let child = format!(
+                    "{}.{}/{}",
+                    state.current_module, module_part, name_part,
+                );
+                if let Some(fq) = self.def_terminal_fq(state, &child, span) {
+                    return Some(fq);
+                }
+            }
+        }
+        self.def_terminal_fq(state, name, span)
+    }
+
+    /// Resolve one candidate spelling through the shared chain-follow +
+    /// prelude-fallback primitive and keep the terminal FQ when it lands on a
+    /// `ModuleEntry::Def` of any kind (S110 0583). Unlike
+    /// [`Self::user_fn_fq_of`] this does NOT filter on `DefKind` — the backend
+    /// discriminates the kind off the fetched entry (Principle 24).
+    fn def_terminal_fq(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<FQSymbol> {
+        let resolved = self.scope_resolve(state, name, span).ok()?;
+        match &resolved.entry {
+            ModuleEntry::Def { .. } => Some(resolved.fq),
+            _ => None,
+        }
+    }
+
     /// Resolve `name` to the FQ identity of a module-resident `UserFn` `Def`,
     /// or `None` for anything else. Mirrors [`Self::lookup`]'s qualified-name
     /// candidate order (child-of-current-module before absolute path) so the

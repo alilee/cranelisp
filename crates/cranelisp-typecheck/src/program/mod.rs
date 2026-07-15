@@ -62,6 +62,14 @@ pub(crate) struct FormCheckResult {
     /// AFTER the per-form `state.method_resolutions` has been drained.
     pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
 
+    /// The per-reference resolved STORAGE identities discovered while checking
+    /// this form's bodies (`MethodResolutions.resolved_targets`, keyed by the
+    /// referencing `Var`/`Apply` span; S110 0583 §1.1). Mirror of
+    /// `pattern_ctors` — accumulated cross-form so the finalize codegen-view
+    /// rebuild can populate `MonoExpr::{Var,Apply}.resolved_target` AFTER the
+    /// per-form `state.method_resolutions` has been drained.
+    pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
+
     /// Expression types for this form's AST nodes.
     /// In Pass 1: may contain constructor types for TypeDef forms.
     /// In Pass 2: contains all expr types from the defn body + the defn's Fn type.
@@ -100,6 +108,7 @@ impl FormCheckResult {
         FormCheckResult {
             method_resolutions: HashMap::new(),
             pattern_ctors: HashMap::new(),
+            resolved_targets: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),
@@ -126,6 +135,7 @@ impl FormCheckResult {
 pub(crate) struct ModuleCheckAccumulator {
     pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
     pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
+    pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
     pub(crate) expr_types: HashMap<Span, Type>,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
@@ -179,6 +189,7 @@ impl ModuleCheckAccumulator {
         ModuleCheckAccumulator {
             method_resolutions: HashMap::new(),
             pattern_ctors: HashMap::new(),
+            resolved_targets: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),

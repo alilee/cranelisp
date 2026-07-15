@@ -70,7 +70,7 @@ fn adt_ty() -> ConcreteType {
     ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")), vec![])
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: sp(900), resolved_call: None, ty: adt_ty() }
+    MonoExpr::Var { name: Symbol::from(n), span: sp(900), resolved_call: None, ty: adt_ty(), resolved_target: None }
 }
 /// A fresh `(Box fields...)` allocation with an explicit span + type.
 fn boxed(span: Span, ty: ConcreteType, fields: Vec<MonoExpr>) -> MonoExpr {
@@ -91,6 +91,7 @@ fn fresh(span: Span) -> MonoExpr {
 /// A statically-resolved `(name args…)` call (Summarised) with explicit span + type.
 fn call(span: Span, name: &str, ty: ConcreteType, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
+        resolved_target: None,
         callee: Box::new(var(name)),
         args,
         span,

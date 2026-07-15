@@ -640,6 +640,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     &mangled_sym,
                     v,
                     &state.method_resolutions.pattern_ctors,
+                    &state.method_resolutions.resolved_targets,
                 )
             });
         // FIXME 0472: harvest this method body's callee edges (ResolvedCall

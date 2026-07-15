@@ -16,6 +16,7 @@ use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
 // irrelevant to the skip decision — use a scalar for construction simplicity.
 fn var(name: &str) -> MonoExpr {
     MonoExpr::Var {
+        resolved_target: None,
         name: Symbol::from(name),
         span: Span::SYNTHETIC,
         resolved_call: None,

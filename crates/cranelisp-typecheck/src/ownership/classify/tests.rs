@@ -16,6 +16,7 @@ use super::*;
 
 fn var(name: &str) -> MonoExpr {
     MonoExpr::Var {
+        resolved_target: None,
         name: Symbol::from(name),
         span: Span::SYNTHETIC,
         resolved_call: None,

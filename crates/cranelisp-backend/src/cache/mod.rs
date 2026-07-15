@@ -313,7 +313,19 @@ pub mod linker;
 /// backend would lose the deterministic keyed read (the exempt-default class
 /// does not apply — the default ≠ the fresh-build value). Serde shape adds one
 /// `#[serde(default)]` field; the bump seals the epoch.
-pub const CACHE_SCHEMA_VERSION: u32 = 18;
+///
+/// **S110 W0 bump 18 → 19 (0583 producer — `backend-keyed-consumer.md` §8).**
+/// `MethodResolutions` gains the `resolved_targets: HashMap<Span, FQSymbol>`
+/// span-keyed sidecar and `MonoExpr::{Var,Apply}` each gain
+/// `resolved_target: Option<FQSymbol>` — the resolved STORAGE identity typecheck
+/// records at the `infer_var` chokepoint and `MonoExpr::from_expr` transports
+/// onto the mono nodes. The `codegen_view: Option<MonoDefnVariant>` serialises
+/// into `.meta.json`, so a stale schema-18 cache would deserialize `None`
+/// carriers and (post-W1) hard-fail the keyed read — the bump invalidates every
+/// schema-18 `.o` wholesale. All three additions are `#[serde(default)]`, but
+/// the fresh-build value on a table-reference node is `Some`, NOT the default
+/// `None` (the exempt-default class does not apply). Value-only invalidation.
+pub const CACHE_SCHEMA_VERSION: u32 = 19;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

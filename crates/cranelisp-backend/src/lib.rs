@@ -643,147 +643,25 @@ pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
     )
 }
 
-/// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types
-/// (concrete-boundary-type.md §3.1.1) — the LENIENT counterpart of the strict,
-/// choke-pointed [`cranelisp_types::MonoExpr::from_expr`].
+/// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types —
+/// the LENIENT counterpart of the strict, choke-pointed
+/// [`cranelisp_types::MonoExpr::from_expr`].
 ///
-/// **Remaining role (S84, FIXME 0394/0395 — formerly `mono_from_expr_signature_driven`).**
-/// Since the backend now consumes the typecheck-populated `codegen_view` on the
-/// live `UserFn { Concrete{slot} }` path, this builder is NO LONGER the universal
-/// body source. It is the fallback for entries that legitimately have NO
-/// `codegen_view` — the signature-driven / generic / REPL-`__expr` paths — where
-/// the body is NOT a §3.11.1-checked fully-concrete body-AST target:
-///
-///  - **Signature-driven kinds** — `DefKind::Constructor` (ctor/accessor),
-///    primitives, platform-effects: the synthetic body is walked but the walk
-///    reads **no node `ty`** — heap classification comes from the *signature*
-///    (`scheme` via `signature_heap_category`). A ctor body's field `Var` nodes
-///    (`(ConstrADT (Var a))`) carry a `Type::Var` (the generic ctor `Def`'s own
-///    template) that the strict `from_expr` would reject.
-///  - **Generic / best-effort-0392 templates** — a REPL `__expr` for a bare
-///    polymorphic value (`[]`, §3.11.2 disposition 3), a directly-compiled
-///    generic defn (`(defn id [x] x)`), a macro-expanded clause whose body did
-///    not fully concretize in typecheck.
-///
-/// In all cases the residual `Var`-typed nodes are read ONLY via
-/// `signature_heap_category` (Var→Mixed), never the deleted `classify(Var)`
-/// panic — so this builder fills any non-concrete/absent node type with a
-/// placeholder (`ConcreteType::Int`, never read) so the walk has a total
-/// `MonoExpr`. The live `codegen_view` body-AST path stays 100% `Var`-free.
+/// **Relocated (S110 W0.b, `design/arch/backend-keyed-consumer.md` §5).** The
+/// builder body now lives in `cranelisp-types` beside `from_expr`
+/// ([`cranelisp_types::MonoExpr::lenient_from_expr`]) so view construction has
+/// ONE home. This backend entry point is the thin fallback for entries reached
+/// with NO typecheck-built `codegen_view` (signature-driven ctor/accessor
+/// synthetic bodies; generic / best-effort templates; REPL `__expr`;
+/// non-concretized macro-clause bodies). The sidecars are empty at this site —
+/// synthetic bodies carry their ctor identities directly (§5), and any residual
+/// `Var`-typed node is read ONLY via `signature_heap_category`, never the
+/// deleted `classify(Var)` panic. Byte-identical to the former in-crate body
+/// (empty sidecars ⇒ `resolved_target`/`resolved_ctor` = `None`, exactly as
+/// before). Deleted in W3 once typecheck is the sole view producer.
 pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
-    use cranelisp_types::{ConcreteType, Expr, MonoExpr, MonoMatchArm};
-
-    // The node's concrete type: the real one when concrete, else the placeholder
-    // (never read for signature-driven bodies).
-    let node_ty = |e: &Expr| -> ConcreteType {
-        e.inferred_type()
-            .and_then(|t| ConcreteType::from_type(t).ok())
-            .unwrap_or(ConcreteType::Int)
-    };
-
-    match expr {
-        Expr::Annotate { expr: inner, .. } => lenient_mono_from_expr(inner),
-        Expr::IntLit { value, span, .. } => MonoExpr::IntLit { value: *value, span: *span, ty: node_ty(expr) },
-        Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit { value: *value, span: *span, ty: node_ty(expr) },
-        Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit { value: *value, span: *span, ty: node_ty(expr) },
-        Expr::StringLit { value, span, .. } => MonoExpr::StringLit { value: value.clone(), span: *span, ty: node_ty(expr), confined: None, escapes: None, unique_static: None },
-        Expr::Var { name, span, resolved_call, .. } => MonoExpr::Var {
-            name: name.clone(),
-            span: *span,
-            resolved_call: resolved_call.clone(),
-            ty: node_ty(expr),
-        },
-        Expr::Let { bindings, body, span, .. } => MonoExpr::Let {
-            bindings: bindings.iter().map(|(n, e)| (n.clone(), lenient_mono_from_expr(e))).collect(),
-            body: Box::new(lenient_mono_from_expr(body)),
-            span: *span,
-            ty: node_ty(expr),
-        },
-        Expr::If { cond, then_branch, else_branch, span, .. } => MonoExpr::If {
-            cond: Box::new(lenient_mono_from_expr(cond)),
-            then_branch: Box::new(lenient_mono_from_expr(then_branch)),
-            else_branch: Box::new(lenient_mono_from_expr(else_branch)),
-            span: *span,
-            ty: node_ty(expr),
-        },
-        Expr::Lambda { params, body, span, .. } => MonoExpr::Lambda {
-            params: params.iter().map(|(n, _)| n.clone()).collect(),
-            body: Box::new(lenient_mono_from_expr(body)),
-            span: *span,
-            ty: node_ty(expr),
-            confined: None,
-            escapes: None,
-            unique_static: None,
-        },
-        Expr::Apply { callee, args, span, resolved_call, .. } => MonoExpr::Apply {
-            callee: Box::new(lenient_mono_from_expr(callee)),
-            args: args.iter().map(lenient_mono_from_expr).collect(),
-            span: *span,
-            resolved_call: resolved_call.clone(),
-            ty: node_ty(expr),
-            confined: None,
-            escapes: None,
-            provenance: None,
-            unique_static: None,
-        },
-        Expr::Match { scrutinee, arms, span, compiler_generated, .. } => MonoExpr::Match {
-            scrutinee: Box::new(lenient_mono_from_expr(scrutinee)),
-            arms: arms.iter().map(|arm| MonoMatchArm {
-                pattern: arm.pattern.clone(),
-                body: lenient_mono_from_expr(&arm.body),
-                span: arm.span,
-                provenance: None,
-                // The lenient (signature-driven / synthetic-body / generic-template)
-                // path has no `pattern_ctors` sidecar — its ctor arms (the
-                // auto-generated field-accessor `(match self [(Box v) v])`, a
-                // generic-template match) are single in-scope-unambiguous ctors that
-                // `compile_constructor_pattern` resolves via the `None`-arm
-                // `lookup_constructor` fallback (§10.3 fold-in). A scrutinee-directed
-                // same-named ctor never reaches this builder — it lives only in a
-                // user `defn` body, which is `codegen_view` (sidecar-populated).
-                resolved_ctor: None,
-            }).collect(),
-            span: *span,
-            compiler_generated: *compiler_generated,
-            ty: node_ty(expr),
-        },
-        Expr::VecLit { elements, span, .. } => MonoExpr::VecLit {
-            elements: elements.iter().map(lenient_mono_from_expr).collect(),
-            span: *span,
-            ty: node_ty(expr),
-            confined: None,
-            escapes: None,
-            unique_static: None,
-        },
-        Expr::Trace { modules, body, span, .. } => MonoExpr::Trace {
-            modules: modules.clone(),
-            body: Box::new(lenient_mono_from_expr(body)),
-            span: *span,
-            ty: node_ty(expr),
-        },
-        Expr::ParBind { bindings, body, span, .. } => MonoExpr::ParBind {
-            bindings: bindings.iter().map(|(n, e)| (n.clone(), lenient_mono_from_expr(e))).collect(),
-            body: Box::new(lenient_mono_from_expr(body)),
-            span: *span,
-            ty: node_ty(expr),
-        },
-        Expr::LaunchContinue { launched, continuation, span, .. } => MonoExpr::LaunchContinue {
-            launched: Box::new(lenient_mono_from_expr(launched)),
-            continuation: Box::new(lenient_mono_from_expr(continuation)),
-            span: *span,
-            ty: node_ty(expr),
-        },
-        Expr::ConstrADT { type_name, tag, fields, span, .. } => MonoExpr::ConstrADT {
-            type_name: type_name.clone(),
-            tag: *tag,
-            fields: fields.iter().map(lenient_mono_from_expr).collect(),
-            span: *span,
-            ty: node_ty(expr),
-            confined: None,
-            escapes: None,
-            unique_static: None,
-        },
-    }
+    use std::collections::HashMap;
+    cranelisp_types::MonoExpr::lenient_from_expr(expr, &HashMap::new(), &HashMap::new())
 }
 
 fn compile_to_module_impl<M, C, L>(

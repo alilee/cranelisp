@@ -340,6 +340,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // filter, chain-follow to the home module).
         self.record_user_fn_ref(state, name.as_ref(), span);
 
+        // S110 0583 (the F1 chokepoint): record the reference's STORAGE identity
+        // — every table-resolved kind, not just user fns — into
+        // `MethodResolutions.resolved_targets`, keyed at the `Var` span, so the
+        // backend keys ONE fetch on it and never re-resolves the name
+        // (Principle 24). Rides UNREAD in W0 (behaviour-invariant).
+        self.record_resolved_target(state, name.as_ref(), span);
+
         let ty = self.instantiate(state, &scheme);
         let resolved = self.apply_subst(state, &ty);
         self.record_expr_type(state, span, resolved.clone());

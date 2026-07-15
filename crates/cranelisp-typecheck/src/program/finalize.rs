@@ -82,6 +82,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         accumulator.method_resolutions.extend(result.method_resolutions);
         accumulator.pattern_ctors.extend(result.pattern_ctors);
+        accumulator.resolved_targets.extend(result.resolved_targets);
         accumulator.expr_types.extend(result.expr_types);
         if let Some(name) = result.constrained_fn {
             accumulator.constrained_fn_names.insert(name);
@@ -879,6 +880,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // `state.method_resolutions` (§10.2 requires the sidecar to reach
             // `from_expr`). The map is per-cluster (spans → FQSymbols), cheap.
             let pattern_ctors_for_views = accumulator.pattern_ctors.clone();
+            let resolved_targets_for_views = accumulator.resolved_targets.clone();
             let sym_table = &mut self.current_symbol_table_mut(state);
             // Reannotate `existing` from the final side maps + subst, then, for a
             // `Concrete{slot}` codegen target, rebuild `codegen_view` from the
@@ -898,7 +900,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             kind.as_ref(),
                             DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
                         ) {
-                            *cv = build_concrete_codegen_view(name, existing, &pattern_ctors_for_views);
+                            *cv = build_concrete_codegen_view(name, existing, &pattern_ctors_for_views, &resolved_targets_for_views);
                         }
                     }
                 };

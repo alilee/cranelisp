@@ -61,7 +61,7 @@ fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
     pc.insert(pat_span, fq.clone());
 
     let MonoExpr::Match { arms, .. } =
-        MonoExpr::from_expr(&match_expr, &pc).expect("concrete")
+        MonoExpr::from_expr(&match_expr, &pc, &std::collections::HashMap::new()).expect("concrete")
     else {
         panic!("expected a Match node");
     };
@@ -75,17 +75,73 @@ fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
     // Empty sidecar ⇒ the ctor arm is None (the population gap the backend
     // detects — it is never silently filled by the transport layer).
     let MonoExpr::Match { arms: arms2, .. } =
-        MonoExpr::from_expr(&match_expr, &std::collections::HashMap::new()).expect("concrete")
+        MonoExpr::from_expr(&match_expr, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete")
     else {
         panic!("expected a Match node");
     };
     assert_eq!(arms2[0].resolved_ctor, None, "an empty sidecar leaves the ctor arm None");
 }
 
+// S110 0583 (the resolved_target transport seam): `from_expr` populates
+// `MonoExpr::{Var,Apply}.resolved_target` from the `resolved_targets` sidecar
+// keyed by the referencing node's OWN span; an empty sidecar leaves it `None`
+// (the carrier-miss precondition the backend keys on, W1). Lambda params /
+// locals are not in the sidecar and stay `None`.
+#[test]
+fn var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span() {
+    use crate::FQSymbol;
+    let var_span = Span::new(10, 20);
+    let apply_span = Span::new(30, 40);
+    let fq_fn = FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("f") };
+    let fq_dispatch =
+        FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("g$Int") };
+
+    // `(f)` — the callee Var carries its storage FQ; the Apply carries the
+    // dispatch-leg FQ.
+    let callee = Expr::Var {
+        name: Symbol::from("f"),
+        span: var_span,
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Fn(vec![], Box::new(Type::Int)))),
+    };
+    let apply = Expr::Apply {
+        callee: Box::new(callee),
+        args: vec![],
+        span: apply_span,
+        resolved_call: None,
+        inferred_type: int_ty(),
+    };
+    let mut rt = std::collections::HashMap::new();
+    rt.insert(var_span, fq_fn.clone());
+    rt.insert(apply_span, fq_dispatch.clone());
+
+    let MonoExpr::Apply { callee, resolved_target, .. } =
+        MonoExpr::from_expr(&apply, &std::collections::HashMap::new(), &rt).expect("concrete")
+    else {
+        panic!("expected an Apply node");
+    };
+    assert_eq!(resolved_target.as_ref(), Some(&fq_dispatch), "Apply carries the dispatch-leg FQ");
+    let MonoExpr::Var { resolved_target: v_rt, .. } = *callee else {
+        panic!("expected a Var callee");
+    };
+    assert_eq!(v_rt.as_ref(), Some(&fq_fn), "the callee Var carries its storage FQ");
+
+    // Empty sidecar ⇒ both carriers None (the carrier-miss the backend detects;
+    // never silently filled by the transport layer).
+    let MonoExpr::Apply { callee, resolved_target, .. } =
+        MonoExpr::from_expr(&apply, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+            .expect("concrete")
+    else {
+        panic!("expected an Apply node");
+    };
+    assert_eq!(resolved_target, None, "empty sidecar leaves the Apply carrier None");
+    assert!(matches!(*callee, MonoExpr::Var { resolved_target: None, .. }));
+}
+
 #[test]
 fn concrete_int_lit_round_trips() {
     let e = int_lit(42);
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 42, ref ty, .. } if *ty == ConcreteType::Int));
     assert_eq!(m.ty(), &ConcreteType::Int);
 }
@@ -94,7 +150,7 @@ fn concrete_int_lit_round_trips() {
 fn unannotated_node_fails() {
     // inferred_type == None — representation-undetermined.
     let e = Expr::IntLit { value: 1, span: span(), inferred_type: None };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(0));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(0));
 }
 
 #[test]
@@ -114,7 +170,7 @@ fn residual_var_node_fails_at_that_node() {
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(7));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(7));
 }
 
 #[test]
@@ -127,7 +183,7 @@ fn annotate_is_erased() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     // The result is the inner IntLit, NOT a wrapper node.
     assert!(matches!(m, MonoExpr::IntLit { value: 5, .. }));
 }
@@ -148,7 +204,7 @@ fn nested_annotate_erases_to_inner() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&two, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&two, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 9, .. }));
 }
 
@@ -174,7 +230,7 @@ fn lambda_param_type_exprs_are_erased() {
         span: span(),
         inferred_type: Some(Box::new(lam_ty)),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Lambda { params, ty, .. } => {
             assert_eq!(params, vec![Symbol::from("x")]);
@@ -201,7 +257,7 @@ fn apply_carries_resolved_call_and_concrete_args() {
         resolved_call: Some(Box::new(rc)),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Apply { resolved_call, args, ty, .. } => {
             assert!(resolved_call.is_some());
@@ -227,7 +283,7 @@ fn concrete_adt_node_round_trips() {
         span: span(),
         inferred_type: Some(Box::new(opt_int)),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::ConstrADT { tag, fields, ty, .. } => {
             assert_eq!(tag, 1);
@@ -262,7 +318,7 @@ fn match_arm_pattern_survives_body_converts() {
         }
         _ => unreachable!(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
     match m {
         MonoExpr::Match { arms, ty, .. } => {
             assert_eq!(arms.len(), 1);
@@ -288,5 +344,5 @@ fn deeply_nested_var_in_let_binding_is_caught() {
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(3));
+    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(3));
 }

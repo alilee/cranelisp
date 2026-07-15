@@ -787,6 +787,69 @@ Acceptance: /testing's 3×-consecutive bar + a deliberate dual-build clobber
 check, scheduled when no other agent is testing. **Separate root from 0604**
 (build substrate vs runtime SharedState) — not folded.
 
+### /dev (W0) — 0583 producer change-set (2026-07-15, LANDED)
+
+ONE coordinated cross-crate deployment across `cranelisp-types` +
+`cranelisp-typecheck` + `cranelisp-backend`, per `backend-keyed-consumer.md` §8.
+**Suite: 13 pre-existing S110 REDs UNCHANGED (zero new failures); +2 new unit
+rows GREEN** (`cache_v18_meta_rejected_after_resolved_target_carriers`,
+`var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span`).
+`public_api_relocations` flips GREEN (types baseline regenerated). Backend +
+typecheck `public-api.txt` = ZERO movement (verified). Behaviour-invariant by
+construction — carriers ride UNREAD until W1.
+
+**Landed (W0.a — carriers + producer + schema):**
+- `cranelisp-types`: `MethodResolutions.resolved_targets` span-keyed sidecar
+  (`check.rs`); `MonoExpr::{Var,Apply}.resolved_target: Option<FQSymbol>`
+  (`#[serde(default)]`); `from_expr` gains the REQUIRED `resolved_targets`
+  third param (§10 unforgettable template), `Var`/`Apply` arms populate by span.
+- `cranelisp-typecheck`: `record_resolved_target` writer at the `infer_var`
+  F1 chokepoint (`checker.rs`), recording the terminal STORAGE FQ for EVERY
+  table-resolved reference kind (any `ModuleEntry::Def` — user fn, primitive,
+  ctor, effect, extern, mangled/mono variant); env-shadow gate skips locals.
+  Sidecar threaded through `FormCheckResult`/`ModuleCheckAccumulator` +
+  `build_concrete_codegen_view` + the finalize codegen-view rebuild + the
+  `monomorphise_call` direct `from_expr` — exact mirror of `pattern_ctors`.
+- `cranelisp-backend`: `CACHE_SCHEMA_VERSION` **18 → 19** (same change-set);
+  test-harness `from_expr` callers updated.
+- Baseline: `cranelisp-types/public-api.txt` regenerated (2 mono fields +
+  sidecar + `from_expr` signature + the §5 `lenient_from_expr` relocation) —
+  matches the /arch-pinned §8 diff exactly, nothing beyond it.
+
+**Landed (W0.b — partial, the SAFE clauses):**
+- `lenient_mono_from_expr` RELOCATED to `cranelisp_types::MonoExpr::lenient_from_expr`
+  (beside `from_expr`, same two REQUIRED sidecar params) — ONE home for view
+  construction. The backend entry point is now a thin delegator (byte-identical:
+  empty sidecars ⇒ `None` carriers, exactly as before).
+
+**Landed (R-2 — typecheck half):**
+- `adt.rs::register_type_def_with_ctor_infos` rewired onto
+  `cranelisp_types::build_adt_entries` (thin caller: pre-allocates GOT slots +
+  builds `AdtCtorSpec`s, inserts returned pairs — `Def`/`TypeDef` verbatim,
+  bare `Import` aliases through the extracted §8.6.5 contest classifier
+  `install_bare_ctor_alias`; product accessor synthesis kept as the
+  typecheck-only follow-on). The dead `register_constructors` + `CtorBuild.tag`
+  deleted; `build_constructor_scheme` demoted to `#[cfg(test)]`. Behaviour-
+  invariant — all adt/DC/exemplar suites GREEN, ZERO cache impact (entry shapes
+  unchanged). `src/bootstrap.rs`'s half wires in the src/ track later (per
+  dispatch).
+
+**DEFERRED within-W0 (flagged to /arch + /sprint — NOT improvised):** the W0.b
+**full totalization flip** — backend `lib.rs:905` view-selection hard-error arm
++ typecheck populating `codegen_view` for ALL codegen-reached entries
+(ctors/accessors) + synthetic-body `resolved_ctor`-at-synthesis. Rationale: the
+flip retires the `requires_codegen_view` bypass and makes `lib.rs:909` a hard
+error, which requires typecheck to view-populate Constructor-kind entries across
+new registration seams. Its shippability gate is **CLIF byte-identity**, and I
+have no automated byte-identity harness to verify the flip (KC-W0-2 is
+`/testing`'s W0 deliverable). Improvising it risks a silent codegen regression
+the passing suite would not catch (suite-green ≠ byte-identical CLIF). **W1/W2
+do NOT depend on it** — they consume the `resolved_target` carrier, which IS
+delivered; only **W3**'s deletion of `lenient_mono_from_expr` depends on the
+totalization. Recommend it lands as a follow-on W0.b change-set gated on the
+KC-W0-2 golden-CLIF harness, before W3. `lenient_from_expr` is already relocated
+so that follow-on is a backend-`lib.rs` + typecheck-view-population edit only.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

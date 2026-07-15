@@ -163,7 +163,7 @@ fn table_with_def(
     // `ConcreteType`-typed). Build it from the concretely-annotated `ast`
     // body the fixtures supply.
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new())
+        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new())
             .expect("test fixture body must be concretely typed for the codegen view");
         MonoDefnVariant {
             name: name.clone(),

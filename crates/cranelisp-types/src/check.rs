@@ -74,6 +74,25 @@ pub struct MethodResolutions {
     /// `Symbol` slipping through was the D47-violation pattern flagged by
     /// the S70 cranelisp-types solidness sweep finding #4.
     pub pattern_ctors: HashMap<Span, FQSymbol>,
+    /// Per-reference-span resolved STORAGE identity (S110 0583; mirror of
+    /// `pattern_ctors`): the `FQSymbol` under which the referenced `Def`
+    /// actually resolved — "whichever storage key HIT" at the typecheck
+    /// resolution chokepoint (`design/arch/backend-keyed-consumer.md` §1.1).
+    /// It is NOT the written name and NOT a display name: module + the exact
+    /// symbol-table key the resolution terminated at (bare `m/f`, canonical
+    /// `m/Type.Ctor` for sum ctors, mangled `m/f$Int+Int` for a mono/dispatch
+    /// instance, `primitives/add-i64` for a primitive, etc.).
+    ///
+    /// Keyed by the REFERENCING node's span — `Expr::Var.span` for
+    /// value/callee references, `Expr::Apply.span` for dispatch-leg
+    /// resolutions that resolve at the `Apply`. Populated by typecheck at the
+    /// `infer_var` chokepoint (and dispatch seams); read by
+    /// [`crate::MonoExpr::from_expr`] into `MonoExpr::{Var,Apply}.resolved_target`
+    /// so the backend performs ONE keyed fetch and never re-resolves a name
+    /// (Principle 24 "Resolve once"). Local variables / lambda params are not
+    /// table-resolved and carry no entry here.
+    #[serde(default)]
+    pub resolved_targets: HashMap<Span, FQSymbol>,
 }
 
 impl MethodResolutions {

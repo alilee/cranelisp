@@ -390,7 +390,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // subst-resolved variant body the `ast` carries (best-effort; a
                 // `$Var`-param variant body legitimately stays non-concrete — see
                 // `build_concrete_codegen_view`).
-                if let Some(view) = build_concrete_codegen_view(&mangled, &ast, &state.method_resolutions.pattern_ctors) {
+                if let Some(view) = build_concrete_codegen_view(&mangled, &ast, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets) {
                     builder = builder.codegen_view(view);
                 }
                 builder = builder.ast(ast);
@@ -928,7 +928,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let codegen_view = concrete_defn
                 .variants
                 .first()
-                .and_then(|v| build_concrete_codegen_view(&name, v, &state.method_resolutions.pattern_ctors));
+                .and_then(|v| build_concrete_codegen_view(&name, v, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets));
 
             // Re-register the entry under the BARE name as `Concrete{slot}`,
             // carrying the concrete scheme + annotated body. Allocate a fresh

@@ -45,12 +45,13 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String }
+    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolved_target: None }
 }
 /// A statically-resolved call `(name args...)` via SigDispatch (classifies
 /// Summarised(name), consulting the summary registered under `name`).
 fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
+        resolved_target: None,
         callee: Box::new(var(name)),
         args,
         span: s(),
@@ -67,6 +68,7 @@ fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
 /// A call with no resolved_call (the None+Var classifier row).
 fn bare_call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
+        resolved_target: None,
         callee: Box::new(var(name)),
         args,
         span: s(),
@@ -98,6 +100,7 @@ fn adt_sp(span: Span, fields: Vec<MonoExpr>) -> MonoExpr {
 /// A `SigDispatch` call with an explicit span.
 fn call_sp(span: Span, name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
+        resolved_target: None,
         callee: Box::new(var(name)),
         args,
         span,

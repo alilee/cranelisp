@@ -163,6 +163,54 @@ fn cache_v4_meta_rejected_after_callability_reshape() {
     }
 }
 
+/// S110 W0 bump guard (0583, KC-W0-3): a `.meta.json` stamped at schema
+/// version 18 — written before the `resolved_targets` sidecar +
+/// `MonoExpr::{Var,Apply}.resolved_target` carriers landed — MUST be rejected
+/// as `CacheStale::SchemaMismatch` against the bumped `CACHE_SCHEMA_VERSION`
+/// (19), so the caller recompiles rather than deserialising `None` carriers
+/// that (post-W1) would hard-fail the backend's keyed read. The three carrier
+/// additions are `#[serde(default)]` but their fresh-build value on a
+/// table-reference node is `Some`, NOT the default — the exempt-default class
+/// does not apply, so the wholesale invalidation is required.
+// spec: design/arch/backend-keyed-consumer.md §8 (the pinned W0 diff — cache 18→19)
+#[test]
+fn cache_v18_meta_rejected_after_resolved_target_carriers() {
+    // The bump must actually have happened — a v18 cache must be stale now.
+    const {
+        assert!(
+            super::super::CACHE_SCHEMA_VERSION >= 19,
+            "S110 0583 carriers require CACHE_SCHEMA_VERSION bumped past 18"
+        );
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join("user.meta.json");
+
+    // Emit a sidecar stamped at the legacy v18 (current build_id, so only the
+    // schema version differs — isolating the schema-mismatch route).
+    let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+    table.insert(Symbol::from("callable"), make_def("callable"));
+    write_meta(&meta_path, &table, 18).unwrap();
+
+    let bytes = std::fs::read(&meta_path).unwrap();
+    let result =
+        deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
+    match result {
+        Err(CacheStale::SchemaMismatch { found, expected, .. }) => {
+            assert_eq!(found, 18, "the stale cache was stamped at v18");
+            assert_eq!(
+                expected,
+                super::super::CACHE_SCHEMA_VERSION,
+                "rejected against the current (bumped) schema version"
+            );
+        }
+        // Crucially NOT Ok(table): a v18 cache must never load post-carrier.
+        other => panic!(
+            "v18 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"
+        ),
+    }
+}
+
 /// Per task: write-then-read round-trip. Full multi-field SymbolTable
 /// round-trips byte-identical (modulo skipped fields). Covers the §14.6
 /// symmetry invariant.

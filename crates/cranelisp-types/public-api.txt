@@ -358,6 +358,7 @@ pub cranelisp_types::MonoExpr::Apply::confined: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::Apply::escapes: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::Apply::provenance: core::option::Option<cranelisp_types::Symbol>
 pub cranelisp_types::MonoExpr::Apply::resolved_call: core::option::Option<alloc::boxed::Box<cranelisp_types::ResolvedCall>>
+pub cranelisp_types::MonoExpr::Apply::resolved_target: core::option::Option<cranelisp_types::FQSymbol>
 pub cranelisp_types::MonoExpr::Apply::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Apply::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::Apply::unique_static: core::option::Option<bool>
@@ -432,6 +433,7 @@ pub cranelisp_types::MonoExpr::Trace::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::Var
 pub cranelisp_types::MonoExpr::Var::name: cranelisp_types::Symbol
 pub cranelisp_types::MonoExpr::Var::resolved_call: core::option::Option<alloc::boxed::Box<cranelisp_types::ResolvedCall>>
+pub cranelisp_types::MonoExpr::Var::resolved_target: core::option::Option<cranelisp_types::FQSymbol>
 pub cranelisp_types::MonoExpr::Var::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Var::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::VecLit
@@ -442,7 +444,8 @@ pub cranelisp_types::MonoExpr::VecLit::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::VecLit::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::VecLit::unique_static: core::option::Option<bool>
 impl cranelisp_types::MonoExpr
-pub fn cranelisp_types::MonoExpr::from_expr(&cranelisp_types::Expr, &std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>) -> core::result::Result<cranelisp_types::MonoExpr, cranelisp_types::NotConcrete>
+pub fn cranelisp_types::MonoExpr::from_expr(&cranelisp_types::Expr, &std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>, &std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>) -> core::result::Result<cranelisp_types::MonoExpr, cranelisp_types::NotConcrete>
+pub fn cranelisp_types::MonoExpr::lenient_from_expr(&cranelisp_types::Expr, &std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>, &std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>) -> cranelisp_types::MonoExpr
 pub fn cranelisp_types::MonoExpr::span(&self) -> cranelisp_types::Span
 pub fn cranelisp_types::MonoExpr::ty(&self) -> &cranelisp_types::ConcreteType
 impl core::marker::Freeze for cranelisp_types::MonoExpr
@@ -1261,6 +1264,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::MatchArm
 #[non_exhaustive] pub struct cranelisp_types::MethodResolutions
 pub cranelisp_types::MethodResolutions::pattern_ctors: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>
 pub cranelisp_types::MethodResolutions::resolved_calls: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::ResolvedCall>
+pub cranelisp_types::MethodResolutions::resolved_targets: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>
 impl cranelisp_types::MethodResolutions
 pub fn cranelisp_types::MethodResolutions::new() -> Self
 impl core::marker::Freeze for cranelisp_types::MethodResolutions

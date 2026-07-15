@@ -231,8 +231,9 @@ pub(crate) fn build_concrete_codegen_view(
     name: &Symbol,
     variant: &DefnVariant,
     pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> Option<cranelisp_types::MonoDefnVariant> {
-    match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors) {
+    match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors, resolved_targets) {
         Ok(mono_body) => Some(cranelisp_types::MonoDefnVariant {
             name: name.clone(),
             params: variant.params.iter().map(|(n, _)| n.clone()).collect(),

@@ -638,6 +638,7 @@ where
                 span,
                 resolved_call,
                 ty,
+                ..
             } => {
                 // The signature-path bridge: `compile_var` reads the variable's
                 // type as a `&Type` (for the value-position trait-method arity).
@@ -1420,7 +1421,7 @@ mod b34_stack_eligibility_tests {
         ConcreteType::Int
     }
     fn var(name: &str) -> MonoExpr {
-        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int() }
+        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(), resolved_target: None }
     }
     fn constr(escapes: Option<bool>) -> MonoExpr {
         MonoExpr::ConstrADT {
@@ -1432,6 +1433,7 @@ mod b34_stack_eligibility_tests {
     /// An `(f args…)` apply with the given callee name, escape fact, and resolved call.
     fn apply(callee: &str, args: Vec<MonoExpr>, escapes: Option<bool>, resolved: Option<ResolvedCall>) -> MonoExpr {
         MonoExpr::Apply {
+            resolved_target: None,
             callee: Box::new(var(callee)), args, span: Span::new(0, 3),
             resolved_call: resolved.map(Box::new), ty: int(),
             escapes, confined: None, unique_static: None, provenance: None,
@@ -1680,7 +1682,9 @@ mod return_protect_tests {
 
     fn apply_body() -> MonoExpr {
         MonoExpr::Apply {
+            resolved_target: None,
             callee: Box::new(MonoExpr::Var {
+                resolved_target: None,
                 name: Symbol::from("f"),
                 span: Span::new(0, 1),
                 resolved_call: None,
@@ -1700,15 +1704,15 @@ mod return_protect_tests {
     fn if_body() -> MonoExpr {
         MonoExpr::If {
             cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }),
-            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, ty: int_ty() }),
-            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, ty: int_ty() }),
+            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, resolved_target: None, ty: int_ty() }),
+            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, resolved_target: None, ty: int_ty() }),
             span: Span::new(0, 4),
             ty: int_ty(),
         }
     }
 
     fn var_body() -> MonoExpr {
-        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty() }
+        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty(), resolved_target: None }
     }
 
     fn fresh() -> ModeSummary {
@@ -1772,7 +1776,7 @@ mod b33_node_confined_tests {
         MonoExpr::Lambda { params: vec![], body: Box::new(MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: None, confined: c, unique_static: None }
     }
     fn apply(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None }
+        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, resolved_target: None, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None, resolved_target: None }
     }
     fn vec_lit(c: Option<bool>) -> MonoExpr {
         // node_confined reads only `confined`; the ty is immaterial here.
@@ -1797,7 +1801,7 @@ mod b33_node_confined_tests {
     // never the fact source.
     #[test]
     fn non_fact_bearing_variants_are_none() {
-        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, ty: int() };
+        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, resolved_target: None, ty: int() };
         let iflit = MonoExpr::If { cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }), then_branch: Box::new(var.clone()), else_branch: Box::new(var.clone()), span: Span::new(0, 2), ty: int() };
         let intlit = MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() };
         assert_eq!(node_confined(&var), None);

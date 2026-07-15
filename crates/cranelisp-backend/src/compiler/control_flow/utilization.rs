@@ -525,7 +525,9 @@ mod tests {
 
     fn apply_var(callee: &str, ret: cranelisp_types::ConcreteType) -> MonoExpr {
         MonoExpr::Apply {
+            resolved_target: None,
             callee: Box::new(MonoExpr::Var {
+                resolved_target: None,
                 name: Symbol::from(callee),
                 span: Span::new(0, 0),
                 resolved_call: None,

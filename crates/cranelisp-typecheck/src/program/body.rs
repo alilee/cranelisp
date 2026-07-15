@@ -117,6 +117,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(FormCheckResult {
             method_resolutions: form_mr,
             pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
+            resolved_targets: state.method_resolutions.resolved_targets.clone(),
             expr_types: form_et,
             constrained_fn,
             mono_defns: Vec::new(),
@@ -344,7 +345,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
         let codegen_view = if is_concrete_codegen_target {
             annotated.variants.first().and_then(|variant| {
-                build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors)
+                build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets)
             })
         } else {
             None
@@ -556,6 +557,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(FormCheckResult {
             method_resolutions: form_mr,
             pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
+            resolved_targets: state.method_resolutions.resolved_targets.clone(),
             expr_types: form_et,
             constrained_fn: None,
             mono_defns: Vec::new(),

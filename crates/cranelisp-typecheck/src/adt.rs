@@ -25,7 +25,6 @@ use crate::checker::{CheckState, TypeCheckEnv};
 #[derive(Clone)]
 pub(crate) struct CtorBuild {
     pub name: Symbol,
-    pub tag: usize,
     pub fields: Vec<FieldInfo>,
     pub docstring: Option<String>,
     pub internal: bool,
@@ -134,37 +133,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
         let adt_type = Type::ADT(fqtn.clone(), type_args);
 
-        // Capture ctor names for the TypeDefInfo before consuming ctor_infos
-        // during per-ctor Def registration.
-        let ctor_names: Vec<Symbol> =
-            ctor_infos.iter().map(|c| c.name.clone()).collect();
-
-        let type_def_info = TypeDefInfo {
-            name: fqtn.clone(),
-            type_params: type_params.to_vec(),
-            constructors: ctor_names,
-        };
-
-        // **Product/sum split (S79 Option 3a, FIXME 0319).** A single-ctor
-        // **product** type has type-name == ctor-name, so the type and its
-        // constructor collide on one symbol-table key (`"Rectangle"`). Rather
-        // than overwrite the got-slotted ctor `Def` with a `ModuleEntry::TypeDef`
-        // (the prior model — which dropped the ctor's `param_names` field names
-        // and broke product-ctor-as-first-class-value), the surviving entry is
-        // the **got-slotted ctor `Def`** carrying a **type facet**
-        // (`DefKind::Constructor { type_def: Some(..) }`) so it ALSO answers as
-        // its own type. A sum/enum type registers a separate `ModuleEntry::TypeDef`
-        // under its distinct key and its ctors carry `type_def: None`.
         let is_product = ctor_infos.len() == 1
             && ctor_infos[0].name.as_ref() == name.as_ref();
-        let product_type_def: Option<TypeDefInfo> =
-            is_product.then(|| type_def_info.clone());
 
+        // Sum/enum: pre-seed the type-name placeholder before minting ctor `Def`s
+        // (the `register_type_def` path pre-seeds; direct callers may not have —
+        // do it defensively so any staging read during insertion sees the type).
+        // The real `TypeDef` (with the ctor-name list + docstring) is minted by
+        // `build_adt_entries` below and overwrites this placeholder.
         if !is_product {
-            // Sum/enum: pre-seed the type entry (the `register_type_def` path
-            // pre-seeds; direct callers may not have, so do it here
-            // defensively) so recursive ctor-field resolution can see the type
-            // while constructors register.
             self.current_symbol_table_mut(state).insert(
                 Symbol::from(name.as_ref()),
                 ModuleEntry::TypeDef {
@@ -179,34 +156,129 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
-        // Register each constructor as a ModuleEntry::Def with
-        // kind: DefKind::Constructor { type_name, tag, field_count, internal,
-        // type_def } and a synthesised DefnVariant body wrapping Expr::ConstrADT.
-        // The product ctor receives the type facet (`type_def: Some(..)`); every
-        // sum/enum ctor receives `type_def: None`.
-        self.register_constructors(
-            state,
+        // **R-2 (S110, the bootstrap↔typecheck ADT-mirror cure; Principle 24).**
+        // The ordered `(key, entry)` set an ADT registration produces is derived
+        // ONCE by `cranelisp_types::build_adt_entries` — the single derivation
+        // both this writer and `src/bootstrap.rs::register_synth_adt` call. This
+        // caller stays thin: it pre-allocates each ctor's GOT slot from staging
+        // (table state the pure builder cannot own), builds the specs, then
+        // inserts the returned pairs sequentially — `Def`/`TypeDef` verbatim, and
+        // each bare-name `Import` alias through the §8.6.5 contest classifier
+        // (`install_bare_ctor_alias`), the ONE structurally-discriminable `Import`
+        // shape the builder returns. Product field-accessor synthesis is a
+        // typecheck-only follow-on kept here (below).
+        let specs: Vec<cranelisp_types::AdtCtorSpec> = ctor_infos
+            .iter()
+            .map(|c| {
+                let got_slot = self.current_symbol_table_mut(state).allocate_got_slot();
+                cranelisp_types::AdtCtorSpec::new(
+                    c.name.clone(),
+                    c.fields.clone(),
+                    c.docstring.clone(),
+                    c.internal,
+                    got_slot,
+                )
+            })
+            .collect();
+
+        let entries = cranelisp_types::build_adt_entries::<C>(
             &fqtn,
-            &ctor_infos,
-            &adt_type,
+            type_params,
             type_var_ids,
+            docstring.as_deref(),
+            &specs,
             visibility,
-            product_type_def.as_ref(),
-            docstring,
         );
 
-        // Register the sum/enum type's separate `TypeDef` entry. The product
-        // case has NO `TypeDef` entry — its type facet lives on the ctor `Def`
-        // registered just above, under the shared `"Rectangle"` key.
-        if !is_product {
-            self.current_symbol_table_mut(state).insert(
-                Symbol::from(name.as_ref()),
-                ModuleEntry::TypeDef {
-                    info: type_def_info,
+        for (key, entry) in entries {
+            match &entry {
+                // The ONLY `Import` shape the builder returns is a sum ctor's
+                // bare-name alias onto its canonical `member_key(Type, Ctor)`
+                // `Def` — route it through the §8.6.5 contest classifier.
+                ModuleEntry::Import { source, .. } => {
+                    self.install_bare_ctor_alias(
+                        state, &fqtn, &key, &source.symbol, visibility,
+                    );
+                }
+                // Canonical ctor `Def`, product ctor `Def` (dual facet), and the
+                // sum `TypeDef` insert verbatim.
+                _ => {
+                    self.current_symbol_table_mut(state).insert(key, entry);
+                }
+            }
+        }
+
+        // **Field accessors (S83, spec §5.2.6) — typecheck-only follow-on.** For
+        // a **product** type, auto-generate free accessor fns over the lone ctor
+        // (the builder deliberately does not; bootstrap's seeded product has
+        // none). Sum/enum fields have no total accessor.
+        if is_product {
+            self.synthesise_field_accessors(
+                state, &fqtn, &ctor_infos[0], &adt_type, type_var_ids, visibility,
+            );
+        }
+    }
+
+    /// Install a sum ctor's **bare-name convenience alias** onto its canonical
+    /// `member_key(Type, Ctor)` `Def`, applying the §8.6.5 cross-type contest
+    /// classification (S109 dotted-ctor keying; `design/arch/
+    /// dotted-ctor-canonical-keys.md` §1). The canonical `Def` was already
+    /// inserted (the builder orders it before this alias). Classify the bare
+    /// binding by following its committed owner:
+    /// - **absent** → install the convenience `Import` alias;
+    /// - **same-type redefinition** (the one deftype re-run) → (re)install afresh;
+    /// - **cross-type contest** → poison the bare name to `Ambiguous` (canonical
+    ///   `Maybe.Some`/`Option.Some` `Def`s stay valid; only the bare alias is
+    ///   ambiguous);
+    /// - **non-ctor binding present** (a user `defn`, an unrelated import) → leave
+    ///   it untouched (the canonical key is still reachable).
+    fn install_bare_ctor_alias(
+        &self,
+        state: &mut CheckState,
+        fqtn: &FQTypeName,
+        bare_name: &Symbol,
+        canonical_key: &Symbol,
+        visibility: Visibility,
+    ) {
+        // Follow the bare binding's one committed edge to read its owner.
+        let probed = self.probe_module_entry_owned(&fqtn.module, bare_name.as_ref());
+        let committed_owner: Option<FQTypeName> = match probed.as_ref() {
+            Some(ModuleEntry::Import { source, .. }) if source.module == fqtn.module => {
+                self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
+                    .as_ref()
+                    .and_then(committed_member_owner)
+            }
+            Some(entry) => committed_member_owner(entry),
+            None => None,
+        };
+
+        let install_alias = |this: &Self, state: &mut CheckState| {
+            this.current_symbol_table_mut(state).insert(
+                bare_name.clone(),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: fqtn.module.clone(),
+                        symbol: canonical_key.clone(),
+                    },
                     visibility,
-                    docstring: docstring.clone(),
                 },
             );
+        };
+
+        match committed_owner {
+            // Same-type redefinition (the one deftype re-run): (re)install afresh.
+            Some(ref owner) if owner == fqtn => install_alias(self, state),
+            // Cross-type contest (§8.6.5): poison the bare name.
+            Some(_) => {
+                self.current_symbol_table_mut(state).insert(
+                    bare_name.clone(),
+                    ModuleEntry::Ambiguous { visibility },
+                );
+            }
+            // Bare name absent → install the convenience alias.
+            None if probed.is_none() => install_alias(self, state),
+            // Bare name present as a non-ctor binding: do NOT clobber it.
+            None => {}
         }
     }
 
@@ -237,22 +309,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Vec<CtorBuild>, CranelispError> {
         constructors
             .iter()
-            .enumerate()
-            .map(|(tag, ctor)| {
+            .map(|ctor| {
                 self.build_single_ctor_info(
-                    state, type_name, ctor, tag, var_map, span,
+                    state, type_name, ctor, var_map, span,
                 )
             })
             .collect()
     }
 
-    /// Build a single CtorBuild with resolved field types.
+    /// Build a single CtorBuild with resolved field types. The ctor's tag is
+    /// assigned positionally by `cranelisp_types::build_adt_entries` (S110 R-2);
+    /// `CtorBuild` carries no tag.
     fn build_single_ctor_info(
         &self,
         state: &CheckState,
         _type_name: &TypeName,
         ctor: &ConstructorDef,
-        tag: usize,
         var_map: &HashMap<Symbol, TypeId>,
         span: Span,
     ) -> Result<CtorBuild, CranelispError> {
@@ -272,220 +344,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         Ok(CtorBuild {
             name: ctor.name.clone(),
-            tag,
             fields,
             docstring: ctor.docstring.clone(),
             internal: false,
         })
-    }
-
-    /// Register constructors in the current module's symbol table.
-    ///
-    /// Each constructor becomes a `ModuleEntry::Def` with
-    /// `kind: DefKind::Constructor { type_name, tag, field_count, internal,
-    /// type_def }` and a synthesised `DefnVariant` body whose body expression is
-    /// `Expr::ConstrADT { type_name, tag, fields, span }` (per S69 Submission 35
-    /// and `DefKind::Constructor` rustdoc in `cranelisp_types::module`).
-    ///
-    /// **Product type facet (S79 Option 3a, FIXME 0319).** When
-    /// `product_type_def` is `Some`, this registration is for a single-ctor
-    /// **product** type (type-name == ctor-name); the lone ctor's `Def` carries
-    /// `type_def: Some(..)` so the shared `"Rectangle"` entry answers both as a
-    /// got-slotted ctor `Def` AND as its own type. Sum/enum ctors pass `None`
-    /// and carry `type_def: None`. `type_docstring` is the deftype-level
-    /// docstring, applied to the product ctor's `Def` when the ctor itself has
-    /// none (the product `Def` has no separate `TypeDef` entry to hold it).
-    #[allow(clippy::too_many_arguments)]
-    fn register_constructors(
-        &self,
-        state: &mut CheckState,
-        fqtn: &FQTypeName,
-        ctor_builds: &[CtorBuild],
-        adt_type: &Type,
-        type_var_ids: &[TypeId],
-        visibility: Visibility,
-        product_type_def: Option<&TypeDefInfo>,
-        type_docstring: &Option<String>,
-    ) {
-        for ctor in ctor_builds {
-            // The product type facet (if any) attaches to the ctor whose name
-            // matches the type name — for a product that is the single ctor.
-            let ctor_type_def: Option<Box<TypeDefInfo>> = product_type_def
-                .filter(|td| td.name.name.as_ref() == ctor.name.as_ref())
-                .map(|td| Box::new(td.clone()));
-            let ctor_scheme = build_constructor_scheme(
-                ctor, adt_type, type_var_ids,
-            );
-            let param_names: Vec<Symbol> =
-                ctor.fields.iter().map(|f| f.name.clone()).collect();
-            // Synthesise a DefnVariant body whose body expression is
-            // Expr::ConstrADT. Per `DefKind::Constructor` rustdoc — the
-            // backend lowers `Expr::ConstrADT` directly; the ctor's metadata
-            // (type_name, tag, field_count) lives on `DefKind::Constructor`.
-            let body_span = Span::SYNTHETIC;
-            let synth_params: Vec<(Symbol, Option<cranelisp_types::TypeExpr>)> =
-                param_names.iter().cloned().map(|n| (n, None)).collect();
-            let synth_body = Expr::ConstrADT {
-                type_name: fqtn.clone(),
-                tag: ctor.tag,
-                fields: param_names
-                    .iter()
-                    .map(|n| Expr::var(n.clone(), body_span))
-                    .collect(),
-                span: body_span,
-                inferred_type: None,
-            };
-            let ast = DefnVariant {
-                params: synth_params,
-                body: synth_body,
-                span: body_span,
-            };
-
-            // 0249-a: constructors are GOT-slotted callable values, exactly
-            // like user fns (program.rs user-fn slotting). Without a slot, a
-            // constructor reached *as a value* (`(map Some xs)`, `(let [f None]
-            // f)`) has no address to load — BC §3's minimal-JIT-setup boundary
-            // assumes the slot exists on the entry before int enumerates the
-            // name into the compile batch (0249-b). Allocated at registration
-            // (Decision 0048 primitives-got-slotting precedent). Nullary
-            // constructors are slotted too — addressability does not depend on
-            // arity. The slot is allocated before the entry is built; the
-            // `&mut` guard is dropped before the later `.insert` re-acquires it.
-            // The ctor is a concrete callable born with its slot (S83 deferred
-            // allocation, Principle 20): the slot rides on
-            // `DefKind::Constructor.got_slot`, not a flat `Def` field.
-            let slot = self.current_symbol_table_mut(state).allocate_got_slot();
-            let is_product_ctor = ctor_type_def.is_some();
-            let mut builder = ModuleEntry::def(
-                ctor_scheme,
-                DefKind::Constructor {
-                    got_slot: slot,
-                    type_name: fqtn.clone(),
-                    tag: ctor.tag,
-                    field_count: ctor.fields.len(),
-                    internal: ctor.internal,
-                    type_def: ctor_type_def,
-                    mode_summary: None,
-                },
-            )
-            .visibility(visibility)
-            .param_names(param_names)
-            .ast(ast);
-            // Ctor docstring wins; for the product ctor (which has no separate
-            // `TypeDef` entry) fall back to the deftype-level docstring.
-            let doc = ctor.docstring.clone().or_else(|| {
-                if is_product_ctor { type_docstring.clone() } else { None }
-            });
-            if let Some(doc) = doc {
-                builder = builder.docstring(doc);
-            }
-            let entry = builder.build();
-
-            if is_product_ctor {
-                // **Product dual-facet corner (spec §8.5.2 / design §1).** A
-                // product ctor (type-name == ctor-name) keeps its SINGLE key at
-                // the type name — NO canonical re-key, NO bare alias, NO poison.
-                // `member_key("Point","Point") = "Point.Point"` is degenerate; the
-                // bare name IS the canonical single key, carrying both the type
-                // facet (`type_def: Some`) and the ctor `Def`.
-                self.current_symbol_table_mut(state).insert(ctor.name.clone(), entry);
-            } else {
-                // **Sum ctor — uniform canonical keying (S109 W1, design §1).**
-                // The real got-slotted ctor `Def` is keyed under the canonical
-                // `member_key(Type, Ctor)` (`Maybe.Some`) in the type's home
-                // module; the bare ctor name becomes a convenience `Import` ALIAS,
-                // poisoned to `ModuleEntry::Ambiguous` on a §8.6.5 cross-type
-                // contest. Exact mirror of `synthesise_one_accessor` (bootstrap's
-                // `register_synth_adt` applies the same rule — no seeded/user split).
-                let canonical_key = member_key(&fqtn.name, ctor.name.as_ref());
-
-                // Classify the bare-name binding BEFORE minting the canonical key.
-                // The bare key is normally an `Import` ALIAS onto the FIRST owner's
-                // canonical `Type.Ctor` `Def` — follow that one edge to read the
-                // committed owner. Owner == this type ⇒ redefinition; DIFFERENT
-                // owner ⇒ §8.6.5 distinct-terminal contest.
-                let probed =
-                    self.probe_module_entry_owned(&fqtn.module, ctor.name.as_ref());
-                let committed_owner: Option<FQTypeName> = match probed.as_ref() {
-                    Some(ModuleEntry::Import { source, .. })
-                        if source.module == fqtn.module =>
-                    {
-                        self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
-                            .as_ref()
-                            .and_then(committed_member_owner)
-                    }
-                    Some(entry) => committed_member_owner(entry),
-                    None => None,
-                };
-
-                // Mint the canonical `Def` (unconditionally — the real entry).
-                self.current_symbol_table_mut(state)
-                    .insert(canonical_key.clone(), entry);
-
-                // Install / poison the bare alias.
-                match committed_owner {
-                    // Same-type redefinition (the one deftype re-run): (re)install
-                    // the bare alias afresh — NOT a cross-type contest.
-                    Some(ref owner) if owner == fqtn => {
-                        self.current_symbol_table_mut(state).insert(
-                            ctor.name.clone(),
-                            ModuleEntry::Import {
-                                source: FQSymbol {
-                                    module: fqtn.module.clone(),
-                                    symbol: canonical_key.clone(),
-                                },
-                                visibility,
-                            },
-                        );
-                    }
-                    // Cross-type contest (§8.6.5): poison the bare name. The
-                    // canonical `Maybe.Some`/`Option.Some` `Def`s stay valid; only
-                    // the bare alias becomes `Ambiguous`. Alternatives are
-                    // reconstructed on demand by walking the module for canonical
-                    // keys whose terminal segment equals the bare name
-                    // (`reconstruct_accessor_alternatives`, member-neutral).
-                    Some(_) => {
-                        self.current_symbol_table_mut(state).insert(
-                            ctor.name.clone(),
-                            ModuleEntry::Ambiguous { visibility },
-                        );
-                    }
-                    // Bare name absent → install the convenience alias.
-                    None if probed.is_none() => {
-                        self.current_symbol_table_mut(state).insert(
-                            ctor.name.clone(),
-                            ModuleEntry::Import {
-                                source: FQSymbol {
-                                    module: fqtn.module.clone(),
-                                    symbol: canonical_key.clone(),
-                                },
-                                visibility,
-                            },
-                        );
-                    }
-                    // Bare name present as a non-ctor binding (a user `defn`, an
-                    // unrelated import, or an already-`Ambiguous` third contest):
-                    // do NOT clobber it. The canonical `Maybe.Some` is still minted
-                    // and reachable; the bare name stays whatever it was.
-                    None => {}
-                }
-            }
-
-            // **Field accessors (S83, FIXME 0351(a), spec §5.2.6).** For each
-            // named field of a **product** type, auto-generate a free accessor
-            // fn `field :: (Fn [ProductType] FieldType)` whose body is a
-            // single-arm `match` over the product ctor binding all fields and
-            // returning the named one. Accessors are first-class concrete
-            // callables (born with a GOT slot, like the ctor). Only products
-            // get accessors — a sum/enum field accessor would be partial
-            // (undefined for the other ctors). The backend lowers the
-            // `Expr::Match` body; no new node, no backend change.
-            if is_product_ctor {
-                self.synthesise_field_accessors(
-                    state, fqtn, ctor, adt_type, type_var_ids, visibility,
-                );
-            }
-        }
     }
 
     /// Synthesise free field-accessor fns for a product type's ctor.
@@ -975,6 +837,12 @@ enum AccessorCollision {
 /// Data constructors:    `forall [vars]. (Fn [field_types] ADT_Type)`
 ///
 /// If there are no type parameters (vars is empty), the scheme is monomorphic.
+///
+/// **S110 R-2:** the production ctor-scheme derivation moved into
+/// `cranelisp_types::build_adt_entries` (the single ADT-entry builder). This
+/// free function is retained only for the `adt/tests.rs` scheme-shape unit
+/// tests, which assert the scheme grammar independently of the builder.
+#[cfg(test)]
 fn build_constructor_scheme(
     ctor: &CtorBuild,
     adt_type: &Type,

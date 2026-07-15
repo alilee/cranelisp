@@ -1818,7 +1818,6 @@
     fn test_build_constructor_scheme_nullary_mono() {
         let ctor = CtorBuild {
             name: Symbol::from("Red"),
-            tag: 0,
             fields: vec![],
             docstring: None,
             internal: false,
@@ -1835,7 +1834,6 @@
     fn test_build_constructor_scheme_data_mono() {
         let ctor = CtorBuild {
             name: Symbol::from("Point"),
-            tag: 0,
             fields: vec![
                 FieldInfo { name: Symbol::from("x"), ty: Type::Int },
                 FieldInfo { name: Symbol::from("y"), ty: Type::Int },
@@ -1861,7 +1859,6 @@
     fn test_build_constructor_scheme_polymorphic() {
         let ctor = CtorBuild {
             name: Symbol::from("Some"),
-            tag: 1,
             fields: vec![
                 FieldInfo { name: Symbol::from("val"), ty: Type::Var(42) },
             ],

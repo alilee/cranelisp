@@ -40,7 +40,9 @@ fn veclit(unique_static: Option<bool>) -> MonoExpr {
 /// carrying an explicit `unique_static`.
 fn apply(unique_static: Option<bool>) -> MonoExpr {
     MonoExpr::Apply {
+        resolved_target: None,
         callee: Box::new(MonoExpr::Var {
+            resolved_target: None,
             name: Symbol::from("build"),
             span: Span::SYNTHETIC,
             resolved_call: None,
@@ -61,6 +63,7 @@ fn apply(unique_static: Option<bool>) -> MonoExpr {
 /// the proof off.
 fn var() -> MonoExpr {
     MonoExpr::Var {
+        resolved_target: None,
         name: Symbol::from("v"),
         span: Span::SYNTHETIC,
         resolved_call: None,
