@@ -607,6 +607,10 @@ type MangledNamesByBase = HashMap<Symbol, Vec<Symbol>>;
 /// home_of_imported_callee).
 type FnValueArgSite = (Symbol, Symbol, Span, Vec<Type>, Option<ModuleFullPath>);
 
+/// A monomorphisation call site collected by `pass4_monomorphise`:
+/// (callee_name, arg_spans, call_span, home_of_imported_callee).
+type MonoCallSite = (Symbol, Vec<Span>, Span, Option<ModuleFullPath>);
+
 // --- Name mangling for multi-sig overload dispatch ---
 
 /// Mangle a function name with its parameter type signature.
@@ -1193,6 +1197,65 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // because resolved_overloads is populated by resolve_multi_sig_overloads.
         self.resolve_auto_curry(state);
 
+        // Eager constrained-fn detection + the S83 determination point: finalise
+        // this defn's `fn_state` (Concrete{slot} / Constrained / Polymorphic)
+        // from its trial scheme (`program-decomposition.md` §2.2).
+        let constrained_fn = self.determine_fn_state(state, defn, param_types, ret_ty, accumulator);
+
+        // Extract new method resolutions and expr types added during this form
+        let mut form_mr = HashMap::new();
+        for (span, res) in &state.method_resolutions.resolved_calls {
+            if !mr_before.contains(span) {
+                form_mr.insert(*span, res.clone());
+            }
+        }
+        let mut form_et = HashMap::new();
+        for (span, ty) in &state.expr_types {
+            if !et_before.contains(span) {
+                form_et.insert(*span, ty.clone());
+            }
+        }
+
+        // Per-defn AST annotation + concrete-boundary `codegen_view` writeback.
+        self.annotate_and_writeback_single_defn(state, defn, &form_et, &form_mr);
+
+        // Harvest call graph edges (Decision 21 + FIXME 0470/0472): the
+        // ResolvedCall channel + the user-fn references recorded during this
+        // form's body inference — call- and value-position alike, uniform
+        // carrier. ONE shared helper across all body-check seams.
+        let call_graph_edges =
+            self.harvest_callee_edges(state, &defn.name, &form_mr, &ufr_before);
+
+        let warnings = std::mem::take(&mut state.warnings);
+
+        Ok(FormCheckResult {
+            method_resolutions: form_mr,
+            pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
+            expr_types: form_et,
+            constrained_fn,
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings,
+            call_graph_edges,
+        })
+    }
+
+    /// The S83 determination point (FIXME 0356/0357, Principle 20; deferred
+    /// GOT-slot allocation) extracted from `check_form_body_single_defn`
+    /// (`program-decomposition.md` §2.2). Eagerly detects constrained-ness from
+    /// this defn's trial scheme and finalises its `fn_state`: unconstrained-
+    /// concrete → `Concrete{got_slot}` (slot reused on REPL redef); constrained
+    /// → slot-less `Constrained`; unconstrained-but-non-concrete → slot-less
+    /// `Polymorphic`. Returns the defn name iff it was marked constrained.
+    fn determine_fn_state(
+        &self,
+        state: &mut CheckState,
+        defn: &Defn,
+        param_types: &[Type],
+        ret_ty: &Type,
+        accumulator: &ModuleCheckAccumulator,
+    ) -> Option<Symbol> {
         // Eager constrained-fn detection
         let fn_type = Type::Fn(
             param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
@@ -1251,7 +1314,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         //   field to clear or assert about now). A concrete→constrained redef
         //   drops the old slot; the constrained template is never call-resolved
         //   so there is no live GOT pointer to orphan (no UAF).
-        let constrained_fn = if !trial_scheme.constraints.is_empty() {
+        if !trial_scheme.constraints.is_empty() {
             if let Some(entry) =
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
                 && let ModuleEntry::Def { kind, .. } = entry
@@ -1342,98 +1405,72 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 });
             }
             None
+        }
+    }
+
+    /// Per-defn AST annotation + concrete-boundary `codegen_view` writeback for
+    /// a single-sig defn, extracted from `check_form_body_single_defn`
+    /// (`program-decomposition.md` §2.2). Clones the defn, annotates it from the
+    /// per-form side maps + subst, and writes `ast` (+ `codegen_view` for a
+    /// `Concrete{slot}` codegen target) to its symbol-table entry.
+    fn annotate_and_writeback_single_defn(
+        &self,
+        state: &mut CheckState,
+        defn: &Defn,
+        form_et: &HashMap<Span, Type>,
+        form_mr: &HashMap<Span, ResolvedCall>,
+    ) {
+        let resolved_et: HashMap<Span, Type> = form_et
+            .iter()
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
+            .collect();
+        let mut annotated = defn.clone();
+        annotate_defn_from_maps(&mut annotated, &resolved_et, form_mr);
+        apply_subst_to_defn(&state.subst, &mut annotated);
+
+        // S84 Phase-3 (FIXME 0392): populate the concrete-boundary
+        // `codegen_view` for an ordinary CONCRETE single-sig defn (e.g.
+        // `main`, `(defn f [x] (+ x 1))` at a concrete instantiation). Only
+        // a `Concrete` entry is a `compile_to_module` codegen target —
+        // `Polymorphic`/`Constrained` templates (and any non-`Def`) get no
+        // view (they are mono SOURCES, excluded by `defined_symbols()`). The
+        // view is built from the SAME fully-annotated, subst-resolved body
+        // the `ast` carries, via `MonoExpr::from_expr`.
+        //
+        // **The validation payoff (FIXME 0392 §VALIDATION):** a
+        // `Concrete{slot}` defn that passed body-check (§3.11.1) has a fully
+        // concrete body ⇒ `from_expr` MUST succeed. A failure on a
+        // legitimate concrete defn is a real §3.11.1-position gap — surfaced
+        // HERE as the unified ambiguity / could-not-monomorphise error
+        // (NOT silently set to `None`, which would later trip the Phase-3
+        // backend backstop).
+        let is_concrete_codegen_target = matches!(
+            self.current_symbol_table(state).view().lookup(&defn.name),
+            Some(ModuleEntry::Def {
+                kind,
+                ..
+            }) if matches!(
+                kind.as_ref(),
+                DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+            )
+        );
+        let codegen_view = if is_concrete_codegen_target {
+            annotated.variants.first().and_then(|variant| {
+                build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors)
+            })
+        } else {
+            None
         };
 
-        // Extract new method resolutions and expr types added during this form
-        let mut form_mr = HashMap::new();
-        for (span, res) in &state.method_resolutions.resolved_calls {
-            if !mr_before.contains(span) {
-                form_mr.insert(*span, res.clone());
-            }
-        }
-        let mut form_et = HashMap::new();
-        for (span, ty) in &state.expr_types {
-            if !et_before.contains(span) {
-                form_et.insert(*span, ty.clone());
-            }
-        }
-
-        // Per-defn AST annotation: clone the defn, annotate from side maps,
-        // apply final substitution, and write to ModuleEntry::Def.ast.
+        if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
+            self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
         {
-            let resolved_et: HashMap<Span, Type> = form_et
-                .iter()
-                .map(|(span, ty)| (*span, apply(&state.subst, ty)))
-                .collect();
-            let mut annotated = defn.clone();
-            annotate_defn_from_maps(&mut annotated, &resolved_et, &form_mr);
-            apply_subst_to_defn(&state.subst, &mut annotated);
-
-            // S84 Phase-3 (FIXME 0392): populate the concrete-boundary
-            // `codegen_view` for an ordinary CONCRETE single-sig defn (e.g.
-            // `main`, `(defn f [x] (+ x 1))` at a concrete instantiation). Only
-            // a `Concrete` entry is a `compile_to_module` codegen target —
-            // `Polymorphic`/`Constrained` templates (and any non-`Def`) get no
-            // view (they are mono SOURCES, excluded by `defined_symbols()`). The
-            // view is built from the SAME fully-annotated, subst-resolved body
-            // the `ast` carries, via `MonoExpr::from_expr`.
-            //
-            // **The validation payoff (FIXME 0392 §VALIDATION):** a
-            // `Concrete{slot}` defn that passed body-check (§3.11.1) has a fully
-            // concrete body ⇒ `from_expr` MUST succeed. A failure on a
-            // legitimate concrete defn is a real §3.11.1-position gap — surfaced
-            // HERE as the unified ambiguity / could-not-monomorphise error
-            // (NOT silently set to `None`, which would later trip the Phase-3
-            // backend backstop).
-            let is_concrete_codegen_target = matches!(
-                self.current_symbol_table(state).view().lookup(&defn.name),
-                Some(ModuleEntry::Def {
-                    kind,
-                    ..
-                }) if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
-                )
-            );
-            let codegen_view = if is_concrete_codegen_target {
-                annotated.variants.first().and_then(|variant| {
-                    build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors)
-                })
-            } else {
-                None
-            };
-
-            if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
-                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
-            {
-                // S69 Submission 35: `ast: Option<DefnVariant>` (the single
-                // meaningful payload; multi-sig decomposition already split
-                // into per-mangled-name Defs upstream of this point).
-                *ast = annotated.variants.into_iter().next();
-                *cv = codegen_view;
-            }
+            // S69 Submission 35: `ast: Option<DefnVariant>` (the single
+            // meaningful payload; multi-sig decomposition already split
+            // into per-mangled-name Defs upstream of this point).
+            *ast = annotated.variants.into_iter().next();
+            *cv = codegen_view;
         }
-
-        // Harvest call graph edges (Decision 21 + FIXME 0470/0472): the
-        // ResolvedCall channel + the user-fn references recorded during this
-        // form's body inference — call- and value-position alike, uniform
-        // carrier. ONE shared helper across all body-check seams.
-        let call_graph_edges =
-            self.harvest_callee_edges(state, &defn.name, &form_mr, &ufr_before);
-
-        let warnings = std::mem::take(&mut state.warnings);
-
-        Ok(FormCheckResult {
-            method_resolutions: form_mr,
-            pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
-            expr_types: form_et,
-            constrained_fn,
-            mono_defns: Vec::new(),
-            default_method_defns: Vec::new(),
-            multi_sig_defns: Vec::new(),
-            warnings,
-            call_graph_edges,
-        })
     }
 
     /// Check a multi-sig defn's variant bodies (Pass 2).
@@ -2125,22 +2162,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         found
     }
 
-    fn finalize_check_result_inner(
-        &self,
-        state: &mut CheckState,
-        accumulator: &mut ModuleCheckAccumulator,
-        working_program: &[TopLevel],
-        strategy: ModuleStrategy,
-    ) -> Result<CheckResult, CranelispError> {
-        // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
-        // Clear false-positive constrained markers.
-        self.regeneralize_defn_schemes(state, accumulator);
-
-        // Phase 3: re-resolve deferred trait calls with final substitution.
-        // Per-defn resolution already ran in check_form_body, but cross-defn
-        // substitution refinement (e.g., constrained fns pinned by call sites)
-        // may enable additional resolutions. This updates the side maps for
-        // backward compatibility; AST annotation is already done per-defn.
+    /// Phase 3 (finalize): re-resolve deferred trait calls with the final
+    /// substitution across every defn body (`program-decomposition.md` §2.1 P1).
+    /// Per-defn resolution already ran in `check_form_body`, but cross-defn
+    /// substitution refinement (e.g. constrained fns pinned by call sites) may
+    /// enable additional resolutions. Updates the side maps for backward
+    /// compatibility; AST annotation is already done per-defn. A multi-sig defn
+    /// fans per `__v{i}` variant (the register-side internal-defn keys).
+    fn reresolve_deferred_calls(&self, state: &mut CheckState, working_program: &[TopLevel]) {
         for top in working_program {
             if let TopLevel::Defn(defn) = top {
                 if defn.is_multi_sig() {
@@ -2166,25 +2195,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+    }
 
-        // Pass 2.5: resolve multi-sig overloads.
-        // Side effect: registers mangled variants on the symbol table.
-        // The returned Vec<Defn> was carried on CheckResult.default_method_defns
-        // pre-slim; no longer needed — mangled entries live on SymbolTable.
-        // `multi_sig_mangled_names` (base → [mangled]) IS needed below: the
-        // re-annotation block re-keys multi-sig variant entries by their mangled
-        // names (the internal `{name}__v{i}` keys are gone post-registration).
-        let mut multi_sig_mangled_names = MangledNamesByBase::new();
-        let _multi_sig_defns = self.resolve_multi_sig_overloads(
-            state,
-            working_program,
-            &accumulator.defn_type_vars,
-            &mut multi_sig_mangled_names,
-        )?;
-
-        // Pass 3: detect constrained polymorphic functions
-        let single_sig_defns = Self::collect_single_sig_defns(working_program);
-        let mut constrained_fn_names = self.detect_constrained_fns(state, &single_sig_defns);
+    /// Pass 3 (finalize): the complete set of constrained/parametric fn names to
+    /// monomorphise (`program-decomposition.md` §2.1 P3) — the per-cluster
+    /// `detect_constrained_fns` result, the accumulator carry (prior REPL evals),
+    /// plus (Additive strategy only) a live-table scan for cross-call
+    /// constrained / polymorphic-with-ast fns.
+    fn collect_all_constrained_names(
+        &self,
+        state: &mut CheckState,
+        single_sig_defns: &[&Defn],
+        accumulator: &mut ModuleCheckAccumulator,
+        strategy: ModuleStrategy,
+    ) -> HashSet<Symbol> {
+        let mut constrained_fn_names = self.detect_constrained_fns(state, single_sig_defns);
 
         // Add previously-accumulated constrained fns and those from prior REPL evals
         constrained_fn_names.extend(accumulator.constrained_fn_names.drain());
@@ -2222,6 +2247,83 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+
+        constrained_fn_names
+    }
+
+    /// Surface deferred field-accessor / binding collisions as non-fatal
+    /// warnings (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor was
+    /// suppressed (the existing binding wins) and the clash is reported so it is
+    /// never silent. Drained so a redefining REPL re-check does not double-report.
+    fn drain_accessor_collisions(&self, state: &mut CheckState) {
+        for (accessor_name, type_name) in std::mem::take(&mut state.deferred_accessor_collisions) {
+            state.warnings.push(cranelisp_types::Warning {
+                kind: cranelisp_types::WarningKind::ShadowedName,
+                message: format!(
+                    "field accessor `{accessor_name}` for type `{type_name}` \
+                     conflicts with a name already bound to `{accessor_name}`; \
+                     the accessor is suppressed and the existing binding is kept"
+                ),
+                span: Span::SYNTHETIC,
+            });
+        }
+    }
+
+    /// Sweep post-pass outputs from `state` into the accumulator. Post-passes
+    /// (resolve_deferred_trait_calls, pass4_monomorphise, resolve_pending_overloads,
+    /// resolve_auto_curry) write new method resolutions into
+    /// `state.method_resolutions`; merge these into the accumulator so it becomes
+    /// the single authoritative source.
+    fn sweep_post_pass_outputs(
+        &self,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) {
+        accumulator.method_resolutions.extend(
+            std::mem::take(&mut state.method_resolutions).resolved_calls,
+        );
+        accumulator.expr_types.extend(
+            std::mem::take(&mut state.expr_types),
+        );
+        accumulator.warnings.extend(
+            std::mem::take(&mut state.warnings),
+        );
+    }
+
+    fn finalize_check_result_inner(
+        &self,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
+        // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
+        // Clear false-positive constrained markers.
+        self.regeneralize_defn_schemes(state, accumulator);
+
+        // Phase 3: re-resolve deferred trait calls with final substitution.
+        self.reresolve_deferred_calls(state, working_program);
+
+        // Pass 2.5: resolve multi-sig overloads.
+        // Side effect: registers mangled variants on the symbol table.
+        // The returned Vec<Defn> was carried on CheckResult.default_method_defns
+        // pre-slim; no longer needed — mangled entries live on SymbolTable.
+        // `multi_sig_mangled_names` (base → [mangled]) IS needed below: the
+        // re-annotation block re-keys multi-sig variant entries by their mangled
+        // names (the internal `{name}__v{i}` keys are gone post-registration).
+        let mut multi_sig_mangled_names = MangledNamesByBase::new();
+        let _multi_sig_defns = self.resolve_multi_sig_overloads(
+            state,
+            working_program,
+            &accumulator.defn_type_vars,
+            &mut multi_sig_mangled_names,
+        )?;
+
+        // Pass 3: detect constrained polymorphic functions (cluster result +
+        // accumulator carry + Additive live-table scan).
+        let single_sig_defns = Self::collect_single_sig_defns(working_program);
+        let constrained_fn_names =
+            self.collect_all_constrained_names(state, &single_sig_defns, accumulator, strategy);
 
         // Pass 4: monomorphise constrained function call sites.
         // Side effect: registers mono specialisations on the symbol table via
@@ -2292,37 +2394,58 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.refresh_multi_sig_variant_ret_types(state, &multi_sig_mangled_names);
 
         // Surface any field-accessor synthesis collisions with a NON-accessor
-        // binding (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor
-        // was suppressed (the existing binding wins) and the clash is reported
-        // as a non-fatal warning so it is never silent. Drained so a redefining
-        // REPL re-check does not double-report.
-        for (accessor_name, type_name) in std::mem::take(&mut state.deferred_accessor_collisions) {
-            state.warnings.push(cranelisp_types::Warning {
-                kind: cranelisp_types::WarningKind::ShadowedName,
-                message: format!(
-                    "field accessor `{accessor_name}` for type `{type_name}` \
-                     conflicts with a name already bound to `{accessor_name}`; \
-                     the accessor is suppressed and the existing binding is kept"
-                ),
-                span: Span::SYNTHETIC,
-            });
-        }
+        // binding (FIXME 0351(a)) as non-fatal warnings.
+        self.drain_accessor_collisions(state);
 
-        // Sweep post-pass outputs from self.state into the accumulator.
-        // Post-passes (resolve_deferred_trait_calls, pass4_monomorphise,
-        // resolve_pending_overloads, resolve_auto_curry) write new method
-        // resolutions into state.method_resolutions. Merge these into
-        // the accumulator so it becomes the single authoritative source.
-        accumulator.method_resolutions.extend(
-            std::mem::take(&mut state.method_resolutions).resolved_calls,
-        );
-        accumulator.expr_types.extend(
-            std::mem::take(&mut state.expr_types),
-        );
-        accumulator.warnings.extend(
-            std::mem::take(&mut state.warnings),
+        // Sweep post-pass outputs from self.state into the accumulator (the
+        // single authoritative source for the final CheckResult).
+        self.sweep_post_pass_outputs(state, accumulator);
+
+        // Phase 5: final callee write + re-annotate every defn/impl AST from the
+        // settled side maps + subst, rebuilding each `Concrete{slot}`
+        // codegen_view post-mono.
+        self.finalize_annotations_and_publish(
+            state,
+            accumulator,
+            working_program,
+            &multi_sig_mangled_names,
         );
 
+        // Pass 5: interprocedural ownership inference (S102 CS-1..4;
+        // `design/typecheck/ownership-inference.md`). A post-pass over the
+        // now-settled cluster — mono done, callees written, `codegen_view`
+        // rebuilt post-mono. Read-path increment: summaries are emitted but
+        // UNconsumed by codegen (backend mechanisms are Wave 11), so the pass
+        // is behaviour-neutral. Toggle-gated at its entry (`CRANELISP_NO_OWNERSHIP`
+        // set ⇒ emits nothing, §13.5).
+        crate::ownership::run_pass5(self, state);
+
+        // Build CheckResult from the accumulator (authoritative source).
+        // Sprint 57 Wave 2 step 4: CheckResult slimmed to `{ warnings, display }`.
+        // The legacy `method_resolutions` / `expr_types` / `mono_defns` /
+        // `constrained_fn_names` / `default_method_defns` fields were retired —
+        // their data lives on annotated AST nodes and `ModuleEntry::Def` entries
+        // (symbol-table registrations above are the durable carriers).
+        let result = CheckResult {
+            warnings: std::mem::take(&mut accumulator.warnings),
+            display: None,
+        };
+
+        Ok(result)
+    }
+
+    /// Phase 5 (finalize) tail — the AST re-annotation / re-key / publish pass
+    /// extracted from `finalize_check_result_inner` (`program-decomposition.md`
+    /// §2.1 P5). Reads the now-settled side maps + subst; the callee writeback
+    /// is the 0472 seam and the per-`Concrete{slot}` `codegen_view` rebuild is
+    /// the post-mono view (§10.2 pattern-ctor sidecar threaded through).
+    fn finalize_annotations_and_publish(
+        &self,
+        state: &mut CheckState,
+        accumulator: &ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        multi_sig_mangled_names: &MangledNamesByBase,
+    ) {
         // Final callee write (Decision 21): overwrite the eager writes from
         // merge_form_result with the final canonical version that includes any
         // edges from post-passes.
@@ -2451,28 +2574,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
-
-        // Pass 5: interprocedural ownership inference (S102 CS-1..4;
-        // `design/typecheck/ownership-inference.md`). A post-pass over the
-        // now-settled cluster — mono done, callees written, `codegen_view`
-        // rebuilt post-mono. Read-path increment: summaries are emitted but
-        // UNconsumed by codegen (backend mechanisms are Wave 11), so the pass
-        // is behaviour-neutral. Toggle-gated at its entry (`CRANELISP_NO_OWNERSHIP`
-        // set ⇒ emits nothing, §13.5).
-        crate::ownership::run_pass5(self, state);
-
-        // Build CheckResult from the accumulator (authoritative source).
-        // Sprint 57 Wave 2 step 4: CheckResult slimmed to `{ warnings, display }`.
-        // The legacy `method_resolutions` / `expr_types` / `mono_defns` /
-        // `constrained_fn_names` / `default_method_defns` fields were retired —
-        // their data lives on annotated AST nodes and `ModuleEntry::Def` entries
-        // (symbol-table registrations above are the durable carriers).
-        let result = CheckResult {
-            warnings: std::mem::take(&mut accumulator.warnings),
-            display: None,
-        };
-
-        Ok(result)
     }
 
     // =================================================================
@@ -3584,6 +3685,75 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
+        let (call_sites, fn_value_arg_sites) =
+            self.collect_mono_call_sites(state, defns, constrained_fn_names);
+
+        // Nothing to monomorphise (neither local constrained fns nor imported
+        // constrained call sites nor polymorphic fn-value arguments) — bail
+        // before resolving expr_types.
+        if call_sites.is_empty() && fn_value_arg_sites.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Resolve expr_types so we can look up concrete arg types
+        let resolved_expr_types = self.resolve_expr_types(state);
+
+        // Monomorphise each call site and record dispatch mappings
+        let mut mono_defns = Vec::new();
+        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
+        // The caller's module — the fallback home for a LOCAL generic's mono
+        // name. `monomorphise_call` restores `state.current_module` per call, so
+        // capturing once here is stable across the loop (FIXME 0519).
+        let current_module = state.current_module.clone();
+
+        self.drive_call_site_monomorphisation(
+            state,
+            &call_sites,
+            &resolved_expr_types,
+            &current_module,
+            &mut seen,
+            &mut mono_defns,
+        )?;
+
+        let fn_value_rewrites = self.drive_fn_value_monomorphisation(
+            state,
+            &fn_value_arg_sites,
+            &current_module,
+            &mut seen,
+            &mut mono_defns,
+        )?;
+
+        // Apply the fn-value `Var` renames to the stored ASTs. A later
+        // re-annotation pass (in `finalize_check_result_inner`) only writes
+        // `inferred_type` / `resolved_call` by span — it does not touch the
+        // `Var` name — so this rename survives.
+        if !fn_value_rewrites.is_empty() {
+            let mut st = self.current_symbol_table_mut(state);
+            for (enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
+                if let Some(ModuleEntry::Def { ast: Some(variant), .. }) =
+                    st.symbols.get_mut(enclosing)
+                {
+                    rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
+                }
+            }
+        }
+
+        // S84 Phase-3 (FIXME 0392): the concrete-boundary `MonoExpr` view of
+        // each minted instance is now set ON its `ModuleEntry::Def.codegen_view`
+        // at `register_mono_entry` — no parallel `Vec` to drain.
+        Ok(mono_defns)
+    }
+
+    /// Collect the Pass-4 monomorphisation work list from every defn body
+    /// (`program-decomposition.md` §2.2): local constrained calls, imported
+    /// constrained/parametric calls, local pure-parametric hops, and
+    /// polymorphic fn-value arguments. Returns `(call_sites, fn_value_arg_sites)`.
+    fn collect_mono_call_sites(
+        &self,
+        state: &mut CheckState,
+        defns: &[&Defn],
+        constrained_fn_names: &HashSet<Symbol>,
+    ) -> (Vec<MonoCallSite>, Vec<FnValueArgSite>) {
         // Collect call sites: (fn_name, arg_spans, call_span, home_module).
         //
         // `home_module` is `None` for a call to a LOCALLY-defined constrained fn
@@ -3616,7 +3786,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &mut local_calls,
             );
         }
-        let mut call_sites: Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)> = local_calls
+        let mut call_sites: Vec<MonoCallSite> = local_calls
             .into_iter()
             .map(|(name, spans, span)| (name, spans, span, None))
             .collect();
@@ -3679,25 +3849,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // Nothing to monomorphise (neither local constrained fns nor imported
-        // constrained call sites nor polymorphic fn-value arguments) — bail
-        // before resolving expr_types.
-        if call_sites.is_empty() && fn_value_arg_sites.is_empty() {
-            return Ok(Vec::new());
-        }
+        (call_sites, fn_value_arg_sites)
+    }
 
-        // Resolve expr_types so we can look up concrete arg types
-        let resolved_expr_types = self.resolve_expr_types(state);
-
-        // Monomorphise each call site and record dispatch mappings
-        let mut mono_defns = Vec::new();
-        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
-        // The caller's module — the fallback home for a LOCAL generic's mono
-        // name. `monomorphise_call` restores `state.current_module` per call, so
-        // capturing once here is stable across the loop (FIXME 0519).
-        let current_module = state.current_module.clone();
-
-        for (fn_name, arg_spans, call_span, home_module) in &call_sites {
+    /// Drive monomorphisation over the collected call sites
+    /// (`program-decomposition.md` §2.2): re-derive each site's concrete arg
+    /// types from the final `resolved_expr_types`, dedup by the canonical
+    /// mangled name, mint the mono instance via `monomorphise_call`, and record
+    /// the `SigDispatch`. Threads `seen` / `mono_defns` shared with the fn-value
+    /// pass.
+    fn drive_call_site_monomorphisation(
+        &self,
+        state: &mut CheckState,
+        call_sites: &[MonoCallSite],
+        resolved_expr_types: &HashMap<Span, Type>,
+        current_module: &ModuleFullPath,
+        seen: &mut HashMap<String, JitSymbol>,
+        mono_defns: &mut Vec<MonoDefn>,
+    ) -> Result<(), CranelispError> {
+        for (fn_name, arg_spans, call_span, home_module) in call_sites {
             // Look up concrete arg types from resolved expr_types
             let arg_types: Vec<Type> = arg_spans
                 .iter()
@@ -3764,6 +3934,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
+        Ok(())
+    }
+
+    /// Drive monomorphisation of polymorphic fn-value arguments
+    /// (`program-decomposition.md` §2.2, FIXME 0374 Tier 2): mint each site's
+    /// concrete mono instance and collect the `(enclosing, arg_span, mangled)`
+    /// rewrites the driver applies to the stored ASTs. Shares `seen` /
+    /// `mono_defns` with the call-site pass.
+    fn drive_fn_value_monomorphisation(
+        &self,
+        state: &mut CheckState,
+        fn_value_arg_sites: &[FnValueArgSite],
+        current_module: &ModuleFullPath,
+        seen: &mut HashMap<String, JitSymbol>,
+        mono_defns: &mut Vec<MonoDefn>,
+    ) -> Result<Vec<(Symbol, Span, Symbol)>, CranelispError> {
         // FIXME 0374 (Tier 2 — fn-value-argument monomorphisation). For each
         // polymorphic fn passed as a value into a HOF, mint its concrete mono
         // instance (`mk$Int`) and rewrite the fn-value `Var` in the enclosing
@@ -3773,7 +3959,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // body re-checks at the concrete param types, so its `(Box a)` field
         // becomes `(Box Int)` — concrete, classifying cleanly, no RC guard.
         let mut fn_value_rewrites: Vec<(Symbol, Span, Symbol)> = Vec::new();
-        for (enclosing, arg_name, arg_span, param_types, home) in &fn_value_arg_sites {
+        for (enclosing, arg_name, arg_span, param_types, home) in fn_value_arg_sites {
             // Home-qualified dedup key == the minted name (FIXME 0519): `home`
             // for an IMPORTED generic fn-value (FIXME 0488 sig b), else current.
             let key_home = home
@@ -3806,25 +3992,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             fn_value_rewrites.push((enclosing.clone(), *arg_span, mangled_sym));
         }
 
-        // Apply the fn-value `Var` renames to the stored ASTs. A later
-        // re-annotation pass (in `finalize_check_result_inner`) only writes
-        // `inferred_type` / `resolved_call` by span — it does not touch the
-        // `Var` name — so this rename survives.
-        if !fn_value_rewrites.is_empty() {
-            let mut st = self.current_symbol_table_mut(state);
-            for (enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
-                if let Some(ModuleEntry::Def { ast: Some(variant), .. }) =
-                    st.symbols.get_mut(enclosing)
-                {
-                    rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
-                }
-            }
-        }
-
-        // S84 Phase-3 (FIXME 0392): the concrete-boundary `MonoExpr` view of
-        // each minted instance is now set ON its `ModuleEntry::Def.codegen_view`
-        // at `register_mono_entry` — no parallel `Vec` to drain.
-        Ok(mono_defns)
+        Ok(fn_value_rewrites)
     }
 
     /// Walk a defn body collecting calls to IMPORTED callees that chain-resolve
