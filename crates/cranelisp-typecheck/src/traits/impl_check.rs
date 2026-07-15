@@ -816,7 +816,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // this body.
         let saved_rigid = std::mem::take(&mut state.rigid_vars);
         let saved_scope = state.written_var_scope.take();
-        let saved_lambda = std::mem::take(&mut state.lambda_written_vars);
 
         for ((param_name, _), param_ty) in
             defn.params().iter().zip(param_types.iter())
@@ -838,7 +837,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         state.rigid_vars = saved_rigid;
         state.written_var_scope = saved_scope;
-        state.lambda_written_vars = saved_lambda;
 
         self.pop_scope(state);
         result

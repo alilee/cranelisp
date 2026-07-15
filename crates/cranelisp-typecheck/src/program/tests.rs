@@ -1463,61 +1463,103 @@
         );
     }
 
-    // spec: 03-types §3.3.4 / §3.10 [S109 W6.3] (U7) — poly-as-value rejection at
-    // the generalization boundary. A written parameter var freshly introduced by
-    // a nested `fn` that remains FREE after body inference means the polymorphic
-    // `fn` was RETURNED/STORED, not applied — rank-2, unsupported. R10 (rejected):
-    // `(defn mk [] (fn [:b y] y))`. R9 (accepted): `(defn h [x] ((fn [:b y] y) 3))`
-    // — applied in place, so `b` unifies to Int and is not free. The discriminator
-    // is instantiated-at-a-use vs held-as-a-value. Fails on a revert of the check.
+    // spec: 03-types §3.3.4 / §3.10 [S109 W6.3 — user ruling] (U7) — a `defn`
+    // body that DEFINES a rank-1 polymorphic function value is a legitimate
+    // syntactic value; the written `:b` is IRRELEVANT. `(defn mk [] (fn [:b y]
+    // y))` and its unwritten twin `(defn mkid [] (fn [y] y))` are the SAME thing
+    // — BOTH accepted with the SAME scheme (`∀a. (Fn [] (Fn [a] a))`). Likewise
+    // `(defn weird [x] (fn [:b y] x))` == `(defn constf [x] (fn [y] x))`
+    // (`∀a b. (Fn [a] (Fn [b] a))`). The former eager escape check
+    // ("a polymorphic function cannot be returned or stored as a value: rank-2")
+    // OVER-REJECTED the written forms while their unwritten twins compiled; it
+    // was removed. This test pins the written≡unwritten PARITY — it fails if the
+    // eager check is re-introduced (the written forms would reject again).
     #[test]
-    fn u7_returned_polymorphic_fn_rejected_applied_in_place_accepted() {
-        // R10 — a RETURNED still-polymorphic fn is rejected.
-        let mut tc = tc_with_prims();
-        let sexps = cranelisp_frontend::parse("(defn mk [] (fn [:b y] y))").expect("parse");
-        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
-        let err = tc
-            .check_program_self(&program)
-            .expect_err("a returned still-polymorphic `fn` MUST be rejected (row 10, §3.10)");
-        let msg = format!("{err:?}");
-        assert!(
-            !msg.contains("codegen") && !msg.contains("__expr"),
-            "the poly-as-value rejection MUST be a clean type error, never a codegen \
-             frame; got: {msg}"
-        );
+    fn u7_rank1_poly_fn_return_written_and_unwritten_parity_accepted() {
+        // Accept `src`, return the named entry's generalized scheme (clone).
+        fn scheme_of(src: &str, name: &str) -> cranelisp_types::Scheme {
+            let mut tc = tc_with_prims();
+            let sexps = cranelisp_frontend::parse(src).expect("parse");
+            let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+            tc.check_program_self(&program).unwrap_or_else(|e| {
+                panic!("`{src}` MUST be accepted (rank-1 poly-return, W6.3 ruling); got {e:?}")
+            });
+            let table = tc.symbol_table();
+            let Some(ModuleEntry::Def { scheme, .. }) = table.get(name) else {
+                panic!("{name} not found after checking `{src}`");
+            };
+            scheme.clone()
+        }
 
-        // R9(ii) — the same lambda APPLIED IN PLACE instantiates `b` and compiles.
-        let mut tc2 = tc_with_prims();
-        let sexps2 =
-            cranelisp_frontend::parse("(defn h [x] ((fn [:b y] y) 3))").expect("parse");
-        let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
-        tc2.check_program_self(&program2)
-            .expect("a polymorphic `fn` APPLIED in place MUST be accepted (row 9)");
+        // Shape assertion: `∀a. (Fn [] (Fn [a] a))` — ONE quantified var, a
+        // nullary outer fn whose result is the identity fn (inner param ≡ ret).
+        fn assert_mk_shape(scheme: &cranelisp_types::Scheme, label: &str) {
+            assert_eq!(
+                scheme.type_vars.len(),
+                1,
+                "{label} MUST generalize to ONE quantified var; got {scheme:?}"
+            );
+            match &scheme.ty {
+                Type::Fn(outer_params, outer_ret) => {
+                    assert!(outer_params.is_empty(), "{label} outer fn is nullary; got {scheme:?}");
+                    match &**outer_ret {
+                        Type::Fn(inner_params, inner_ret) => {
+                            assert_eq!(inner_params.len(), 1, "{label}: {scheme:?}");
+                            assert_eq!(
+                                inner_params[0], **inner_ret,
+                                "{label} inner fn MUST be the identity (param ≡ ret); got {scheme:?}"
+                            );
+                        }
+                        other => panic!("{label} result MUST be a Fn; got {other:?}"),
+                    }
+                }
+                other => panic!("{label} MUST be a Fn; got {other:?}"),
+            }
+        }
+
+        // mk (written `:b`) ≡ mkid (unwritten) — same scheme, both accepted.
+        assert_mk_shape(&scheme_of("(defn mk [] (fn [:b y] y))", "mk"), "mk (written)");
+        assert_mk_shape(&scheme_of("(defn mkid [] (fn [y] y))", "mkid"), "mkid (unwritten)");
+
+        // weird (written `:b`) ≡ constf (unwritten) — `∀a b. (Fn [a] (Fn [b] a))`.
+        for (src, name, label) in [
+            ("(defn weird [x] (fn [:b y] x))", "weird", "weird (written)"),
+            ("(defn constf [x] (fn [y] x))", "constf", "constf (unwritten)"),
+        ] {
+            let scheme = scheme_of(src, name);
+            assert_eq!(
+                scheme.type_vars.len(),
+                2,
+                "{label} MUST generalize to TWO quantified vars; got {scheme:?}"
+            );
+        }
     }
 
-    // spec: 03-types §3.3.4 / §3.10 [S109 W6.3] (U7 / B-1, FIXME 0596) — the
-    // poly-as-value discriminator at the {applied-in-place × GENERIC-arg} cell.
-    // The old "still a `Var` after body inference" reading over-fired: it flagged
-    // a nested-`fn` written var that had MERGED into the enclosing definition's
-    // own quantified param var (also a `Var`), wrongly rejecting a lambda applied
-    // in place at a generic argument. The correct discriminator is
-    // enclosing-param-var MEMBERSHIP: a var that resolves INTO the enclosing
-    // params is caller-instantiable (accept, §3.10); a DISTINCT free var escaped
-    // as a value (reject, row 10). This cell pins the applied-in-place-at-generic
-    // accept AND the held-as-value reject at the seam — a revert to the "still a
-    // Var" reading fails the accept leg.
+    // spec: 03-types §3.3.4 / §3.10 / §3.11 [S109 W6.3 — user ruling] (U7) — with
+    // the eager poly-as-value escape check REMOVED, defining a rank-1 poly value
+    // (applied in place, OR let-stored-and-returned) is accepted; the GENUINE
+    // restrictions are enforced by their real mechanisms, NOT an eager check:
+    //   - B-1 `(defn f1 [x] ((fn [:b y] y) x))` — applied in place → `∀a. (Fn
+    //     [a] a)`, accepted (unchanged);
+    //   - mk3 `(defn mk3 [] (let [g (fn [:b y] y)] g))` — the FORMER fence,
+    //     now ACCEPTED (it defines a rank-1 poly value; the written `:b` is
+    //     irrelevant, cf. its unwritten twin which always compiled);
+    //   - MULTI-TYPE use of one instance → the value restriction / unification
+    //     (a type conflict), STILL rejected;
+    //   - RANK-2 (poly value used at two types inside a callee) → unification,
+    //     STILL rejected;
+    //   - a RESULT-ONLY var held unresolved → the §3.11 ambiguity gate, STILL
+    //     rejected. These three confirm the removed check was purely over-firing.
     #[test]
-    fn u7_applied_in_place_at_generic_arg_accepted_held_as_value_rejected() {
-        // B-1 accept — `(defn f1 [x] ((fn [:b y] y) x))`: the inner `:b` merges
-        // into `x`'s (enclosing, generic) param var, so no value stays
-        // polymorphic. Scheme MUST be `∀a. (Fn [a] a)` — ONE quantified var.
+    fn u7_rank1_poly_value_accepted_genuine_restrictions_enforced_elsewhere() {
+        // B-1 accept — `∀a. (Fn [a] a)`, ONE quantified var, inner identity.
         let mut tc = tc_with_prims();
         let sexps =
             cranelisp_frontend::parse("(defn f1 [x] ((fn [:b y] y) x))").expect("parse");
         let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
         tc.check_program_self(&program).expect(
             "a lambda APPLIED IN PLACE at a generic arg is instantiation-at-use \
-             (§3.10) — MUST be accepted (B-1, the 0596 over-fire)",
+             (§3.10) — MUST be accepted (B-1)",
         );
         let table = tc.symbol_table();
         let Some(ModuleEntry::Def { scheme, .. }) = table.get("f1") else {
@@ -1526,8 +1568,7 @@
         assert_eq!(
             scheme.type_vars.len(),
             1,
-            "f1 MUST generalize to ONE quantified var (∀a. (Fn [a] a)); got {:?}",
-            scheme
+            "f1 MUST generalize to ONE quantified var (∀a. (Fn [a] a)); got {scheme:?}"
         );
         match &scheme.ty {
             Type::Fn(params, ret) => {
@@ -1541,21 +1582,69 @@
             _ => panic!("f1 MUST be a Fn type; got {:?}", scheme.ty),
         }
 
-        // Held-as-value reject — `(defn mk3 [] (let [g (fn [:b y] y)] g))`: `g`
-        // is stored then RETURNED, so `:b` stays a DISTINCT free var (mk3 has NO
-        // enclosing params) → poly-as-value, rejected (row 10 sibling).
+        // mk3 accept (FLIPPED from the former reject) — a let-stored-and-returned
+        // rank-1 poly value is legitimate; `∀a. (Fn [] (Fn [a] a))`.
         let mut tc2 = tc_with_prims();
         let sexps2 = cranelisp_frontend::parse("(defn mk3 [] (let [g (fn [:b y] y)] g))")
             .expect("parse");
         let program2 = cranelisp_frontend::build_forms(&sexps2).expect("build_forms");
-        let err = tc2
-            .check_program_self(&program2)
-            .expect_err("a let-stored-and-RETURNED polymorphic `fn` MUST be rejected (row 10)");
-        let msg = format!("{err:?}");
+        tc2.check_program_self(&program2).expect(
+            "a let-stored-and-returned rank-1 poly `fn` MUST be accepted (W6.3 ruling — \
+             the written `:b` is irrelevant, cf. its always-compiling unwritten twin)",
+        );
+
+        // MULTI-TYPE use of ONE instance is STILL rejected — by unification, not
+        // an eager check: `mkid` yields a fresh `(Fn [a] a)`; using it at String
+        // then Int inside a body is a type conflict.
+        let mut tc3 = tc_with_prims();
+        let sexps3 = cranelisp_frontend::parse(
+            "(defn mkid [] (fn [y] y))\n\
+             (defn mtu [] (let [f (mkid)] (let [a (f \"x\")] (f 5))))",
+        )
+        .expect("parse");
+        let program3 = cranelisp_frontend::build_forms(&sexps3).expect("build_forms");
+        let err3 = tc3.check_program_self(&program3).expect_err(
+            "multi-type USE of one poly instance MUST be rejected by unification (value \
+             restriction), independent of the removed eager check",
+        );
+        let msg3 = format!("{err3}").to_lowercase();
         assert!(
-            !msg.contains("codegen") && !msg.contains("__expr"),
-            "the poly-as-value rejection MUST be a clean type error, never a codegen \
-             frame; got: {msg}"
+            msg3.contains("mismatch") || msg3.contains("expected"),
+            "multi-type-use rejection is a unification type conflict; got: {msg3}"
+        );
+
+        // RANK-2 (a poly value used at two types inside a callee) is STILL
+        // rejected — by unification.
+        let mut tc4 = tc_with_prims();
+        let sexps4 =
+            cranelisp_frontend::parse("(defn apply2 [f] (let [a (f \"x\")] (f 5)))")
+                .expect("parse");
+        let program4 = cranelisp_frontend::build_forms(&sexps4).expect("build_forms");
+        let err4 = tc4.check_program_self(&program4).expect_err(
+            "rank-2 (poly arg used at two types) MUST be rejected by unification",
+        );
+        let msg4 = format!("{err4}").to_lowercase();
+        assert!(
+            msg4.contains("mismatch") || msg4.contains("expected"),
+            "rank-2 rejection is a unification type conflict; got: {msg4}"
+        );
+
+        // RESULT-ONLY var held unresolved is STILL rejected — by the §3.11
+        // ambiguity gate (pin-the-type), NOT the removed eager check.
+        let mut tc5 = tc_with_prims();
+        let sexps5 = cranelisp_frontend::parse(
+            "(defn constf [x] (fn [y] x))\n(defn g [] (constf 5))",
+        )
+        .expect("parse");
+        let program5 = cranelisp_frontend::build_forms(&sexps5).expect("build_forms");
+        let err5 = tc5.check_program_self(&program5).expect_err(
+            "a result-only unresolved var at a codegen position MUST be rejected by the \
+             §3.11 ambiguity gate",
+        );
+        let msg5 = format!("{err5}").to_lowercase();
+        assert!(
+            msg5.contains("ambiguous"),
+            "the result-var rejection is the §3.11 ambiguity gate; got: {msg5}"
         );
     }
 

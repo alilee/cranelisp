@@ -60,26 +60,31 @@ The pieces:
    mirroring `resolve_bound_param` (the two entrances to a constraint resolve
    identically).
 
-5. **Poly-as-value (§3.3.4/§3.10, rank-1).** `state.lambda_written_vars`
-   collects the vars FRESHLY minted for a nested `fn`'s WRITTEN param annotation
-   (a co-referring inner name is reused, not minted, so it is absent). After body
-   inference, `check_defn_body` flags such a var as an escape **iff it resolves
-   to a var that is NOT one of the enclosing definition's own parameter vars**
-   (0596). The axis is {applied-in-place, held-as-value} × {concrete, generic
-   arg}, and ONLY held-as-a-value is the §3.3.4 violation:
-   - **applied in place** MERGES the written var into the enclosing scheme —
-     either to a concrete type (row 9: `((fn [:b y] y) 3)` → `b := Int`, not a
-     var) or to an enclosing quantified PARAM var (B-1: `(defn f1 [x] ((fn [:b y]
-     y) x))` → `b := x`'s var, in `param_types`). Caller-instantiable at each
-     call of the enclosing defn (§3.10 instantiation-at-use) — **accepted**;
-   - **held as a value** (returned `(defn mk [] (fn [:b y] y))`, let-stored-and-
-     returned, passed uninstantiated) keeps `b` a DISTINCT free var NOT in the
-     enclosing params — the value itself stays polymorphic (rank-2) — **rejected**
-     (row 10).
-   The old "still a `Var` after inference" reading OVER-FIRED on the generic-arg
-   applied cell (a var merged to a still-generic enclosing param is also a `Var`)
-   — do NOT revert to it. The discriminator is the enclosing-param-var membership
-   test (`cranelisp_types::free_vars` over the resolved `param_types`).
+5. **Rank-1 poly-returns are legitimate — NO eager poly-as-value check (§3.3.4/
+   §3.10, W6.3 ruling).** A `defn` body that DEFINES a rank-1 polymorphic
+   function value — returned (`(defn mk [] (fn [:b y] y))`), let-stored-and-
+   returned (`(defn mk3 [] (let [g (fn [:b y] y)] g))`), passed uninstantiated,
+   or applied in place — is a legitimate syntactic value. The written `:b` is
+   IRRELEVANT: `mk`/`weird` are the SAME thing as their unwritten twins
+   `mkid`/`constf`, and ALL are accepted. The former eager
+   `lambda_written_vars` free-var escape check (`check_defn_body`, added
+   `c3008d1f`, refined `750471ac`/0596) OVER-REJECTED the written forms while
+   their unwritten twins compiled — it was **removed at S109 W6.3** (the
+   `CheckState::lambda_written_vars` field is gone; do NOT re-add it). The
+   genuine restrictions live ELSEWHERE and stay:
+   - **Multi-type USE of one poly instance** (`(let [f (mkid)] (f "x") (f 5))`)
+     → the value restriction / **unification** (a type conflict). NOT an eager
+     check.
+   - **Rank-2** (a poly value passed as an argument and used at two types,
+     `(defn apply2 [f] … (f "x") … (f 5))`) → **unification**. NOT an eager
+     check.
+   - **Result-only var held unresolved** (`(defn g [] (constf 5))`) → the
+     **§3.11 ambiguity gate** ("pin the type"; the R16 result-var
+     monomorphisation family). NOT an eager check.
+   `resolve_annotation_type_expr_in_module` returns just the `Type` now (the
+   minted-id list that fed the removed check is gone); a nested `fn`'s own
+   written param mints a flexible id like any annotation, with no post-hoc
+   escape flagging.
 
 **Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
 caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type

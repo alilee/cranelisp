@@ -3174,9 +3174,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // its display name (§3.3.1 [S109 W6.3]); the shared scope
                         // (`var_map`) threads it to Pass-2 for CO-REFERENCE, not
                         // rigidity — `check_defn_body` seeds `rigid_vars` from
-                        // asserted-constraint param vars, not from `var_map`. The
-                        // returned `_minted` ids are unused here.
-                        Ok((ty, _minted)) => ty,
+                        // asserted-constraint param vars, not from `var_map`.
+                        Ok(ty) => ty,
                         // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE
                         // annotation `:Eq a` is ambiguous between a concrete-type
                         // annotation and a single trait bound. The frontend leaves
@@ -3342,7 +3341,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Every piece is SAVED here and restored on every exit below.
         let prev_rigid = std::mem::take(&mut state.rigid_vars);
         let prev_scope = state.written_var_scope.take();
-        let prev_lambda = std::mem::take(&mut state.lambda_written_vars);
         let mut rigid: HashSet<TypeId> = HashSet::new();
         for pt in param_types {
             if let Type::Var(id) = self.apply_subst(state, pt)
@@ -3356,10 +3354,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // The fallible body runs inside one closure so the per-body state is
         // torn down at ONE restore point regardless of how it exits (FIXME
-        // 0599 — the pre-existing `?` exits, and the poly-as-value early
-        // return, previously leaked `rigid_vars`/`written_var_scope`/the scope
-        // frame, so a failed body-check left a stale `written_var_scope`
-        // installed for the next top-level annotation).
+        // 0599 — the pre-existing `?` exits previously leaked
+        // `rigid_vars`/`written_var_scope`/the scope frame, so a failed
+        // body-check left a stale `written_var_scope` installed for the next
+        // top-level annotation).
         let result = (|| {
             // Bind parameters.
             for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
@@ -3376,54 +3374,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Unify body type with return type variable.
             self.unify(state, &body_ty, ret_ty, defn.span)?;
 
-            // **Poly-as-value rejection (spec §3.3.4 / §3.10 rank-1, MUST (f)/(h),
-            // rows 10 vs 9, B-1).** `lambda_written_vars` holds the vars freshly
-            // minted for a nested `fn`'s WRITTEN param annotation (`(fn [:b y]
-            // …)`); a co-referring inner `:a` is reused-not-minted, so it never
-            // enters the set. A written var still `Type::Var` after body
-            // inference means the polymorphic `fn` was NOT pinned to a concrete
-            // type — but that alone does NOT distinguish the two §3.10 cases:
-            //
-            //  - APPLIED IN PLACE at a GENERIC argument (`(defn f1 [x]
-            //    ((fn [:b y] y) x))`): application MERGES `b` into the enclosing
-            //    definition's own quantified param var (here `x`'s var). No
-            //    function value stays polymorphic anywhere — the enclosing scheme
-            //    carries the `∀`, and every call to THIS definition instantiates
-            //    it (§3.10, instantiation-at-use is always sound). ACCEPT.
-            //  - HELD AS A VALUE (`(defn mk [] (fn [:b y] y))`, let-stored-and-
-            //    returned, passed uninstantiated): `b` stays a DISTINCT free var
-            //    that never merges into an enclosing param — the returned/stored
-            //    value itself is polymorphic (rank-2, unsupported). REJECT (row
-            //    10).
-            //
-            // The discriminator is therefore "the resolved var is NOT one of the
-            // enclosing definition's own parameter vars" — a merge-with-an-
-            // enclosing-param-var is caller-instantiable (accept); a distinct
-            // free var escaped as a value (reject). (`(fn [:b y] y) 3` — applied
-            // at a CONCRETE arg — resolves `b` to `Int`, not a var, so it is not
-            // flagged by either reading. FIXME 0596: the old "still a `Var`"
-            // reading over-fired on the generic-arg cell, which no prior test
-            // exercised.)
-            let enclosing_param_vars: HashSet<TypeId> = param_types
-                .iter()
-                .flat_map(|pt| cranelisp_types::free_vars(&self.apply_subst(state, pt)))
-                .collect();
-            let escaped_poly_fn = state.lambda_written_vars.iter().any(|&id| {
-                match self.apply_subst(state, &Type::Var(id)) {
-                    Type::Var(resolved) => !enclosing_param_vars.contains(&resolved),
-                    _ => false,
-                }
-            });
-            if escaped_poly_fn {
-                return Err(CranelispError::TypeError {
-                    message: "a polymorphic function cannot be returned or stored as a \
-                              value: a written type variable would leave the returned \
-                              `fn` polymorphic (rank-2). Apply it in place, or make the \
-                              returned function concrete (spec §3.3.4/§3.10)"
-                        .to_string(),
-                    location: ErrorLocation::from_span(defn.span),
-                });
-            }
+            // A `defn` body that DEFINES a rank-1 polymorphic function value —
+            // returned (`(defn mk [] (fn [:b y] y))`), let-stored-and-returned,
+            // or applied in place — is a legitimate syntactic value (spec
+            // §3.3.4 / §3.10, W6.3 ruling): the written `:b` is irrelevant, so
+            // `mk`/`weird` are the same as `mkid`/`constf` and all are ACCEPTED.
+            // There is NO eager poly-as-value escape check here. The genuine
+            // restrictions are enforced ELSEWHERE:
+            //  - MULTI-TYPE use of ONE poly instance (`(let [f (mkid)] (f "x")
+            //    (f 5))`) → the value restriction / unification (a type conflict).
+            //  - RANK-2 (a poly value passed as an argument and used at two
+            //    types, `(defn apply2 [f] … (f "x") … (f 5))`) → unification.
+            //  - A RESULT-ONLY var held unresolved (`(defn g [] (constf 5))`) →
+            //    the §3.11 ambiguity gate (pin-the-type; the R16 result-var
+            //    monomorphisation family), a separate carried limitation.
 
             // Record the defn's Fn type in expr_types so the backend can look up
             // authoritative parameter types. Without this, unused params (e.g.,
@@ -3441,7 +3405,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // outside its own body a written var is an ordinary quantified var).
         state.rigid_vars = prev_rigid;
         state.written_var_scope = prev_scope;
-        state.lambda_written_vars = prev_lambda;
         self.pop_scope(state);
 
         result

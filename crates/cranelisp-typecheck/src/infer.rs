@@ -504,24 +504,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // flexible is the faithful realization (`((fn [:a x] x) 3)` → 3). No
         // bare-path id is ever rigid: rigidity lives on the constraint path, so
         // the minted ids from THIS call are never added to `state.rigid_vars`.
-        // They ARE recorded in `lambda_written_vars` for the §3.10 poly-as-value
-        // check (below).
+        //
+        // A nested `fn` that DEFINES a rank-1 polymorphic function value — whether
+        // returned, let-stored, or applied in place — is a legitimate syntactic
+        // value (spec §3.3.4 / §3.10, W6.3 ruling): `(defn mk [] (fn [:b y] y))`
+        // and `(defn mkid [] (fn [y] y))` are the SAME thing (the written `:b` is
+        // irrelevant). The genuine rank-2 / multi-type-use restrictions are enforced
+        // ELSEWHERE (value restriction + unification), not by an eager escape check
+        // here.
         let mut var_map = state.written_var_scope.take().unwrap_or_default();
         let mut param_types = Vec::new();
         for (param_name, annotation) in params.iter() {
             let param_ty = if let Some(annotation) = annotation {
-                let (ty, minted) = self.resolve_annotation_type_expr_in_module(
+                self.resolve_annotation_type_expr_in_module(
                     annotation, &mut var_map, &state.current_module, span,
-                )?;
-                // Record the vars FRESHLY minted by THIS lambda's param
-                // annotation — a written var (`:b`) genuinely introduced by the
-                // nested `fn` (a co-referring name is reused, not re-minted, so
-                // `minted` is empty for it — spec §3.3.4 / §3.10). If such a var
-                // survives free into the enclosing defn's scheme, the polymorphic
-                // `fn` was returned/stored rather than applied — a poly-as-value
-                // rejected by `check_defn_body` (row 10 vs applied-in-place row 9).
-                state.lambda_written_vars.extend(minted);
-                ty
+                )?
             } else {
                 self.fresh_var()
             };
@@ -1280,7 +1277,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // type incl. return-type dispatch, §3.3.3 MUST (d) rows 13–15). A
             // legitimately-polymorphic residual (`:(Vec a) []`) still flows into
             // the §3.11 ambiguity machinery.
-            Ok((ann_type, _minted)) => {
+            Ok(ann_type) => {
                 state.written_var_scope = Some(var_map);
                 let expr_ty = self.infer_expr(state, expr)?;
                 self.unify(state, &expr_ty, &ann_type, span)?;

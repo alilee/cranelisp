@@ -220,16 +220,6 @@ pub struct CheckState {
     /// This is ALL a bare written var carries — a name for relating occurrences,
     /// never rigidity (W6.3 backs out the W6.2 rigid-bare model).
     pub(crate) written_var_scope: Option<HashMap<Symbol, TypeId>>,
-    /// **`TypeId`s freshly minted for a nested `fn`'s WRITTEN parameter
-    /// annotation** during the current definition body (spec §3.3.4 / §3.10
-    /// rank-1). A written lambda-param var (`(fn [:b y] …)`) that is NOT a
-    /// co-reference to an enclosing scope name is genuinely introduced by the
-    /// lambda. If such a var remains FREE after the enclosing body is inferred,
-    /// the polymorphic `fn` was RETURNED/STORED rather than applied-in-place — a
-    /// poly-as-value (rank-2), which `check_defn_body` rejects (row 10). When the
-    /// lambda is applied in place (row 9), the var unifies away and is not free,
-    /// so it is not flagged. Reset per definition body.
-    pub(crate) lambda_written_vars: Vec<TypeId>,
 }
 
 impl CheckState {
@@ -255,7 +245,6 @@ impl CheckState {
             current_module: module,
             rigid_vars: HashSet::new(),
             written_var_scope: None,
-            lambda_written_vars: Vec::new(),
         }
     }
 
@@ -2450,15 +2439,13 @@ where
     /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
     /// annotation `:a form`, or a type var nested in an applied annotation
     /// `:(Box a)`) to its [`Type`], **minting a fresh type variable** for each
-    /// free lowercase type-var name the source author writes (spec §3.3 [S109]),
-    /// and returning the list of `TypeId`s freshly minted by this call.
+    /// free lowercase type-var name the source author writes (spec §3.3 [S109]).
     ///
     /// The minted var is bound in `var_map`, so repeated names within one
     /// resolution — and across the whole definition when the caller threads ONE
     /// shared scope (the `written_var_scope`) — co-refer (`[:a x :a y]` shares
     /// `a`; a body `:a` co-refers to a param `:a`). A name already in `var_map`
-    /// is REUSED (not re-minted), so it is absent from the returned list; only
-    /// genuinely fresh names appear.
+    /// is REUSED (not re-minted).
     ///
     /// **A minted bare var is FLEXIBLE — it carries only a display name (spec
     /// §3.3.1 [S109 W6.3]).** Rigidity is NOT a property of the written var; it
@@ -2466,28 +2453,19 @@ where
     /// `CheckState::rigid_vars` from asserted-constraint param vars only). A
     /// `defn`/`fn` parameter, a body/value annotation, and a nested-`fn`
     /// parameter all mint flexible ids — the body MAY pin one to a concrete type
-    /// (never an error, §3.3.1 MUST (a)). The returned id list lets the caller
-    /// track which names are genuinely NEW (e.g. a nested `fn`'s own written
-    /// param, for the §3.10 poly-as-value check); a co-referring name is REUSED,
-    /// not re-minted, so it is absent from the list.
+    /// (never an error, §3.3.1 MUST (a)), and a nested `fn` that leaves a written
+    /// var polymorphic is a legitimate rank-1 poly value (W6.3 ruling — no eager
+    /// escape check; the genuine restrictions are enforced by the value
+    /// restriction + unification + the §3.11 gate).
     pub(crate) fn resolve_annotation_type_expr_in_module(
         &self,
         texpr: &cranelisp_types::TypeExpr,
         var_map: &mut std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<(Type, Vec<TypeId>), ResolveError> {
-        // Collect the ids minted by this call so the caller can mark them rigid
-        // (or not). `RefCell` because the `mint` closure is `Fn` (the resolver
-        // takes `&dyn Fn`) yet must record a side effect per mint.
-        let minted = std::cell::RefCell::new(Vec::new());
-        let mint = || {
-            let id = self.fresh_var_id().1;
-            minted.borrow_mut().push(id);
-            id
-        };
-        let ty = self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)?;
-        Ok((ty, minted.into_inner()))
+    ) -> Result<Type, ResolveError> {
+        let mint = || self.fresh_var_id().1;
+        self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)
     }
 
     /// Shared resolution core for both the type-definition path
