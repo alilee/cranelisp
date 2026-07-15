@@ -1246,3 +1246,37 @@ fn search_neg_no_bare_duplicate_ctor_row() {
         out.stdout
     );
 }
+
+// spec: spec/08-modules.md §8.2.3 — a private `(mod- test)` submodule's symbols
+// MUST NOT be surfaced as importable `/search` rows (repl/spec.md §17.19.2). The
+// entry module `user` declares a private `(mod- test)` child (child-file backed at
+// `user/test.cl`), loaded+registered at startup. After `/mod sibling` switches the
+// current module to `sibling` — OUTSIDE `user`'s subtree — a `/search` for the
+// child's symbol MUST NOT advertise `(import [user.test [...]])`: importing
+// `user.test` from `sibling` is rejected by §8.2.3 ("importer 'sibling' is not
+// within the 'user' subtree"), so the row advertises an import that FAILS.
+// Residual of FIXME 0570 (the stdlib `collections.vec.test`/`num.bits.test` leak
+// reduced free-standing; the entry-child + `/mod` shape makes the leak
+// DETERMINISTIC — the racy background file-index feed surfaces an outside-subtree
+// child only intermittently, but the entry's own registered child is served from
+// the deterministic loaded feed).
+// defect: class=enumeration-miss locus=search importable-set private-submodule filter found=S109 owner=/dev
+#[test]
+fn search_neg_private_mod_dash_submodule_not_surfaced_to_outside_subtree() {
+    let out = Cranelisp::new()
+        .repl()
+        .file(
+            "user.cl",
+            "(defn pubfn [:primitives/Int x] :primitives/Int x)\n(mod- test)\n",
+        )
+        .file(
+            "user/test.cl",
+            "(import [super [pubfn]])\n\
+             (defn test-secretxyz [] :primitives/Int (pubfn 42))\n",
+        )
+        .stdin("/mod sibling\n/search test-secretxyz\n")
+        .output();
+    // `sibling` is outside `user`'s subtree, so `user.test` is NOT importable from
+    // it (§8.2.3). /search MUST NOT advertise the private submodule's import hint.
+    out.assert_stdout_does_not_contain("(import [user.test");
+}

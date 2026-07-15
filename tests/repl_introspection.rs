@@ -1105,6 +1105,53 @@ Red
     );
 }
 
+// spec: repl/spec.md §4.1.2 / §1.5 — the DOTTED nullary-constructor input
+// `Color.Red` MUST resolve to the SAME canonical qualified constructor home as
+// the bare `Red` input. §4.1.2 pins `Red` → `:user/Color user/Color.Red ; deftype`;
+// the §1.5 "Nullary constructor" row pins the `Type.Ctor` form (`Color.Red`). The
+// type segment MUST NOT be doubled: `Color.Red` MUST render `user/Color.Red`,
+// NEVER `user/Color.Color.Red`.
+// defect: class=display-envelope-mirror locus=src/eval.rs::check_bare_symbol_introspection(dotted-ctor input path) found=S109 owner=/dev
+//
+// As-built the DOTTED-input path doubles the type segment: entering `Color.Red`
+// (and `/info Color.Red`) renders `:user/Color user/Color.Color.Red ; deftype`,
+// while the bare `Red` input correctly renders `:user/Color user/Color.Red ; deftype`
+// (pinned green by nullary_constructor_bare_lookup_shows_deftype_and_qualified_home).
+// Only the dotted-input path doubles — two code paths formatting one ctor home,
+// diverged.
+#[test]
+fn dotted_nullary_constructor_input_does_not_double_type_segment() {
+    let out = repl("(deftype Color Red Green Blue)\nColor.Red\n");
+    assert!(
+        out.stdout.contains(":user/Color user/Color.Red ; deftype"),
+        "dotted ctor input `Color.Red` MUST render ':user/Color user/Color.Red ; \
+         deftype' — the SAME canonical qualified home as bare `Red` (§4.1.2/§1.5); \
+         got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("Color.Color.Red"),
+        "dotted ctor input `Color.Red` MUST NOT double the type segment to \
+         'user/Color.Color.Red'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 / §17.19.2b — each constructor is listed ONCE under its
+// canonical `Type.Ctor` form in the /list "Types" category (§3.3 "Constructors —
+// canonical qualified Type.Ctor form, listed once"). After
+// `(deftype Color Red Green Blue)`, /list MUST show `Color.Red`, `Color.Green`,
+// and `Color.Blue` (once each). This is the `/testing`-owed twin for the
+// "twin owed" rows in §3.3 / §17.19.2b.
+// defect: class=enumeration-miss locus=src/repl.rs::handle_list(Types category ctor rows) found=S109 owner=/dev
+//
+// As-built /list shows only the type `Color` under Types — ZERO constructor rows.
+#[test]
+fn list_types_includes_constructor_rows_under_canonical_dotted_form() {
+    repl("(deftype Color Red Green Blue)\n/list\n")
+        .assert_stdout_contains_all(&["Color.Red", "Color.Green", "Color.Blue"]);
+}
+
 // spec: repl/spec.md §1.5 — applied data constructor displays in
 // parenthesised dot-notation `(Type.Ctor args...)` value form.
 // (carry: legacy/e2e.rs::e2e_s1_5_data_ctor_dot_notation)
