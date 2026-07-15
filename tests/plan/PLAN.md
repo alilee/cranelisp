@@ -2360,9 +2360,9 @@ Inc3 §B byte-identity strategy):
   annotation-band citation the move breaks (annotation band is `/qa`'s, edited
   in place).
 
-### L. W6/W6.3 — written-type-var semantics acceptance matrix (spec §3.3 rows 1–17, SETTLED 2026-07-14; supersedes the W6.2 rigid-everywhere matrix)
+### L. W6/W6.3 — written-type-var semantics acceptance matrix (spec §3.3 rows 1–19, SETTLED 2026-07-14 + W6.3.1 rank-model reversal 2026-07-15; supersedes the W6.2 rigid-everywhere matrix)
 
-**Three generations run through this matrix** (kept because each generation's
+**Four generations run through this matrix** (kept because each generation's
 tests are in the tree and carry `// defect:` records):
 
 - **W6 (`unknown type 'a'`, FIXED at `e401cce9`):** a free lowercase annotation
@@ -2376,6 +2376,14 @@ tests are in the tree and carry `// defect:` records):
   §"W6.3 SETTLED PRINCIPLE"; scribed as spec §3.3.1–3.3.5 + the §3.10
   poly-as-value clause):** REVERSES the rigid-BARE half of W6.2 while KEEPING
   lexical co-reference; rigidity moves onto the CONSTRAINT path. This matrix.
+- **W6.3.1 (rank-model REVERSAL, user-ruled 2026-07-15; SPRINT.md §"W6.3
+  POLY-AS-VALUE REVERSAL"; scribed as the rewritten spec §3.3.4 + §3.3.5
+  rows 10/18/19 + the §3.10 bullet; `/dev` `eb6c94e6`):** REVERSES the
+  W6.3 eager poly-as-value rejection — **rank-1 polymorphic function
+  RETURNS are legitimate** (written ≡ unwritten); only rank-2 *use* is
+  unsupported, and it is rejected **at the use** by mechanisms that already
+  exist (value restriction, rank-2-argument unification, §3.11 ambiguity).
+  The D-matrix below (Table 1b) is this generation's row set.
 
 **The settled model (one line):** bare `:a` = a named inference variable — it
 relates same-named occurrences (incl. into nested `fn`, lexically) and
@@ -2385,10 +2393,12 @@ held abstract over `C` for the body-check; body-narrowing = skolem escape
 (body-only; caller instantiation is always sound). A value-position constraint
 is a satisfaction check; a concrete-type value annotation resolves ambiguity
 including return-type-polymorphic trait dispatch; an unresolved return-type
-poly in a codegen-reaching position is the §3.11 ambiguity error; polymorphic
-functions as values (rank-2) are unsupported.
+poly in a codegen-reaching position is the §3.11 ambiguity error; a rank-1
+polymorphic function value may be RETURNED or contained (written ≡ unwritten)
+— only rank-2 *use* is unsupported, rejected at the use, never at the
+returning definition (W6.3.1; spec §3.3.4).
 
-**The §3.3 MUST band (a)–(h)** — every row below cites it (the retired W6.2
+**The §3.3 MUST band (a)–(k)** — every row below cites it (the retired W6.2
 MUST-1..MUST-4/SCOPE-5 band is superseded; `// spec:` comments citing it are
 swept in the same `/testing` pass):
 
@@ -2402,12 +2412,29 @@ swept in the same `/testing` pass):
 - **(e)** §3.3.3 — an unresolved return-type polymorphism is the §3.11
   ambiguity error; a value-position constraint does NOT disambiguate
   (rows 16–17)
-- **(f)** §3.3.4 + §3.10 — a polymorphic function as a value is unsupported
-  (row 10)
+- **(f)** §3.3.4 + §3.10 — **REVERSED (W6.3.1, 2026-07-15):** a rank-1
+  polymorphic function value may be RETURNED or contained, written ≡
+  unwritten — `(defn mk [] (fn [:b y] y))` MUST be accepted as
+  `∀a. (Fn [] (Fn [a] a))`; a written `:b` MUST NOT be treated differently
+  from an unwritten parameter (row 10). The earlier reading of (f) —
+  "poly-as-value rejected at the definition" — is superseded; only rank-2
+  *use* is unsupported, rejected at the use per (i)/(j)/(k)
 - **(g)** §3.3.1 — lexical co-reference, including into nested `fn`; no fresh
   quantification boundary at a nested `fn` (rows 3, 8)
 - **(h)** §3.3.1 — caller instantiation is never an error; a lambda-owned var
   applied in place is instantiation-at-use (row 9)
+- **(i)** §3.3.4 — a single polymorphic instance used at two types is
+  rejected (value restriction): an application result bound by `let` is NOT
+  generalized; `(let [f (mkid)] (pair (f "x") (f 5)))` MUST error (row 18)
+- **(j)** §3.3.4 — a polymorphic value applied at two types inside a callee
+  is rejected (rank-2 argument): a parameter carries ONE monotype for the
+  body-check; `(defn apply2 [f] (pair (f "x") (f 5)))` MUST error (row 19)
+- **(k)** §3.3.4 + §3.11.3 — a result-only variable left unresolved at a
+  codegen-reaching use is the §3.11 ambiguity error, NOT a rank-1 rejection:
+  the returning definition IS admitted (sound, code-less until instantiated);
+  only an unpinned codegen-reaching *use* errors — `(defn g [] (constf 5))`
+  surfaces the §3.11 "pin the type" ambiguity, the R16 monomorphisation
+  family
 
 **Empirical grounding at `b2bfb760`** (SPRINT.md, 2026-07-14 REPL probes):
 rows 13/14/15 PASS; row 16 leaks `codegen error … __expr entry has no GOT
@@ -2433,20 +2460,36 @@ The family map (shape × position; cells point at realizing rows):
 | concrete type | pins the param (§3.9.1; existing concrete-app coverage) | resolves ambiguity incl. return-type dispatch (R13/R14/R15); mismatch still rejected (FV-9 neg) |
 
 Boundary rows outside the 3×2 grid: R16 (unresolved return-type poly = §3.11
-error, mode-uniform), R10 (poly-as-value), R9 (caller instantiation), the
-name-discrimination guards FV-13 (uppercase) / FV-21 (qualified lowercase),
-and the two review-found cells B-1/B-2 (Table 2b, added 2026-07-14).
+error, mode-uniform), the rank-model D-matrix rows R10/D-1/D-2/R18/R19/D-3
+(Table 1b — rank-1 poly-return ACCEPTED; rank-2 use / unpinned
+codegen-reaching var rejected at the use; W6.3.1 + FIXME 0602), R9
+(caller instantiation), the name-discrimination guards FV-13 (uppercase) /
+FV-21 (qualified lowercase), and the two review-found cells B-1/B-2
+(Table 2b, added 2026-07-14).
 
-**The poly-as-value discriminator axis (0596 lesson):** the R9/R10 pair
-straddles a finer axis than the rows pinned — **{applied-in-place,
-held-as-value} × {concrete-arg, generic-arg}**. R9 covered applied-in-place ×
-concrete (`3`); R10 covered held-as-value (the arg axis is moot there — the
-value never reaches an application); the applied-in-place × **generic**-arg
-cell was MISSING from both the §L matrix and the unit tier, and that is
-exactly the cell the landed W6.3 discriminator (`c3008d1f`) breaks — "still a
-`Var` after body inference" is NOT the instantiated-at-a-use vs
-held-as-a-value discriminator, because a var instantiated at a still-generic
-type is also a `Var`. B-1 adds the cell.
+**The rank-model discriminator (W6.3.1; SUPERSEDES the 0596
+applied/held-as-value axis):** the 0596-era axis — {applied-in-place,
+held-as-value} × {concrete-arg, generic-arg}, with held-as-value rejected at
+the definition — is retired along with the eager check it calibrated
+(`eb6c94e6` removed the discriminator wholesale; B-1's history below records
+why it was unbuildable). The settled axis is NOT "written vs unwritten"
+either — the written `:b` is irrelevant (written ≡ unwritten parity, §3.3.1).
+It is:
+
+- **{define a rank-1 poly-return} → ACCEPT** — every `∀` at the defining
+  definition's own boundary (prenex); returned or let-stored-and-returned
+  both included (MUST (f); rows 10, D-1 below). Passing uninstantiated is
+  not itself a rank-2 *use*, but it is an ACCEPT only when the flow pins
+  the var (callee applies it) or returns the closure (making the definition
+  a poly-return); a passed closure the callee IGNORES leaves the var
+  unpinned at codegen → the §3.11 arm below (D-2; FIXME 0602 correction);
+- **{use a poly *instance* at >1 type / pass as a rank-2 argument / hold a
+  result-only var unresolved at a codegen-reaching use} → REJECT at the
+  use** — by value restriction (MUST (i), row 18), rank-2-argument
+  unification (MUST (j), row 19), and §3.11 ambiguity (MUST (k))
+  respectively. These three mechanisms were the *real* enforcement of "no
+  first-class polymorphism" all along; the eager definition-time check was
+  redundant where they fire and wrong where they don't.
 
 **Fixture notes (binding for `/testing`):**
 
@@ -2468,7 +2511,7 @@ type is also a `Var`. B-1 adds the cell.
 - Free-standing ADTs as before: `(deftype (Box a) [:a v])`,
   `(deftype (Pair2 a b) [:a x :b y])`, primitives `add-i64`/`str-concat`.
 
-#### L.1 W6.3 acceptance rows (R1–R17 = spec rows 1–17, + derived corollaries C-1..C-4, + retained guards)
+#### L.1 W6.3 acceptance rows (R1–R19 = spec rows 1–19 — R10 reversed + R18/R19 added at W6.3.1, Table 1b; + derived corollaries C-1..C-4, + retained guards)
 
 **Status legend** (all verdicts read against HEAD `b2bfb760`, the rigid-bare
 tree): **PIN** = GREEN today, verdict unchanged under W6.3, MUST HOLD through
@@ -2486,7 +2529,11 @@ state at `b2bfb760` recorded at authoring.
   (vocabulary addition `wrong-reject` recorded in `tests/CLAUDE.md` §Defect-repro
   notation, /qa 2026-07-14)
 - **R6:** `class=silent-accept locus=crates/cranelisp-typecheck constraint path (0590 mirror sites: traits/type_resolve.rs x3 + form.rs — a :C x parameter is never held abstract, so the body narrows the claimed-abstract type silently) found=S109 owner=/dev`
-- **R10:** `class=silent-accept locus=crates/cranelisp-typecheck generalization boundary (the §3.10 rank-1 gate is absent for a RETURNED still-polymorphic fn) found=S109 owner=/dev` — verify the observed failure shape at authoring and adjust the class to the evidence.
+- **R10:** RETIRED (W6.3.1) — the "silent accept" this line attributed was the
+  CORRECT behaviour; the acceptance is spec (MUST (f)). The `/testing`
+  rewrite of `returned_polymorphic_fn_rejected_neg` DROPS its `// defect:`
+  line (no defect existed at this cell; the W6.3 eager check that briefly
+  enforced the rejection was itself the wrong-reject, removed at `eb6c94e6`).
 - **R16/R17:** `class=check-gate-leak locus=crates/cranelisp-typecheck §3.11 finalization gate (unresolved return-type-poly trait dispatch reaches the backend as an __expr-has-no-GOT-slot codegen error instead of the check-side ambiguous-type rejection; message-quality sibling FIXME 0568) found=S109 owner=/dev`
 - **B-1:** `class=wrong-reject locus=crates/cranelisp-typecheck/src/program.rs::check_defn_body (escaped_poly_fn) + infer.rs::infer_lambda (lambda_written_vars) (the landed W6.3 discriminator flags any written lambda var still Type::Var after body inference, conflating held-as-value with applied-in-place-at-a-GENERIC-type — §3.3.4's operative "held as a value" condition does not hold, §3.10 makes instantiation-at-use sound; FIXME 0596) found=S109 owner=/dev`
 
@@ -2503,7 +2550,7 @@ state at `b2bfb760` recorded at authoring.
 | R7 | row 7, (b) | `(defn f [:a x] (nadd x x))` → `∀a. Num2 a => (Fn [a] a)`, no error — the constraint is INFERRED from use, not asserted; nothing is held abstract | NEW `bare_var_inferred_constraint_not_held_abstract` | tests/spec_03_types.rs | e2e | verify-first pos (b2bfb760's rigid bare may reject constraint accrual → possibly RED today; record observed) | pos |
 | R8 | row 8, (g) | `(defn g [:a x] (fn [:a y] y))` → `∀a.(Fn [a] (Fn [a] a))` — inner `:a` co-refers, one var both layers. Call facet: `((g 3) 4)` → 4 AND `((g 3) "t")` errors (co-reference observable) | existing `nested_fn_written_var_corefers_enclosing_rigid` (ex-FV-20 pos facet) — KEEP; co-reference survives W6.3 (name-sweep of the `_rigid` suffix optional) | tests/spec_04_expressions.rs | e2e + unit U2 | PIN | pos |
 | R9 | row 9, (h) | (i) `((fn [:a x] x) 3)` → 3 — standalone lambda applied in place (existing ex-FV-15); (ii) NEW in-defn shape: `(defn h [x] ((fn [:b y] y) 3))` accepted — `b` is lambda-owned, quantified at `h`'s boundary, and `3` is caller-instantiation, never an error | existing `fn_lambda_param_free_var_annotation` + NEW `lambda_owned_var_instantiated_in_place` | tests/spec_04_expressions.rs | e2e | (i) PIN; (ii) verify-first pos (the rigid tree may reject the in-place instantiation) | pos |
-| R10 | row 10, (f)/§3.10 | `(defn mk [] (fn [:b y] y))` → **type error** — a returned still-polymorphic `fn` is poly-as-value (rank-2), unsupported; a CLEAR error, not silent mis-inference, not a codegen frame. Contrast facet with R9(ii): applied-in-place accepted, returned rejected | NEW `returned_polymorphic_fn_rejected_neg` | tests/spec_03_types.rs | e2e + unit U7 | **RED** (verify today's failure shape at authoring — expected silently accepted or mis-inferred) | neg |
+| R10 | row 10, (f)/§3.10 — **REVERSED (W6.3.1, 2026-07-15)** | `(defn mk [] (fn [:b y] y))` → **ACCEPTED** as `∀a. (Fn [] (Fn [a] a))` — a rank-1 poly-return is legitimate; written `:b` ≡ unwritten (the unwritten twin `mkid` is the same scheme); each `(mk)` instantiates fresh. Twin facets: `weird` `(defn weird [x] (fn [:b y] x))` accepted (`const`'s written twin); the W6.3-era rejection verdict this row carried is SUPERSEDED | REWRITE of `returned_polymorphic_fn_rejected_neg` → `returned_rank1_polymorphic_fn_accepted` (drop the `// defect:` line; add the mkid written≡unwritten twin facet) | tests/spec_03_types.rs | e2e + unit U7 (repurposed) | **REWRITE→GREEN** — behaviour landed at `eb6c94e6`; the CURRENT test is RED pinning the superseded rejection until `/testing` flips it | pos (was neg) |
 | R11 | row 11, (a) | `(defn f [] :a 5)` → `(Fn [] Int)`; `(f)` → 5 — a bare value-position ascription pins to the concrete type, no error | NEW `bare_var_value_position_pins_to_concrete` | tests/spec_03_types.rs | e2e all-modes | **RED** (b2bfb760 rejects as skolem-escape — the wrong-reject flip-to-pass) | pos |
 | R12 | row 12, (c) | `(defn f [] :Num2 5)` → no error, `(f)` → 5 — Int satisfies Num2; the check changes nothing. NEG twin: `:Num2 "s"` with no String impl → satisfaction-check error naming the trait (accepted IFF the type implements the trait) | NEW `value_position_constraint_satisfaction_check` + `_neg` sibling | tests/spec_03_types.rs | e2e + unit U4 | verify-first (pos expected GREEN today; neg verdict recorded at authoring) | pos+neg |
 | R13 | row 13, (d) | Zeroable fixture; `:Int (zed)` → `:primitives/Int 0` — the concrete-type ascription selects the Int impl of return-type-polymorphic dispatch | NEW `concrete_ascription_resolves_return_type_dispatch_int` | tests/spec_03_types.rs (cross-cite §7) | e2e all-modes | PIN (empirically GREEN 2026-07-14) | pos |
@@ -2511,6 +2558,58 @@ state at `b2bfb760` recorded at authoring.
 | R15 | row 15, (d) | `(add-i64 (zed) 5)` → `:primitives/Int 5` — surrounding CONTEXT resolves the dispatch, no annotation needed | NEW `context_resolves_return_type_dispatch` | tests/spec_03_types.rs | e2e all-modes | PIN (empirically GREEN) | pos |
 | R16 | row 16, (e) | bare `(zed)` in a codegen-reaching position → the **§3.11 ambiguous-type error** ("ambiguous … add an annotation" class), **MODE-UNIFORM across REPL/`--run`/`--link`** — the sibling disposition of unpinned `[]`. Output MUST NOT contain `GOT slot` / `codegen error` / the `__expr` internal binder (0568). Discrimination facet: bare `zed` (the NAME, no call) at the REPL is disposition-3 introspection display (§3.11.4), not an error | NEW `unresolved_return_type_dispatch_ambiguity_error_neg` (per-mode assertions) | tests/spec_03_types.rs | e2e per-mode | **RED** (leaks `codegen error … __expr has no GOT slot` today — check-gate-leak) | neg |
 | R17 | row 17, (e) | `:Zeroable (zed)` → STILL the §3.11 ambiguous-type error — a value-position CONSTRAINT does not disambiguate; only a concrete type does | NEW `value_position_constraint_does_not_disambiguate_neg` | tests/spec_03_types.rs | e2e | **RED** (verify today's shape at authoring — expected the same codegen leak) | neg |
+
+**Table 1b — the rank-model D-matrix (W6.3.1 REVERSAL, user-ruled
+2026-07-15):** verdicts read against **`eb6c94e6`** (the `/dev` commit that
+removed the eager poly-as-value escape check), NOT `b2bfb760`/`c3008d1f`.
+Spec ground: rewritten §3.3.4 ("rank-1 polymorphic function values are
+returnable; only rank-2 use is unsupported"), §3.3.5 rows 10 (flipped to
+accept), 18, 19, the corrected §3.10 first bullet, and MUSTs (f)/(i)/(j)/(k).
+Empirical ground truth verified at `eb6c94e6` (`mk4` leg CORRECTED per FIXME
+0602, `/testing` verification): `mk`/`weird`/`mkid`/`const`/`mk3` ACCEPT;
+**`mk4` does NOT** — its fixture callee `(defn takes [g] 0)` IGNORES its
+argument, so `mk4` returns `0` (not the closure) and is no rank-1 poly-return;
+the closure's type var is never pinned and reaches codegen → the clean
+**§3.11 ambiguous-type error** ("add an annotation to pin the type of the
+polymorphic value bound in `mk4`"; MUST (k), the D-3/R16 family). The framing
+is decisive: a passed-and-RETURNED variant (`(defn hold [g] g)` +
+`(defn mk4r [] (hold (fn [:b y] y)))`) IS a rank-1 poly-return and ACCEPTS,
+and a callee that APPLIES `g` (`(g 5)`) pins the var and also accepts. The
+multi-type-use `let`, `apply2`, and `(defn g [] (constf 5))` fixtures reject
+by their real mechanisms (value restriction / unification / §3.11 ambiguity).
+Fixture note: `constf` = `(defn constf [x] (fn [y] x))` (the unwritten
+`const` shape, named to avoid prelude collision).
+
+| Row | Spec + MUST | Fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
+|---|---|---|---|---|---|---|---|
+| D-1 | §3.3.4, (f) — **REVERSED**: let-stored-and-RETURNED ACCEPTS | `(defn mk3 [] (let [g (fn [:b y] y)] g))` (let-stored-and-returned) → **ACCEPTED** as `∀a. (Fn [] (Fn [a] a))` — a syntactic-value `let` binding is still generalized (§3.3.4 ¶1) and the closure IS the return value (rank-1 poly-return, same scheme as `mk`). The W6.3-era "stays rejected" fence verdict is SUPERSEDED. (The former blanket "held-as-value trio ACCEPTS" claim grouped `mk4` here — WRONG for the ignored-closure framing; `mk4` moved to D-2 per FIXME 0602) | `let_stored_rank1_fn_returned_accepted` (the accept half of the 0602 split of the retired `held_as_value_polymorphic_fn_variants_stay_rejected_neg`) | tests/spec_03_types.rs | e2e + unit U7 (repurposed) | **LANDED GREEN (W6.3.1)** — behaviour landed at `eb6c94e6`; split test authored + green | pos (was neg) |
+| D-2 | §3.3.4 mech. 3 + §3.11/§3.11.1, (k) — **the D-3/R16 FAMILY** (0602 correction: NOT an accept, and NOT a rank-1 rejection) | `(defn takes [g] 0)` + `(defn mk4 [] (takes (fn [:b y] y)))` (passed-and-IGNORED) → the **§3.11 ambiguous-type error** — `takes` never applies `g` and `mk4` returns `0`, not the closure, so the closure's type var is never pinned and reaches codegen unpinned (§3.11.1: "an argument passed to a function that is itself evaluated"). Facets: (i) the message is the clean §3.11 class ("ambiguous type; add an annotation to pin the type of the polymorphic value bound in `mk4`") — no GOT-slot/`__expr`/codegen leak — and `mk4` MUST NOT be silently defined; (ii) mode-uniform (`--run` exit 1, same message); (iii) contrast controls verified by `/testing`: a callee that APPLIES `g` (`(g 5)`) pins the var → `mk4 : (Fn [] Int)` accepts; a callee that RETURNS `g` is a D-1-class poly-return → accepts | `passed_uninstantiated_poly_fn_unpinned_ambiguity_neg` (the neg half of the 0602 split) | tests/spec_03_types.rs | e2e | **LANDED GREEN (W6.3.1)** — spec-correct rejection verified at `eb6c94e6` (clean §3.11 message, both modes) | neg |
+| R18 | row 18, (i) | `(defn mkid [] (fn [y] y))` then `(let [f (mkid)] (pair (f "x") (f 5)))` → **error** — value restriction: the application result `(mkid)` is ONE monomorphic instance, not generalized; using it at `String` AND `Int` is a unification conflict. Facet: the error is a type error, never a codegen frame. This is a *retained genuine restriction* — it was the real enforcement all along, not the eager check | NEW `single_poly_instance_used_at_two_types_value_restriction_neg` (free-standing `pair` via `(deftype (Pair2 a b) [:a x :b y])`) | tests/spec_03_types.rs | e2e + unit U7 (repurposed) | **GREEN PIN** (verified rejecting at `eb6c94e6`) | neg |
+| R19 | row 19, (j) | `(defn apply2 [f] (pair (f "x") (f 5)))` → **error** — rank-2 argument: the param `f` carries a single monotype for the body-check, so it cannot serve both `String` and `Int`; the §3.10 "no rank-2 polymorphism" restriction. *Retained genuine restriction* | NEW `rank2_argument_applied_at_two_types_neg` | tests/spec_03_types.rs | e2e + unit U7 (repurposed) | **GREEN PIN** (verified rejecting at `eb6c94e6`) | neg |
+| D-3 | §3.3.4 mech. 3 + §3.11/§3.11.3, (k) — **the R16 FAMILY** (monomorphisation of not-arg-determined result vars), NOT a rank-1 rejection | `(defn constf [x] (fn [y] x))` then `(defn g [] (constf 5))` → the **§3.11 ambiguous-type error** at the codegen-reaching unpinned use — `g`'s result var is nobody's argument-carried quantifier (contrast `weird`, which DEFINES the template and accepts), so no use can pin it and codegen has nothing to mint. Facets: (i) the error is the §3.11 "pin the type" class, never `rank-2`/`cannot be returned`, never a codegen frame; (ii) per MUST (k) the *returning-definition admission* is the requirement to watch — a future fix must move the error to the codegen-reaching use, not re-reject definitions. CARRIED alongside R16 (same §3.11 error-quality seam; R16's check-gate-leak caveat applies here too — verify the observed error shape at authoring) | NEW `result_only_var_unresolved_use_ambiguity_not_rank1_neg` | tests/spec_03_types.rs | e2e | **verify-first** — rejection confirmed at `eb6c94e6`; record whether the surfaced message is the §3.11 class or the R16-style codegen leak (if leak: same `check-gate-leak` defect line as R16, same owner) | neg |
+
+**W6.3.1 `/testing` reclassification (in-scope for the wave gate — the two
+`spec_03_types.rs` tests `/dev` named at `eb6c94e6`):**
+
+1. `returned_polymorphic_fn_rejected_neg` → **rewrite to accept `mk`**
+   (R10 row above): assert `:(Fn [] (Fn [a] a)) user/mk` present, `--run`
+   leg succeeds; drop the `// defect:` line (retired above); re-ground the
+   `// spec:` comment on §3.3.4 MUST (f) row 10.
+2. `held_as_value_polymorphic_fn_variants_stay_rejected_neg` → **SPLIT per
+   FIXME 0602** (supersedes this item's original "rewrite to accept
+   `mk3`/`mk4`" instruction — `mk4` does not accept):
+   `let_stored_rank1_fn_returned_accepted` (`mk3` accepts — D-1, MUST (f))
+   + `passed_uninstantiated_poly_fn_unpinned_ambiguity_neg` (`mk4` is the
+   §3.11 ambiguity — D-2, MUST (k), the D-3/R16 family).
+
+Both were RED at `eb6c94e6` pinning the superseded rejection; the R10
+rewrite and the D-1/D-2 split landed GREEN. Adjacent legs that MUST NOT move in the same pass:
+B-1's `lambda_applied_in_place_at_generic_arg_accepted` (GREEN at
+`eb6c94e6` — the eager check whose over-fire it pinned is gone) and
+`let_stored_polymorphic_fn_applied_in_place_accepted` (GREEN; its
+"contrast mk3 rejected" comment prose needs the same re-grounding sweep).
+The R18/R19/D-2/D-3 rows land as NEW guards in the same batch so the retained
+restrictions are pinned before anyone "simplifies" them away.
 
 **Table 2 — derived corollaries** (rewrites of W6.2 negatives whose fixtures
 are NOT verbatim rows 1–17; each verdict DERIVES from MUST (a) — a bare
@@ -2532,7 +2631,7 @@ over-fire unobserved. Unlike Tables 1–2, verdicts here read against
 
 | Row | Spec + MUST | Fixture → expected verdict | Test (proposed) | File | Tier | Status | Polarity |
 |---|---|---|---|---|---|---|---|
-| B-1 | §3.3.4 + §3.10, (f)/(h) — applied-in-place × GENERIC-arg: the "held as a value" condition does NOT hold | `(defn f1 [x] ((fn [:b y] y) x))` AND `(defn f2 [:a x] ((fn [:b y] y) x))` — the annotated inner lambda is APPLIED IN PLACE to a generic-typed argument (the enclosing defn's own quantified var); application binds `b` to it and NO function value stays polymorphic anywhere (the returned value is `y`'s value, not a `fn`) → both ACCEPTED, `f1 : ∀a. (Fn [a] a)` (instantiation-at-use, always sound per §3.10) | NEW `lambda_applied_in_place_at_generic_arg_accepted` (both f1/f2 facets — bare-enclosing and co-annotated-enclosing) | tests/spec_03_types.rs | e2e + unit U7 (the two repros join the unit tier beside the existing U7 pair) | **RED at `c3008d1f`** — wrong-reject with the §3.3.4 message (0596, Blocker); the `/dev` 0596 fix flips it green. Adjacent legs MUST stay put through that fix: R10's held-as-value trio (mk / let-stored mk3 / passed-uninstantiated mk4) stays rejected, R9's legs + the pinned-by-use `(let [g (fn [:b y] y)] (g 3))` stay accepted — a fix regressing either side is mis-narrowing | pos |
+| B-1 | §3.3.4 + §3.10, (f)/(h) — applied-in-place × GENERIC-arg: the "held as a value" condition does NOT hold | `(defn f1 [x] ((fn [:b y] y) x))` AND `(defn f2 [:a x] ((fn [:b y] y) x))` — the annotated inner lambda is APPLIED IN PLACE to a generic-typed argument (the enclosing defn's own quantified var); application binds `b` to it and NO function value stays polymorphic anywhere (the returned value is `y`'s value, not a `fn`) → both ACCEPTED, `f1 : ∀a. (Fn [a] a)` (instantiation-at-use, always sound per §3.10) | NEW `lambda_applied_in_place_at_generic_arg_accepted` (both f1/f2 facets — bare-enclosing and co-annotated-enclosing) | tests/spec_03_types.rs | e2e + unit U7 (the two repros join the unit tier beside the existing U7 pair) | **GREEN** — was RED at `c3008d1f` (wrong-reject, 0596 Blocker), flipped by the 0596 fix (`750471ac`) and moot since `eb6c94e6` removed the eager check wholesale. **Fence framing REVERSED by W6.3.1:** the original "adjacent legs stay put" clause required the held-as-value trio (mk/mk3/mk4) to stay REJECTED — under the settled rank model `mk`/`mk3` ACCEPT (Table 1b R10/D-1) while `mk4` — passed to an IGNORING callee — is the §3.11 ambiguity (D-2; FIXME 0602 correction); R9's legs + the pinned-by-use `(let [g (fn [:b y] y)] (g 3))` stay accepted as before. The retained-restriction fence is now R18/R19/D-3 | pos |
 | B-2 | §3.3.2 × the **fn-param position** — a lambda param is a quantified position (quantified at the enclosing definition's boundary), so §3.3.2's "a parameter" reading naturally covers it | free-standing trait fixture; `(fn [:NumT y] (nadd y y))` → **CURRENT behaviour** at `c3008d1f`: `unknown type 'NumT' (from module '')` — the §3.9.3 try-type-then-trait fallback exists at the defn-param seam (`register_defn_signature` → `resolve_bound_param`) but NOT at `infer_lambda`'s param resolution; a trait constraint is inexpressible at the fn-param position. PRE-EXISTING (not introduced by `c3008d1f`) | none authored — recorded cell; test rows land when the closing effort picks it up | — | (unit-tier candidate at pickup) | **KNOWN-LIMITATION / scope caveat** — closing it is OUT of the W6.3 landed scope; it rides the open 0590 convergence (constraint rigidity reaches `defn` params ONLY today; fn params / let / trait-impl sigs untouched — `infer_lambda` is exactly a 0590 mirror site missing the ONE mint/fallback capability) or a future constraint-position-uniformity pass. NO fix verdict asserted here. **Desired end-state for the future record:** fn-param constraints behave IDENTICALLY to defn-param — held abstract for the enclosing body-check, R5/R6 logic per cell; if that derivation is contested at pickup, escalate via `/spec` (per the Table-2 note), do not improvise. Error-shape note: independent of when support lands, the R6/R12 band's "never `unknown type` for a recognised constraint shape" applies to this seam | n/a (recorded, no polarity until a verdict is owned) |
 
 (Related but NOT folded in: FIXME 0597's value-position satisfaction-check
@@ -2540,7 +2639,7 @@ over-fire unobserved. Unlike Tables 1–2, verdicts here read against
 family — it keeps its own FIXME and joins the matrix when triaged.)
 
 **Table 3 — retained guards** (verdicts UNCHANGED under W6.3; GREEN at
-`b2bfb760` unless noted; `// spec:` comment-band sweep to (a)–(h) only):
+`b2bfb760` unless noted; `// spec:` comment-band sweep to (a)–(k) only):
 
 | Row | Test | W6.3 disposition |
 |---|---|---|
@@ -2557,9 +2656,14 @@ family — it keeps its own FIXME and joins the matrix when triaged.)
 | FV-14 | `trait_constraint_annotation_unaffected_by_free_var_rule` | PIN as thin control; substance upgraded by R5 (pos) + R6 (neg) |
 | FV-21 | `qualified_lowercase_annotation_unknown_type_not_minted_neg` | Verdict unchanged under W6.3 (a QUALIFIED lowercase name is a named-type reference, never a var — F2/0589). Verify-first at `b2bfb760`: the W6.2 `/dev` pass may have closed the mint sites; record observed state |
 
-**Row accounting: 35 rows** — 17 settled rows (R1–R17; R1/R3/R8/R9(i) realized
-by existing ex-FV tests), 4 derived corollaries (C-1..C-4), 2 review-found
-boundary cells (B-1 RED, B-2 recorded known-limitation), 12 retained guards.
+**Row accounting: 40 rows** (was 35; **+4 at W6.3.1**: R18, R19, D-1, D-3;
+**+1 at the FIXME 0602 correction**: D-2 split off D-1) —
+19 settled spec rows (R1–R19; R1/R3/R8/R9(i) realized by existing ex-FV
+tests; R10 REVERSED to accept; R18/R19 added with the rewritten §3.3.5),
+3 rank-model D-rows (D-1 `mk3` reversed-to-accept, D-2 the `mk4`
+ignored-closure §3.11 ambiguity per 0602, D-3 the R16-family carry),
+4 derived corollaries (C-1..C-4), 2 review-found boundary cells (B-1 now
+GREEN, B-2 recorded known-limitation), 12 retained guards.
 
 **W6.2 → W6.3 reclassification summary (what `/testing` flips):**
 
@@ -2571,7 +2675,9 @@ boundary cells (B-1 RED, B-2 recorded known-limitation), 12 retained guards.
   (co-referring var pinned by body, was skolem-escape); ex-FV-11 → C-4
   (per-clause body pins restored, was per-clause skolem-escape).
 - **4 NEW REDs fail on the current tree:** R6 (constraint not held abstract —
-  passes today, MUST error), R10 (returned poly fn), R16 (bare `(zed)` leaks a
+  passes today, MUST error), R10 (returned poly fn — **SUPERSEDED by W6.3.1**:
+  the rejection this RED demanded was landed at `c3008d1f` and then REVERSED;
+  see the W6.3.1 block below), R16 (bare `(zed)` leaks a
   codegen GOT-slot error, MUST be the §3.11 message, mode-uniform), R17
   (value-position constraint does not disambiguate).
 - **1 flip-to-pass RED:** R11 (bare value-position `:a 5` — rejected today,
@@ -2581,9 +2687,30 @@ boundary cells (B-1 RED, B-2 recorded known-limitation), 12 retained guards.
 - **PINs carried:** R1, R3, R8, R9(i) + the 12 Table-3 guards.
 - **1 post-landing RED (W6.3 review, reads against `c3008d1f`):** B-1 —
   applied-in-place at a GENERIC arg wrong-rejected by the landed
-  discriminator (0596 Blocker); flips green at the 0596 `/dev` fix.
+  discriminator (0596 Blocker); flipped green at the 0596 `/dev` fix
+  (`750471ac`) and moot since `eb6c94e6`.
 - **1 recorded known-limitation (no RED authored):** B-2 — {constraint ×
   fn-param} inexpressible today (`unknown type`); rides 0590.
+
+**W6.3 → W6.3.1 reclassification summary (rank-model reversal, 2026-07-15;
+reads against `eb6c94e6`; what `/testing` flips — enumerated in full in
+Table 1b's trailing note):**
+
+- **2 authored tests flip** (were RED pinning the superseded
+  poly-as-value rejection; the rewrites landed GREEN):
+  `returned_polymorphic_fn_rejected_neg` → R10 accept (`mk`, MUST (f));
+  `held_as_value_polymorphic_fn_variants_stay_rejected_neg` → SPLIT per
+  FIXME 0602: `let_stored_rank1_fn_returned_accepted` (D-1 accept — `mk3`,
+  MUST (f)) + `passed_uninstantiated_poly_fn_unpinned_ambiguity_neg`
+  (D-2 §3.11-ambiguity neg — `mk4`, MUST (k); the plan's original blanket
+  "mk4 accepts" instruction was a plan error, corrected here).
+- **2 NEW GREEN PINs** guard the retained genuine restrictions: R18 (value
+  restriction, MUST (i)), R19 (rank-2 argument, MUST (j)).
+- **1 NEW verify-first neg:** D-3 (result-only var → §3.11 ambiguity,
+  MUST (k)) — the R16 monomorphisation family, carried, NOT a rank-1
+  rejection; error-shape recorded at authoring.
+- **PINs carried unchanged:** B-1, `let_stored_polymorphic_fn_applied_in_place_accepted`
+  (comment-prose re-grounding only), R9's legs.
 
 **Unit-tier enumeration for `/dev`** (the S108-Inc2 deferral discipline: each
 named cell gets a guard that FAILS on revert of its fix, in the SAME change-set;
@@ -2623,16 +2750,22 @@ a bare "unit-pinned" without these is a hole):
   error is raised CHECK-side ("ambiguous type; add an annotation"), never
   reaches the backend GOT path, and carries no `__expr` internal binder (0568).
   Seam: the §3.11.1 enforcement seam (program finalization). Guards R16.
-- **U7 — poly-as-value rejection:** a generalized `fn` escaping as a
-  returned/stored VALUE with residual quantified vars is rejected at the
-  generalization boundary (§3.10 rank-1); applied-in-place instantiation (R9)
-  MUST remain accepted — the discriminator is instantiated-at-a-use vs
-  held-as-a-value, and per the 0596 lesson "still a `Var` after body
-  inference" is NOT it: a var instantiated at a still-generic type (the
-  enclosing definition's own quantified var) is also a `Var`. The full axis
-  is {applied-in-place, held-as-value} × {concrete-arg, generic-arg}; the
-  generic-arg cell's two repros (B-1) join this unit set beside the existing
-  pair. Guards R10 vs R9/B-1.
+- **U7 — rank-model enforcement at the use (REPURPOSED, W6.3.1):** the
+  original U7 charge — an eager poly-as-value rejection at the
+  generalization boundary — is RETIRED with the check (`eb6c94e6`); do not
+  reintroduce it. The unit set inverts to pin the settled model: (i) a
+  returned or stored-and-returned rank-1-polymorphic `fn` generalizes at the
+  enclosing definition's boundary and is ACCEPTED, written ≡ unwritten
+  (guards R10/D-1 — a regression here is the eager check creeping back;
+  a passed-and-IGNORED closure is NOT in this set — its unpinned var is the
+  §3.11 ambiguity, D-2/FIXME 0602);
+  (ii) an application result is NOT generalized at `let`, so one instance
+  unified at two types FAILS (value restriction; guards R18); (iii) a
+  parameter carries one monotype for the body-check, so applying it at two
+  types FAILS (guards R19); (iv) applied-in-place instantiation stays sound
+  at concrete AND generic args (guards R9/B-1 — the `eb6c94e6` unit-test
+  rework in `program/tests.rs` seeded this set; audit it covers all four
+  cells). Seams: the §3.4 generalization boundary + `unify.rs`.
 - **U8 — name-discrimination guards retained:** uppercase unknown → §3.9.3
   error path (FV-13); qualified lowercase NEVER mints, at ALL 0590 mirror
   sites (FV-21).
@@ -2650,7 +2783,8 @@ correct) — its residual is per-mint-site keying consistency (U2); 0593
 `unify_with_rigid` hardening survives repurposed (U3); 0568 is R16's
 message-quality sibling; 0576 governs FV-12's soft disposition; 0591 keeps the
 body-ascription parse gaps that route cells to the unit tier; 0596 (Blocker,
-`target: /dev`) is B-1's carrier — the over-fire its fix removes; 0600
+`target: /dev`) was B-1's carrier — resolved + deleted at `750471ac`, then the
+whole eager check it calibrated was removed at `eb6c94e6` (W6.3.1); 0600
 (`target: /qa`) is ACTIONED into B-2 and deleted — its implementation half
 rides 0590 (the `infer_lambda` mint/fallback seam is a 0590 mirror site), and
 its verdict-derivation half is recorded on B-2 as the non-asserted desired
@@ -2722,7 +2856,9 @@ arities keep it clear of the W6 defect by construction — concrete `:Int`
 fields) + AL edge set + DC-14; (3) observability + display rows
 (these depend on the `/repl`-specced surfaces and the agent harness;
 verify-first items marked above); (4) the §L.1 matrix — W6.3 state: (a)
-author the four NEW REDs + the flip-to-pass RED FIRST (R6, R10, R16, R17,
+author the four NEW REDs + the flip-to-pass RED FIRST (R6, R10 [SUPERSEDED
+by W6.3.1 — R10 is now an accept row; the Table 1b reclassification + the
+R18/R19/D-2/D-3 batch replace this item], R16, R17,
 R11 — they pin the settled model the `/dev` pass must implement; add B-1 to
 this batch — it pins the 0596 over-fire the follow-on `/dev` fix removes,
 RED against the landed `c3008d1f` tree), (b)
@@ -2731,7 +2867,7 @@ assertions pin `b2bfb760`'s superseded rigid model; each lands RED until
 `/dev`), (c) author the new positives (R5, R7, R9(ii), R12, R13, R14, R15 —
 the zed/Num2 free-standing trait fixtures; R13/R14/R15 land as GREEN PINs),
 (d) sweep `// spec:`/`// defect:` comments from the retired
-MUST-1..MUST-4/SCOPE-5 band to the §3.3 (a)–(h) band + FV-12's re-grounding
+MUST-1..MUST-4/SCOPE-5 band to the §3.3 (a)–(k) band + FV-12's re-grounding
 comment, then the L.2 execution items; (5) remaining GREEN pins/controls.
 Every RED lands failing-not-ignored with `// spec:` + (for defect rows) the
 `// defect:` line given in its row.

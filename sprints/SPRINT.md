@@ -505,7 +505,7 @@ such type is the **§3.11 ambiguity** error. **Polymorphic functions as values**
 | 7 | `(defn f [:a x] (nadd x x))` | `∀a.Num a => …`, no error | `Num` INFERRED from use, not asserted |
 | 8 | `(defn g [:a x] (fn [:a y] y))` | `∀a.(Fn [a] (Fn [a] a))` | inner `:a` co-refers (lexical) |
 | 9 | `(defn h [x] ((fn [:b y] y) 3))` | fine | `b` lambda-owned; `3` is caller-instantiation |
-| 10 | `(defn mk [] (fn [:b y] y))` (returned) | **error** | polymorphic function as value — unsupported |
+| 10 | `(defn mk [] (fn [:b y] y))` (returned) | `∀a.(Fn [] (Fn [a] a))` **accept** | rank-1 poly-return — legitimate (written≡unwritten). **REVERSED S109 W6.3** — see reversal note below |
 | 11 | `(defn f [] :a 5)` | `(Fn [] Int)`, no error | bare value-position; named, pinned |
 | 12 | `(defn f [] :Num 5)` | no error | `Int` satisfies `Num` — value-position constraint = check |
 | 13 | `:Int (zed)` | `:Int 0` | value-position CONCRETE TYPE resolves return-type dispatch |
@@ -618,6 +618,27 @@ owner /dev); 2 vec-assoc UAF (owner /backend); 0590 (four-mirror single-source r
 resolved, 0592/0593 obsoleted (bare-acquire now correct) — `/design` to formally close;
 0589 unchanged; 0595 repurposed. **A focused `/review` of `750471ac` (Blocker-fix
 soundness) precedes W6 close.**
+
+**W6.3 POLY-AS-VALUE REVERSAL (user, 2026-07-15):** user probing (`const`/`weird`/`g`
+edge cases) exposed that the eager poly-as-value rejection (R10) was **redundant +
+inconsistent** — it rejected the *written* form of legitimate rank-1 combinators
+(`(defn mk …)`, `(defn weird …)`) while their unwritten twins (`const`, `mkid`) were
+accepted; and empirically the language already enforces "no first-class polymorphism"
+at the *use* site (value restriction). **RULED: rank-1 poly-returns are legitimate
+(written≡unwritten); remove the eager check.** `/dev` `eb6c94e6` removed it (mk/weird/
+mk3/mk4 now accept; genuine restrictions HELD — multi-type-use + rank-2 → unification
+conflict, result-only-var → §3.11 ambiguity; 679/679, zero pub-API). `/spec` corrected
+§3.3.4 (heading + prose: "rank-1 returnable; only rank-2 unsupported"), §3.3.5 table
+row 10→accept + rows 18/19, §3.10 bullet; MUSTs (f)/(i)/(j)/(k). Cleanup routed:
+`/qa` D-matrix, `/testing` 2 test flips (`returned_polymorphic_fn_rejected_neg`,
+`held_as_value_..._stay_rejected_neg` → accept), `/review`. **New carry logged with
+R16:** the **result-only-variable monomorphisation limitation** (`(defn g [] (constf
+5))` — a var appearing only in a called fn's result, held unresolved, is a §3.11
+ambiguity; full let-generalisation would lift it but the compiler doesn't — same
+family as return-type dispatch). Essence (why `weird` accepts but `g` doesn't):
+`weird` DEFINES a template (`b` is weird's quantifier); `g` HOLDS `constf`'s result
+(`b` is nobody's quantifier — no argument carries it), verified via `callid`
+(arg-flowing var defers) vs `g` (result-only var can't).
 
 ## W1.1a BLOCKER (Phase 5, 2026-07-13) — dotted-ctor registration model needs re-ruling
 
