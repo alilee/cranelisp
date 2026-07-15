@@ -1079,6 +1079,105 @@ ruled. `interfaces.md` is `/arch`-owned — the two new fields likely want a
 one-line narrative there (`ResolvedCall`/`ModuleEntry` sections); FLAGGED, not
 edited.
 
+### /review (producer W0.1+W0.1b) — 0583 producer gate review (2026-07-15, COMPLETE)
+
+Reviewed `635f364b` (W0.1) + `144828d1` (W0.1b) against `backend-keyed-consumer.md`
+§1.1/§1.1.1/§8, narrow to typecheck+types. **Gating verdict: GO — the producer is
+complete and correct to build W1 on.** Zero Blockers. All targeted probes green
+(the 6 carrier pins + the 17 `callees_*` guards); 13-RED baseline asserted by both
+commits, not re-run (per dispatch).
+
+**Storage-module correctness (the W1-gating check) — verified per leg:**
+- **Trait-method**: the shell write (`impl_check.rs:153–167`) goes into
+  `trait_home`'s table via `symbol_table_mut_in` while `state.current_module`
+  is UNTOUCHED — it IS the writer's module there (the D1 trait-home switch
+  happens later, only around default-method BODY checks, and
+  `finalize_impl_method_writeback` runs after the unconditional restore at
+  `impl_check.rs:520–524`, writing via `current_symbol_table_mut` = writer).
+  **Explicit, default, and HKT methods all land through that ONE writeback
+  tail**, so `impl_module` names the true storage for every method class.
+  Cross-module shapes checked: trait T / impl B / caller A (three distinct) —
+  shell at T carries B, probe roots at T, carrier `{B, mangle}` ✓;
+  re-exported trait refs (chain-follow terminates at T regardless of path) ✓;
+  prelude-trait impls from user code (the §1.1.1 named-broad case) ✓.
+  No latent W1 hard-miss shape found.
+- **The `impl_module_in_home` probe**: the exact key
+  (`impl${fq_for_mangle}${fq_trait_name}`) matches the writer key whenever the
+  S102 mangle lock-step holds — the SAME condition for the call to resolve at
+  all, so an exact-probe miss on a valid program implies the bare fallback,
+  whose predicate is IDENTICAL to `has_impl_in_home`'s (which just returned
+  true over the same table) — so the fallback cannot record a module the
+  existence check didn't ground, and the `degrade to current_module` arm is
+  dead in practice (Suggestion: a debug trace on it; silent-wrong if ever live).
+  Bare-name collisions (a/Point vs b/Point) discriminate on the exact key for
+  ADT receivers; the colliding-miss shape also breaks the mangle, i.e. the
+  program is already invalid and W1 fails it LOUDLY — acceptable.
+- **AutoCurry plain leg**: callee-span transport verified shadow-correct
+  (reads only what `infer_var` recorded; `None` for locals) and correct across
+  all three drain seams (per-defn, mono-recheck under the swapped per-instance
+  map, finalize) — the map read always targets the map the callee Var wrote. Pinned.
+- **Fn-value mono rewrite**: sidecar insert at `arg_span` with the caller's
+  module matches `register_mono_entry` storage; pinned.
+- **Mono legs**: `record_self_recursion_dispatch` + inner legs receive
+  `current_module` AFTER `recheck_body_for_mono`'s restore — matches storage ✓.
+
+**The flagged W0.1b deviation (finalize.rs:667 sweep) — SOUND, not a mask.**
+Post-pass carriers (pass-4 fn-value rename at `mono_collect.rs:88–104`;
+finalize-drained auto-curry) land in `state.method_resolutions` AFTER the
+per-form snapshots (which are superset CLONES, `body.rs:120/560`); the sweep is
+the only bridge into `accumulator.resolved_targets`, and
+`finalize_annotations_and_publish` (runs after the sweep, `finalize.rs:794→799`)
+rebuilds every `Concrete` view from it (`finalize.rs:890/910`). HashMap-extend
+is idempotent-overwrite: no drop, no double-count; the same-span rename value
+correctly clobbers the stale template FQ. The lenient/synthetic totalization
+correctly remains W0.b.
+
+**Consolidation ("Resolve once") — CLEAN.** `resolve_ref_target`/`def_resolved`
+is the ONE chain-follow; `callees` is a `UserFn` projection of the same
+resolution; the deleted sextet is gone (grep: only doc-comment mentions remain).
+Self-edge gates verified both right: carve-out writes `resolved_targets` only,
+`callees` skip retained; all 17 `callees_*` guards green. `impl_module_in_home`
+is NOT a resolver mirror — a keyed shell probe within the ALREADY-RESOLVED trait
+home reading the resolution product (no chain-follow, no scan beyond the
+pre-existing `has_impl_in_home` pattern). One corner behaviour change, in the
+agreeing direction: a qualified `m/f` whose child-of-current-module candidate is
+a non-`UserFn` Def no longer falls through to the absolute candidate for the
+`callees` edge — the new stop agrees with `lookup`'s candidate order (the old
+fall-through could record an edge to an entry the reference didn't type-check
+against).
+
+**Behaviour-invariance + baseline — CONFIRMED.** Carrier write-only (every
+backend `resolved_target:` construction sits in `#[cfg(test)]`); types
+`public-api.txt` diff = exactly the two `impl_module` lines;
+`CACHE_SCHEMA_VERSION` = 19 unchanged; both new fields required, zero
+`#[serde(default)]` (P18/P20) ✓.
+
+**Findings filed** (neither gates W1 — advisory for `/sprint` disposition):
+- **FIXME 0618 (`/arch`, Important)**: `interfaces.md` carries NO narrative for
+  the W0 carrier fields OR the two `impl_module` fields — §1.1.1's pinned diff
+  named it as riding the change-set; land before sprint close.
+- **FIXME 0619 (`/dev` typecheck; Important + 3 Minor)**: (1)
+  `builtin_storage_fq` resolves the JIT name through USER scope — a
+  prelude-suppressed module with a local fn named `add-i64` + `(import
+  [primitives [+]])` + `(+ 1 2)` records the user fn as the carrier for a call
+  the backend emits as the primitive (wrong-dispatch at W1 on a narrow-but-valid
+  shape; one-line kind-filter fix); (2) the self-recursion carve-out fires on
+  any same-named LOCAL (`(defn f [] (let [f …] (f 3)))`) — harmless ONLY while
+  the backend's locals check precedes the keyed read (the §1.1 pinned order; W1
+  brief must keep it); (3) the AutoCurry plain-arm `callees` edge still derives
+  the CALLER's module for an imported target (pre-existing; now contradicts
+  `dispatch_target_fq`'s "carrier and callees agree" rustdoc); (4) typecheck
+  `CLAUDE.md` still names the deleted `record_user_fn_ref`.
+- **Coverage note (`/qa`/`/testing`)**: the cross-module trait pin exercises the
+  READ half via a synthetic shell; the WRITER half (a real `(impl)` for an
+  IMPORTED trait ⇒ shell `impl_module` = writer ≠ trait_home) is verified by
+  source reading but not pinned end-to-end — a cheap 3-module pin would close it
+  (W1's hard-miss e2e catches it loudly regardless).
+
+Next skills: `/sprint` (dispose 0618/0619; advance the W0-completion front —
+W0.2 KC-W0-2/KC-W0-6 → W0.b flip → W1 as re-pinned), `/arch` (0618), `/dev`
+(typecheck, 0619 — can ride any pre-W1 typecheck slot).
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
