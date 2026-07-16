@@ -1,5 +1,5 @@
 ---
-number: 0624
+number: 0628
 target: /design
 filed_by: /repl
 filed_at: 2026-07-16
