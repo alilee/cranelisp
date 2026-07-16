@@ -236,37 +236,34 @@ where
         // run-to-run deterministically, instead of `lookup_constructor`'s
         // context-free re-resolution (arbitrary-iteration wrong-tag / `match
         // failed` nondeterminism).
-        let (fqtn, ctor_info) = match resolved_ctor {
-            Some(fq) => self.ctx.ctor_meta_at(fq).ok_or_else(|| {
-                // A `Some` that resolves to no `Def` is keying drift — fail
-                // LOUDLY at compile time (Principle 18), never silently mis-tag.
-                CranelispError::CodegenError {
-                    message: format!(
-                        "pattern constructor '{name}' resolved to '{fq}' which has \
-                         no Def (pattern_ctors keying drift)"
-                    ),
-                    location: ErrorLocation::from_span(span),
-                }
-            })?,
-            None => {
-                // No typecheck resolution. Sum/enum ctor patterns always carry
-                // one (the sidecar mint at `instantiate_ctor` covers every
-                // `check_constructor_pattern` arm); a `None` here is a
-                // synthetic/lenient body (auto-generated field-accessor `(match
-                // self [(Box v) v])`, generic template) whose pattern ctor is a
-                // single in-scope-unambiguous ctor NOT routed through the sidecar
-                // — the ONE narrow, deterministic use `lookup_constructor` still
-                // serves (a scrutinee-directed same-named ctor never reaches this
-                // arm: it lives only in a user `defn` body → `codegen_view` →
-                // populated `resolved_ctor`). See §10.3 fold-in note.
-                self.ctx
-                    .lookup_constructor(name.as_ref())
-                    .ok_or_else(|| CranelispError::CodegenError {
-                        message: format!("unknown constructor: {name}"),
-                        location: ErrorLocation::from_span(span),
-                    })?
+        // W3 (S19 delete — `backend-keyed-consumer.md` §4/§5): the former
+        // `None`-arm `lookup_constructor` fallback is DELETED. Since W0.b
+        // typecheck is the SOLE mono-view producer and populates `resolved_ctor`
+        // for EVERY codegen-reached ctor pattern — user `defn` bodies via the
+        // `pattern_ctors` sidecar (S109 §10), synthesised accessor bodies
+        // directly at synthesis (`Span::SYNTHETIC`, structurally outside
+        // span-keyed transport). A `None` here is therefore keying drift, not a
+        // legitimate lenient body — fail LOUDLY (Principle 18; Rev-2
+        // no-soft-fallback: no resolver remains to fall back to).
+        let fq = resolved_ctor.ok_or_else(|| CranelispError::CodegenError {
+            message: format!(
+                "pattern constructor '{name}' reached codegen with no resolved_ctor \
+                 carrier (typecheck keying drift; every ctor pattern carries its \
+                 storage identity post-W0.b)"
+            ),
+            location: ErrorLocation::from_span(span),
+        })?;
+        let (fqtn, ctor_info) = self.ctx.ctor_meta_at(fq).ok_or_else(|| {
+            // A `Some` that resolves to no `Def` is keying drift — fail LOUDLY at
+            // compile time (Principle 18), never silently mis-tag.
+            CranelispError::CodegenError {
+                message: format!(
+                    "pattern constructor '{name}' resolved to '{fq}' which has no \
+                     Def (pattern_ctors keying drift)"
+                ),
+                location: ErrorLocation::from_span(span),
             }
-        };
+        })?;
         let _type_def =
             self.ctx
                 .lookup_type_def(&fqtn)
@@ -298,7 +295,7 @@ where
             )
         } else if !is_nullary && bindings.len() == ctor_info.fields.len() {
             self.compile_data_pattern(
-                name, tag, is_mixed, is_value, bindings, match_ctx, body,
+                fq, tag, is_mixed, is_value, bindings, match_ctx, body,
             )
         } else {
             Err(CranelispError::CodegenError {
@@ -379,7 +376,7 @@ where
     #[allow(clippy::too_many_arguments)] // +1 for the R5 `is_value` flatten hint
     fn compile_data_pattern(
         &mut self,
-        ctor_name: &Symbol,
+        resolved_ctor: &cranelisp_types::FQSymbol,
         tag: usize,
         is_mixed: bool,
         is_value: bool,
@@ -407,7 +404,7 @@ where
         // Resolve concrete field types by looking at the scrutinee's type
         // and matching against the constructor's fields. This allows us to
         // determine which extracted fields are heap-typed for RC management.
-        let field_types = self.resolve_field_types(ctor_name, match_ctx);
+        let field_types = self.concrete_field_types(resolved_ctor, match_ctx);
 
         self.push_scope();
         self.bind_data_pattern_fields(is_value, bindings, &field_types, match_ctx.scrut_val);
@@ -582,22 +579,28 @@ where
         }
     }
 
-    /// Resolve concrete field types for a constructor pattern by examining
+    /// Compute concrete field types for a constructor pattern by examining
     /// the scrutinee's type and matching type parameters against the
     /// constructor's declared field types.
     ///
     /// For `(Option String)` matching `(Some s)`, this returns `[String]`.
     /// For `(Point Int Int)` matching `(Point x y)`, returns `[Int, Int]`.
-    fn resolve_field_types(
+    ///
+    /// W3 (S20 fold — `backend-keyed-consumer.md` §3/§4): the ctor is read via a
+    /// DIRECT keyed fetch (`ctor_meta_at(resolved_ctor)`) off the arm's carried
+    /// STORAGE identity — the same `(fqtn, ctor_info)` `compile_constructor_pattern`
+    /// already resolved. The former `lookup_constructor` re-resolution (a
+    /// context-free name walk through `resolve_driven`) was always redundant under
+    /// the carrier, so this is byte-identical for a valid pattern ctor.
+    fn concrete_field_types(
         &self,
-        ctor_name: &Symbol,
+        resolved_ctor: &cranelisp_types::FQSymbol,
         match_ctx: &MatchContext,
     ) -> Vec<cranelisp_types::Type> {
         use cranelisp_types::Type;
 
-        // Look up the constructor and its parent type.
-        // lookup_constructor handles both qualified and bare names.
-        let (fqtn, ctor_info) = match self.ctx.lookup_constructor(ctor_name.as_ref()) {
+        // Read the ctor and its parent type by its STORAGE key (the carrier).
+        let (fqtn, ctor_info) = match self.ctx.ctor_meta_at(resolved_ctor) {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -822,14 +825,30 @@ fn test_compile_match_with_fields() {
     };
 
     // W1 (KC-W0-6): the scrutinee `(Some 99)` ctor `Apply` reads the callee Var
-    // carrier (`main/Some`, the bare storage key in `option_type_tables`). The
-    // match ARM ctor resolution stays on its legacy S19 fallback (W2/W3 kind).
+    // carrier (`main/Some`, the bare storage key in `option_type_tables`).
+    // W3 (KC-W0-6): the S19 `lookup_constructor` fallback is deleted, so each
+    // match ARM ctor pattern now REQUIRES a `pattern_ctors` carrier keyed by the
+    // pattern span → the ctor's storage FQ (both bare in `main`).
     let mut check = empty_check();
     check.resolved_targets.insert(
         Span::new(11, 15),
         cranelisp_types::FQSymbol {
             module: ModuleFullPath::from("main"),
             symbol: Symbol::from("Some"),
+        },
+    );
+    check.pattern_ctors.insert(
+        Span::new(22, 30),
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("main"),
+            symbol: Symbol::from("Some"),
+        },
+    );
+    check.pattern_ctors.insert(
+        Span::new(34, 40),
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("main"),
+            symbol: Symbol::from("None"),
         },
     );
     let tables = option_type_tables();

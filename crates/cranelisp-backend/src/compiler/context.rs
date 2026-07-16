@@ -76,10 +76,15 @@ where
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    /// Session-level module-alias table (spec §8.6.6). Threaded into
-    /// `resolve_got_target` / `resolve_func_arity` so qualified-name
-    /// resolution can substitute an alias prefix with its target module
-    /// before walking the symbol tables. Added S75 W2 (D41 rotation).
+    /// Session-level module-alias table (spec §8.6.6). Added S75 W2 (D41
+    /// rotation) to feed the qualified-name alias substitution inside the
+    /// `resolve_*` resolvers. **S110 W3: those resolvers were deleted** (the
+    /// backend keyed-reads typecheck's `resolved_target` — no name resolution,
+    /// hence no alias substitution). The field is now threaded but UNREAD;
+    /// dropping it from `CompileContext` / `compile_to_module` / the
+    /// `build_compile_context` chain is a follow-on signature cleanup deferred
+    /// out of W3 because it moves the `pub` `compile_to_module` surface and int's
+    /// call sites (W3 is backend-internal, zero public-API movement).
     pub module_aliases: &'a cranelisp_types::ModuleAliases,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
@@ -132,39 +137,6 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Look up a constructor by name from the symbol tables.
-    ///
-    /// Accepts both bare names (`"SexpStr"`) and qualified names (`"macros/SexpStr"`).
-    /// For qualified names, looks up directly in the specified module.
-    /// For bare names, searches the current module's symbol table (following imports).
-    /// Returns `(FQTypeName, CtorMeta)` if found.
-    ///
-    /// Post-S70 ctor-as-Def: constructors are `ModuleEntry::Def` entries with
-    /// `kind: DefKind::Constructor { type_name, tag, field_count, .. }`. The
-    /// returned `CtorMeta` reconstructs field names (from `param_names`) and
-    /// field types (from the `Def.scheme`'s `Type::Fn` params).
-    pub(crate) fn lookup_constructor(&self, name: &str) -> Option<(FQTypeName, CtorMeta)> {
-        // Collapsed onto the ONE backend resolution driver (S109 W1 commit 1,
-        // `dotted-ctor-canonical-keys.md` §3.1) — its `resolve_chain` walks the
-        // import chain MULTI-hop (up to `MAX_IMPORT_DEPTH`), so an imported bare
-        // ctor whose home aliases the canonical `Type.Ctor` key
-        // (`user.Nil → home.Nil-alias → home."Lst.Nil"`, 2 hops) resolves; the
-        // former one-hop copy here missed it, producing BOTH the `unknown
-        // constructor` prelude cascade AND the silent nullary-ctor-as-closure
-        // wrong-value class (the P7 divergent-duplication defect — two resolvers,
-        // one name). The `read` closure stops at the first entry that extracts as
-        // a constructor; on a non-ctor entry (`Import` alias) the driver follows
-        // the edge. Precedence (current → qualified+alias → global) is
-        // single-sourced in `resolve_driven`.
-        crate::compiler::resolution::resolve_driven(
-            self.symbol_tables,
-            self.module_aliases,
-            &self.current_module,
-            &Symbol::from(name),
-            |_module, _bare, entry| Self::extract_constructor(entry),
-        )
-    }
-
     /// Resolve a constructor by its STORAGE `FQSymbol` (the key its `Def` was
     /// stored under, carried on `MonoMatchArm.resolved_ctor` from typecheck's
     /// `pattern_ctors` sidecar) — a DIRECT keyed read, NO name resolution, NO

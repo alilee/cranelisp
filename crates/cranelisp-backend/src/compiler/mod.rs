@@ -8,10 +8,13 @@
 //! These types (`FnCompiler`, `CompileContext`, `MatchContext`)
 //! are `pub` codegen primitives reached only via the
 //! `compile_to_module` free function in production; the `pub` exists for
-//! test-side AST-fragment compilation. The GOT-target resolution helpers
-//! `resolve_func_arity` / `resolve_got_target` / `got_data_symbol_name` are the
-//! canonical per-symbol-table probing primitives (no equivalent at the
-//! `cranelisp-types` boundary).
+//! test-side AST-fragment compilation. **S110 W3: the `resolve_*` GOT-target
+//! resolvers were deleted** — the backend keyed-reads typecheck's
+//! `resolved_target` carrier (`CompileContext::entry_at` / `ctor_meta_at` /
+//! `got_entry_at`) and hard-errors on miss (Principle 24). The only survivors in
+//! `resolution.rs` are the symbol-naming primitives `got_data_symbol_name` /
+//! `inner_fn_discriminator_for` (fixed compile-time name schemes, NOT
+//! resolvers).
 //!
 //! **Forbidden pattern.** Every primitive — including `not`, `+`, `=`, and the
 //! arithmetic/comparison operators — goes through the SAME GOT-indirect
@@ -53,19 +56,14 @@ pub(crate) use rc_emission::{
     collect_var_ids_from_type, find_var_type_in_expr, signature_heap_category,
     substitute_type_inline,
 };
-// S110 W1 dropped the apply-site re-exports of `resolve_extern_target`,
-// `resolve_platform_effect_target`, and `resolve_poll_effect_target` — the call
-// seam keys off `entry_at`. S110 W2 dropped the value-seam re-exports of
-// `resolve_callee_summary`, `resolve_is_callable_target`,
-// `resolve_vec_query_primitive`, and `resolve_func_arity` — the value seam now
-// keys off `entry_at`/`ctor_meta_at`/`got_entry_at` (§3 S10–S18). Those
-// resolvers keep only their in-module `resolution/tests.rs` unit-test callers
-// (`#[allow(dead_code)]`; deleted wholesale in W3, §3 S23). `resolve_got_target`
-// stays re-exported — the dead-but-present `resolve_got_entry` (deleted W3)
-// still references it; both go together in W3.
-pub(crate) use resolution::{
-    got_data_symbol_name, inner_fn_discriminator_for, resolve_got_target,
-};
+// S110 W3 deleted the entire `resolve_*` resolver family (`resolve_driven` +
+// `resolve_chain` + the ten entry points + `lookup_constructor`): the backend is
+// now a pure keyed-lookup consumer (`entry_at`/`ctor_meta_at`/`got_entry_at`),
+// reading typecheck's `resolved_target` carrier and hard-erroring on miss (§3
+// S1–S24; `backend-keyed-consumer.md` §1.3). `resolution.rs` retains only the
+// two symbol-naming primitives (NOT resolvers — a fixed compile-time naming
+// scheme, no scan / no precedence walk).
+pub(crate) use resolution::{got_data_symbol_name, inner_fn_discriminator_for};
 
 /// Information about a single function to be traced by `(trace ...)`.
 ///

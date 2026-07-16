@@ -104,7 +104,18 @@ pub-to-boundary item under `compiler::`; everything else is `pub(crate)`.
 
 - `compiler/apply.rs` — call-site dispatch (direct/GOT/extern/platform/poll).
 - `compiler/{fn_compiler,context,resolution,extern_call,rc_emission,literals,match_codegen,trace_codegen,vec_codegen}.rs`
-  — per-concern codegen; `resolution.rs` holds the `resolve_*_target`/`resolve_func_arity` probes.
+  — per-concern codegen. **S110 W3 (`backend-keyed-consumer.md`): the backend is a
+  pure keyed-lookup consumer** — it reads typecheck's per-reference
+  `resolved_target` storage key and does ONE direct keyed fetch
+  (`CompileContext::entry_at` / `ctor_meta_at` / `got_entry_at` in `context.rs`),
+  kind-discriminating on the fetched entry and hard-erroring on a carrier/entry
+  miss (Principle 24 "Resolve once"; Rev-2 no-soft-fallback). The `resolve_*`
+  resolver family (`resolve_driven` + the arbitrary-order `symbol_tables.iter()`
+  global scan + the ten `resolve_*` entry points + `lookup_constructor`) is
+  DELETED; `resolution.rs` now holds ONLY the two symbol-naming primitives
+  (`got_data_symbol_name` / `inner_fn_discriminator_for` — fixed name schemes, no
+  scan/precedence walk). Grep gate: zero `resolve_driven`/`resolve_*_target` in
+  `compiler/`.
 - `compiler/control_flow/` — `let_if`, `par_bind`, `lambda`, `fn_as_value`,
   `free_vars`, `sparkability`, `capture_rc`, `select`, `launch`, `utilization`.
 - `heap.rs`, `jit.rs`, `got.rs`/`got_observer.rs`, `schema.rs`, `exe.rs`,

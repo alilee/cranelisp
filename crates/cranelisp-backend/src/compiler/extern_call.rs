@@ -122,6 +122,7 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
     let check = TestCheckResult {
         method_resolutions,
         resolved_targets: HashMap::new(),
+        pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),

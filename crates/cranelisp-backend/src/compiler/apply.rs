@@ -1757,35 +1757,6 @@ where
         Ok(Some(glue_func_id))
     }
 
-    /// Resolve a function name to `(defining_module, slot_index)` by walking
-    /// the shared symbol-table map. Returns an error if no GOT slot is found.
-    ///
-    /// Replacement for the Sprint-56-retracted `CompilationEnv::resolve_got`.
-    /// Callers that need a concrete base-pointer should emit a `global_value`
-    /// against the `__cranelisp_got_{module}` data symbol (see §12) rather
-    /// than embedding a compile-time constant.
-    ///
-    /// S110 W2 (S10): the sole caller (`emit_wrapper_call`) now keys off the
-    /// carrier (`got_entry_at`); this method is dead-but-present and is deleted
-    /// with `resolve_got_target` in W3 (§3 S23).
-    #[allow(dead_code)]
-    pub(crate) fn resolve_got_entry(
-        &self,
-        name: &Symbol,
-        span: Span,
-    ) -> Result<(cranelisp_types::ModuleFullPath, usize), CranelispError> {
-        crate::compiler::resolve_got_target(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            name,
-        )
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: format!("no GOT slot for function: {name}"),
-            location: ErrorLocation::from_span(span),
-        })
-    }
-
     /// Compile a tail self-recursive call as a jump to the loop header.
     fn compile_tail_self_call(&mut self, args: &[MonoExpr]) -> Result<Value, CranelispError> {
         // CRITICAL: Args are not in tail position.

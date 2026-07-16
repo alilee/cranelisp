@@ -51,6 +51,13 @@ pub(crate) struct TestCheckResult {
     /// typecheck producer's `storage_fq()` records). Empty for fixtures whose
     /// bodies drive no keyed dispatch.
     pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
+    /// S110 W3 (KC-W0-6): the pattern-position ctor sidecar (mirror of the
+    /// `MethodResolutions.pattern_ctors` map), keyed by the `Pattern::Constructor`
+    /// span → the ctor `Def`'s TERMINAL storage FQ. Threaded into the fixture's
+    /// `codegen_view` build so each match arm carries `resolved_ctor`. Required
+    /// for any match fixture now that the S19 `lookup_constructor` fallback is
+    /// deleted (a carrier-less ctor pattern hard-errors — the production rule).
+    pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
     pub(crate) expr_types: HashMap<Span, Type>,
@@ -65,6 +72,7 @@ pub(crate) fn empty_check() -> TestCheckResult {
     TestCheckResult {
         method_resolutions: HashMap::new(),
         resolved_targets: HashMap::new(),
+        pattern_ctors: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -293,7 +301,7 @@ pub(crate) fn enrich_expr_from_side_maps(
 /// direct-write (`make_def_entry_slot`) assign an explicit slot and read
 /// the pointer back via `table.got.load_slot(slot)`.
 pub(crate) fn make_def_entry(defn: Defn) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, None, &HashMap::new())
+    make_def_entry_inner(defn, None, &HashMap::new(), &HashMap::new())
 }
 
 /// Like `make_def_entry` (slot-less, FuncId-called `__expr__`-style entry) but
@@ -304,14 +312,14 @@ pub(crate) fn make_def_entry_with_targets(
     defn: Defn,
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, None, resolved_targets)
+    make_def_entry_inner(defn, None, &HashMap::new(), resolved_targets)
 }
 
 /// Like `make_def_entry` but assigns an explicit GOT slot (for tests that
 /// exercise the GOT-slot direct-write, or insert more than one compilable
 /// defn that must be reachable GOT-indirect).
 pub(crate) fn make_def_entry_slot(defn: Defn, slot: usize) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, Some(slot), &HashMap::new())
+    make_def_entry_inner(defn, Some(slot), &HashMap::new(), &HashMap::new())
 }
 
 /// Like `make_def_entry_slot` but threads the W1 dispatch carriers (KC-W0-6)
@@ -325,12 +333,13 @@ pub(crate) fn make_def_entry_slot_with_targets(
     slot: usize,
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, Some(slot), resolved_targets)
+    make_def_entry_inner(defn, Some(slot), &HashMap::new(), resolved_targets)
 }
 
 pub(crate) fn make_def_entry_inner(
     defn: Defn,
     slot: Option<usize>,
+    pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> cranelisp_types::ModuleEntry {
     use cranelisp_types::{
@@ -360,7 +369,11 @@ pub(crate) fn make_def_entry_inner(
         v
     });
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), resolved_targets)
+        // W3 (KC-W0-6): thread the `pattern_ctors` sidecar so a fixture with a
+        // ctor pattern arm carries its `MonoMatchArm.resolved_ctor` — the S19
+        // None-arm `lookup_constructor` fallback is deleted, so a pattern ctor
+        // with no carrier now hard-errors at codegen (the production discipline).
+        let body = MonoExpr::from_expr(&v.body, pattern_ctors, resolved_targets)
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),
@@ -629,7 +642,10 @@ pub(crate) fn test_compile_and_run(
         let mut st = tables
             .entry(module.clone())
             .or_insert_with(|| SymbolTable::new(module.clone()));
-        st.insert(name.clone(), make_def_entry_with_targets(defn, &check.resolved_targets));
+        st.insert(
+            name.clone(),
+            make_def_entry_inner(defn, None, &check.pattern_ctors, &check.resolved_targets),
+        );
     }
 
     let mut jit = Jit::new_with_symbols(&[])?;

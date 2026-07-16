@@ -33,10 +33,16 @@
 //!   `cache::object::build_isa`).
 //!
 //! `symbol_tables` (a raw `&DashMap<ModuleFullPath, SymbolTable<C, L>>`) is the
-//! single source for every codegen decision — callee/GOT-target resolution
-//! (`compiler::resolve_got_target`), arity (`compiler::resolve_func_arity`),
+//! single source for every codegen decision — callee/GOT-target lookup, arity,
 //! `entry.kind` → dispatch shape, constructor metadata, and the per-module GOT
 //! layout are all read from it; there is no side channel and no mode flag.
+//! **S110 W3 (`backend-keyed-consumer.md`): the backend NO LONGER resolves
+//! names.** Every reference carries typecheck's `resolved_target` storage key
+//! (Principle 24 "Resolve once"); codegen does ONE direct keyed fetch
+//! (`CompileContext::entry_at` / `ctor_meta_at` / `got_entry_at`) and
+//! kind-discriminates on the fetched entry, hard-erroring on miss — the
+//! `resolve_*` resolver family (scan + import-chain walk + global fallback) was
+//! deleted with this wave.
 //!
 //! # Who composes `Code` — the caller, both variants
 //!
@@ -81,7 +87,8 @@
 //! relocation against the extern key settles to int's promised pointer. The
 //! motivating member is `discover-tests`; a `DefKind::PrimitiveExtern` callee
 //! lowers as a `Linkage::Import` against its key (the kind-driven call arm in
-//! `compiler::apply`, resolved by `compiler::resolve_extern_target`). Canonical:
+//! `compiler::apply`, discriminated off the keyed-fetched entry's
+//! `DefKind::PrimitiveExtern` — `fq.symbol` IS the ABI key). Canonical:
 //! `design/arch/test-discovery.md` §6.
 //!
 //! # The platform-interface codegen role (BC §3, platform-interface.md)
@@ -103,8 +110,9 @@
 //!   `__cranelisp_got_platform_<name>` at the entry's `got_slot` (the new
 //!   shape), structurally identical to user-module GOT dispatch; the as-built
 //!   direct-extern-against-`jit_name` path stays live while `got_slot: None`
-//!   (transitional discriminator: `compiler::resolve_got_target`). Backend does
-//!   not emit the platform GOT (the DLL exports it).
+//!   (transitional discriminator: the keyed-fetched entry's
+//!   `callable_got_slot()`). Backend does not emit the platform GOT (the DLL
+//!   exports it).
 //! - **Startup-object hash baking** — [`exe::PlatformLayoutCheck`] +
 //!   `exe::generate_startup_object_checked` bake the compiler-computed layout
 //!   hash + a `cranelisp_check_layout_hash` compare into the `--link` startup
@@ -552,8 +560,9 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///   plus Decision 31 (all-GOT calling), every cross-module call is GOT-
 ///   indirect (`__cranelisp_got_{other_M}`). No `Linkage::Import` function
 ///   declarations are needed for cross-module fns — they are unreachable
-///   by direct call. Compile-time arity for cross-module calls is resolved
-///   via `compiler::resolve_func_arity` walking the symbol tables.
+///   by direct call. Compile-time arity for cross-module calls is read off the
+///   callee's keyed-fetched entry (`CompileContext::arity_at` →
+///   `param_names.len()`; S110 W3 replaced the deleted `resolve_func_arity`).
 ///
 /// # Function naming and linkage (`/arch` Decision 36)
 ///
@@ -619,34 +628,6 @@ where
         capture_clif,
     )
     .map_err(CompilationError::from)
-}
-
-/// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types —
-/// the LENIENT counterpart of the strict, choke-pointed
-/// [`cranelisp_types::MonoExpr::from_expr`].
-///
-/// **W0.b retired the live-path use** (`design/arch/backend-keyed-consumer.md`
-/// §4 W0.b / §5): typecheck is the sole mono-view producer, so
-/// `compile_to_module` no longer rebuilds a lenient view — a codegen-reached
-/// body with `codegen_view: None` is a hard error. The ONLY surviving caller is
-/// the `#[cfg(test)]`-reachable `jit.rs::compile_defn` unit helper (design §5
-/// finding 3 — no live caller; W3 migrates it onto a typecheck-/`from_expr`-built
-/// view and deletes this entry point + `lenient_from_expr`). The builder body
-/// itself lives in `cranelisp-types` beside `from_expr` so view construction has
-/// ONE home. The sidecars are empty here (the test helper lowers a bare
-/// template); byte-identical to the former in-crate body.
-pub(crate) fn lenient_mono_from_expr(
-    expr: &cranelisp_types::Expr,
-    resolved_targets: &std::collections::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>,
-) -> cranelisp_types::MonoExpr {
-    use std::collections::HashMap;
-    // W1 (KC-W0-6): the unit-test harness threads the dispatch carriers it
-    // computes directly from the tables it also builds — a lenient-built body
-    // now reaches W1's keyed reads (`entry_at`), so a `None` carrier would
-    // hard-miss. Live `compile_to_module` consumes the typecheck-populated
-    // `codegen_view` instead; this backend lenient path is test-harness-only
-    // (jit.rs §5, no live caller) and deletes in W3.
-    cranelisp_types::MonoExpr::lenient_from_expr(expr, &HashMap::new(), resolved_targets)
 }
 
 fn compile_to_module_impl<M, C, L>(
@@ -770,10 +751,13 @@ where
             // EVERY codegen-reached body — ordinary concrete defns, mono
             // instances, ctor/accessor synthetic bodies, `f$Var` multi-sig
             // variants, `__expr`, macro-clause bodies. The `requires_codegen_view`
-            // bypass and the backend lenient rebuild (`lenient_mono_from_expr`)
-            // are retired from the live path: a codegen-reached entry with NO
-            // typecheck-populated `codegen_view` is a producer gap and a HARD
-            // error, never a silent lenient rebuild (Rev-2: no soft fallback).
+            // bypass was retired from the live path at W0.b, and the backend
+            // lenient rebuild (`lenient_mono_from_expr`) was DELETED outright at
+            // W3 (only `cranelisp_types::MonoExpr::lenient_from_expr` survives,
+            // called by the `#[cfg(test)]`-only `jit::compile_defn` helper): a
+            // codegen-reached entry with NO typecheck-populated `codegen_view` is
+            // a producer gap and a HARD error, never a silent lenient rebuild
+            // (Rev-2: no soft fallback).
             let (body, mode_summary) = match codegen_view {
                 Some(view) => (view.body.clone(), view.mode_summary.clone()),
                 None => {
@@ -839,8 +823,9 @@ where
     // No cross-module function declarations: under all-GOT calling
     // (Decision 31) cross-module calls are GOT-indirect against
     // `__cranelisp_got_{other_M}`, never direct. Compile-time arity for
-    // those calls is resolved via `compiler::resolve_func_arity` walking
-    // the symbol tables (see compiler/control_flow.rs auto-curry path).
+    // those calls is read off the callee's keyed-fetched entry
+    // (`CompileContext::arity_at`; S110 W3 replaced the deleted
+    // `resolve_func_arity`) — see compiler/control_flow.rs auto-curry path.
     let func_arities: HashMap<Symbol, usize> = defns
         .iter()
         .map(|d| (d.name.clone(), d.params().len()))
@@ -1460,8 +1445,9 @@ mod trap_stub_tests {
 // `/arch` Decision 36 + 31. Under all-GOT calling, cross-module function
 // references flow through `__cranelisp_got_{other_M}`, never as direct
 // `Linkage::Import` function declarations. Compile-time arity for those
-// calls is resolved via `compiler::resolve_func_arity` walking the symbol
-// tables.
+// calls is read off the callee's keyed-fetched entry
+// (`CompileContext::arity_at`; S110 W3 replaced the deleted
+// `resolve_func_arity`).
 
 /// Compile a single defn into a module using FnCompiler, returning the
 /// per-symbol introspection artifacts captured during codegen.

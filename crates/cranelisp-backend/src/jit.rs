@@ -644,10 +644,19 @@ impl Jit {
         // `None`; the lenient rebuild lives ONLY here. A bare generic template
         // (`(defn id [x] x)` with `x: Var a`) is lowered only by this test helper;
         // its residual `Var` nodes are read ONLY via `signature_heap_category`
-        // (Var→Mixed). W3 migrates this helper onto a `from_expr`-/typecheck-built
-        // view and deletes `lenient_mono_from_expr` + the backend lenient entry
-        // point entirely.
-        let body = crate::lenient_mono_from_expr(defn.body(), resolved_targets);
+        // (Var→Mixed).
+        //
+        // W3 (`backend-keyed-consumer.md` §4/§5): the backend `lenient_mono_from_expr`
+        // wrapper was DELETED — this test-only helper now calls the ONE view builder
+        // (`cranelisp_types::MonoExpr::lenient_from_expr`, the home beside
+        // `from_expr`) directly. The `pattern_ctors` sidecar is empty (a bare
+        // template lowers no ctor patterns); the dispatch carriers come from the
+        // harness-supplied `resolved_targets` (KC-W0-6).
+        let body = cranelisp_types::MonoExpr::lenient_from_expr(
+            defn.body(),
+            &std::collections::HashMap::new(),
+            resolved_targets,
+        );
         // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
         // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing
         // the module through a method (`self.module_mut()`) would re-borrow
