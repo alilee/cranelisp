@@ -1664,9 +1664,14 @@ order-flexible within the serial spine.
 - **W-TC — 0590 resolver convergence** (`/dev` typecheck; after W0 on the serial typecheck
   chain). Blast-radius scout FIRST (the never-error `Named`-fabrication deletion), then the
   `TypeExprCtx` single-source collapse; FV-13/FV-14 fence holds. → `/review`.
-- **W-RD — R16/R17 error quality** (`/arch` ratifies 0611 carrier shape → `/dev` coordinated
-  typecheck + int). Dispatch-outcome signal → §3.11 clean message; RD-3 false-positive fence.
-  → `/review`.
+- **W-RD — R16/R17 error quality + the 0585 die-leg typecheck close** (`/arch` ratifies 0611
+  carrier shape → `/dev` coordinated typecheck + int). Dispatch-outcome signal → §3.11 clean
+  message; RD-3 false-positive fence. **COUPLED IN (W2 finding):** the 0585 die legs
+  (VP-3/4/5) need typecheck's §3.11 finalization gate (`find_ambiguous_value_position`) to fire
+  for a **top-level polymorphic value** (currently skipped) so `(if c gcount gother)` dies
+  check-side with the `"ambiguous"` §3.11 message — the backend backstop landed W2 is the
+  loud fallback, but the neg tests assert the check-side message. Same `finalize.rs` §3.11
+  gate as R16/R17 → land together. → `/review`.
 - **W-604 — index-feed write-race isolation** (`/dev` int; must-have, schedule early in the
   int/src spine). The ≥25× `CRANELISP_MODULE_TRACE=1` sweep **LOCATES the residual writer
   first** (prime suspect: the shared-cache §25.5 channel per the corrected attribution), THEN
@@ -1707,6 +1712,10 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | prod rev | /review | producer W0.1+W0.1b | (shim §II.3) | (shim) | — `8a72d320`: **GO, 0 Blockers** — storage-module correct all cross-module shapes; deviation sound; consolidation clean. Findings 0618 (/arch doc) + 0619 (/dev; item 1 Important) |
 | W0.2 | /testing | KC-W0-2 golden-CLIF gate | (shim §II.3) | (shim) | — `f5d0197f`: 5 goldens byte-verbatim (class-06 backend-unit-only); KC-W0-6 reds-first; gate for W0.b |
 | W0.b | /dev | totalization flip (typecheck+backend) | (shim §II.3) | (shim) | — `7e8972c3`: typecheck sole mono-view producer + backend hard-error arm; **golden 5/5 byte-identical**; KC-W0-6 helper + 0619 items 1/3/4; ownership-universe pin (→/arch note); baseline holds. **W0 FRONT CLOSED** |
+| W1 | /dev | backend call seam (S1–S9) | (shim §II.3) | (shim) | — **BLOCKED, not landed** (`c1098c3c` note+FIXME only): golden byte-identical but member-aliased carrier records alias not canonical key → FIXME 0620 (/arch); W1 backend STASHED |
+| W1 rule | /arch | 0620 member-alias carrier + producer re-sweep | (shim §II.3) | (shim) | — `dd759afc`: **class CLOSED** — walk surfaces `Resolved.storage_key`/`storage_fq()` (uniform, cures renamed-imports too); 19-row recorder-grounded table + carrier value-source rule (/review-enforced); types half landed |
+| W1 rd | /dev | W1 re-deploy (recorder flip + backend) | (shim §II.3) | (shim) | — `86038e27`: `storage_fq()` recorder flip + stash pop + S3/S4 ctor keyed + 24 fixtures; golden 5/5; **13-RED baseline restored, W1 LANDED**, zero regressions |
+| W2 | /dev | value seam + 0585 backstop + vec-assoc (S10–S18) | (shim §II.3) | (shim) | — `369c226c`: value seam resolver-free; **vec-assoc UAF root-caused+fixed+behaviorally-verified** (VA-1/2 GREEN, VA-3 pin, VA-4 fence); 0585 backend backstop landed. Baseline **13→11**. **VP-3/4/5 owe a typecheck §3.11.1 leg** (couples R16/R17) |
 
 ## Notes
 
