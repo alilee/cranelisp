@@ -2448,6 +2448,81 @@ trace to open defects — no genuine regression. The B1/B2 pair flips GREEN when
 `/dev` (typecheck) lands the gate-duty-split (run §5.1.2 leg pre-drain, §3.11.1
 scan post-drain but pre-`sweep_post_pass_outputs`).
 
+### /dev (finalize duty-split, B1/B2) — LANDED (2026-07-16, `cranelisp-typecheck`)
+
+Split the §3.11 gate's two timing-incompatible duties in
+`program/finalize.rs::finalize_check_result_inner`; both Blockers flip GREEN,
+mode-uniform, no re-break. Baseline **9 → 7**.
+
+**The split (which leg moved where).** `find_ambiguous_top_level_form` now takes
+an `AmbiguityScanPhase` and scans each defn in EXACTLY ONE phase, partitioned by
+`defn.variants.len() > 1`:
+- **LEG 1 — `ClauseIndependence` (MULTI-ARITY defns), PRE-drain, UNCHANGED
+  position.** Still called at the old gate site, BEFORE `resolve_pending_overloads`.
+  A multi-clause self-recursive defn's per-clause param vars must be verdicted
+  while UNPINNED, else a deferred self-call acquires a sibling clause's concrete
+  param type and masks the ambiguity (`multi_clause_defn_self_call_is_ambiguous_
+  not_panic`, `sum-to`). Multi-arity behaviour is byte-for-byte what it was.
+- **LEG 2 — `ValueScan` (SINGLE-CLAUSE defns + `__expr`), POST-drain, MOVED.**
+  Now called AFTER `resolve_pending_overloads` + `resolve_auto_curry` + the C-4
+  `regeneralize_only_polymorphic`, and BEFORE `sweep_post_pass_outputs` (which
+  drains `state.expr_types` the scan reads by span). Post-drain, B1's `(let [r (h
+  7)] r)` fresh overload ret var is unified to the variant's concrete `Int` (no
+  false-reject); B2's `main`, spuriously-`Polymorphic` at drain time, is collapsed
+  to `Concrete` by C-4's scoped regeneralize so its unpinned-`[]` body is SCANNED
+  rather than §3.11.3 poly-skipped (no false-accept).
+- **`collect_unresolved_dispatch` (W-RD 0611 signal) moved with LEG 2** — same
+  pre-`sweep_post_pass_outputs` window (`expr_types` still live); the drain doesn't
+  touch trait-method dispatch resolution, so the signal is unchanged by the move.
+
+**Benign-var exemption extended.** `collect_resolved_dispatch_result_vars` (the
+`__expr` `allowed_vars` source, previously trait-dispatch only — the RD-3 fence)
+now ALSO collects the free vars of a RESOLVED multi-sig/overload call's recorded
+result: an `Apply` span carrying a `ResolvedCall::SigDispatch`. Closes B1's
+2-arity sibling cell (`(let [r (h 7 8)] r)`) with the same discipline — a
+genuinely-unresolved overload leaves no `SigDispatch` and is not exempted.
+
+**Mode reconciliation.** The fix is at the shared finalize seam, so all three
+modes agree. Verified: B1 → REPL `:primitives/Int 7`, `--run` exit 7, `--link`
+exit 7; B2 → REPL/`--run`/`--link` all reject exit 1 with the §3.11.1
+`ambiguous … polymorphic value bound in `main`` message.
+
+**I1 fixed.** The false-invariant comment at the old finalize:991–992 ("overloads
+and auto-curry already resolved per-defn") is replaced — `resolve_pending_overloads`
+has exactly ONE call site (it is THE single drain; `infer.rs` defers, never
+resolves per-defn), and the new comment states the single-drain ordering the
+LEG-2 scan depends on. **I2 out of scope** (regeneralize-family convergence →
+/design/arch, S111) — a comment pointer only, no attempt.
+
+**Verification (all must-holds GREEN, re-run explicitly).** B1
+(`multi_arity_overload_call_in_let_not_spuriously_ambiguous`, all 3 faces) + B2
+(`unpinned_vec_in_main_calling_overload_rejected_run_neg` + concrete control)
+flip GREEN. Held: rows 13–15 (`concrete_ascription_*`, `context_resolves_*`,
+`nullary_return_poly_trait_method_dispatches_at_codegen`), RD-3
+(`arg_directed_dispatch_result_in_value_position_not_flagged` — via the
+`generic_value_*_indeterminate_neg` fences), VP-3/4/5 (`generic_value_in_if_branch`
+/`_in_match_arm`/`_as_vec_element` mint+die), R16/R17
+(`unresolved_return_type_dispatch_ambiguity_error_neg`,
+`value_position_constraint_does_not_disambiguate_neg`), C-4
+(`multi_arity_call_from_main_batch_no_main_neg`), the two C-4 ordering hazards
+(`test_fn_registered_as_mono_root_gets_concrete_instance`,
+`multi_clause_defn_self_call_is_ambiguous_not_panic`), TX-1/TX-5
+(`trait_method_sig_bare_user_type_resolves`, `hkt_trait_sig_unknown_named_errors_neg`),
+`golden_clif_w0b` 5/5 byte-identical. Full suite: **7 RED** (the 7 known carries,
+all tracing to open defects — no genuine regression), stable across two runs.
+typecheck lib 704/704 (incl. the new split-seam unit pin
+`deferred_overload_return_var_in_let_value_resolves_post_drain`, fail-on-revert:
+a pre-drain value scan false-rejects it). public-api.txt UNCHANGED (additions are
+`pub(super)`); no schema/cache bump. clippy `-p cranelisp-typecheck --all-targets`
+zero NEW lints (lib 103, lib-test 134 — clean baseline).
+
+**One-off observation for /qa/testing (NOT this fix's regression):** in ONE of
+two full-suite runs, `agent::y_short_flag_errors_on_non_agent_build` (a
+subprocess CLI-flag test, `#[cfg(not(feature = "agent"))]`, unrelated to
+typecheck) FAILED at seq 673 under concurrent link-test load; it PASSES in
+isolation and on both the clean full run and the repeat with-change full run.
+Load-sensitive subprocess behaviour in that test, orthogonal to the duty-split.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

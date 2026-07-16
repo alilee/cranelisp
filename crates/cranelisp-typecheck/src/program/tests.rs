@@ -7503,6 +7503,105 @@
             .expect("a Concrete caller carries a callable slot");
     }
 
+    // spec: spec/05-definitions.md §5.1.2 — the S110 finalize DUTY-SPLIT seam.
+    //   A deferred-overload return var read in a VALUE position
+    //   (`(let [r (h 7)] r)`) is unified to the selected variant's concrete
+    //   return ONLY by `resolve_pending_overloads` (the single drain), so the
+    //   §3.11.1 value-position scan MUST run POST-drain. Pinned here at unit
+    //   tier: a single-clause caller whose body binds the deferred overload call
+    //   in a `let` and returns it MUST check CLEAN (no spurious `ambiguous`) and
+    //   settle `Concrete` `Int`. On a revert that runs the value scan PRE-drain
+    //   (the pre-split composition), `r` carries the still-unresolved fresh
+    //   return var minted at `infer.rs:585` and the scan false-rejects — this
+    //   test flips RED, guarding the split against re-collapse (B1 wrong-reject
+    //   at the seam; the e2e face is
+    //   `spec_03_types::multi_arity_overload_call_in_let_not_spuriously_ambiguous`).
+    // defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
+    #[test]
+    fn deferred_overload_return_var_in_let_value_resolves_post_drain() {
+        let mut tc = tc_with_prims();
+        let int_ann = || {
+            Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                None,
+                TypeName::from("Int"),
+            )))
+        };
+        // (defn h ([:Int x] x) ([:Int x :Int y] x)) — the overloaded base.
+        let h = TopLevel::Defn(make_multi_defn(
+            "h",
+            vec![
+                DefnVariant {
+                    params: vec![(Symbol::from("x"), int_ann())],
+                    body: Expr::var(Symbol::from("x"), span(10, 11)),
+                    span: span(5, 12),
+                },
+                DefnVariant {
+                    params: vec![
+                        (Symbol::from("x"), int_ann()),
+                        (Symbol::from("y"), int_ann()),
+                    ],
+                    body: Expr::var(Symbol::from("x"), span(20, 21)),
+                    span: span(15, 22),
+                },
+            ],
+            span(0, 23),
+        ));
+        // (defn caller [] (let [r (h 7)] r)) — the deferred overload call bound in
+        // a `let` VALUE position, then returned. This is the exact B1 shape.
+        let call = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("h"), span(41, 42))),
+            args: vec![Expr::IntLit { value: 7, span: span(43, 44), inferred_type: None }],
+            span: span(40, 45),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let body = Expr::Let {
+            bindings: vec![(Symbol::from("r"), call)],
+            body: Box::new(Expr::var(Symbol::from("r"), span(47, 48))),
+            span: span(35, 49),
+            inferred_type: None,
+        };
+        let caller = TopLevel::Defn(make_defn(
+            "caller",
+            vec![],
+            vec![],
+            body,
+            Visibility::Public,
+            span(25, 50),
+        ));
+        tc.check(&[h, caller], &test_ctx(), ModuleStrategy::Additive).expect(
+            "a deferred-overload call bound in a `let` VALUE position must NOT be \
+             spuriously rejected — the §3.11.1 value scan runs POST-drain so `r` \
+             is settled `Int` before the verdict (B1)",
+        );
+        let table = tc.symbol_table();
+        let entry = table.get("caller").expect("caller registered");
+        match entry {
+            ModuleEntry::Def { scheme, kind, .. } => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "caller settles `Concrete` (its `let`-bound overload return is \
+                     pinned to `Int` by the drain, then reslotted by \
+                     `regeneralize_only_polymorphic`) — got {kind:?}",
+                );
+                match &scheme.ty {
+                    Type::Fn(params, ret) => {
+                        assert!(params.is_empty(), "caller is nullary");
+                        assert!(
+                            matches!(ret.as_ref(), Type::Int),
+                            "caller returns the variant's concrete `Int` — got {ret:?}",
+                        );
+                    }
+                    other => panic!("caller scheme not a Fn: {other:?}"),
+                }
+            }
+            other => panic!("caller entry not a Def: {other:?}"),
+        }
+    }
+
     // spec: spec/03-types.md §3.11.1 — a CODEGEN-REACHING unpinned polymorphic
     //       value is an ambiguity error. A `let`-bound `None` whose type stays
     //       `(Option a)` (the `match` scrutinises only the tag) must be

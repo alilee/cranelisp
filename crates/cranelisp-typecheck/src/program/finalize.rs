@@ -55,6 +55,34 @@ impl AmbiguousForm {
 }
 
 
+/// Which of the §3.11 gate's two timing-incompatible duties a
+/// [`TypeCheckEnv::find_ambiguous_top_level_form`] pass performs.
+///
+/// The gate historically carried BOTH duties in one pre-drain pass, which is
+/// unsound: they need OPPOSITE positions relative to `resolve_pending_overloads`
+/// (the single overload/self-call drain). Splitting them by defn shape lets each
+/// run at its correct position (S110 review "gate/drain ordering composition").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum AmbiguityScanPhase {
+    /// §5.1.2 clause-independence leg — scans MULTI-ARITY defns ONLY, and MUST
+    /// run PRE-`resolve_pending_overloads`. A multi-clause defn's per-clause
+    /// param vars must stay UNPINNED for the verdict: resolving a deferred
+    /// self-call first would let it acquire a sibling clause's concrete param
+    /// type, masking the genuine cross-variant ambiguity (the C-4 constraint;
+    /// `multi_clause_defn_self_call_is_ambiguous_not_panic`).
+    ClauseIndependence,
+    /// §3.11.1 value-position scan — scans SINGLE-CLAUSE defns and the `__expr`
+    /// eval wrapper, and MUST run POST-drain (after `resolve_pending_overloads`,
+    /// `resolve_auto_curry`, and the C-4 `regeneralize_only_polymorphic`). A
+    /// deferred-overload return var in a value position (`(let [r (h 7)] r)`) is
+    /// only unified to the selected variant's concrete return by the drain, and
+    /// a caller left spuriously `Polymorphic` at gate time is only collapsed to
+    /// `Concrete` (its body then scannable) by the scoped regeneralize — so the
+    /// verdict must read the SETTLED types (B1 wrong-reject / B2 wrong-accept).
+    ValueScan,
+}
+
+
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Merge a `FormCheckResult` into the module's accumulator.
@@ -438,9 +466,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &CheckState,
         accumulator: &ModuleCheckAccumulator,
         working_program: &[TopLevel],
+        phase: AmbiguityScanPhase,
     ) -> Option<AmbiguousForm> {
         for top in working_program {
             let TopLevel::Defn(defn) = top else { continue };
+            // The two duties partition the defns by shape (S110 duty-split):
+            //   - MULTI-ARITY defns are verdicted PRE-drain (clause independence);
+            //   - SINGLE-CLAUSE defns + `__expr` are verdicted POST-drain (value
+            //     scan, so a deferred-overload return var / spuriously-poly caller
+            //     is settled first).
+            // A defn is scanned in exactly ONE phase — never both — so the
+            // pre-drain multi-arity behaviour is byte-for-byte unchanged and only
+            // the single-clause verdict moves late.
+            let is_multi_arity = defn.variants.len() > 1;
+            let in_phase = match phase {
+                AmbiguityScanPhase::ClauseIndependence => is_multi_arity,
+                AmbiguityScanPhase::ValueScan => !is_multi_arity,
+            };
+            if !in_phase {
+                continue;
+            }
             // The vars LEGITIMATELY polymorphic for this defn are the free vars
             // of its finalised function type — these are exactly what generalise
             // into the defn's scheme and are pinned per-instantiation by
@@ -513,7 +558,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if defn_is_polymorphic {
                 continue;
             }
-            let multi_arity = defn.variants.len() > 1;
             for variant in &defn.variants {
                 if let Some((span, param)) =
                     self.find_ambiguous_value_position(state, &variant.body, &allowed_vars)
@@ -524,7 +568,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // The offending CLAUSE (0576) — named by its arity only
                         // for a multi-arity `defn`, so a single-sig defn keeps the
                         // plain message.
-                        clause_arity: multi_arity.then_some(variant.params.len()),
+                        clause_arity: is_multi_arity.then_some(variant.params.len()),
                         param,
                     });
                 }
@@ -621,17 +665,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         out: &mut std::collections::HashSet<u32>,
     ) {
-        if let Expr::Apply { callee, span, .. } = expr
-            && let Expr::Var { name, .. } = callee.as_ref()
-            && self.method_to_trait_with_state(state, name).is_some()
-            // RESOLVED = a trait-method dispatch that is NOT a genuinely-
-            // unresolved return-poly dispatch.
-            && !(self.method_self_in_return(state, name.as_ref())
-                && self.method_return_dispatch_type(state, name, *span).is_none())
-            && let Some(ty) = state.expr_types.get(span)
-        {
-            let resolved = self.apply_subst(state, ty);
-            out.extend(cranelisp_types::free_vars(&resolved));
+        if let Expr::Apply { callee, span, .. } = expr {
+            // A RESOLVED trait-method dispatch (arg-directed / context-pinned) —
+            // NOT a genuinely-unresolved return-poly dispatch (RD-3, unchanged).
+            let resolved_trait_dispatch = if let Expr::Var { name, .. } = callee.as_ref() {
+                self.method_to_trait_with_state(state, name).is_some()
+                    && !(self.method_self_in_return(state, name.as_ref())
+                        && self.method_return_dispatch_type(state, name, *span).is_none())
+            } else {
+                false
+            };
+            // S110 B1 — a RESOLVED multi-sig/overload call (sig-dispatch) is also
+            // benign. `resolve_pending_overloads` (the sole drain, run BEFORE this
+            // POST-drain LEG-2 scan) unified the call's fresh return var with the
+            // selected variant's concrete return AND recorded a `SigDispatch` at
+            // the span; if any residual var lingers on the recorded surface type
+            // it computes concretely at runtime, exactly like the trait case. This
+            // exempts `r` in `(let [r (h 7 8)] r)` (the 2-arity sibling cell) with
+            // the same discipline as the trait fence — a genuinely-unresolved
+            // overload leaves NO `SigDispatch` and is not exempted.
+            let resolved_overload = matches!(
+                state.method_resolutions.resolved_calls.get(span),
+                Some(cranelisp_types::ResolvedCall::SigDispatch { .. })
+            );
+            if (resolved_trait_dispatch || resolved_overload)
+                && let Some(ty) = state.expr_types.get(span)
+            {
+                let resolved = self.apply_subst(state, ty);
+                out.extend(cranelisp_types::free_vars(&resolved));
+            }
         }
         for_each_child_expr(expr, |child| {
             self.collect_resolved_dispatch_result_vars(state, child, out);
@@ -963,33 +1025,44 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // FIXME 0373(ii) / 0374 / 0378 — §3.11.1 ambiguity check (SECONDARY
         // backstop; the structural slot gate above is the PRIMARY SIGSEGV-
-        // prevention mechanism). Per the user ruling 2026-06-16 (spec §3.11
-        // disposition triple), this check fires ONLY for a CODEGEN-REACHING
-        // unpinned polymorphic value (§3.11.1 — a `let`-bound value consumed at
-        // runtime while a type var is free), NOT for a bare REPL polymorphic
-        // value (§3.11.2 — displayed via introspection) nor a named polymorphic
-        // defn (§3.11.3 — sound, dead-for-codegen). `find_ambiguous_top_level_form`
-        // is scoped to `let`-binding value positions, so the two REPL display
-        // guards stay green and named poly defns are admitted.
-        if let Some(amb) = self.find_ambiguous_top_level_form(state, accumulator, working_program) {
+        // prevention mechanism), split into its two timing-incompatible duties
+        // (S110 review "gate/drain ordering composition"). Per the user ruling
+        // 2026-06-16 (spec §3.11 disposition triple), this check fires ONLY for a
+        // CODEGEN-REACHING unpinned polymorphic value (§3.11.1 — a `let`-bound
+        // value consumed at runtime while a type var is free), NOT for a bare
+        // REPL polymorphic value (§3.11.2 — displayed via introspection) nor a
+        // named polymorphic defn (§3.11.3 — sound, dead-for-codegen).
+        //
+        // LEG 1 — §5.1.2 clause independence, PRE-drain. A MULTI-ARITY defn's
+        // per-clause param vars must be verdicted while still UNPINNED: running
+        // AFTER `resolve_pending_overloads` (below) would let a deferred
+        // cross-variant self-call acquire a sibling clause's concrete param type,
+        // masking a genuine ambiguity (`multi_clause_defn_self_call_is_ambiguous_
+        // not_panic`). Its position is UNCHANGED from before the split. The
+        // §3.11.1 value scan for SINGLE-CLAUSE defns + `__expr` moves POST-drain
+        // (LEG 2, below) so a deferred-overload return var / spuriously-poly
+        // caller is settled first (B1/B2).
+        if let Some(amb) = self.find_ambiguous_top_level_form(
+            state,
+            accumulator,
+            working_program,
+            AmbiguityScanPhase::ClauseIndependence,
+        ) {
             return Err(CranelispError::TypeError {
                 message: amb.message(),
                 location: ErrorLocation::from_span(amb.span),
             });
         }
 
-        // The unresolved-return-poly-dispatch signal (carrier (A), FIXME 0611
-        // ratified; `design/typecheck/return-poly-dispatch-signal.md` §3.1). int
-        // applies this at the entry/eval-result boundary it owns (Principle 19).
-        // Computed HERE — alongside `find_ambiguous_top_level_form`, BEFORE
-        // `sweep_post_pass_outputs` drains `state.expr_types` — so the
-        // dispatch-outcome read (`method_return_dispatch_type`, which reads the
-        // per-span recorded type) sees the settled types, NOT an emptied map.
-        // EMPTY for every valid program.
-        let unresolved_dispatch = self.collect_unresolved_dispatch(state, working_program);
-
-        // Pass 5: overloads and auto-curry already resolved per-defn.
-        // Drain any remaining entries (e.g., from mono defn generation).
+        // Pass 5: drain the deferred multi-sig/overload resolutions and
+        // auto-curry. `resolve_pending_overloads` has exactly ONE call site (this
+        // one) — the SINGLE drain of `state.pending_overload_resolutions`, which
+        // `infer.rs` fills whenever a call targets an overloaded base (it mints a
+        // fresh return var and defers, NOT resolving per-defn). It unifies each
+        // deferred call's return var with the selected variant's concrete return
+        // and records the `SigDispatch` resolution at the call span. (Corrects the
+        // former "already resolved per-defn" comment — I1: nothing drains
+        // per-defn; this ordering is load-bearing for the LEG-2 value scan below.)
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
 
@@ -1014,14 +1087,49 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `regeneralize_defn_schemes` would overwrite a mono-root's minted concrete
         // scheme back to its poly `defn_type_vars` signature (the finalize ordering
         // hazard the mono-root comment guards; `test_fn_registered_as_mono_root_
-        // gets_concrete_instance`). It runs AFTER `find_ambiguous_top_level_form`
-        // (above), so the §5.1.2 clause-independence gate — which relies on a
-        // self-recursive multi-clause defn's own param vars staying UNPINNED (a
-        // self-call would otherwise acquire a sibling clause's concrete param type)
-        // — has already errored before any overload resolution runs. Genuinely
+        // gets_concrete_instance`). It runs AFTER the §5.1.2 clause-independence
+        // LEG (LEG 1, above) — which relies on a self-recursive multi-clause
+        // defn's own param vars staying UNPINNED (a self-call would otherwise
+        // acquire a sibling clause's concrete param type) — so that gate has
+        // already errored before any overload resolution runs. Genuinely
         // polymorphic defns (`(defn empty [] [])`, scheme stays `(Fn [] (Vec a))`)
         // are non-concrete after re-generalize and stay `Polymorphic`.
         self.regeneralize_only_polymorphic(state, accumulator);
+
+        // LEG 2 — §3.11.1 value-position scan for SINGLE-CLAUSE defns + `__expr`,
+        // POST-drain (the S110 duty-split). It runs AFTER `resolve_pending_overloads`
+        // (so a deferred-overload return var in a value position — `(let [r (h 7)]
+        // r)` — is unified to the variant's concrete return, no false-reject: B1)
+        // AND AFTER `regeneralize_only_polymorphic` (so a caller left spuriously
+        // `Polymorphic` at drain time — `(defn main [] (let [u []] (Pure (h 7))))`
+        // — is collapsed to `Concrete`, its unpinned-`[]` body then SCANNED rather
+        // than poly-skipped: B2). It stays BEFORE `sweep_post_pass_outputs`
+        // (below), which drains `state.expr_types` that both this scan and
+        // `collect_unresolved_dispatch` read by span.
+        if let Some(amb) = self.find_ambiguous_top_level_form(
+            state,
+            accumulator,
+            working_program,
+            AmbiguityScanPhase::ValueScan,
+        ) {
+            return Err(CranelispError::TypeError {
+                message: amb.message(),
+                location: ErrorLocation::from_span(amb.span),
+            });
+        }
+
+        // The unresolved-return-poly-dispatch signal (carrier (A), FIXME 0611
+        // ratified; `design/typecheck/return-poly-dispatch-signal.md` §3.1). int
+        // applies this at the entry/eval-result boundary it owns (Principle 19).
+        // Computed HERE — POST-drain alongside the LEG-2 value scan, BEFORE
+        // `sweep_post_pass_outputs` drains `state.expr_types` — so the
+        // dispatch-outcome read (`method_return_dispatch_type`, which reads the
+        // per-span recorded type) sees the settled types, NOT an emptied map. The
+        // drain does not resolve trait-method dispatch (that is
+        // `reresolve_deferred_calls`, above), so this signal is unchanged by the
+        // move; it is co-located with LEG 2 to keep the two span-map readers
+        // adjacent within the same pre-sweep window. EMPTY for every valid program.
+        let unresolved_dispatch = self.collect_unresolved_dispatch(state, working_program);
 
         // S91 Wave-7 (FIXME 0432 Face A): a multi-sig variant whose body
         // contains an in-body self-call has a return type that is only pinned
