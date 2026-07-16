@@ -731,6 +731,9 @@ where
                 // will inc before forwarding to the target function.
                 let arg_vals = self.compile_consuming_arg_list(args)?;
                 self.in_tail_position = saved_tail;
+                // S110 W2 (row 17): the Apply-span carrier is the plain-fn curry
+                // target's STORAGE key (callee-span transport, W0.1b), threaded to
+                // the wrapper's GOT read.
                 self.compile_auto_curry(
                     target_name,
                     &arg_vals,
@@ -739,6 +742,7 @@ where
                     args,
                     span,
                     trait_resolution.as_deref(),
+                    apply_target,
                 )
             }
             // `ResolvedCall` is `#[non_exhaustive]` (cranelisp-types crate-root
@@ -1760,6 +1764,11 @@ where
     /// Callers that need a concrete base-pointer should emit a `global_value`
     /// against the `__cranelisp_got_{module}` data symbol (see §12) rather
     /// than embedding a compile-time constant.
+    ///
+    /// S110 W2 (S10): the sole caller (`emit_wrapper_call`) now keys off the
+    /// carrier (`got_entry_at`); this method is dead-but-present and is deleted
+    /// with `resolve_got_target` in W3 (§3 S23).
+    #[allow(dead_code)]
     pub(crate) fn resolve_got_entry(
         &self,
         name: &Symbol,

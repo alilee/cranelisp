@@ -12,8 +12,8 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
-    Type, TypeDefInfo,
+    DefKind, FQSymbol, FQTypeName, ModeSummary, ModuleEntry, ModuleFullPath, PrimitiveBody, Symbol,
+    SymbolTable, Type, TypeDefInfo, UserFnState,
 };
 
 /// A single field of a constructor, as reconstructed for backend codegen.
@@ -199,6 +199,85 @@ where
         let table = self.symbol_tables.get(&fq.module)?;
         let entry = table.get(fq.symbol.as_ref())?;
         Some((fq.module.clone(), entry.clone()))
+    }
+
+    // === S110 W2 value-seam keyed reads (`backend-keyed-consumer.md` §1.3/§4;
+    // §3 S10–S18). Each is a kind-arm projection off the ONE `entry_at` fetch,
+    // replacing the value-site reach of a `resolution.rs` resolver. ===
+
+    /// S12 (fn-as-value gate) / kind arm: `true` iff `fq` fetches a dispatchable
+    /// call target ([`ModuleEntry::is_callable_target`] — slot-dispatched OR
+    /// inline-dispatched). Replaces the `resolve_is_callable_target` value-site
+    /// reach (`is_known_function`).
+    pub(crate) fn is_callable_target_at(&self, fq: &FQSymbol) -> bool {
+        self.entry_at(fq).is_some_and(|(_, e)| e.is_callable_target())
+    }
+
+    /// S14 (closure-wrapper arity) kind arm: the callee's param count read off
+    /// the fetched `Def` entry. Replaces the `resolve_func_arity` value-site
+    /// reach.
+    pub(crate) fn arity_at(&self, fq: &FQSymbol) -> Option<usize> {
+        self.entry_at(fq).and_then(|(_, e)| match e {
+            ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
+            _ => None,
+        })
+    }
+
+    /// S15 (wrapper return-protection summary) kind arm: the callee's ownership
+    /// [`ModeSummary`] read off the fetched entry. Replaces the
+    /// `resolve_callee_summary` value-site reach. `None` ⇒ the Decision-24
+    /// conservative point (no summary carried).
+    pub(crate) fn callee_summary_at(&self, fq: &FQSymbol) -> Option<ModeSummary> {
+        self.entry_at(fq).and_then(|(_, e)| e.mode_summary().cloned())
+    }
+
+    /// S17/S18 (vec-query wrapper discrimination) kind arm: `true` iff `fq`
+    /// fetches a slot-less inline primitive (`DefKind::Primitive { body:
+    /// PrimitiveBody::Inline }` — the vec-query trio `vec-get`/`vec-set`/
+    /// `vec-push`, the ONLY inline primitives; §12.7). Replaces the
+    /// `resolve_vec_query_primitive` value-site reach; the canonical bare name
+    /// the wrapper inline-emits is `fq.symbol`.
+    pub(crate) fn is_inline_primitive_at(&self, fq: &FQSymbol) -> bool {
+        self.entry_at(fq).is_some_and(|(_, e)| {
+            matches!(
+                &e,
+                ModuleEntry::Def { kind, .. }
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::Primitive { body: PrimitiveBody::Inline, .. }
+                    )
+            )
+        })
+    }
+
+    /// S10 (fn-as-value wrapper GOT entry) kind arm: `(defining_module,
+    /// got_slot)` read off the fetched entry via `callable_got_slot()`. Replaces
+    /// the `resolve_got_entry`/`resolve_got_target` value-site reach; `None` when
+    /// the carrier fetches nothing or the entry carries no slot (the caller
+    /// hard-errors — Rev-2, no name-resolver fallback).
+    pub(crate) fn got_entry_at(&self, fq: &FQSymbol) -> Option<(ModuleFullPath, usize)> {
+        self.entry_at(fq)
+            .and_then(|(home, e)| e.callable_got_slot().map(|slot| (home, slot)))
+    }
+
+    /// The 0585 loud backstop discriminator (`backend-keyed-consumer.md` §7 leg
+    /// 2): `true` iff `fq` fetches a **slot-less generic template** — a `UserFn`
+    /// in the `Polymorphic` or `Constrained` state, which carries no mono
+    /// instance. A value-position `Var` resolving to such an entry reached
+    /// codegen without a mint; the caller raises the precise §7 error instead of
+    /// the misleading `undefined variable` leak.
+    pub(crate) fn is_slotless_template_at(&self, fq: &FQSymbol) -> bool {
+        self.entry_at(fq).is_some_and(|(_, e)| {
+            matches!(
+                &e,
+                ModuleEntry::Def { kind, .. }
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                            | DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                    )
+            )
+        })
     }
 
     /// Extract constructor metadata from a module entry.

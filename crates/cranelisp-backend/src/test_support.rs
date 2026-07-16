@@ -501,6 +501,70 @@ fn collect_call_carriers(
     }
 }
 
+/// S110 W2 (KC-K8): record the carrier for every **value-position** vec-query
+/// primitive `Var` (`vec-get`/`vec-set`/`vec-push` named as a value, not called)
+/// — its span → `{primitives, <name>}`, the storage FQ the producer records.
+/// The value seam's `is_known_function` / `is_inline_primitive_at` keyed reads
+/// consume it. A vec-query name in CALLEE position keys off the Apply carrier
+/// (or the `BuiltinFn` arm's self-constructed FQ) instead, so this deliberately
+/// records ALL `vec-*` Var spans — a callee that also gets a carrier here is
+/// harmless (the keyed read agrees).
+fn collect_vec_query_value_carriers(
+    e: &Expr,
+    out: &mut HashMap<Span, cranelisp_types::FQSymbol>,
+) {
+    if let Expr::Var { name, span, .. } = e
+        && matches!(name.as_ref(), "vec-get" | "vec-set" | "vec-push")
+    {
+        out.insert(
+            *span,
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: name.clone(),
+            },
+        );
+    }
+    match e {
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, v) in bindings {
+                collect_vec_query_value_carriers(v, out);
+            }
+            collect_vec_query_value_carriers(body, out);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            collect_vec_query_value_carriers(cond, out);
+            collect_vec_query_value_carriers(then_branch, out);
+            collect_vec_query_value_carriers(else_branch, out);
+        }
+        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+            collect_vec_query_value_carriers(body, out);
+        }
+        Expr::Apply { callee, args, .. } => {
+            collect_vec_query_value_carriers(callee, out);
+            for a in args {
+                collect_vec_query_value_carriers(a, out);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_vec_query_value_carriers(scrutinee, out);
+            for arm in arms {
+                collect_vec_query_value_carriers(&arm.body, out);
+            }
+        }
+        Expr::VecLit { elements, .. } => {
+            for el in elements {
+                collect_vec_query_value_carriers(el, out);
+            }
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for f in fields {
+                collect_vec_query_value_carriers(f, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Insert a minimal `NotDetermined` `UserFn` entry so the W1 keyed read
 /// (`entry_at`) HITS for a fixture that otherwise only DECLARES its callees as
 /// `FuncId`s. No GOT slot ⇒ `compile_direct_call` reaches its `FuncId` tail
@@ -1016,8 +1080,19 @@ pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     }
     let consumer_name = consumer.name.clone();
     {
+        // S110 W2 (KC-K8): the value-position vec-query primitive `Var`
+        // (`(let [f vec-get] …)`) reads its carrier at the fn-as-value gate /
+        // vec-query discrimination — populate it with `{primitives, <prim>}`, the
+        // storage FQ the producer records for such a value ref.
+        let mut resolved_targets = HashMap::new();
+        for variant in &consumer.variants {
+            collect_vec_query_value_carriers(&variant.body, &mut resolved_targets);
+        }
         let mut st = SymbolTable::new(user.clone());
-        st.insert(consumer_name.clone(), make_def_entry_slot(consumer.clone(), 0));
+        st.insert(
+            consumer_name.clone(),
+            make_def_entry_slot_with_targets(consumer.clone(), 0, &resolved_targets),
+        );
         st.next_got_slot = 1;
         tables.insert(user.clone(), st);
     }

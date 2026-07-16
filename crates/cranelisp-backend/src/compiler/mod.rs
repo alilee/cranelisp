@@ -55,15 +55,16 @@ pub(crate) use rc_emission::{
 };
 // S110 W1 dropped the apply-site re-exports of `resolve_extern_target`,
 // `resolve_platform_effect_target`, and `resolve_poll_effect_target` — the call
-// seam now keys off `entry_at`, so those resolvers keep only their in-module
-// unit-test callers (deleted wholesale in W3, §3 S22/S23). The value-seam
-// resolvers (`resolve_got_target`, `resolve_callee_summary`,
-// `resolve_is_callable_target`, `resolve_vec_query_primitive`,
-// `resolve_func_arity`) still have live W2 call sites and stay re-exported.
+// seam keys off `entry_at`. S110 W2 dropped the value-seam re-exports of
+// `resolve_callee_summary`, `resolve_is_callable_target`,
+// `resolve_vec_query_primitive`, and `resolve_func_arity` — the value seam now
+// keys off `entry_at`/`ctor_meta_at`/`got_entry_at` (§3 S10–S18). Those
+// resolvers keep only their in-module `resolution/tests.rs` unit-test callers
+// (`#[allow(dead_code)]`; deleted wholesale in W3, §3 S23). `resolve_got_target`
+// stays re-exported — the dead-but-present `resolve_got_entry` (deleted W3)
+// still references it; both go together in W3.
 pub(crate) use resolution::{
-    got_data_symbol_name, inner_fn_discriminator_for, resolve_callee_summary,
-    resolve_func_arity, resolve_got_target, resolve_is_callable_target,
-    resolve_vec_query_primitive,
+    got_data_symbol_name, inner_fn_discriminator_for, resolve_got_target,
 };
 
 /// Information about a single function to be traced by `(trace ...)`.

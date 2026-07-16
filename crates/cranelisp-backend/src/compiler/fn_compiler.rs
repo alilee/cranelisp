@@ -297,6 +297,26 @@ where
     /// and no other. `None` ⇒ every `vec-get` incs verbatim — byte-identical-off
     /// (§2.2).
     pub(crate) elide_vecget_span: Option<Span>,
+
+    /// The heap scope binding whose reference the function's TAIL COW op
+    /// (`(vec-set v …)` / `(vec-push v …)`) moves into the returned Vec, or
+    /// `None`. Set once at function-body setup ([`FnCompiler::compile_body`])
+    /// from [`FnCompiler::return_cow_source_in_scope`].
+    ///
+    /// A COW op's in-place arm (rc==1) returns the SAME Vec pointer, so its
+    /// source reference transfers into the returned value; but the source is a
+    /// scope binding that scope-exit would `rc_dec`, freeing the just-returned
+    /// Vec (the `tests/vec_assoc_param_mutate_return_uaf.rs` premature-free). Two
+    /// coordinated effects key on this field: (1) the source var is passed as the
+    /// `skip_var` so `pop_scope_with_cleanup` suppresses its scope-exit dec (the
+    /// ref lives on as the return value); (2) `compile_vec_set`/`compile_vec_push`
+    /// switch the COW **copy** branch from `Borrowed` to `Owned` so the copy path
+    /// (which returns a FRESH Vec, leaving the source unreferenced) releases the
+    /// source itself — scope cleanup no longer does. Both arms are then correct:
+    /// in-place transfers, copy releases, and the source is decremented exactly
+    /// once on every path. `None` ⇒ every COW site keeps its `Borrowed` polarity,
+    /// byte-identical to pre-fix.
+    pub(crate) return_cow_source: Option<Symbol>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -355,6 +375,7 @@ where
             // `dependent_spark.rs` sets it directly on its dedicated inner).
             in_spark_thunk: false,
             elide_vecget_span: None,
+            return_cow_source: None,
         }
     }
 
@@ -489,6 +510,7 @@ where
             // the flag is raised only around the backend-synthesized thunk compiles.
             in_spark_thunk: false,
             elide_vecget_span: None,
+            return_cow_source: None,
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -499,6 +521,16 @@ where
         // heap-typed parameters and dec's them at exit. The caller inc's
         // variable arguments before the call.
         let skip_var = Self::return_var_in_scope(body, compiler.scope_stack.last());
+        // vec-assoc UAF fix (`tests/vec_assoc_param_mutate_return_uaf.rs`): a tail
+        // COW op (`(vec-set v …)` / `(vec-push v …)`) on a heap scope binding `v`
+        // returns `v`'s backing (in-place arm) — the returned Vec IS `v`. Suppress
+        // `v`'s scope-exit dec (fold it into `skip_var`, mutually exclusive with a
+        // bare-Var return) and record it so the COW site flips its copy branch to
+        // the `Owned` polarity (see the `return_cow_source` field rustdoc).
+        let cow_return_source =
+            return_cow_source_in_scope(body, compiler.scope_stack.last());
+        compiler.return_cow_source = cow_return_source.clone();
+        let skip_var = skip_var.or(cow_return_source);
         // §3.2 soundness tripwire (`design/backend/ownership-codegen.md` §3.2):
         // a `Borrowed` param must NEVER be the function's returned value — the
         // ownership analysis widens any returned/escaping param off `Borrowed`
@@ -637,14 +669,28 @@ where
                 name,
                 span,
                 resolved_call,
+                resolved_target,
                 ty,
                 ..
             } => {
                 // The signature-path bridge: `compile_var` reads the variable's
                 // type as a `&Type` (for the value-position trait-method arity).
                 // The node's `ConcreteType` embeds losslessly into a `Type`.
+                //
+                // S110 W2 (`backend-keyed-consumer.md` §4; S10–S18): the Var's
+                // `resolved_target` — the terminal STORAGE key typecheck resolved
+                // (§1.1.2) — is threaded to the value-seam keyed reads (fn-as-value
+                // gate, nullary-ctor fold, ctor-as-value, arity, summary, vec-query,
+                // GOT entry). A local/lambda-param Var carries `None` (the backend
+                // `variables` check precedes any keyed read — KC-N6).
                 let inferred = ty.to_type();
-                self.compile_var(name, *span, resolved_call.as_deref(), Some(&inferred))
+                self.compile_var(
+                    name,
+                    *span,
+                    resolved_call.as_deref(),
+                    Some(&inferred),
+                    resolved_target.as_ref(),
+                )
             }
             MonoExpr::Let {
                 bindings,
@@ -1674,6 +1720,144 @@ pub(crate) fn return_is_fresh_by_summary(
     summary: Option<&cranelisp_types::ModeSummary>,
 ) -> bool {
     summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
+}
+
+/// The heap scope binding a TAIL COW op moves into the function's return value,
+/// or `None` — the [`FnCompiler::return_cow_source`] determinant (vec-assoc UAF
+/// fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
+///
+/// Matches ONLY the direct shape: the whole body is `(vec-set v …)` /
+/// `(vec-push v …)` whose FIRST argument is a bare `Var` naming a member of the
+/// current scope frame. Restricting to the direct body guarantees `v` is used
+/// exactly once (as the COW source), so it is genuinely at last use (the in-place
+/// COW arm fires) and suppressing its scope-exit dec cannot strand a live
+/// reference. A more complex body (`v` used elsewhere, a COW inside an `if`/`let`,
+/// the element argument aliasing `v`) does NOT match — conservative,
+/// byte-identical to pre-fix. Reads the `Apply` callee `Var` name directly: the
+/// vec-query primitive names are canonical and never aliased at a value site.
+/// Free function (not an associated fn) so the ownership DECISION is unit-testable
+/// without constructing a generic `FnCompiler` — the `return_is_fresh_by_summary`
+/// precedent.
+pub(crate) fn return_cow_source_in_scope(
+    body: &MonoExpr,
+    scope_frame: Option<&Vec<Symbol>>,
+) -> Option<Symbol> {
+    let MonoExpr::Apply { callee, args, .. } = body else {
+        return None;
+    };
+    let MonoExpr::Var { name: callee_name, .. } = callee.as_ref() else {
+        return None;
+    };
+    if !matches!(callee_name.as_ref(), "vec-set" | "vec-push") {
+        return None;
+    }
+    let Some(MonoExpr::Var { name: src, .. }) = args.first() else {
+        return None;
+    };
+    let frame = scope_frame?;
+    if frame.contains(src) {
+        Some(src.clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod return_cow_source_tests {
+    //! vec-assoc UAF fix (`tests/vec_assoc_param_mutate_return_uaf.rs`): the
+    //! last-use/ownership DECISION seam — which scope binding a tail COW op
+    //! (`vec-set`/`vec-push`) moves into the function return, so its scope-exit
+    //! dec is suppressed and the COW copy branch flips to `Owned`. VA-3 unit pin.
+    use super::return_cow_source_in_scope;
+    use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
+
+    fn int_ty() -> ConcreteType {
+        ConcreteType::Int
+    }
+
+    fn var(name: &str) -> MonoExpr {
+        MonoExpr::Var {
+            name: Symbol::from(name),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            resolved_target: None,
+            ty: int_ty(),
+        }
+    }
+
+    fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
+        MonoExpr::Apply {
+            resolved_target: None,
+            callee: Box::new(var(prim)),
+            args: vec![src, var("i"), var("x")],
+            span: Span::new(0, 9),
+            resolved_call: None,
+            ty: ConcreteType::ADT(
+                cranelisp_types::FQTypeName::new(
+                    cranelisp_types::ModuleFullPath::from("primitives"),
+                    cranelisp_types::TypeName::from("Vec"),
+                ),
+                vec![int_ty()],
+            ),
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
+        }
+    }
+
+    fn frame(names: &[&str]) -> Vec<Symbol> {
+        names.iter().map(|n| Symbol::from(*n)).collect()
+    }
+
+    // (i) `(vec-set v i x)` returning a scope-bound param `v` ⇒ suppress v's
+    // scope-exit dec (the in-place COW returns v's backing).
+    #[test]
+    fn vec_set_on_returned_scope_param_is_the_cow_source() {
+        let f = frame(&["v", "i", "x"]);
+        assert_eq!(
+            return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // (ii) `vec-push` sibling — same suppression.
+    #[test]
+    fn vec_push_on_returned_scope_param_is_the_cow_source() {
+        let f = frame(&["v", "i", "x"]);
+        assert_eq!(
+            return_cow_source_in_scope(&cow_call("vec-push", var("v")), Some(&f)),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // (iii) control: the identity-fn return (bare `Var`, not a COW) is NOT a COW
+    // source — it is handled by `return_var_in_scope` instead, and MUST NOT be
+    // flagged here (no over-correction: the copy branch stays `Borrowed`).
+    #[test]
+    fn identity_bare_var_return_is_not_a_cow_source() {
+        let f = frame(&["v"]);
+        assert_eq!(return_cow_source_in_scope(&var("v"), Some(&f)), None);
+    }
+
+    // Control: a COW on a NON-frame source (a temporary / fresh literal wrapped
+    // as a Var not in scope) is NOT flagged — only a scope-managed binding whose
+    // scope-exit dec would otherwise fire needs suppression.
+    #[test]
+    fn cow_on_non_frame_source_is_not_flagged() {
+        let f = frame(&["i", "x"]); // `v` deliberately absent from the frame
+        assert_eq!(return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)), None);
+    }
+
+    // Control: a non-COW callee (`vec-get`) is not a mutating op — no source move.
+    #[test]
+    fn non_cow_primitive_is_not_flagged() {
+        let f = frame(&["v", "i"]);
+        assert_eq!(
+            return_cow_source_in_scope(&cow_call("vec-get", var("v")), Some(&f)),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

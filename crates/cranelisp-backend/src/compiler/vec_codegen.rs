@@ -336,6 +336,11 @@ where
             // the dynamic rc==1 probe is dead — take the in-place arm and elide
             // the check. Read off the fresh node, NEVER a consuming-use Var.
             let elide_rc_check = node_unique_static(vec_expr) == Some(true);
+            // vec-assoc UAF fix: `Owned` when this COW's source is moved into the
+            // function return (`return_cow_source`); else `Borrowed` (default,
+            // byte-identical). The `Owned` copy branch releases the source that
+            // scope cleanup no longer dec's.
+            let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
             emit_vec_set_cow_core(
                 &mut self.builder,
                 self.module,
@@ -346,12 +351,7 @@ where
                     inc_fn_ptr,
                     old_elem_category,
                     dealloc_id: self.ctx.dealloc_func_id,
-                    // Static in-place site: the Vec arg was compiled by
-                    // `compile_arg_list` (no consuming inc), so this reference
-                    // is owned by the live scope binding (or is a transferring
-                    // temporary) — the scope dec's it. Copy branch releases
-                    // nothing (§13.3 Ruling 2, static-site polarity).
-                    source_ownership: SourceOwnership::Borrowed,
+                    source_ownership,
                     elide_rc_check,
                 },
                 span,
@@ -410,6 +410,10 @@ where
             // Increment-II static-uniqueness proof (§6.4): elide the dynamic
             // rc==1 probe when the Vec arg is a fresh node proven unique.
             let elide_rc_check = node_unique_static(vec_expr) == Some(true);
+            // vec-assoc UAF fix: `Owned` when this COW's source is moved into the
+            // function return (`return_cow_source`); else `Borrowed` (default,
+            // byte-identical).
+            let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
             // Shared core with the §12.7 wrapper emission (Principle 7).
             emit_vec_push_cow_core(
                 &mut self.builder,
@@ -417,9 +421,7 @@ where
                 vec_val,
                 new_val,
                 inc_fn_ptr,
-                // Static in-place site: source owned by scope (or transferring
-                // temporary) — copy branch releases nothing (§13.3 Ruling 2).
-                SourceOwnership::Borrowed,
+                source_ownership,
                 elide_rc_check,
                 span,
             )
@@ -536,6 +538,38 @@ where
     /// Returns iconst(0) for NeverHeap types (runtime skips the call).
     /// For ADT element types with heap fields, builds a drop glue function
     /// so that fields are dec'd when the element reaches rc=0.
+    /// The COW source-release polarity for an in-place `vec-set`/`vec-push`
+    /// site (vec-assoc UAF fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
+    ///
+    /// `Owned` when this COW's source `Var` is the function's recorded
+    /// [`FnCompiler::return_cow_source`] — the tail COW moves the source's
+    /// reference into the returned Vec, so its scope-exit dec is suppressed
+    /// (`skip_var`) and the **copy** branch (which returns a FRESH Vec, leaving
+    /// the source unreferenced) must release the source itself. Otherwise
+    /// `Borrowed` (scope cleanup releases the binding — the default, emitting
+    /// nothing here, so a program that never hits this pattern is byte-identical).
+    fn cow_source_ownership(
+        &mut self,
+        vec_expr: &MonoExpr,
+        elem_type: &Option<Type>,
+        span: Span,
+    ) -> Result<SourceOwnership, CranelispError> {
+        let is_return_source = matches!(
+            vec_expr,
+            MonoExpr::Var { name, .. } if self.return_cow_source.as_ref() == Some(name)
+        );
+        if !is_return_source {
+            return Ok(SourceOwnership::Borrowed);
+        }
+        let vec_drop_func_id =
+            self.ctx.vec_drop_func_id.ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(elem_type, span)?;
+        Ok(SourceOwnership::Owned { vec_drop_func_id, elem_dec_fn_ptr })
+    }
+
     fn resolve_elem_dec_fn_ptr(
         &mut self,
         elem_type: &Option<Type>,

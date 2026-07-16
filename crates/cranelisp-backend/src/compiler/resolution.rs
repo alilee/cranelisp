@@ -237,6 +237,11 @@ where
 /// inline-emits the op), even though it has no GOT slot. For every non-inline
 /// name this is byte-identical to `resolve_got_target(..).is_some()` (they agree
 /// wherever a slot exists), so no shadowing precedence or emission changes.
+///
+/// S110 W2: the fn-as-value gate now keys off the Var carrier
+/// (`is_callable_target_at`); this resolver keeps only its `resolution/tests.rs`
+/// unit callers and is deleted wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_is_callable_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -274,6 +279,12 @@ where
 /// `vec-len` is naturally EXCLUDED: it carries a real extern shim + populated
 /// slot (`PrimitiveBody::Extern`), so it reports `None` here and dispatches
 /// through its slot (the green control path — `tests/vec_query_value_use.rs`).
+///
+/// S110 W2: the fn-as-value and auto-curry wrapper vec-query discrimination
+/// (S17/S18) now keys off the carrier (`is_inline_primitive_at`); this resolver
+/// keeps only its `resolution/tests.rs` unit callers and is deleted wholesale in
+/// W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_vec_query_primitive<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -330,6 +341,11 @@ where
 /// typecheck emits no summaries, so every callee resolves `None` here and the
 /// caller-side emission is byte-identical to the pre-S102 consuming path (§2.2
 /// else-arm discipline).
+///
+/// S110 W2: the fn-as-value / auto-curry wrapper summary (S15) now keys off the
+/// carrier (`callee_summary_at`); this resolver keeps only its
+/// `resolution/tests.rs` unit callers and is deleted wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_callee_summary<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -508,6 +524,11 @@ where
 ///
 /// Narrowed to `pub(crate)` in S75 W3 — backend-internal arity-resolution
 /// primitive (no int caller).
+///
+/// S110 W2: the closure-wrapper arity (S14) now keys off the carrier
+/// (`arity_at`); this resolver keeps only its `resolution/tests.rs` unit callers
+/// and is deleted wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_func_arity<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,

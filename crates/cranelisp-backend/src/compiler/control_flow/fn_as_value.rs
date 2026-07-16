@@ -10,7 +10,8 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{
-    ConcreteType, CranelispError, ErrorLocation, MonoExpr, ResolvedCall, Span, Symbol, Type,
+    ConcreteType, CranelispError, ErrorLocation, FQSymbol, ModuleFullPath, MonoExpr, ResolvedCall,
+    Span, Symbol, Type,
 };
 
 use crate::heap::{self, HeapCategory, HeapClosure};
@@ -104,22 +105,18 @@ where
 
     /// Check if a name is a known top-level function (eligible for wrapping).
     ///
-    /// Resolves via [`resolve_is_callable_target`] (FIXME 0476: the
-    /// `is_callable_target()` stop predicate), so an inline-dispatched vec-query
-    /// primitive (`PrimitiveBody::Inline`, no GOT slot) is recognised as a known
-    /// function and wraps to a closure whose body inline-emits the op — the
-    /// former `resolve_got_target(..).is_some()` gate missed it once the trio
-    /// lost its slot. Byte-identical to the old gate for every slot-carrying name.
-    ///
-    /// [`resolve_is_callable_target`]: crate::compiler::resolve_is_callable_target
-    pub(crate) fn is_known_function(&self, name: &Symbol) -> bool {
+    /// S110 W2 (S12): the resolver gate (`resolve_is_callable_target`) is replaced
+    /// by a keyed [`CompileContext::is_callable_target_at`] read off the Var's
+    /// carrier, plus the current-unit `func_ids` fast-path (a local map, not a
+    /// resolver). `is_callable_target` (FIXME 0476) covers both slot-dispatched
+    /// callables AND inline-dispatched vec-query primitives (`PrimitiveBody::
+    /// Inline`, no slot), so a bare inline vec primitive as a value is still a
+    /// known function. A `None` carrier (a genuinely-unresolved name, or a
+    /// slot-less generic template) reports `false` — the caller falls to the 0585
+    /// backstop / undefined-variable arm (Rev-2, no scan fallback).
+    pub(crate) fn is_known_function(&self, name: &Symbol, target_fq: Option<&FQSymbol>) -> bool {
         self.ctx.func_ids.contains_key(name)
-            || crate::compiler::resolve_is_callable_target(
-                self.ctx.symbol_tables,
-                self.ctx.module_aliases,
-                &self.ctx.current_module,
-                name,
-            )
+            || target_fq.is_some_and(|fq| self.ctx.is_callable_target_at(fq))
     }
 
     /// Wrap a named top-level function as a zero-capture closure.
@@ -136,6 +133,9 @@ where
         name: &Symbol,
         span: Span,
         fn_type: Option<&Type>,
+        // S110 W2 (§4): the Var's terminal STORAGE key — drives the S14 arity
+        // read and the S10/S15/S16/S17 wrapper-body keyed reads.
+        target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -145,13 +145,11 @@ where
                     location: ErrorLocation::from_span(span),
                 })?;
 
+        // S110 W2 (S14): arity read off the carrier's fetched entry
+        // (`param_names.len()`), replacing `resolve_func_arity`. The current-unit
+        // `func_arities` map stays as the fast-path (a local map, not a resolver).
         let arity = self.ctx.func_arities.get(name).copied()
-            .or_else(|| crate::compiler::resolve_func_arity(
-                self.ctx.symbol_tables,
-                self.ctx.module_aliases,
-                &self.ctx.current_module,
-                name,
-            ))
+            .or_else(|| target_fq.and_then(|fq| self.ctx.arity_at(fq)))
             .ok_or_else(|| {
                 CranelispError::CodegenError {
                     message: format!("unknown arity for function: {name}"),
@@ -184,7 +182,9 @@ where
             })?;
 
         let vec_elem = vec_query_elem_from_fn_type(fn_type);
-        self.compile_fn_wrapper_body(wrapper_func_id, name, arity, span, vec_elem.as_ref())?;
+        self.compile_fn_wrapper_body(
+            wrapper_func_id, name, arity, span, vec_elem.as_ref(), target_fq,
+        )?;
 
         // Allocate a closure with zero captures: [header | code_ptr].
         let payload_size = HeapClosure::payload_size(0) as i64;
@@ -309,7 +309,10 @@ where
         let block_params = builder.block_params(entry).to_vec();
         let user_args: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
 
-        // Dispatch through the SAME path direct application uses.
+        // Dispatch through the SAME path direct application uses. S110 W2: the
+        // TraitMethod / BuiltinFn arms self-derive their carrier from `resolved`
+        // (the mangled entry's `impl_module`; a primitive's `primitives` home), so
+        // no plain-fn carrier is threaded here (`None`).
         let vec_elem = vec_query_elem_from_fn_type(fn_type);
         let result = self.emit_curry_target_call(
             &mut builder,
@@ -318,6 +321,7 @@ where
             span,
             Some(resolved),
             vec_elem.as_ref(),
+            None,
         )?;
 
         builder.ins().return_(&[result]);
@@ -377,6 +381,9 @@ where
         arity: usize,
         span: Span,
         vec_elem: Option<&Type>,
+        // S110 W2 (§4): the target's STORAGE key — drives `emit_wrapper_call`'s
+        // S10/S15/S16/S17 keyed reads.
+        target_fq: Option<&FQSymbol>,
     ) -> Result<(), CranelispError> {
         let mut inner_ctx = self.module.make_context();
         let mut inner_func_ctx = FunctionBuilderContext::new();
@@ -399,7 +406,7 @@ where
         let user_params: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
 
         let result = self.emit_wrapper_call(
-            &mut builder, target_name, &user_params, span, vec_elem,
+            &mut builder, target_name, &user_params, span, vec_elem, target_fq,
         )?;
 
         builder.ins().return_(&[result]);
@@ -492,18 +499,22 @@ where
         user_params: &[Value],
         span: Span,
         vec_elem: Option<&Type>,
+        // S110 W2 (§4): the target's STORAGE key — drives the S15 summary, S16
+        // ctor-as-value, S17 vec-query, and S10 GOT-entry keyed reads. `None` for
+        // a target with no carrier (the current-unit `func_ids` fast-path below
+        // covers same-unit fns; a `None` reaching the S10 GOT fallback hard-errors
+        // — Rev-2, no name-resolver fallback).
+        target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // §3.5: the target's summary, kept only when non-ABI-conservative — the
-        // moded-body arms below adapt against it. `None` for every summary-trivial
-        // or non-summary target (constructors, inline vec primitives, unanalysed
+        // §3.5 / S110 W2 (S15): the target's summary, kept only when
+        // non-ABI-conservative — the moded-body arms below adapt against it.
+        // Keyed read off the carrier (`callee_summary_at`) replacing
+        // `resolve_callee_summary`. `None` for every summary-trivial or
+        // non-summary target (constructors, inline vec primitives, unanalysed
         // fns), so those arms emit exactly today's shape.
-        let target_summary = crate::compiler::resolve_callee_summary(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            target_name,
-        )
-        .filter(|s| !s.is_abi_conservative());
+        let target_summary = target_fq
+            .and_then(|fq| self.ctx.callee_summary_at(fq))
+            .filter(|s| !s.is_abi_conservative());
 
         // If the function is declared in the current compilation unit, emit a
         // direct call — cheaper and avoids an unnecessary GOT dereference. User
@@ -529,7 +540,12 @@ where
         // constructors are functions"). This is RC-identical to direct
         // construction (`emit_adt_construct`): the wrapper's params arrive owned
         // (consuming convention) and are stored into the new ADT with no inc.
-        if let Some((fqtn, ctor_info)) = self.ctx.lookup_constructor(target_name.as_ref()) {
+        // S110 W2 (S16): keyed `ctor_meta_at` read off the carrier, replacing the
+        // `lookup_constructor` chain-follow — the recorder records the canonical
+        // `member_key` for a ctor value ref (§1.1.2), so the direct read HITS.
+        if let Some((fqtn, ctor_info)) =
+            target_fq.and_then(|fq| self.ctx.ctor_meta_at(fq))
+        {
             // R5 (§7.1): a value-flattened single-ctor type constructs by a
             // bare-word move of its single field — no alloc. MUST match the
             // use-site (`compile_var_apply`) and synthetic-body
@@ -572,18 +588,33 @@ where
         // keeps the GOT path); `vec-len` is excluded (real extern shim,
         // populated slot — the working control path). Re-keys off the inline
         // kind (§13.2 B1-be — the S101 name-list retired).
-        if let Some(canonical) = crate::compiler::resolve_vec_query_primitive(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            target_name,
-        ) {
+        // S110 W2 (S17): keyed inline-primitive discrimination off the carrier,
+        // replacing `resolve_vec_query_primitive`. A user fn shadowing the name
+        // resolves to a non-inline entry (the carrier is the resolved storage FQ),
+        // so it keeps the GOT path below — precedence-faithful by construction.
+        // The canonical bare name the wrapper inline-emits is `fq.symbol`.
+        if let Some(fq) = target_fq
+            && self.ctx.is_inline_primitive_at(fq)
+        {
             let elem = vec_elem.cloned();
-            return self.emit_vec_query_into(builder, canonical.as_ref(), user_params, &elem, span);
+            return self.emit_vec_query_into(builder, fq.symbol.as_ref(), user_params, &elem, span);
         }
 
         // Otherwise: GOT-indirect call via __cranelisp_got_{module} data sym.
-        let (module_path, slot) = self.resolve_got_entry(target_name, span)?;
+        // S110 W2 (S10): keyed `got_entry_at` read off the carrier, replacing
+        // `resolve_got_entry`/`resolve_got_target`. A `None` carrier or an
+        // entry-miss / slot-less entry here is a hard `CodegenError` (Rev-2, no
+        // fall-through to the retired name-resolver scan; §1.2).
+        let (module_path, slot) = target_fq
+            .and_then(|fq| self.ctx.got_entry_at(fq))
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "fn-as-value wrapper for '{target_name}' reached codegen with \
+                     no GOT-slot carrier (S110 W2 keyed read; \
+                     backend-keyed-consumer.md §1.2/§10)"
+                ),
+                location: ErrorLocation::from_span(span),
+            })?;
         let got_sym = crate::compiler::got_data_symbol_name(&module_path);
         let data_id = self
             .module
@@ -627,6 +658,7 @@ where
     /// When the target is a trait method or builtin, this emits the appropriate
     /// inline IR or extern call directly, instead of trying to call by name
     /// (which fails for inline builtins like `add-i64` that have no JIT symbol).
+    #[allow(clippy::too_many_arguments)] // +1 for the S110 W2 carrier
     fn emit_curry_target_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -635,11 +667,19 @@ where
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
         vec_elem: Option<&Type>,
+        // S110 W2 (§4): the plain-fn target's STORAGE key (the auto-curry Apply
+        // carrier / the fn-as-value Var carrier), used for the summary-trivial
+        // `_ =>`/no-resolution fall-throughs. The TraitMethod and BuiltinFn arms
+        // derive their OWN carrier from the resolution product (the mangled entry
+        // lives in `impl_module`; a vec-query primitive lives in `primitives`),
+        // so they do not consult this.
+        target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         if let Some(resolved) = trait_resolution {
             match resolved {
                 ResolvedCall::TraitMethod {
                     mangled_name,
+                    impl_module,
                     ..
                 } => {
                     // Per Decision 43 + FIXME 0185: backend has no trait
@@ -652,8 +692,19 @@ where
                     // migration that restores inline optimisation by having
                     // typecheck emit `BuiltinFn { name: "add-i64" }` for
                     // primitive-implemented trait methods directly.
+                    //
+                    // S110 W2 (S10/S15): the mangled method's STORAGE key is
+                    // `{impl_module, mangled}` (the resolution PRODUCT — W0.1b
+                    // §1.1.1: the mangle lives in the impl-WRITER's module), keyed
+                    // into `emit_wrapper_call`'s summary + GOT reads.
                     let sym = Symbol::from(mangled_name.as_ref());
-                    return self.emit_wrapper_call(builder, &sym, all_args, span, vec_elem);
+                    let method_fq = FQSymbol {
+                        module: impl_module.clone(),
+                        symbol: sym.clone(),
+                    };
+                    return self.emit_wrapper_call(
+                        builder, &sym, all_args, span, vec_elem, Some(&method_fq),
+                    );
                 }
                 ResolvedCall::BuiltinFn { name: jit_name } => {
                     // Vec query family (§12.7 — the CURRY seam): the vec family
@@ -662,16 +713,22 @@ where
                     // Import below and dies at JIT-finalize
                     // ("can't resolve symbol vec-get"). Inline-emit instead,
                     // element type recovered from the applied Vec argument.
-                    if let Some(canonical) = crate::compiler::resolve_vec_query_primitive(
-                        self.ctx.symbol_tables,
-                        self.ctx.module_aliases,
-                        &self.ctx.current_module,
-                        jit_name,
-                    ) {
+                    //
+                    // S110 W2 (S18): keyed inline-primitive discrimination off the
+                    // synthesized `{primitives, jit_name}` FQ (the vec trio live in
+                    // `primitives`; §1.4 synthesized-name precedent), replacing
+                    // `resolve_vec_query_primitive`. typecheck already resolved
+                    // precedence when it emitted `BuiltinFn` (a user shadow would
+                    // have produced a `UserFn` resolution, not this arm).
+                    let vq_fq = FQSymbol {
+                        module: ModuleFullPath::from("primitives"),
+                        symbol: Symbol::from(jit_name.as_ref()),
+                    };
+                    if self.ctx.is_inline_primitive_at(&vq_fq) {
                         let elem = vec_elem.cloned();
                         return self.emit_vec_query_into(
                             builder,
-                            canonical.as_ref(),
+                            jit_name.as_ref(),
                             all_args,
                             &elem,
                             span,
@@ -690,12 +747,18 @@ where
                         ) {
                             Some(result) => return result,
                             None => {
-                                // Drift between is_known_builtin and the
-                                // inline table — fall through to wrapper
-                                // GOT-indirect call.
+                                // Drift between is_known_builtin and the inline
+                                // table — fall through to a GOT-indirect call
+                                // against the primitive's `{primitives, jit_name}`
+                                // slot (S10 keyed read).
                                 let sym = Symbol::from(jit_name.as_ref());
+                                let prim_fq = FQSymbol {
+                                    module: ModuleFullPath::from("primitives"),
+                                    symbol: sym.clone(),
+                                };
                                 return self.emit_wrapper_call(
                                     builder, &sym, all_args, span, vec_elem,
+                                    Some(&prim_fq),
                                 );
                             }
                         }
@@ -709,8 +772,9 @@ where
             }
         }
 
-        // No trait resolution, or resolution didn't match — call by name.
-        self.emit_wrapper_call(builder, target_name, all_args, span, vec_elem)
+        // No trait resolution, or resolution didn't match — call by name via the
+        // plain-fn carrier (S10/S15).
+        self.emit_wrapper_call(builder, target_name, all_args, span, vec_elem, target_fq)
     }
 
     // --- Auto-curry codegen ---
@@ -731,6 +795,11 @@ where
         args: &[MonoExpr],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
+        // S110 W2 (§4; row 17): the Apply-span carrier — the plain-fn curry
+        // target's STORAGE key (callee-span transport, W0.1b). Threaded to the
+        // wrapper's `_ =>`/no-resolution GOT read; the TraitMethod/BuiltinFn arms
+        // self-derive their own.
+        target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -765,6 +834,7 @@ where
             span,
             trait_resolution,
             vec_elem.as_ref(),
+            target_fq,
         )?;
 
         // 2. Build drop glue for heap-typed captures.
@@ -848,6 +918,8 @@ where
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
         vec_elem: Option<&Type>,
+        // S110 W2 (§4; row 17): the plain-fn curry target's carrier.
+        target_fq: Option<&FQSymbol>,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         // Mono-discriminated span name (FIXME 0347 defect 1).
         let wrapper_name = format!(
@@ -915,6 +987,7 @@ where
             span,
             trait_resolution,
             vec_elem,
+            target_fq,
         )?;
 
         builder.ins().return_(&[result]);

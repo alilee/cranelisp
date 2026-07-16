@@ -6,7 +6,9 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{
+    CranelispError, ErrorLocation, FQSymbol, ModuleFullPath, ResolvedCall, Span, Symbol, Type,
+};
 
 use super::FnCompiler;
 use crate::heap::{self, HeapClosure};
@@ -111,8 +113,14 @@ where
         span: Span,
         resolved_call: Option<&ResolvedCall>,
         inferred_type: Option<&Type>,
+        // S110 W2 (`backend-keyed-consumer.md` §4; S10–S18): the Var's terminal
+        // STORAGE key (§1.1.2). Drives every value-seam keyed read below. `None`
+        // for a local/lambda-param Var (caught by the `variables` check first —
+        // KC-N6) or a genuinely-unresolved name (falls to the undefined error).
+        resolved_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // Local variable takes priority.
+        // Local variable takes priority (before ANY keyed read — KC-N6). A
+        // shadowing local wins unconditionally; the carrier is never consulted.
         if let Some(var) = self.variables.get(name) {
             return Ok(self.builder.use_var(*var));
         }
@@ -149,10 +157,12 @@ where
         }
 
         // Nullary constructor reference (e.g. `None`, `Red`): fold to a bare
-        // tag via the single core emitter (§2.6.1 Path-1 nullary fold). The
-        // `lookup_constructor` recognition stays; the emission routes through
+        // tag via the single core emitter (§2.6.1 Path-1 nullary fold). S110 W2
+        // (S11): the recognition is now a keyed `ctor_meta_at` read off the Var's
+        // carrier (the canonical `member_key` the recorder records — §1.1.2), not
+        // the `lookup_constructor` chain-follow. The emission routes through
         // `emit_adt_construct(tag, &[], span)`.
-        if let Some(tag) = self.nullary_constructor_tag(name) {
+        if let Some(tag) = self.nullary_constructor_tag(resolved_target) {
             return self.emit_adt_construct(tag, &[], span);
         }
 
@@ -183,9 +193,31 @@ where
 
         // Named function as value: wrap in a zero-capture closure. The
         // inferred `Fn` type rides along so the vec-query wrapper arm can
-        // recover the per-site element type (§12.7).
-        if self.is_known_function(name) {
-            return self.compile_fn_as_value(name, span, inferred_type);
+        // recover the per-site element type (§12.7). S110 W2 (S12): the gate is
+        // now a keyed `is_callable_target` read off the Var's carrier.
+        if self.is_known_function(name, resolved_target) {
+            return self.compile_fn_as_value(name, span, inferred_type, resolved_target);
+        }
+
+        // S110 W2 — the 0585 loud backstop (`backend-keyed-consumer.md` §7 leg 2).
+        // A value-position `Var` whose carrier fetches a SLOT-LESS GENERIC
+        // TEMPLATE (`UserFn` Polymorphic/Constrained) reached codegen without a
+        // mono instance: the shared value-position mint walk (S109 0571.2) did
+        // NOT concretise it, so no mint exists. Hard-fail LOUDLY (release builds
+        // included) with a precise message, REPLACING the misleading `undefined
+        // variable` leak below. (The check-side §3.11 ambiguity gate is the
+        // primary cure for an indeterminate top-level generic value; this backend
+        // backstop is the honest floor for any producer gap that leaks past it.)
+        if let Some(fq) = resolved_target
+            && self.ctx.is_slotless_template_at(fq)
+        {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "generic value reference '{name}' reached codegen without a \
+                     mono instance"
+                ),
+                location: ErrorLocation::from_span(span),
+            });
         }
 
         Err(CranelispError::CodegenError {
@@ -194,12 +226,15 @@ where
         })
     }
 
-    /// Look up the tag value for a nullary constructor.
+    /// Look up the tag value for a nullary constructor via the Var's carrier.
     ///
-    /// Supports module-qualified names (e.g. `macros/SNil`):
-    /// lookup_constructor handles qualified name resolution.
-    pub(crate) fn nullary_constructor_tag(&self, name: &Symbol) -> Option<usize> {
-        let (_fqtn, ctor_info) = self.ctx.lookup_constructor(name.as_ref())?;
+    /// S110 W2 (S11): a DIRECT keyed `ctor_meta_at` read off the terminal STORAGE
+    /// key the recorder recorded (the canonical `member_key` for a sum ctor —
+    /// §1.1.2), NO name resolution / chain-follow. Returns the tag iff the fetched
+    /// entry is a fieldless (nullary) `DefKind::Constructor`. `None` carrier (a
+    /// non-ctor value ref) ⇒ `None`.
+    pub(crate) fn nullary_constructor_tag(&self, resolved_target: Option<&FQSymbol>) -> Option<usize> {
+        let (_fqtn, ctor_info) = self.ctx.ctor_meta_at(resolved_target?)?;
         if ctor_info.fields.is_empty() {
             Some(ctor_info.tag)
         } else {
@@ -260,21 +295,24 @@ where
                     location: ErrorLocation::from_span(span),
                 })?;
 
-        // Resolve the primitive to its GOT slot. The primitive lives in the
-        // synthetic `primitives` module's symbol table; resolution walks
-        // import chains starting from current_module per the standard path.
-        let prim_sym = Symbol::from(primitive_name);
-        let (target_module, slot) = crate::compiler::resolve_got_target(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            &prim_sym,
-        )
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: format!(
-                "operator-as-value: no GOT slot for primitive '{primitive_name}'"
-            ),
-            location: ErrorLocation::from_span(span),
+        // S110 W2 (S13; §1.4 backend-synthesized name — direct keyed read, no
+        // resolver). The target is a FIXED compile-time mapping into the
+        // `primitives` module (`operator_primitive_name`): the name is synthesized
+        // and the home is static, so there is no carrier and no precedence walk —
+        // a DIRECT `got_entry_at({primitives, <mapped>})` fetch + hard-miss
+        // (Rev-2). Byte-identical (the pre-W2 `resolve_got_target` scan terminated
+        // at exactly this `primitives` entry).
+        let prim_fq = FQSymbol {
+            module: ModuleFullPath::from("primitives"),
+            symbol: Symbol::from(primitive_name),
+        };
+        let (target_module, slot) = self.ctx.got_entry_at(&prim_fq).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "operator-as-value: no GOT slot for primitive '{primitive_name}'"
+                ),
+                location: ErrorLocation::from_span(span),
+            }
         })?;
 
         // Declare the GOT data symbol for the primitive's owning module.

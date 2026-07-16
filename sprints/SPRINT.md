@@ -1468,6 +1468,117 @@ W1-introduced regressions. No public-API/schema/cache change (backend-internal +
 value-only typecheck flip). `cargo check --workspace --tests` clean; no new
 clippy lints in touched files.
 
+### /dev (W2) — value seam + 0585 backstop + vec-assoc UAF (2026-07-16, LANDED with a scoped carry)
+
+Backend-narrow. Three deliverables; two clean, the third (0585) surfaced a
+cross-crate scope finding (below). **Baseline 13 → 11** (VA-1/VA-2 flipped;
+VP-3/4/5 carry — see finding). `golden_clif_w0b` 5/5 byte-identical.
+
+**1. Value-seam flip (S10–S18) — the carrier read replaces the value-site
+resolvers.** `MonoExpr::Var.resolved_target` is threaded from the `compile_expr`
+dispatch (`fn_compiler.rs`) into `compile_var`, and on into `compile_fn_as_value`
+→ `compile_fn_wrapper_body` → `emit_wrapper_call`, plus `emit_curry_target_call`
+and `compile_auto_curry`/`_wrapper` (auto-curry threads the Apply carrier;
+`apply.rs` AutoCurry arm passes `apply_target`). Six new keyed-read helpers on
+`CompileContext` (`context.rs`): `is_callable_target_at` (S12), `arity_at` (S14),
+`callee_summary_at` (S15), `is_inline_primitive_at` (S17/S18), `got_entry_at`
+(S10), `is_slotless_template_at` (0585). Per-site:
+- S11 nullary-ctor fold → `nullary_constructor_tag(carrier)` → `ctor_meta_at`.
+- S12 fn-as-value gate → `is_known_function(name, carrier)` (`func_ids` fast-path
+  ∨ `is_callable_target_at`).
+- S13 operator-as-value → direct `got_entry_at({primitives, <mapped>})` (§1.4
+  synthesized name, no carrier/resolver).
+- S14 arity → `arity_at`. S15 summary → `callee_summary_at`. S16 ctor-as-value →
+  `ctor_meta_at`. S17 vec-query → `is_inline_primitive_at(carrier)`. S10
+  GOT-entry → `got_entry_at(carrier)` + hard-miss (Rev-2, no scan fallback).
+- S18 (BuiltinFn curry leg) → `is_inline_primitive_at({primitives, jit_name})`;
+  the TraitMethod arm keys `emit_wrapper_call` off `{impl_module, mangled}` (the
+  W0.1b resolution product).
+
+**Resolvers that lost their value-site callers (for W3 deletion, §3 S23):**
+`resolve_is_callable_target`, `resolve_func_arity`, `resolve_vec_query_primitive`,
+`resolve_callee_summary` (each now caller-less), and `resolve_got_target` /
+`resolve_got_entry` (only the dead-but-present `resolve_got_entry` references
+`resolve_got_target` now). All marked `#[allow(dead_code)]` with a §3-S23 note;
+the four caller-less ones dropped from the `compiler/mod.rs` re-export (kept only
+`resolve_got_target` for the dead `resolve_got_entry`). `lookup_constructor`
+retains its S19/S20 callers (both W3), so it is NOT yet dead. **W3 grep-gate
+delta:** after W3 deletes S19–S23, the gate goes green — the value seam already
+holds zero live resolver reach. Fixture top-up: `test_support.rs` populates the
+value-position vec-query Var carrier (`collect_vec_query_value_carriers` →
+`make_def_entry_slot_with_targets`) so the 3 `vec_*_as_value` unit fixtures key
+correctly. Backend unit 416/416.
+
+**2. The 0585 loud backstop (design §7 leg 2) — LANDED, but see the finding.**
+`literals.rs::compile_var`: a value-position `Var` whose carrier fetches a
+slot-less `Polymorphic`/`Constrained` template now hard-`CodegenError`s with the
+§7 wording ("generic value reference '<name>' reached codegen without a mono
+instance"), release builds included, REPLACING the misleading `undefined
+variable: gcount` leak at `literals.rs:191`. Confirmed firing on the die case.
+
+> **CROSS-CRATE FINDING (VP-3/4/5 need typecheck, not backend).** The three §B
+> die-leg negatives (`generic_value_{in_if_branch,in_match_arm,as_vec_element}_
+> indeterminate_neg`) assert the output **contains `"ambiguous"` and does NOT
+> contain `"codegen error"`** — and their `// defect:` locus is
+> `crates/cranelisp-typecheck §3.11 finalization gate ... owner=/dev`. Every
+> backend `CranelispError::CodegenError` displays as `"codegen error at …:"`, so
+> **no backend error — including this honest §7 backstop — can satisfy the
+> assertion.** The die case (`(if c gcount gother)` at top level, a polymorphic
+> value with no concrete use) must die CHECK-SIDE with the §3.11.1 ambiguity
+> BEFORE codegen. typecheck's `find_ambiguous_value_position`
+> (`program/finalize.rs`) already scans if/match/vec positions but is skipped for
+> a top-level POLYMORPHIC expression (the known unlanded gap: typecheck
+> CLAUDE.md "the §3.11 ambiguity gate … Not yet landed … reported to /sprint as a
+> coordinated seam"). **These three are a typecheck §3.11 finalization fix, out
+> of backend narrow-deployment.** They stay RED as failing-not-ignored repros
+> (their own record+trigger — no redundant FIXME per the "no FIXME with a failing
+> test" rule). The dispatch's "backend backstop flips them green / 13 → 8" is
+> therefore not achievable backend-only; the honest outcome is **13 → 11**, and
+> the 0585 CLASS closes when the typecheck §3.11 leg lands alongside this
+> backstop. Recommend `/sprint` schedule a typecheck `/dev` deployment for the
+> §3.11.1 top-level-polymorphic-value gate.
+
+**3. vec-assoc UAF ×2 (VA-1/VA-2) — ROOT-CAUSED + FIXED, behaviorally verified.**
+- **Root cause (RC-trace + CLIF evidenced).** `(defn assoc [v i x] (vec-set v i
+  x))`: the COW in-place arm (rc==1) returns the SAME Vec pointer, so `v`'s
+  reference transfers into the returned Vec — but `v` is a heap param that
+  `pop_scope_with_cleanup` `rc_dec`s at scope exit (block4 in the CLIF decs `v3`
+  unconditionally), freeing the just-returned Vec. RC trace: one `alloc rc=1` →
+  premature `free rc=0 len=3` BEFORE the caller's `vec-get` reads it → garbage /
+  `--link` SIGABRT. The identity fn `(idv [v] v)` is safe only because a bare-Var
+  return is a recognized move (`return_var_in_scope`); a COW-computed return that
+  ALIASES the param was not.
+- **Fix at the RC-emission seam** (not a symptom move). New free fn
+  `return_cow_source_in_scope` (`fn_compiler.rs`) recognizes a body that is
+  directly `(vec-set v …)`/`(vec-push v …)` with `v` a scope-frame binding →
+  records `FnCompiler::return_cow_source`. Two coordinated effects: (a) `v` folds
+  into `skip_var` so its scope-exit dec is suppressed (`protect_return_value`
+  no-ops when `skip_var` is set — no spurious inc); (b) `compile_vec_set`/
+  `compile_vec_push` (`vec_codegen.rs::cow_source_ownership`) flip the COW **copy**
+  branch from `Borrowed` to `Owned` so the copy path (which returns a FRESH Vec,
+  leaving `v` unreferenced) releases `v` itself — scope cleanup no longer does.
+  Both arms then decrement `v` exactly once: in-place transfers, copy releases.
+  Byte-identical when the pattern is absent (`Borrowed`, no emission) — hence
+  `golden_clif_w0b` unchanged.
+- **Behavioral verification (per the "verify fix, not symptom" rule).** exit=99
+  under `--run`; VA-1 (REPL, full value) + VA-2 (`--link`, exit 99, no SIGABRT)
+  GREEN; **10× `--run` deterministic 99**; RC trace balanced (one alloc, one free
+  — the free now lands AFTER the `vec-get` read). Copy-branch exercised with a
+  SHARED source (`w` used by both `assoc` and a later `vec-get w`) → `w` COPIED
+  (unmutated, `b=6`), result 105, clean exit, no leak/double-free — the `Owned`
+  copy branch verified. `vec-push` param-return variant → 30. **VA-4**
+  (`vec_cow_value_use_leak`, the leak-inversion fence, all 3) stays GREEN — no
+  over-correction into a leak.
+- **VA-3 unit pin** (`return_cow_source_tests`, 5 tests): vec-set/vec-push on a
+  returned scope param ⇒ `Some(v)`; identity bare-Var return, non-frame source,
+  and `vec-get` (non-mutating) ⇒ `None`. Pins the ownership DECISION at the seam.
+
+**Release gate:** `cargo check -p cranelisp-backend` (lib + `--tests`) zero-warning;
+`clippy --all-targets` no new lints in touched files; no public-API/schema/cache
+change (CACHE_SCHEMA_VERSION stays 19, backend-internal). Full suite 11 RED (the
+13 W1 baseline − VA-1/VA-2); every RED traces to a known open defect (VP-3/4/5
+typecheck §3.11, R16/R17 ×2, 0590 ×2, spec_05 ×2, ownership_reuse, SG-1 derive).
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
