@@ -58,7 +58,8 @@ string_newtype!(ModuleFullPath);   // dotted path: "core.option", "user"
 string_newtype!(TraitName);        // trait name: "Num", "Display"
 string_newtype!(TypeName);         // type name: "Int", "Option"
 string_newtype!(ModuleName);       // single component: "option", "core"
-string_newtype!(LinkerSymbol);        // JIT linker name: "add$Int+Int"
+string_newtype!(JitSymbol);        // JIT symbol name (mangled): "add$Int+Int"
+string_newtype!(LinkerSymbol);     // linker-level symbol name
 
 /// Fully qualified symbol: module path + local name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -695,7 +696,7 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 
 **`ConcreteType` — the concrete-only codegen-boundary type (S84 user ruling 2026-06-16; Phase-1 scaffold landed; `design/arch/concrete-boundary-type.md`; FIXME 0383).** The user re-direction: generics should not be *representable* at the backend boundary at all. `ConcreteType` (`crates/cranelisp-types/src/concrete.rs`) is the concrete subset of `Type` — Int/Bool/String/Float, concrete `Fn`, concrete `ADT(FQTypeName, Vec<ConcreteType>)` — with **NO `Var` and NO `TyConApp` variant** (recursion on `ConcreteType`, so concreteness is total at every depth; derives `Eq+Hash`, which `Type` cannot). The **single fallible conversion** `ConcreteType::from_type(&Type) -> Result<ConcreteType, NotConcrete>` succeeds iff fully concrete; its `Err(NotConcrete::Var | HktHead)` IS the unified ambiguity/could-not-monomorphise error that today scatters across three guards (the §3.11.1 check, mono-failure, `classify(Var)` panic). This is Principle 18 applied to the boundary type itself — the fullest expression of Principle 20: where the slot gate made *callability* structural, `ConcreteType` makes *value-representation* structural. **Disposition vs the two predicates above:** once the arc's Phase 3 lands (`HeapCategory::classify` takes `ConcreteType`), `is_representation_undetermined()` and the §3.11.1 standalone scan are **subsumed by the conversion** and retired; `is_concrete()` survives, re-expressed as `from_type(..).is_ok()`, still the typecheck slot-gate predicate (it operates on `Type` *before* conversion). The boundary backstops (FIXME 0375/0381) are **deleted, not re-armed** — a `Type::Var` becomes inexpressible at the seam. **Phase-1 scaffold (landed):** the type + conversion + `NotConcrete`, additive `public-api.txt` (27 lines), no cache bump, dead code until Phase 2 (mono produces it) + Phase 3 (backend consumes it). Full arc + honest per-phase sizing: `design/arch/concrete-boundary-type.md`.
 
-**`MonoExpr` — the post-monomorphisation codegen AST (S84 concrete-boundary arc Phase 2a, landed; `design/arch/concrete-boundary-type.md` §2.4; FIXME 0383).** A parallel codegen view of `Expr` (`crates/cranelisp-types/src/mono_expr.rs`) whose every node carries `ty: ConcreteType` **non-optionally** in place of `Expr`'s `inferred_type: Option<Box<Type>>` — a generic / `Type::Var` is *structurally unrepresentable* on a codegen node (there is no `Type` field on `MonoExpr` at all; the fullest expression of the user ruling — generics "shouldn't even be REPRESENTABLE there"). `MonoExpr` mirrors `Expr`'s 14 non-`Annotate` variants; the `Annotate` node is **erased** (collapsed to its inner node at build); `Lambda` param `TypeExpr` annotations are erased (the concrete param types ride in the lambda's `ConcreteType::Fn`); match arms are carried by a sibling `MonoMatchArm { pattern: Pattern, body: MonoExpr, span }` (pattern reused verbatim — it carries no type annotation); `Apply`/`Var` carry `resolved_call: Option<Box<ResolvedCall>>` and every node carries `span: Span` (the backend overlays span-keyed side maps). The mono-defn wrapper is `MonoDefnVariant { name: Symbol, params: Vec<Symbol>, body: MonoExpr, span }` (the typecheck mono pass builds it at the Phase-2b seam — `monomorphise_call`, immediately after `apply_subst_to_defn`). The **fallible builder** `MonoExpr::from_expr(&Expr) -> Result<MonoExpr, NotConcrete>` walks an `inferred_type`-annotated `Expr`, converting each node via `ConcreteType::from_type`, and **fails at the first non-concrete node** (`NotConcrete::Var`/`HktHead`) **or un-annotated node** (`NotConcrete::Var(0)` sentinel) — THIS failure is the unified ambiguity/could-not-monomorphise error. Derives `Debug, Clone, Serialize, Deserialize` (no `PartialEq`/`Eq` — `Expr` cannot, carrying `f64`); accessors `span()`/`ty()`. **Phase 2a (landed):** the representation + builder + 10 unit tests, additive `public-api.txt`, **`CACHE_SCHEMA_VERSION` bumped 6 → 7** (the mono serde shape participates in the cached `.meta.json` surface). Produces-but-unused for codegen — the backend still reads `Expr.inferred_type` until Phase 3; the typecheck mono pass wires `from_expr` in Phase 2b (/dev(typecheck)).
+**`MonoExpr` — the post-monomorphisation codegen AST (S84 concrete-boundary arc Phase 2a, landed; `design/arch/concrete-boundary-type.md` §2.4; FIXME 0383).** A parallel codegen view of `Expr` (`crates/cranelisp-types/src/mono_expr.rs`) whose every node carries `ty: ConcreteType` **non-optionally** in place of `Expr`'s `inferred_type: Option<Box<Type>>` — a generic / `Type::Var` is *structurally unrepresentable* on a codegen node (there is no `Type` field on `MonoExpr` at all; the fullest expression of the user ruling — generics "shouldn't even be REPRESENTABLE there"). `MonoExpr` mirrors `Expr`'s 14 non-`Annotate` variants; the `Annotate` node is **erased** (collapsed to its inner node at build); `Lambda` param `TypeExpr` annotations are erased (the concrete param types ride in the lambda's `ConcreteType::Fn`); match arms are carried by a sibling `MonoMatchArm { pattern: Pattern, body: MonoExpr, span }` (pattern reused verbatim — it carries no type annotation; S109 §10 later adds `resolved_ctor: Option<FQSymbol>`); `Apply`/`Var` carry `resolved_call: Option<Box<ResolvedCall>>` and every node carries `span: Span` (S110 0583 later moves the resolved STORAGE identity onto the nodes themselves as `resolved_target` — see §Method Resolutions). The mono-defn wrapper is `MonoDefnVariant { name: Symbol, params: Vec<Symbol>, body: MonoExpr, span }` (the typecheck mono pass builds it at the Phase-2b seam — `monomorphise_call`, immediately after `apply_subst_to_defn`). The **fallible builder** `MonoExpr::from_expr(&Expr) -> Result<MonoExpr, NotConcrete>` (as of S110 0583 the signature carries two further REQUIRED span-keyed sidecar parameters, `pattern_ctors` + `resolved_targets`, and the lenient counterpart `lenient_from_expr` lives beside it — §Method Resolutions) walks an `inferred_type`-annotated `Expr`, converting each node via `ConcreteType::from_type`, and **fails at the first non-concrete node** (`NotConcrete::Var`/`HktHead`) **or un-annotated node** (`NotConcrete::Var(0)` sentinel) — THIS failure is the unified ambiguity/could-not-monomorphise error. Derives `Debug, Clone, Serialize, Deserialize` (no `PartialEq`/`Eq` — `Expr` cannot, carrying `f64`); accessors `span()`/`ty()`. **Phase 2a (landed):** the representation + builder + 10 unit tests, additive `public-api.txt`, **`CACHE_SCHEMA_VERSION` bumped 6 → 7** (the mono serde shape participates in the cached `.meta.json` surface). Produces-but-unused for codegen — the backend still reads `Expr.inferred_type` until Phase 3; the typecheck mono pass wires `from_expr` in Phase 2b (/dev(typecheck)).
 
 **`ModuleEntry::Def.codegen_view` — the concrete-boundary threading field (S84 concrete-boundary arc Phase 3, threading shape LANDED; `design/arch/concrete-boundary-type.md` §3.0/§4 Phase 3).** The threading decision — how `MonoExpr` reaches the backend per codegen-bound entry — is ruled **option (a), additive field**: `ModuleEntry::Def` gains `codegen_view: Option<MonoDefnVariant>` (`crates/cranelisp-types/src/module.rs`) **alongside** the existing `ast: Option<DefnVariant>`. The backend's Phase-3 read path consumes `codegen_view`'s `MonoDefnVariant.body: MonoExpr` — `ty: ConcreteType` on every node, so **no `Type`/`Var` on the read path by construction** (Principle 18/20). Read through `ModuleEntry::codegen_view(&self) -> Option<&MonoDefnVariant>` (`None` for non-`Def` and non-codegen entries); populated via `DefBuilder::codegen_view(self, MonoDefnVariant) -> Self`. **NOT a type-swap of `ast`** (`Option<DefnVariant>` → `Option<MonoDefnVariant>` would break ~26 literal-construction sites + the `Defn`-reconstruction path at once — a non-green cascade); the additive field defaults `None`, keeping the build green and letting /dev migrate the read path incrementally. **NOT a separate structure `compile_to_module` takes** (rejected — that re-introduces the transitional parallel-`Vec` shape at the crate boundary; the view belongs ON the entry, the symbol table being the per-symbol codegen-input carrier, Principle 7). **Populated for BOTH codegen-bound cases:** monomorphised instances (the mono-population seam moves the already-built `MonoDefnVariant` off the transitional `CheckState.mono_variants` parallel `Vec` onto the entry — `register_mono_entry`), AND ordinary concrete (`UserFnState::Concrete`) defns (the same `MonoExpr::from_expr` over the annotated body at the body-check `.ast(...)` sites). Template kinds / primitives / special forms get `None` — correctly not codegen targets. **Landed:** the field + accessor + setter (+3 additive `public-api.txt` lines), `CACHE_SCHEMA_VERSION` **7 → 8** (the serialized `ModuleEntry::Def` shape changed; `#[serde(default)]` field, no pointer/`C` state). The backend's consumption (classify-becomes-total, the ~13 `inferred_type` read sites → `MonoExpr.ty()`, `compile_to_module` reads `codegen_view`, the single relocated `expect` backstop) is /dev(backend) — FIXME 0391; the typecheck population move is /dev(typecheck) — FIXME 0392.
 
@@ -739,34 +740,60 @@ pub struct DisplayInfo {
 ### Method Resolutions
 
 ```rust
-/// Map from call site span to resolution.
-pub type MethodResolutions = HashMap<Span, ResolvedCall>;
+/// Typecheck's span-keyed resolution sidecars. A `#[non_exhaustive]` newtype
+/// struct since S69 (the v1 `type MethodResolutions = HashMap<Span, ResolvedCall>`
+/// alias is retired — S-DRIFT-8); `pattern_ctors` added S70 (finding #4,
+/// Decision 47); `resolved_targets` added S110 (FIXME 0583).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MethodResolutions {
+    /// Per-`Apply`-span resolution: how typecheck resolved each call site.
+    pub resolved_calls: HashMap<Span, ResolvedCall>,
+    /// Per-`Pattern::Constructor`-span FQ resolution (Decision 47).
+    pub pattern_ctors: HashMap<Span, FQSymbol>,
+    /// Per-reference-span resolved STORAGE identity (S110 0583) —
+    /// "whichever storage key HIT". See the carrier narrative below.
+    #[serde(default)]
+    pub resolved_targets: HashMap<Span, FQSymbol>,
+}
 
 /// How a function call was resolved by the typechecker.
+/// (`FQTraitName`/`FQTypeName` per Decision 47; `JitSymbol` per the newtype table.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ResolvedCall {
     TraitMethod {
-        trait_name: TraitName,
+        trait_name: FQTraitName,
         method_name: Symbol,
-        impl_type: TypeName,
-        mangled_name: LinkerSymbol,
+        impl_type: FQTypeName,
+        mangled_name: JitSymbol,
+        /// The module whose table stores the selected mangled method `Def`
+        /// (the impl-WRITER's module — S110 W0.1b; amended Decision 45).
+        /// REQUIRED (no `#[serde(default)]`, Principles 18/20).
+        impl_module: ModuleFullPath,
     },
-    SigDispatch {
-        mangled_name: LinkerSymbol,
-    },
+    SigDispatch { mangled_name: JitSymbol },
     AutoCurry {
         target_name: Symbol,
         applied_count: usize,
         total_count: usize,
         trait_resolution: Option<Box<ResolvedCall>>,
     },
-    BuiltinFn {
-        name: Symbol,
-    },
+    BuiltinFn { name: Symbol },
 }
 ```
 
-No changes from v1.
+**`resolved_targets` — the 0583 keyed-consumer carrier (S110 W0 `41fab350` + W1.1, landed; `design/arch/backend-keyed-consumer.md` §1.1–§1.1.3).** The one carrier behind the backend-as-pure-keyed-lookup-consumer contract (Principle 24 "Resolve once"; BC §3 invariant 10 is the consumer statement, BC §2 the producer obligation — this paragraph narrates the types surface, not those). Three pieces, one identity:
+
+- **The sidecar** — `resolved_targets: HashMap<Span, FQSymbol>` (`check.rs`; the `pattern_ctors` mirror), keyed by the *referencing* node's span: `Expr::Var.span` for value/callee references, `Expr::Apply.span` for dispatch-leg resolutions that resolve at the Apply. Local variables / lambda params are not table-resolved and carry no entry.
+- **The mono-view fields** — `MonoExpr::{Var,Apply}.resolved_target: Option<FQSymbol>` (`mono_expr.rs`, both `#[serde(default)]`), populated from the sidecar at view-build time. The backend keys ONE direct fetch on this value and hard-errors on a carrier-miss for a table-reference kind — it never re-resolves a name.
+- **The unforgettable parameter** — `MonoExpr::from_expr(expr, pattern_ctors, resolved_targets)` takes both span-keyed sidecars as REQUIRED parameters (the S109 §10 template, Principle 18): a new view-build site cannot forget to thread the carriers because the signature demands them. The **lenient builder relocated beside it** (`MonoExpr::lenient_from_expr`, moved from the backend in W0.b per `backend-keyed-consumer.md` §5) takes the same two parameters — view construction has ONE home in `cranelisp-types` and **typecheck is the sole mono-view producer**; the backend builds no views on the live path. Synthetic bodies (ctor/accessor synthesis) are `Span::SYNTHETIC` on every node — structurally outside span-keyed transport — so their carriers are populated DIRECTLY at synthesis, not through the maps.
+
+**Semantics — "whichever storage key HIT" (§1.1).** The recorded `FQSymbol` is the *storage* identity: module + the exact symbol-table key the typecheck resolution terminated at (bare `m/f`; canonical `m/Type.Ctor` for sum ctors and accessors; mangled `m/f$Int+Int` / `m/Trait.method$Type` for mono/dispatch instances; `primitives/add-i64` for a primitive). It is NOT the written name and NOT a display name. The binding **value-source rule** (§1.1.2, the FIXME-0620 close): every insert comes from exactly one of *walk-resolved* (`Resolved::storage_fq()` — see "The two identities on `Resolved`" under §"Resolution primitive" below; `Resolved.fq` composes the WRITTEN spelling, which is an alias for member-canonical keys and renamed imports), *mint-resolved* (the exact probe/registration key in hand at the seam), or *transport* (copying an existing carrier entry to a new span). A value composed from a written spelling is the 0620 defect class. The per-kind carrier-value matrix, the recorder census, and the map-provenance (check-run pairing) rule live in `backend-keyed-consumer.md` §1.1.2–§1.1.3 — not duplicated here; per-field authority is the `check.rs` / `mono_expr.rs` rustdoc. Cache: the carrier fields rode `CACHE_SCHEMA_VERSION` 18→19 (W0); the subsequent value-conformance fixes stayed inside the schema-19 window.
+
+`resolved_calls` stays supplementary dispatch metadata (inline-builtin intercepts, auto-curry counts, trait resolution for the as-value wrapper) — the backend never reads it as the keyed-lookup carrier; `resolved_targets` is the ONE carrier.
+
+**`ResolvedCall::TraitMethod.impl_module` — the dispatch-leg storage module (S110 W0.1b `144828d1`; `backend-keyed-consumer.md` §1.1.1).** The resolution PRODUCT half of the amended Decision 45 (see §Module Entries below for the `ModuleEntry::TraitImpl.impl_module` twin): a trait-leg's selected mangled method `Def` lives in the impl-WRITER's module, not the trait's home and not the caller's. `try_resolve_trait_method` reads the module off the `TraitImpl` shell that grounds the selected mangle and records it here, where the resolution happens; downstream consumers (`dispatch_target_fq`, the `callees` edge) READ the field, never re-derive — deriving it as `current_module` was the W0.1 gap (wrong for every cross-module trait call, e.g. a prelude-written impl called from `user`). REQUIRED field, no `#[serde(default)]` (Principles 18/20). Landed inside the schema-19 window — no new `CACHE_SCHEMA_VERSION` bump.
 
 ### Monomorphised Definitions
 
@@ -1411,6 +1438,21 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         dll_path: PathBuf,
         platform_module: ModuleFullPath,
     },
+    /// A trait implementation — the DISCOVERY shell, keyed
+    /// `impl$FQTypeName$FQTraitName` in the TRAIT's defining module
+    /// (Decision 45 pattern (b), as amended S110 W0.1 — see narrative below).
+    TraitImpl {
+        trait_name: FQTraitName,
+        impl_type: FQTypeName,
+        /// The module whose table holds this impl's mangled method `Def`s and
+        /// their GOT slots (the impl-writer's module) — the discovery→storage
+        /// pointer. REQUIRED (no `#[serde(default)]`, Principles 18/20).
+        impl_module: ModuleFullPath,
+        /// Method names defined in this impl (local names, not mangled).
+        methods: Vec<Symbol>,
+        /// Always `Public` (spec §5.11.1); present for variant uniformity.
+        visibility: Visibility,
+    },
     Ambiguous,
 }
 
@@ -1420,6 +1462,8 @@ impl ModuleEntry {
 ```
 
 **`ModuleEntry::type_def_info() -> Option<&TypeDefInfo>` — the single "answers as a type" reader (S109 Phase 3, additive).** A type name survives in the table as one of two shapes (S79 Option 3a dual facet): a `ModuleEntry::TypeDef` (sum/enum) or a got-slotted product ctor `Def` carrying `DefKind::Constructor { type_def: Some(..) }` (type-name == ctor-name). Every consumer that needs an entry *as a type* — resolution, arity/exhaustiveness checks, introspection, **persistence** — reads this accessor instead of matching `ModuleEntry::TypeDef` directly; a bare `TypeDef` match is exactly the FIXME-0573 defect class (int's `save.rs generate_types` skipped product `deftype`s from backing-file persistence — silent data loss). Follows the `callable_got_slot()` read-through precedent (one accessor, no per-site re-patterning of the kind set); `type_ctor_names` (heap.rs) is the ctor-name projection over the same two-shape switch. Delegating consumers land in the S109 Phase-5 waves: typecheck's `type_def_view_of` (checker.rs) reduces to it; `save.rs` type emission keys on it. Read-side only — **no serde/cache impact**; +1 `public-api.txt` line.
+
+**`ModuleEntry::TraitImpl.impl_module` — the amended-D45 discovery→storage pointer (S110 W0.1b `144828d1`, landed; `design/arch/backend-keyed-consumer.md` §1.1.1; amends `design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md`).** An `(impl Trait Type …)` form written in module M splits across two placements. The `TraitImpl` **shell — the discovery record — lands in the TRAIT's defining module** (D45 pattern (b): importers chain-follow the trait reference back to its home and probe `impl$FQTypeName$FQTraitName` in O(1) — no closure walk, no cycle detection). The **mangled method `Def`s — the compilation record (`Trait.method$m/Type`) — land in M**, the impl-writer's module. This split is structurally forced, which is why D45's original method-co-location clause ("the method entries live in the same module that holds the `TraitImpl` entry") is AMENDED rather than the bodies moved: the bodies compile in M's codegen batch, and `compile_to_module` requires every compiled defn's entry + GOT slot in the compiling module's OWN table (relocating them would also push per-impl GOT-slot writes into shared tables — the 0604 write-race surface). `impl_module` is the pointer from the discovery record to the storage module, written from `state.current_module` at shell construction (`impl_check.rs`), so trait-method dispatch derives the selected entry's true home with one keyed probe — never a scan, never `current_module` (this resolves the callees.rs "Step 5" pending note and repairs the S101 session-transaction reverse index for cross-module trait calls). Its consumer twin is `ResolvedCall::TraitMethod.impl_module` (§Method Resolutions above), populated from this shell at resolution time. REQUIRED field — a defaulted `""` module is a representable-invalid state (Principle 20), and construction sites are forced to supply it (Principle 18). Landed inside the schema-19 window — no new `CACHE_SCHEMA_VERSION` bump. Per-field authority: the `module.rs` variant rustdoc.
 
 ### Definition Classification
 
