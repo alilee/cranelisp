@@ -41,7 +41,7 @@ skill; the authoritative inventory is the on-disk file set itself.
 
 ## 2. The Learning Sequence (current on-disk set)
 
-33 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
+35 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
 is the **capability taught**. Exit code is the documented `main` return
 (sum of sub-test passes); it is the value `tests/examples.rs` asserts.
 
@@ -82,6 +82,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively | 136 |
 | 34 | `34-async-io-leaf.cl` | Poll-shape platform IO leaf: an async effect (`async-read`) that SUSPENDS on the host reactor and RESUMES with its result, vs. the blocking effects of 21–24; independent poll-shape leaves overlap on one reactor thread. Teaches the poll-shape leaf MECHANISM the network "server-with-no-spawn" shape is built on | 4 |
 | 35 | `35-ctor-disambiguation.cl` | Same-named constructors across two in-scope types: the bare ctor name is ambiguous, the dotted `Type.Ctor` form disambiguates in VALUE position, and the dotted prefix in PATTERN position pins the scrutinee type (a cross-type dotted pattern is a compile-time type error). Builds on 06/10 | 100 |
+| 36 | `36-multi-arity.cl` | Multi-signature `defn` dispatch (§5.1.2): ARITY dispatch (clauses differ by parameter count), TYPE dispatch (same arity, different concrete param types `:Int`/`:Blob`/`:(Vec Int)`), and the arity-overload-for-defaults idiom (a shorter clause supplies a default and delegates to a longer one). The function-level counterpart to the multi-clause `defmacro` of 18/19; distinct from currying (25). Builds on 05/06/10/14/25 | 8 |
 
 ### Notes on specific entries
 
@@ -226,6 +227,27 @@ is the **capability taught**. Exit code is the documented `main` return
     (2026-07-10) via the exact harness invocation
     (`CRANELISP_PLATFORM_PATH=target/debug ./target/debug/cranelisp --run`).
 
+- **36-multi-arity** (S110 Phase 6b) — the first learning-sequence example of
+  multi-signature `defn` dispatch (spec §5.1.2). Unblocked by the S110 C-4 fix
+  (`303df28a`): an entry `main` whose body calls an overloaded fn previously
+  failed `--run`/`--link` with "entry module has no `main` function" (the
+  caller was generalized over the deferred overload-return var → slot-less
+  `Polymorphic` `(Fn [] (IO a))` → backend correctly declined codegen). With
+  the scoped re-generalize+reslot fix, that exact shape — which *every* example
+  uses — now dispatches and returns cleanly, mode-uniform. The example teaches
+  three facets, each verified `--run` == `--link`: ARITY dispatch (a `scale`
+  with 1/2/3-arg clauses; arity dispatch takes precedence over currying —
+  `(scale 5)` runs the 1-arg clause, does NOT curry the 2-arg one), TYPE
+  dispatch (a `measure` with `:Int`/`:Blob`/`:(Vec Int)` clauses, same arity),
+  and arity-overload-for-defaults (a `between` whose 2-arg clause defaults the
+  step and delegates to its 3-arg sibling). Eight pass=1 sub-tests → exit **8**,
+  stable over 5 `--run` invocations. **Prelude-surface note:** the `:(Vec Int)`
+  clause annotates a parameter with the `Vec` *type*, so the example adds
+  `(import [primitives [Vec]])` — the examples prelude re-exports the vec-*
+  *functions* but not the type. Per §5.1.2 clause-independence the element type
+  must be concrete: bare `:Vec` is rejected ("type argument count mismatch")
+  and `:(Vec a)` is rejected (parameter unpinned) — only `:(Vec Int)` pins.
+
 ## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
 
 > Both 6b candidates below were executed the same day: `33-redefinition.cl`
@@ -328,7 +350,8 @@ the spec when annotating coverage.)
 | Modules / imports / exports | 16 |
 | Macros (defmacro, quasiquote, multi-clause) | 18 |
 | Threading macros | 19 |
-| Multi-signature dispatch + auto-currying | 25 |
+| Auto-currying + partial application | 25 |
+| Multi-signature `defn` dispatch (arity + type + default-overload) | 36 |
 | Higher-kinded traits (Functor) | 26 |
 | Lazy sequences | 27 |
 | IO model (`Pure`, `bind`, platform IO, `read-line`) | 21, 22, 23, 24 |
@@ -359,6 +382,10 @@ to reconcile that table.
 
 ## Next skills
 
+- `/qa` (S110 Phase 6b) — reconcile the `tests/examples.rs` expected-exit table:
+  NEW file `36-multi-arity.cl` => **8** (verified stable over 5 `--run`
+  invocations 2026-07-16; `--run` == `--link`). No platform wiring needed
+  (pure primitives + a local `deftype`). Filed as FIXME 0629.
 - `/qa` (S106 Phase 6) — reconcile the `tests/examples.rs` expected-exit table:
   NEW file `34-async-io-leaf.cl` => **4** (verified stable over 5 `--run`
   invocations 2026-07-10). **No platform-wiring change is needed**: the
