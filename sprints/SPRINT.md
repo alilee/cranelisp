@@ -1998,6 +1998,10 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | W1 rule | /arch | 0620 member-alias carrier + producer re-sweep | (shim §II.3) | (shim) | — `dd759afc`: **class CLOSED** — walk surfaces `Resolved.storage_key`/`storage_fq()` (uniform, cures renamed-imports too); 19-row recorder-grounded table + carrier value-source rule (/review-enforced); types half landed |
 | W1 rd | /dev | W1 re-deploy (recorder flip + backend) | (shim §II.3) | (shim) | — `86038e27`: `storage_fq()` recorder flip + stash pop + S3/S4 ctor keyed + 24 fixtures; golden 5/5; **13-RED baseline restored, W1 LANDED**, zero regressions |
 | W2 | /dev | value seam + 0585 backstop + vec-assoc (S10–S18) | (shim §II.3) | (shim) | — `369c226c`: value seam resolver-free; **vec-assoc UAF root-caused+fixed+behaviorally-verified** (VA-1/2 GREEN, VA-3 pin, VA-4 fence); 0585 backend backstop landed. Baseline **13→11**. **VP-3/4/5 owe a typecheck §3.11.1 leg** (couples R16/R17) |
+| W2 rev | /review | W2 change-set | (shim §II.3) | (shim) | — `143d6fb4`: **CLEAN for W3**; but vec-assoc fix is NARROW — sibling UAFs live (let/match COW-return), root = ownership `transfer.rs:590` Fresh-default for summary-less COW → typecheck class-fix owed (route /arch) |
+| W3 | /dev | delete resolver + grep gate | (shim §II.3) | (shim) | — **BLOCKED** (`f6f88152` note+FIXME): staged deletion green in isolation but cross-module mono `pattern_ctors` hard-miss → FIXME 0622 (/arch); W3 backend STASHED |
+| W3 rule | /arch | 0622 + exhaustive producer sweep | (shim §II.3) | (shim) | — `4d7aee66`: **4th axis found+closed** = MAP-INSTANCE (read enclosing vs per-instance map); §1.1.3 3×9 matrix; fix = "read the right map" (3 edits); +1 sibling (test-fn roots). **Producer space CLOSED** |
+| W3 rd | /dev | W3 re-deploy (0622 fix + deletion) | (shim §II.3) | (shim) | — `4c899dd9`+`be06f6cb`: read-the-right-map + stash pop; **grep-zero (−993 LOC), golden 5/5, 11-RED restored**. **0583 BACKEND HALF COMPLETE** |
 
 ## Notes
 
