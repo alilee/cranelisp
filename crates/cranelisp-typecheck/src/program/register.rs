@@ -925,10 +925,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // discovery contract pins it to `(Fn [] (Option String))`, so the
             // body (`None`) is concrete and `from_expr` succeeds (best-effort
             // per `build_concrete_codegen_view`).
+            //
+            // The check-run pairing rule (S110 W3.1, FIXME 0622,
+            // `backend-keyed-consumer.md` §1.1.3): build the view from the SAME
+            // `MethodResolutions` instance the per-root `recheck_body_for_mono`
+            // above populated (`resolutions`), NOT the enclosing
+            // `state.method_resolutions`. Correct-by-reach when the root's mint
+            // is same-run as its form check; the cross-run retry edge (a root
+            // left `Polymorphic` by a failed recheck, re-attempted in a later
+            // run) reads a map WITHOUT the body's spans off the enclosing map —
+            // the sibling cell of the mono-instance 0622 gap.
             let codegen_view = concrete_defn
                 .variants
                 .first()
-                .and_then(|v| build_concrete_codegen_view(&name, v, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets));
+                .and_then(|v| build_concrete_codegen_view(&name, v, &resolutions.pattern_ctors, &resolutions.resolved_targets));
 
             // Re-register the entry under the BARE name as `Concrete{slot}`,
             // carrying the concrete scheme + annotated body. Allocate a fresh

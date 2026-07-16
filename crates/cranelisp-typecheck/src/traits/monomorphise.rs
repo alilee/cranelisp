@@ -211,7 +211,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &concrete_param_types,
             &concrete_ret_ty,
             defn.span,
-            &resolutions.resolved_targets,
+            &resolutions,
         )?;
 
         Ok(Some(mono_defn))
@@ -504,19 +504,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
         defn_span: Span,
-        resolved_targets: &HashMap<Span, FQSymbol>,
+        resolutions: &MethodResolutions,
     ) -> Result<MonoDefn, CranelispError> {
-        // `resolved_targets` (S110 0583 leg 1, FIXME 0616) is the PER-INSTANCE
-        // mono `resolutions.resolved_targets`, NOT `state.method_resolutions`:
-        // `recheck_body_for_mono` restored the enclosing map before this seam,
-        // and the enclosing map carries no mono-time dispatch SELECTIONS (a
-        // self-call / sig-dispatch is minted per instance — `f$Int` vs `f$Float`
-        // at the SAME template span, so a shared map would collide). The local
-        // map carries the mono body's Var-ref carriers (recheck infer_var) AND
-        // the dispatch carriers (P4/P5 seams). `pattern_ctors` stays on the
-        // enclosing map: template ctors are instance-INVARIANT (same span → same
-        // ctor), so the original template check's entries serve every instance.
-        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &state.method_resolutions.pattern_ctors, resolved_targets) {
+        // The check-run pairing rule (S110 W3.1, FIXME 0622,
+        // `backend-keyed-consumer.md` §1.1.3): a codegen view is built from the
+        // SAME `MethodResolutions` instance that the body-check run which
+        // annotated this body populated — never from a map restored from,
+        // accumulated for, or belonging to a different check run.
+        //
+        // Here that instance is the PER-INSTANCE `resolutions` returned by
+        // `recheck_body_for_mono` (which switched `current_module` to `home` and
+        // re-recorded every carrier for this instance: `infer_var` Var-refs, the
+        // P4/P5 dispatch selections, the in-swap auto-curry drain, AND — via
+        // `check_constructor_pattern` → `instantiate_ctor` — every ctor-pattern
+        // span, defining-module-correct). It is NOT `state.method_resolutions`:
+        // `recheck_body_for_mono` restored the ENCLOSING map before this seam,
+        // and that map carries neither the mono-time dispatch SELECTIONS (a
+        // self-call / sig-dispatch minted per instance — `f$Int` vs `f$Float` at
+        // the SAME template span, so a shared map would collide) NOR — the 0622
+        // fix — the template's `pattern_ctors` when the template was checked in a
+        // DIFFERENT run (cross-module, or cross-check-run same-module REPL-
+        // incremental). Read BOTH sidecars off the one per-instance map.
+        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &resolutions.pattern_ctors, &resolutions.resolved_targets) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
                 MonoDefnVariant {

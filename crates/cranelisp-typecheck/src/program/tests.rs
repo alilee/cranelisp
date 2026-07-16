@@ -2576,6 +2576,166 @@
         );
     }
 
+    // ---------------------------------------------------------------------
+    // S110 W3.1 (§1.1.3, FIXME 0622) — the map-provenance close. A mono
+    // instance of a generic ctor-pattern template must carry its match arm's
+    // `resolved_ctor` = the ctor's canonical STORAGE key. The mono view is
+    // built at `finalize_mono_codegen_view` from the PER-INSTANCE recheck's
+    // `MethodResolutions` (the check-run pairing rule) — NOT the enclosing
+    // run's `pattern_ctors`, which lacks the template's pattern spans whenever
+    // the template was checked in a DIFFERENT run: cross-module (the filed
+    // repro) OR cross-run same-module (REPL-incremental — the run-1 map is
+    // swept at finalize before the run-2 mint). The recheck re-records every
+    // ctor-pattern span under the `home` switch, so the per-instance map is
+    // complete for all three carriers; the fix is read-the-right-map.
+    // Cross-module + cross-run pins are RED on main (the arm carried `None`);
+    // the same-run pin is the regression guard (correct on main too).
+    // spec: design/arch/backend-keyed-consumer.md §1.1.3
+    // ---------------------------------------------------------------------
+
+    /// Walk a `MonoExpr` collecting every reachable `MonoMatchArm.resolved_ctor`
+    /// (source order).
+    fn collect_resolved_ctors(e: &MonoExpr, out: &mut Vec<Option<FQSymbol>>) {
+        match e {
+            MonoExpr::Match { scrutinee, arms, .. } => {
+                collect_resolved_ctors(scrutinee, out);
+                for arm in arms {
+                    out.push(arm.resolved_ctor.clone());
+                    collect_resolved_ctors(&arm.body, out);
+                }
+            }
+            MonoExpr::Apply { callee, args, .. } => {
+                collect_resolved_ctors(callee, out);
+                for a in args {
+                    collect_resolved_ctors(a, out);
+                }
+            }
+            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+                collect_resolved_ctors(cond, out);
+                collect_resolved_ctors(then_branch, out);
+                collect_resolved_ctors(else_branch, out);
+            }
+            MonoExpr::Let { bindings, body, .. } => {
+                for (_, b) in bindings {
+                    collect_resolved_ctors(b, out);
+                }
+                collect_resolved_ctors(body, out);
+            }
+            MonoExpr::Lambda { body, .. } => collect_resolved_ctors(body, out),
+            _ => {}
+        }
+    }
+
+    /// Find a mono-instance ctor-pattern view in `module`: scan every mangled
+    /// mono `Def` (name contains `mangle_frag`) whose `codegen_view` body holds
+    /// a ctor-pattern arm, and return that FIRST arm's `resolved_ctor`. Outer
+    /// `Option` = a mono ctor-pattern view was found; inner = its carrier.
+    fn mono_match_arm_ctor(
+        tc: &TestFixture,
+        module: &str,
+        mangle_frag: &str,
+    ) -> Option<Option<FQSymbol>> {
+        let st = tc.modules.get(&ModuleFullPath::from(module))?;
+        for (name, entry) in st.all_symbols() {
+            if !name.as_ref().contains(mangle_frag) {
+                continue;
+            }
+            if let ModuleEntry::Def { codegen_view: Some(v), .. } = entry {
+                let mut ctors = Vec::new();
+                collect_resolved_ctors(&v.body, &mut ctors);
+                if let Some(first) = ctors.into_iter().next() {
+                    return Some(first);
+                }
+            }
+        }
+        None
+    }
+
+    // Pin (iii) — same-run regression guard. Template + first concrete call in
+    // ONE check run: the live map accumulates the `Box` pattern span across the
+    // run, so P7 reads it correctly regardless of the fix. Must stay GREEN.
+    #[test]
+    fn mono_ctor_pattern_view_same_run_carries_resolved_ctor() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype (Box a) (Box [:a val]))\n\
+             (defn get [b] (match b [(Box v) v]))\n\
+             (defn use-box [] :primitives/Int (get (Box 5)))",
+        );
+        let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+            .expect("get$Int mono instance with a ctor-pattern view must exist");
+        assert_eq!(
+            arm_ctor,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: Symbol::from("Box"),
+            }),
+            "same-run mono ctor-pattern arm must carry test/Box (regression pin)"
+        );
+    }
+
+    // Pin (ii) — cross-run same-module (REPL-incremental) twin. RED on main.
+    #[test]
+    fn mono_ctor_pattern_view_cross_run_same_module_carries_resolved_ctor() {
+        let mut tc = tc_with_prims();
+        // Run 1: define the generic ctor-pattern template. Its `Box` pattern
+        // span is recorded into run 1's `MethodResolutions`, then TAKEN (swept)
+        // at finalize — gone by run 2.
+        check_src(
+            &mut tc,
+            "(deftype (Box a) (Box [:a val]))\n\
+             (defn get [b] (match b [(Box v) v]))",
+        );
+        // Run 2: the first concrete call mints get$Int. The enclosing run-2 map
+        // has NO `Box` pattern span (run 1's was swept), so the pre-fix
+        // view-build read `None`; the per-instance recheck re-records it.
+        check_src(&mut tc, "(defn use-box [] :primitives/Int (get (Box 5)))");
+        let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+            .expect("get$Int mono instance with a ctor-pattern view must exist");
+        assert_eq!(
+            arm_ctor,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: Symbol::from("Box"),
+            }),
+            "cross-run same-module mono ctor-pattern arm must carry test/Box \
+             (0622: was None on main — run-1's map was swept before the run-2 mint)"
+        );
+    }
+
+    // Pin (i) — cross-module twin (the filed 0622 repro). RED on main.
+    #[test]
+    fn mono_ctor_pattern_view_cross_module_carries_resolved_ctor() {
+        let mut tc = tc_with_prims();
+        // The generic ctor-pattern template lives in module `lib`.
+        tc.set_current_module(ModuleFullPath::from("lib"));
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(
+            &mut tc,
+            "(deftype (Box a) (Box [:a val]))\n\
+             (defn get [b] (match b [(Box v) v]))",
+        );
+        // The caller in `test` imports the ctor + fn and calls at a concrete
+        // type; pass4 mints the cross-module mono, whose recheck runs under the
+        // `home = lib` switch and re-records the `Box` pattern in lib's scope.
+        tc.set_current_module(ModuleFullPath::from("test"));
+        seed_specific_import(&mut tc, &ModuleFullPath::from("lib"), &["Box", "get"]);
+        check_src(&mut tc, "(defn use-box [] :primitives/Int (get (Box 5)))");
+        let arm_ctor = mono_match_arm_ctor(&tc, "test", "get$")
+            .expect("cross-module get$Int mono with a ctor-pattern view must exist");
+        assert_eq!(
+            arm_ctor,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("lib"),
+                symbol: Symbol::from("Box"),
+            }),
+            "cross-module mono ctor-pattern arm must carry lib/Box (the DEFINING \
+             module's storage key), resolved by the per-instance recheck under \
+             the home switch (0622: was None on main)"
+        );
+    }
+
     // W0.b (§5 proof obligation 2) — the TOTALIZATION pin: every codegen-reached
     // `defined_symbols()` entry carries a codegen_view after check (the backend's
     // view-absent hard error is the runtime twin). Ctor + accessor synthetic

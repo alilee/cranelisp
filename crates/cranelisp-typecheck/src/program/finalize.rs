@@ -673,6 +673,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (`finalize_annotations_and_publish`) sees them — the carrier rides
         // UNREAD until W1, so this is behaviour-invariant.
         accumulator.resolved_targets.extend(taken.resolved_targets);
+        // S110 W3.1 (§1.1.3, FIXME 0622): sweep the THIRD `MethodResolutions`
+        // sidecar too. Harmless today (no post-pass records pattern ctors into
+        // `state.method_resolutions` — the mono/test-root rechecks swap in their
+        // own per-instance maps), but a partial sweep of a 3-field struct is how
+        // the next map-provenance starvation hides. Extend all three so the
+        // accumulator is the total authoritative source (behaviour-invariant).
+        accumulator.pattern_ctors.extend(taken.pattern_ctors);
         accumulator.expr_types.extend(
             std::mem::take(&mut state.expr_types),
         );
