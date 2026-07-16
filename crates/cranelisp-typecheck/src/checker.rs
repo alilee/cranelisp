@@ -245,7 +245,20 @@ pub struct CheckState {
     /// recursion LOCAL (env-shadowed), yet the backend keys it through the
     /// fn's own storage slot, so its `resolved_targets` carrier is the
     /// enclosing defn's own FQ. Compared by name only (`as_deref`).
+    ///
+    /// **`None` when the fn's own name is also a PARAM** (`(defn f [f] …)`):
+    /// a param named identically to the fn is a genuine LOCAL (a backend
+    /// param), not the self-recursion slot, so the carve-out must not fire
+    /// (FIXME 0619 item 2). The recursion binding is still installed for body
+    /// type inference — suppressing `current_defn` gates only the carrier.
     pub(crate) current_defn: Option<Symbol>,
+    /// The scope-frame index (0 = base) holding the enclosing defn's recursion
+    /// binding, captured by `check_defn_body`. The self-recursion carve-out
+    /// records a carrier ONLY when the referenced name resolves at THIS frame —
+    /// a same-named nested `let`/`fn` binding resolves in a deeper frame and is
+    /// a LOCAL reference, not self-recursion (FIXME 0619 item 2). `None`
+    /// outside a `check_defn_body` body.
+    pub(crate) current_defn_frame: Option<usize>,
 }
 
 impl CheckState {
@@ -268,6 +281,7 @@ impl CheckState {
             deferred_accessor_collisions: Vec::new(),
             synthesised_accessor_names: std::collections::HashSet::new(),
             current_defn: None,
+            current_defn_frame: None,
             accessor_owning_types: HashMap::new(),
             current_module: module,
             rigid_vars: HashSet::new(),
@@ -1418,7 +1432,21 @@ where
             // feeds' gates are semantically different — a self-edge is unwanted
             // in the call graph, yet the self-call IS a table reference the
             // backend keys. `resolved_targets` only; never `callees`.
-            if state.current_defn.as_deref() == Some(name) {
+            //
+            // The carve-out fires ONLY for a GENUINE self-recursive reference —
+            // the enclosing defn's OWN recursion binding, which resolves at
+            // `current_defn_frame` (`check_defn_body`'s frame). A same-named
+            // nested USER binding — a `let`/`fn` rebinding `f` (resolving in a
+            // DEEPER frame), or a param named `f` (which suppresses
+            // `current_defn` at `check_defn_body`) — is a LOCAL reference:
+            // nothing table-resolved HIT (§1.1 "whichever storage key HIT"), so
+            // no carrier entry (the backend's local-`variables` check handles
+            // it). Recording the enclosing fn's FQ on a local Var over-matched
+            // (FIXME 0619 item 2) — harmless only by the backend's
+            // locals-before-keyed-read ordering; now provenance-correct here.
+            if state.current_defn.as_deref() == Some(name)
+                && state.env.lookup_frame(name) == state.current_defn_frame
+            {
                 let fq = FQSymbol {
                     module: state.current_module.clone(),
                     symbol: Symbol::from(name),

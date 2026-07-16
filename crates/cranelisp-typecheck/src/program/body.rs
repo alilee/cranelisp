@@ -632,12 +632,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         state.rigid_vars = rigid;
         state.written_var_scope = Some(written_var_scope);
-        // Install the enclosing defn's name so `record_reference_target`'s
-        // self-recursion carve-out (S110 0583 leg 2) can record the fn's own
-        // storage FQ for a self-call — the recursion name is env-shadowed here
-        // (bound below for recursion typing), so the ordinary carrier path
-        // skips it. Torn down with the rest of the per-body state on every exit.
-        let prev_defn = state.current_defn.replace(defn.name.clone());
+        // Install the enclosing defn's name + its recursion-binding frame so
+        // `record_reference_target`'s self-recursion carve-out (S110 0583 leg 2)
+        // can record the fn's own storage FQ for a GENUINE self-call — the
+        // recursion name is env-shadowed here (bound below for recursion
+        // typing), so the ordinary carrier path skips it.
+        //
+        // A param named identically to the fn (`(defn f [f] …)`) is a genuine
+        // LOCAL (a backend param), NOT the self-recursion slot: suppress
+        // `current_defn` entirely in that case so the carve-out never fires for
+        // it (FIXME 0619 item 2 — the recursion binding is still installed
+        // below for type inference; this gates only the carrier). The frame
+        // index is captured now (the topmost frame after the `push_scope`
+        // above) so the carve-out records only when the name resolves at THIS
+        // frame — a same-named nested `let`/`fn` binding resolves deeper and is
+        // a local, not self-recursion. Torn down on every exit below.
+        let installed_defn = (!defn.params().iter().any(|(p, _)| *p == defn.name))
+            .then(|| defn.name.clone());
+        let prev_defn = std::mem::replace(&mut state.current_defn, installed_defn);
+        let prev_defn_frame =
+            state.current_defn_frame.replace(state.env.top_frame_index());
         // torn down at ONE restore point regardless of how it exits (FIXME
         // 0599 — the pre-existing `?` exits previously leaked
         // `rigid_vars`/`written_var_scope`/the scope frame, so a failed
@@ -691,6 +705,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state.rigid_vars = prev_rigid;
         state.written_var_scope = prev_scope;
         state.current_defn = prev_defn;
+        state.current_defn_frame = prev_defn_frame;
         self.pop_scope(state);
 
         result

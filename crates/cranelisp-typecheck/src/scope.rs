@@ -54,6 +54,25 @@ impl ScopeStack {
         None
     }
 
+    /// The frame INDEX (0 = base) at which `name` first resolves, searching
+    /// innermost-first. `None` if `name` is unbound. Used by the self-recursion
+    /// carrier carve-out to tell the enclosing defn's own recursion binding
+    /// (installed in `check_defn_body`'s frame) apart from a same-named nested
+    /// `let`/`fn` binding that resolves in a DEEPER frame (FIXME 0619 item 2).
+    pub fn lookup_frame(&self, name: &str) -> Option<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, frame)| frame.contains_key(name).then_some(i))
+    }
+
+    /// Index of the current (topmost) frame. Captured by `check_defn_body` to
+    /// mark the frame that holds the enclosing defn's recursion binding.
+    pub fn top_frame_index(&self) -> usize {
+        self.frames.len() - 1
+    }
+
     /// Collect all free type variables across all scope frames.
     /// Used by `generalize` to determine which variables are "free in the environment".
     pub fn free_vars_in_env(&self) -> HashSet<TypeId> {

@@ -2231,6 +2231,102 @@
         );
     }
 
+    // ---------------------------------------------------------------------
+    // FIXME 0619 item 2 — the self-recursion carve-out must fire ONLY for a
+    // GENUINE self-recursive reference, never for a same-named nested USER
+    // binding (a `let`/`fn` rebinding, or a param). Such a reference is a
+    // LOCAL — nothing table-resolved HIT (§1.1), so no carrier entry (the
+    // backend's local-`variables` check handles it). These pin the producer.
+    // spec: design/arch/backend-keyed-consumer.md §1.1 (local row)
+    // ---------------------------------------------------------------------
+
+    /// The enclosing fn's own storage FQ, for the "must NOT carry this" asserts.
+    fn enclosing_test_fq(name: &str) -> FQSymbol {
+        FQSymbol { module: ModuleFullPath::from("test"), symbol: Symbol::from(name) }
+    }
+
+    // A nested `let` rebinds `f` to a lambda; the inner `(f 3)` calls the
+    // let-LOCAL, resolving in a deeper frame than the recursion binding. The
+    // callee `Var` must NOT carry the enclosing fn's storage FQ.
+    #[test]
+    fn self_recursion_carveout_skips_nested_let_shadow() {
+        let mut tc = tc_with_prims();
+        check_src(&mut tc, "(defn f [] (let [f (fn [x] x)] (f 3)))");
+        let view = main_codegen_view_of(&tc, "f");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            targets.iter().any(|(l, _)| l == "f"),
+            "the inner `(f 3)` callee `Var` must be present in the view; \
+             collected: {targets:?}"
+        );
+        let f_carrier = targets
+            .iter()
+            .find(|(l, _)| l == "f")
+            .and_then(|(_, fq)| fq.clone());
+        assert_ne!(
+            f_carrier,
+            Some(enclosing_test_fq("f")),
+            "nested let-local `f` is a LOCAL; its `Var` must NOT carry the \
+             enclosing fn's storage FQ (0619 item 2); collected: {targets:?}"
+        );
+    }
+
+    // A param named identically to the fn (`(defn f [f] …)`) shadows the
+    // recursion name: the `f` in `(f 3)` is the PARAM (a backend local), so its
+    // callee `Var` must NOT carry the enclosing fn's storage FQ. (The `add-i64`
+    // wrapper only forces the return type concrete so the defn carries a
+    // `codegen_view` to inspect — the bare `(defn f [f] (f 3))` is rank-1
+    // polymorphic and view-less; the shadow scenario is identical.)
+    #[test]
+    fn self_recursion_carveout_skips_param_shadow() {
+        let mut tc = tc_with_prims();
+        check_src(&mut tc, "(defn f [f] (add-i64 (f 3) 1))");
+        let view = main_codegen_view_of(&tc, "f");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            targets.iter().any(|(l, _)| l == "f"),
+            "the `(f 3)` callee `Var` must be present in the view; \
+             collected: {targets:?}"
+        );
+        let f_carrier = targets
+            .iter()
+            .find(|(l, _)| l == "f")
+            .and_then(|(_, fq)| fq.clone());
+        assert_ne!(
+            f_carrier,
+            Some(enclosing_test_fq("f")),
+            "param-shadowed `f` is a LOCAL; its `Var` must NOT carry the \
+             enclosing fn's storage FQ (0619 item 2); collected: {targets:?}"
+        );
+    }
+
+    // Control: a GENUINE self-recursive reference (no shadowing binding) MUST
+    // still carry the enclosing fn's storage FQ — the carve-out is tightened,
+    // not disabled.
+    #[test]
+    fn self_recursion_carveout_fires_for_genuine_recursion() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn f [n] (if (eq-i64 n 0) 0 (f (sub-i64 n 1))))",
+        );
+        let view = main_codegen_view_of(&tc, "f");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let f_carrier = targets
+            .iter()
+            .find(|(l, _)| l == "f")
+            .and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            f_carrier,
+            Some(enclosing_test_fq("f")),
+            "genuine self-call `f` Var must still carry resolved_target test/f; \
+             collected: {targets:?}"
+        );
+    }
+
     // Leg 3 (dotted `Type.member`): a dotted ctor reference resolves through the
     // inverted-model member core, invisible to the W0 bare-name re-probe. It
     // carries `(fqtn.module, member_key)` at the Var span. `(Maybe.Some 3)` is
