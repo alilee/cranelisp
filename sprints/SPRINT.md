@@ -1579,6 +1579,88 @@ change (CACHE_SCHEMA_VERSION stays 19, backend-internal). Full suite 11 RED (the
 13 W1 baseline − VA-1/VA-2); every RED traces to a known open defect (VP-3/4/5
 typecheck §3.11, R16/R17 ×2, 0590 ×2, spec_05 ×2, ownership_reuse, SG-1 derive).
 
+### /review (W2) — value seam + 0585 + vec-assoc (2026-07-16, `369c226c`)
+
+**Gating verdict: W2 is CLEAN to build W3's deletions on.** The value seam holds
+zero live resolver reach (census grep-verified); Rev-2 held (hard `CodegenError`
+on S10 carrier/entry miss, §1.2 wording; the only fallbacks are the local
+per-unit `func_ids`/`func_arities` maps, which the design blesses — not
+resolvers); S13/S18 use the §1.4 synthesized `{primitives, <name>}` direct read;
+all six `context.rs` helpers are thin kind-arm projections off `entry_at`;
+operator-as-value probed working under TestStandard. Dead-marking census is
+ACCURATE: the four caller-less resolvers have only `resolution/tests.rs` unit
+callers; `resolve_got_target`'s sole non-test caller is the dead
+`resolve_got_entry` (apply.rs:1777); `lookup_constructor` retains exactly its
+S19 (match_codegen.rs:263) + S20 (:600) callers — the W3 grep-gate delta is
+correctly scoped. No public-surface movement (all `pub(crate)`). No `unsafe`
+touched. 0585 backstop fires with the exact §7 wording (probed:
+`(if (lt-i64 0 1) gcount gother)` → "generic value reference 'gcount' reached
+codegen without a mono instance"), plain release-reachable error, correctly
+ordered after the local-`variables` and `is_known_function` gates. **The `/dev`
+VP-3/4/5 finding is CONFIRMED correct**: the die-leg negatives
+(`tests/generic_value_use_mono.rs`) assert `contains("ambiguous")` AND NOT
+`contains("codegen error")` — structurally unsatisfiable by any backend
+`CodegenError`; they need the typecheck §3.11.1 gate; not a W2 defect.
+
+**Finding R-W2-1 (Important — the headline): the vec-assoc RC fix is NARROW;
+the UAF class stays open on sibling shapes (probed at `369c226c`,
+deterministic, both faces).** The fix covers only the direct-body shape. Two
+2-line siblings still fail:
+
+- `(defn f [v i x] (let [r (vec-set v i x)] r))` +
+  `(vec-get (f [1 2 3] 1 99) 1)` → REPL garbage i64 (0/3 correct; RC trace:
+  alloc → premature free BEFORE the read); `--link` with
+  `(defn main [] (Pure …))` deterministically ABORTS ("corrupted double-linked
+  list", exit 134) — the exact VA-1/VA-2 signature.
+- `(defn m [v i x] (match i [_ (vec-set v i x)]))` → REPL garbage.
+
+**Mechanism (evidenced, not conjectured): both siblings go GREEN under
+`CRANELISP_NO_OWNERSHIP=1`.** The kill path is the B3.2 return-protect elision:
+the enclosing fn's ownership summary computes `result == Fresh` — typecheck
+`ownership/transfer.rs:590` defaults a summary-less callee's result to
+`ResultMode::Fresh`, and the COW primitives carry no summary — so
+`return_is_fresh_by_summary` elides `protect_return_value`,
+`pop_scope_with_cleanup` decs `v`, and the COW in-place arm's returned ALIAS is
+freed. A `Fresh` result claim for a COW op is FALSE on the rc==1 in-place arm
+(dynamically Fresh-or-AliasOf(0)); the `unwrap_or(Fresh)` default is the
+UNSOUND direction for the elision consumer — it contradicts the spine's
+absence-⇒-conservative rule (`ownership-inference.md` monotone soundness) and
+falsifies the B3.2 rustdoc claim (fn_compiler.rs: "`result == Fresh` is
+therefore now sound for *any* body shape"). The W2 recognizer compensates at
+exactly ONE body shape — a second, narrower codepath deciding what the summary
+already claims (the divergent-duplication smell). Probed SAFE for the record:
+direct body (fixed), if-branch (one or both COW arms), chained
+`(vec-push (vec-push v 4) 5)`, let-bound local source, lambda-captured source,
+COW result re-consumed in-body, shared-source copy branch (101, RC balanced —
+no Owned-flip leak; VA-4 verified independently), nested double-COW aliasing
+corners (correct; the `is_last_use` gate confines the flip to one site).
+**Routing:** (a) `/testing` commits the two sibling repros failing-not-ignored
+(REPL + `--link` faces; record+trigger, no FIXME per the failing-test rule);
+(b) the class fix is typecheck-side (COW primitive result facts / the
+transfer.rs:590 Fresh default) — cross-crate, out of backend narrow scope,
+needs `/sprint` to schedule with `/arch`/`/qa` attribution; the B3.2 rustdoc
+claim corrects in the fixing change-set; (c) `/qa`: the vec-assoc matrix
+covered VA-1..4 but no body-shape variant axis (direct/let/if/match ×
+{in-place, shared}) — the definition-variant coverage lens applies. Not a W2
+regression (pre-existing; W2 fixed a real subset and its own claims all held) —
+hence Important, not Blocker; must be scheduled in-sprint, not carried by habit.
+
+**Finding R-W2-2 (Minor, `/dev`): `return_cow_source_in_scope` rustdoc
+overclaims its guard.** "Restricting to the direct body guarantees `v` is used
+exactly once" and "the element argument aliasing `v` … does NOT match" are
+false of the function as written — `(vec-set v (vec-get (vec-set v 0 1) 0) x)`
+matches, with `v` used twice (the recognizer never scans `args[1..]`). The
+operative safety condition lives elsewhere: `cow_source_ownership` only flips
+inside the `is_last_use` COW arm, so the flip lands at exactly one site and the
+suppressed scope dec is balanced by exactly one release (probed correct in the
+aliasing corners). Correct the rustdoc to name the real invariant (or add the
+scan it claims) — an RC seam documenting a guard it doesn't enforce is a
+maintenance hazard.
+
+Minor observation (no action owed): stale `lib.rs` rustdoc still narrates
+resolver-based arity/GOT resolution (lines 37/106/556/842/1463 area) — already
+scheduled for W3 by design §4.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
