@@ -4,8 +4,8 @@
 `traits.md` (§6 constrained polymorphism / §7 dispatch) and `monomorphisation.md`
 (the §3.11.1 ambiguity backstop). A **coordinated typecheck+int** change-set:
 this note designs the **typecheck-side signal**; the cross-crate **carrier** (how
-the signal reaches int's entry/eval seam) is escalated to `/arch` (FIXME 0611)
-with the recommendation in §5.
+the signal reaches int's entry/eval seam) is **ratified as (A)** (FIXME 0611
+resolved — the typecheck-local `CheckResult.unresolved_dispatch` field; see §5).
 
 ## 1. The defect (S109 W6.3 rows 16/17, carried)
 
@@ -148,42 +148,47 @@ arg-directed dispatch) stays computable and unflagged — the explicit
 false-positive fence from the S109 revert. `/qa` owns the row matrix; the
 `(add2 3 4)`-must-not-flag cell is the load-bearing negative.
 
-## 5. The cross-crate carrier — escalated to `/arch` (FIXME 0611)
+## 5. The cross-crate carrier — RATIFIED as (A) (FIXME 0611, resolved)
 
-The class-(b) signal must cross typecheck → int. Options, with this note's
-recommendation:
+The class-(b) signal must cross typecheck → int. `/arch` **ratified carrier (A)**
+(FIXME 0611, resolved 2026-07-16); canonical record:
+`design/arch/bounded-contexts.md` §2 (the "unresolved-return-poly-dispatch
+diagnostic" paragraph).
 
-- **(A) — RECOMMENDED — a transient field on `CheckResult`.** `CheckResult` is
-  explicitly "NOT a boundary type … carries only diagnostics and optional REPL
-  display payload" (`result.rs:14`), typecheck-owned, consumed only by int. A
-  `Vec<UnresolvedDispatchSite>` (each `{ span: Span, method: Symbol, gap:
-  DispatchGap }`, all typecheck-owned types) is exactly a diagnostic payload.
-  int's `__expr`-eval path and `src/exe.rs::validate_main` read it at the
-  entry/eval result span. **No `cranelisp-types` edit, no cache-schema bump** (a
-  valid program has an EMPTY set — an unresolved dispatch that survived to
-  finalize is precisely the error we reject, so nothing worth caching), and
-  typecheck stays the sole deriver (Principle 24 — int consumes a *decision*, it
-  does not re-run dispatch). Cost: a typecheck `public-api.txt` field add
-  (baseline regen, `/dev`).
+**(A) — RATIFIED — a transient field on `CheckResult`.** As landed
+(`crates/cranelisp-typecheck/src/result.rs:66`): `pub unresolved_dispatch:
+Vec<UnresolvedDispatchSite>` on `CheckResult`, each site `{ span: Span, method:
+Symbol, gap: DispatchGap }` — all typecheck-owned types. `CheckResult` is
+"NOT a boundary type … carries only diagnostics and optional REPL display
+payload", typecheck-owned and consumed only by int, so this is exactly a
+diagnostic payload. int's `__expr`-eval path and `src/exe.rs::validate_main` read
+it at the entry/eval result span. The carrier stays **typecheck-local**: **no
+`cranelisp-types` edit and no `CACHE_SCHEMA_VERSION` bump** — a valid program has
+an EMPTY set (an unresolved dispatch that survived to finalize is precisely the
+error we reject, so there is nothing worth caching), and typecheck stays the sole
+deriver (Principle 24 — int consumes a *decision*, it does not re-run dispatch).
+
+**Backend defence-in-depth consumer — DECLINED.** The §5 open question asked
+whether `UnresolvedDispatchSite`/`DispatchGap` should live in `cranelisp-types`
+against a future non-int consumer (e.g. a backend backstop at the slot-less leak
+site). `/arch` DECLINED it: the backend is a pure keyed-lookup consumer (BC §3
+invariant 10, grep-zero-resolver since the `backend-keyed-consumer.md` W3 delete)
+and holds no dispatch knowledge, and the honest backend-side error for a
+slot-less residual already exists WITHOUT dispatch knowledge (the W2 0585
+backstop). So the types are correctly typecheck-local; there is no anticipated
+second consumer.
+
+**Rejected alternatives** (retained for the record):
+
 - **(B) — a serde'd `MethodResolutions` sidecar** (`unresolved_dispatch:
-  HashMap<Span, …>`, mirroring the `pattern_ctors` precedent). Rejected as the
-  primary: `MethodResolutions` is cached; caching an error-path-only map that is
-  always empty for valid programs is a `CACHE_SCHEMA_VERSION` bump for no
-  round-trip value.
+  HashMap<Span, …>`, mirroring the `pattern_ctors` precedent). Rejected:
+  `MethodResolutions` is cached; caching an error-path-only map that is always
+  empty for valid programs is a `CACHE_SCHEMA_VERSION` bump for no round-trip
+  value.
 - **(C) — a new `CranelispError`/`CheckError` variant + int re-derivation.**
   Rejected: int would have to re-inspect the entry result's dispatch state,
   re-deriving the discriminator typecheck already computed (Principle 24
   violation) and re-importing the `(add2 3 4)` false-positive risk into int.
-
-**The `/arch` decision requested:** ratify carrier (A) — the transient
-`CheckResult.unresolved_dispatch: Vec<UnresolvedDispatchSite>` field with the
-site/`DispatchGap` shape — or rule an alternative. The Phase-2 Rev-4 note flagged
-this "may need a types-level carrier (error variant or `CheckResult` field)";
-(A) needs a `CheckResult` field but **no types-level carrier** because the site
-struct is typecheck-owned and int already depends on typecheck. `/arch` confirms
-whether `UnresolvedDispatchSite`/`DispatchGap` should nonetheless live in
-`cranelisp-types` (if any future non-int consumer — e.g. backend defence-in-depth
-at the slot-less leak site — is anticipated) or stay typecheck-local.
 
 ## 6. Principles
 
