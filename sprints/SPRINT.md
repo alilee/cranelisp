@@ -1661,6 +1661,76 @@ Minor observation (no action owed): stale `lib.rs` rustdoc still narrates
 resolver-based arity/GOT resolution (lines 37/106/556/842/1463 area) — already
 scheduled for W3 by design §4.
 
+### /dev (W3) — the deletion wave (2026-07-16, BLOCKED on a producer gap → FIXME 0622)
+
+Backend-narrow. The W3 deletions were IMPLEMENTED in full and GREEN in isolation,
+but landing them exposes a **cross-module-mono `pattern_ctors` producer gap** in
+typecheck that the §1.1.2 completeness re-sweep missed. Per Rev-2 (§1.2, no
+keyed-read-else-resolver hybrid) and the dispatch ("a match-position hard-miss is
+a producer gap to flag to /arch, NOT a workaround"), **W3 cannot delete the S19
+fallback until the producer gap closes** — mirroring W1 → BLOCKED on 0620 → W1.1b
+→ re-deploy. Work preserved in `git stash@{0}` ("S110 W3 backend deletion …");
+tree restored to the clean W2 green baseline.
+
+**What was implemented (all green in the stash):**
+- **S19 (`match_codegen.rs:263`)** — deleted the `None`-arm `lookup_constructor`
+  fallback; a `None` `resolved_ctor` on any ctor pattern is now a hard
+  `CodegenError` (Principle 18; the §5 W0.b totalization claim).
+- **S20 (`match_codegen.rs:600`)** — folded `resolve_field_types` onto
+  `ctor_meta_at(resolved_ctor)` (renamed `concrete_field_types`); the arm's carried
+  storage identity replaces the redundant `lookup_constructor` re-resolution.
+  Threaded `fq` through `compile_constructor_pattern` → `compile_data_pattern`.
+- **Deleted the resolver family (§3 S21–S23):** `resolve_driven` + `resolve_chain`
+  + the `symbol_tables.iter()` global scan + all ten entry points
+  (`resolve_got_target`, `resolve_is_callable_target`, `resolve_vec_query_primitive`,
+  `resolve_callee_summary`, `resolve_platform_effect_target`,
+  `resolve_poll_effect_target`, `resolve_extern_target`, `resolve_func_arity`,
+  `lookup_constructor` in `context.rs`, `resolve_got_entry` in `apply.rs`).
+  `resolution.rs` shrinks to the two naming primitives (`got_data_symbol_name`,
+  `inner_fn_discriminator_for`). Deleted the 8 resolver unit tests in
+  `resolution/tests.rs` (kept the 2 naming-primitive tests). Deleted the backend
+  `lenient_mono_from_expr` wrapper (`lib.rs`); its test-only caller
+  (`jit::compile_defn`) now calls `cranelisp_types::MonoExpr::lenient_from_expr`
+  directly. Dropped `resolve_got_target` from the `compiler/mod.rs` re-export.
+- **Grep gate (would be) GREEN:** `resolve_driven|resolve_*_target|lookup_constructor|
+  lenient_mono_from_expr` → zero LIVE occurrences in `crates/cranelisp-backend/src/`
+  (only rustdoc/comment mentions remain; the `vec_codegen::resolve_elem_*_fn_ptr`
+  drop-glue helpers and `match_codegen::resolve_field_types`→`concrete_field_types`
+  are not name resolvers). Backend rustdoc updated (`lib.rs //!` lines 37/84/106/556-area,
+  `compiler/mod.rs`, `context.rs` `module_aliases` field, `cranelisp-backend/CLAUDE.md`
+  seam map). `module_aliases` is now threaded-but-unread — its removal from
+  `compile_to_module`/`build_compile_context` moves the `pub` surface, so deferred
+  out of W3 (noted in the field rustdoc).
+- **Backend unit suite 408/408 GREEN** in the stash (416 − 8 deleted resolver
+  tests). Threaded a `pattern_ctors` sidecar into the test harness (`test_support.rs`
+  `TestCheckResult`/`make_def_entry_inner`) — the KC-W0-6 discipline — and populated
+  it in `test_compile_match_with_fields`. `golden_clif_w0b` 5/5 byte-identical.
+
+**The blocking gap (FIXME 0622, `target: /arch`).** A generic ctor-pattern body
+(`is-ok?`/`unwrap-or` in `fn.result`) monomorphised by a cross-module call (from
+`fn.result.test` via `[super […]]`) yields a mono instance whose
+`MonoMatchArm.resolved_ctor` is `None`: the mono view is built at
+`monomorphise.rs:519` with the CALLER's `pattern_ctors`, but the template's Ok/Err
+pattern spans were recorded in the DEFINING module's separate check run. The
+`monomorphise.rs:516-518` comment states the false assumption ("the original
+template check's entries serve every instance"). Masked on W1/W2 by the S19
+fallback; W3's deletion surfaces it as a hard miss that fails `fn.result.test`
+codegen → cascades to `unknown type Result` → ~53 `spec_11_stdlib` /
+`stdlib_conformance` REDs. Same-module mono and direct user matches are correct
+(verified). The fix is typecheck-side (transport / union the defining module's
+template `pattern_ctors` into the cross-module mono view — the pattern-ctor analog
+of W0.1b's storage-module derivation), out of backend narrow scope.
+
+**Recommendation:** `/arch` rules the transport mechanism (FIXME 0622); `/sprint`
+schedules a typecheck `/dev` fix + a `/testing` cross-module-mono pattern-ctor
+repro (failing-not-ignored); then re-dispatch W3 `/dev` (backend) to pop
+`stash@{0}` and complete the grep-gate deletion. Full suite currently at the
+clean W2 11-RED baseline (unchanged; W3 landed nothing).
+
+**Note for `/audit`:** the resolution seam is NOT yet grep-zero — W3 is blocked on
+FIXME 0622. The backend end-state (zero live `resolve_*`) is implemented and
+staged in `stash@{0}`, pending the producer fix.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
