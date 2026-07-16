@@ -262,18 +262,29 @@ fn reject_defmacro_over_binding(
 /// clause-recompile authority — that role is unchanged); persisting it as
 /// regen source alongside the original was the D1 directory poison (the two
 /// forms do not co-load).
-#[allow(clippy::too_many_arguments)]
+/// The session/table environment threaded into macro registration — the module
+/// symbol tables, the optional REPL introspection map (write target), and the
+/// module-alias + prelude-fallback resolution scope (the §8.6.4 rejection gate's
+/// inputs). Groups the cohesive reference set so [`register_macro_in_module`]
+/// stays under the 8-param cap (Principle 6). Each call site builds it from its
+/// own reference sources; the values threaded are unchanged.
+pub(crate) struct MacroRegisterEnv<'a> {
+    pub symbol_tables:
+        &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    pub introspection:
+        Option<&'a dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
+    pub module_aliases: &'a ModuleAliases,
+    pub prelude_fallback: &'a PreludeFallback,
+}
+
 pub(crate) fn register_macro_in_module(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
+    env: &MacroRegisterEnv<'_>,
     module: &ModuleFullPath,
     name: &Symbol,
     info: &cranelisp_frontend::DefmacroInfo,
     sexp: &Sexp,
     authored: &Sexp,
     authored_source: Option<String>,
-    module_aliases: &ModuleAliases,
-    prelude_fallback: &PreludeFallback,
 ) -> Result<(), CranelispError> {
     // §8.6.4 definition seam (S108 Wave-G CS2): a `defmacro` over a name already
     // in scope — an explicit import/export head OR a prelude-provided name — is
@@ -285,7 +296,7 @@ pub(crate) fn register_macro_in_module(
     // introspection or symbol-table write, so the error propagates through the
     // normal form-error path with nothing registered.
     reject_defmacro_over_binding(
-        symbol_tables, module_aliases, prelude_fallback, module, name, sexp.span(),
+        env.symbol_tables, env.module_aliases, env.prelude_fallback, module, name, sexp.span(),
     )?;
     let clause_infos: Vec<MacroClauseInfo> = info
         .clauses
@@ -326,7 +337,7 @@ pub(crate) fn register_macro_in_module(
     // defmacro arrived via expansion (`authored` ≠ `sexp` — compared by span,
     // expansion output carries synthetic rewritten spans) the expanded
     // artifact rides `.expanded` for `/sexp` display.
-    if let Some(intr_map) = introspection {
+    if let Some(intr_map) = env.introspection {
         let fq = FQSymbol {
             module: module.clone(),
             symbol: name.clone(),
@@ -346,7 +357,7 @@ pub(crate) fn register_macro_in_module(
                 Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)));
         }
     }
-    if let Some(mut table) = symbol_tables.get_mut(module) {
+    if let Some(mut table) = env.symbol_tables.get_mut(module) {
         // Macro parents carry no meaningful type scheme (not callable); use a
         // placeholder monomorphic scheme, as the legacy `ModuleEntry::Macro`
         // path effectively did (it had no scheme field at all).

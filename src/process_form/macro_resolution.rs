@@ -16,13 +16,11 @@ use cranelisp_types::{
     ModuleFullPath, Sexp, Span, Symbol,
 };
 
-use cranelisp_typecheck::CheckState;
-
 use crate::expander::{self, MacroResolver};
 use crate::scheduler::CompileScheduler;
 use crate::worker::{ModuleCompiler, ModuleCheckAccumulator, handle_cached_codegen};
 
-use super::macro_clause::{compile_macro_clause_core, compile_macro_clause_with_state};
+use super::macro_clause::{compile_macro_clause_core, MacroClauseEnv};
 
 // ---------------------------------------------------------------------------
 // SymbolTableMacroResolver — on-demand macro resolution from symbol tables
@@ -43,10 +41,6 @@ use super::macro_clause::{compile_macro_clause_core, compile_macro_clause_with_s
 pub(super) struct SymbolTableMacroResolver<'a> {
     /// Per-module symbol tables (DashMap, interior mutability).
     pub(super) symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    /// Monotonic counter for fresh type variable IDs.
-    pub(super) next_type_id: &'a std::sync::atomic::AtomicU32,
-    /// CheckState — needed for on-demand compilation (check_form_with_state).
-    pub(super) check_state: &'a mut CheckState,
     /// Current module path (starting point for symbol lookup).
     pub(super) current_module: ModuleFullPath,
     /// Module-path aliases — fed to `resolve_macro_head` for qualified refs.
@@ -57,8 +51,6 @@ pub(super) struct SymbolTableMacroResolver<'a> {
     pub(super) prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
     /// Per-module typecheck products (DashMap, interior mutability).
     pub(super) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    /// Accumulator for check_form_with_state during on-demand compilation.
-    pub(super) accumulator: &'a mut ModuleCheckAccumulator,
     /// Scheduler — for notify_inmem_codegen_complete after on-demand compilation.
     pub(super) scheduler: &'a CompileScheduler,
     /// Shared state — needed for JIT retention during on-demand compilation.
@@ -231,11 +223,13 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             if let Some(sexp) = macro_sexp {
                 let info = cranelisp_frontend::parse_defmacro(&sexp)?;
                 compile_macro_with_state(
-                    self.symbol_tables, self.next_type_id, self.check_state, &defining_module,
-                    &info, span, self.accumulator,
+                    self.symbol_tables,
                     self.typecheck_products,
-                    self.scheduler,
                     self.shared_state,
+                    &defining_module,
+                    &info,
+                    span,
+                    self.scheduler,
                 )?;
             } else {
                 // No sexp available to compile from. The clauses may already be
@@ -305,35 +299,46 @@ fn resolve_macro_sexp_from(
     }
 }
 
-/// Compile a macro's clauses using the `_with_state` API (no &mut TypeChecker needed).
+/// Compile a macro's clauses on demand for the resolver (no `&mut TypeChecker`).
 ///
-/// This is the on-demand compilation path for the resolver. Uses
-/// `check_form_with_state` and `merge_form_result_with_state` which take
-/// `&self` on TypeChecker + `&mut CheckState`.
-#[allow(clippy::too_many_arguments)]
+/// This is the on-demand compilation path for the resolver. The `module_aliases`
+/// / `prelude_fallback` resolution scope derives from `shared_state` — when
+/// absent (unit-test paths) an empty leaked default is a safe stand-in (macro
+/// clause bodies use qualified `macros/*` refs, never aliases or the prelude
+/// bare-name fallback). Built once into a [`MacroClauseEnv`] shared across the
+/// clause loop.
 fn compile_macro_with_state(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut CheckState,
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    shared_state: Option<&crate::session_v4::SharedState>,
     target_module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     scheduler: &CompileScheduler,
-    shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
+    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
+        Some(s) => &s.module_aliases,
+        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
+    };
+    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
+        Some(s) => &s.prelude_fallback,
+        None => Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default())),
+    };
+    let env = MacroClauseEnv {
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        typecheck_products,
+        shared_state,
+    };
     for (clause_idx, clause) in info.clauses.iter().enumerate() {
         let clause_name = macro_clause_jit_name(&info.name, clause_idx);
         if has_code_ptr(symbol_tables, target_module, &clause_name) {
             continue;
         }
 
-        compile_macro_clause_with_state(
-            symbol_tables, next_type_id, check_state, target_module,
-            &info.name, clause_idx, clause, span,
-            accumulator, typecheck_products,
-            shared_state,
+        compile_macro_clause_core(
+            &env, target_module, &info.name, clause_idx, clause, span,
         )?;
         // Sprint 57 Wave 4 G9: macro-clause compile must NOT set inmem_done
         // (last=false). Other symbols in the owning module (including
@@ -351,7 +356,7 @@ fn compile_macro_with_state(
 ///
 /// Creates a SymbolTableMacroResolver, runs expand_sexp_recursive,
 /// drops the resolver, returns the expanded sexp. After this returns,
-/// ctx and accumulator are available for the caller to use freely.
+/// ctx is available for the caller to use freely.
 /// Outcome of attempting macro expansion on a single Pass-2 form.
 pub(super) enum ExpandOutcome {
     /// Expansion ran to fixpoint. `Some(sexp)` = expanded result (differs from
@@ -367,21 +372,16 @@ pub(super) fn try_expand_sexp(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexp: &Sexp,
-    accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<ExpandOutcome, CranelispError> {
-    // No need to extract/restore CheckState — TypeCheckEnv borrows are
-    // separate from CheckState. The resolver holds &DashMap (from tc_env)
-    // and &mut CheckState separately.
+    // The resolver borrows only the symbol tables + resolution scope (macro
+    // recognition/drive); it does not touch `CheckState` or the accumulator.
     let (result, defining_modules, blocked_on) = {
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: ctx.symbol_tables,
-            next_type_id: ctx.next_type_id,
-            check_state: &mut ctx.check_state,
             current_module: module.clone(),
             module_aliases: ctx.module_aliases,
             prelude_fallback: ctx.prelude_fallback,
             typecheck_products: ctx.typecheck_products,
-            accumulator,
             scheduler: ctx.scheduler,
             shared_state: ctx.shared_state,
             macro_defining_modules: Vec::new(),
@@ -559,18 +559,14 @@ fn compile_macro_clause_inline(
 ) -> Result<(), CranelispError> {
     let _ = accumulator;
     let module = ctx.current_module.clone();
-    compile_macro_clause_core(
-        ctx.symbol_tables,
-        ctx.module_aliases,
-        ctx.prelude_fallback,
-        &module,
-        macro_name,
-        clause_idx,
-        clause,
-        span,
-        ctx.typecheck_products,
-        ctx.shared_state,
-    )
+    let env = MacroClauseEnv {
+        symbol_tables: ctx.symbol_tables,
+        module_aliases: ctx.module_aliases,
+        prelude_fallback: ctx.prelude_fallback,
+        typecheck_products: ctx.typecheck_products,
+        shared_state: ctx.shared_state,
+    };
+    compile_macro_clause_core(&env, &module, macro_name, clause_idx, clause, span)
 }
 
 // ---------------------------------------------------------------------------

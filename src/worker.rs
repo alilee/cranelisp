@@ -442,11 +442,8 @@ fn commit_staging_to_live(
     staging: crate::code::SessionSymbolTable,
     shared: Option<&crate::session_v4::SharedState>,
 ) -> Result<Vec<crate::redefine::RedefinitionOutcome>, CranelispError> {
-    use crate::redefine::{
-        allocate_live_got_slot, classify_redefinition, RedefKind, RedefinitionOutcome,
-        RetainedCode,
-    };
-    use cranelisp_types::{FQSymbol, ModuleEntry};
+    use crate::redefine::RedefinitionOutcome;
+    use cranelisp_types::ModuleEntry;
 
     // Drain staging into a Vec before acquiring the live write guard to
     // avoid simultaneous borrow paths on `staging`. `staging` is owned
@@ -503,175 +500,216 @@ fn commit_staging_to_live(
     let mut outcomes: Vec<RedefinitionOutcome> = Vec::new();
 
     for (name, mut entry) in drained.drain(..) {
-        // The staged slot (read via the `callable_got_slot()` chokepoint —
-        // the slot rides on the callable `DefKind` variant per the S83
-        // reshape, FIXME 0356/0357) is meaningless in live's GOT (staging
-        // holds a fresh GOT Arc). Re-point every callable `Def` to a live
-        // slot before commit, applying the S101 slot policy.
-        //
-        // Redefinition slot authority (supersedes the pre-S101 "we must NOT
-        // introduce a second allocation policy" invariant): typecheck's
-        // Pass-1 `redef_slots` pin remains the fast-path identity — for an
-        // `AbiPreserving` redefinition the staged slot already equals the
-        // reused live slot — but THIS gate is the documented single
-        // authority that overrides it on `AbiChanging`, allocating a fresh
-        // live slot and freezing the old one (its code retained in the
-        // session pool so stale closures and in-flight frames keep a
-        // coherent old-ABI chain — design §4.3, no quiesce needed).
-        //
-        // `AbiPreserving` also CARRIES OVER the prior `code` field — codegen's
-        // redefinition detection compares prior `code` against None to decide
-        // whether to emit a `Redefinition` trace event, and Decision 31
-        // Scenario 2's per-redefinition reclaim happens when codegen replaces
-        // it. `AbiChanging` deliberately does NOT carry code: the fresh slot
-        // is a new world, and the prior code's lifetime belongs to the pool.
+        // Each staged `Def` re-points its (staging-fresh) GOT slot to a live
+        // slot at commit. A callable staged entry routes through
+        // `commit_slotted_def` (slot policy + freeze); a slot-less staged `Def`
+        // displacing a prior live `Def` routes through `commit_slotless_redef`
+        // (the T1 downgrade outcome). Both push at most one outcome.
         if entry.callable_got_slot().is_some() {
-            let (prior_slot, prior_code, kind, per_symbol, prior_was_def) =
-                match live.symbols.get(&name) {
-                    Some(prior @ ModuleEntry::Def { code, .. }) => {
-                        let (kind, per_symbol) =
-                            classify_redefinition(name.as_ref(), Some(prior), &entry);
-                        (prior.callable_got_slot(), code.clone(), kind, per_symbol, true)
-                    }
-                    prior => {
-                        let (kind, per_symbol) =
-                            classify_redefinition(name.as_ref(), prior, &entry);
-                        (None, None, kind, per_symbol, false)
-                    }
-                };
-
-            // Fresh-slot is unconditional on ABI change, independent of the
-            // recorded caller set (invisible value captures exist — design
-            // §7.1) — but freezing requires the retention pool: without it
-            // the displaced `Code`'s pages would be freed while the frozen
-            // slot still points at them, so a pool-less context degrades to
-            // reuse-and-patch.
-            let effective_kind = match kind {
-                RedefKind::AbiChanging if shared.is_none() => RedefKind::AbiPreserving,
-                k => k,
-            };
-
-            let new_slot = match effective_kind {
-                RedefKind::New => match prior_slot {
-                    // Defensive: a `New`-classified commit with a prior slot
-                    // cannot arise (classification requires no prior Def
-                    // slot), but reuse would be the safe answer.
-                    Some(slot) => slot,
-                    None => allocate_live_got_slot(&mut live, module)?,
-                },
-                RedefKind::AbiPreserving => match prior_slot {
-                    Some(slot) => slot,
-                    None => allocate_live_got_slot(&mut live, module)?,
-                },
-                RedefKind::AbiChanging => {
-                    // Freeze: push the superseded `Code` into the retention
-                    // pool BEFORE `live.insert` replaces the entry (the pool
-                    // clone keeps the pages mapped; the old slot is never
-                    // written again — Principle 20: after this commit no live
-                    // entry carries the old index, so the illegal write is
-                    // unreachable by representation).
-                    let shared = shared.expect("AbiChanging requires a session (gated above)");
-                    let old_slot = prior_slot.expect("AbiChanging requires a prior slot");
-                    if let Some(code) = prior_code.clone() {
-                        shared
-                            .retained_code
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .push(RetainedCode::frozen(module, &name, Some(old_slot), code));
-                    }
-                    let fresh = allocate_live_got_slot(&mut live, module)?;
-                    crate::got_trace::emit_slot_freeze(module, &name, old_slot, fresh);
-                    fresh
-                }
-            };
-
-            if let ModuleEntry::Def { kind: def_kind, code, .. } = &mut entry {
-                repoint_callable_slot(def_kind, new_slot);
-                // Preserve the prior code handle on the reuse path if staging
-                // didn't already write one (staging-side typecheck does not
-                // run codegen, so `code` is normally `None` for staged Def
-                // entries). `AbiChanging` starts its fresh slot code-less.
-                if code.is_none() && effective_kind != RedefKind::AbiChanging {
-                    *code = prior_code;
-                }
-            }
-
-            outcomes.push(RedefinitionOutcome {
-                fq: FQSymbol {
-                    module: module.clone(),
-                    symbol: name.clone(),
-                },
-                kind: effective_kind,
-                per_symbol,
-                prior_was_def,
-                old_slot: prior_slot,
-                new_slot: Some(new_slot),
-            });
-        } else if matches!(entry, ModuleEntry::Def { .. })
-            && let Some(prior) = live.symbols.get(&name)
-            && matches!(prior, ModuleEntry::Def { .. })
-        {
-            // The SLOT-LESS-staged redefinition arms — both T1 shapes
-            // (S102 §9.1.1 gate widening: the gate emits an outcome for
-            // EVERY staged `Def` whose name had a prior live `Def`, any slot
-            // shape — outcomes are the only channel the driver sees, so a T1
-            // shape that produces no outcome is invisible to the §18.1.1
-            // downgrade print):
-            //
-            // (a) FIXME 0479 — a slotted prior with compiled code displaced
-            //     by a slot-less staged Def (a concrete fn redefined as a
-            //     polymorphic/constrained template or an `Overloaded` base).
-            //     The `live.insert` below drops the prior entry — possibly
-            //     the last `Code` Arc, freeing mapped JIT pages — while
-            //     compiled callers still embed the prior's GOT slot: a
-            //     use-after-free SIGSEGV on the next call. Retain the prior
-            //     `Code` (frozen supersession, design §6.3) so the
-            //     still-populated slot keeps dispatching the frozen old
-            //     chain — memory-safe coherent-stale execution (the §4.3
-            //     frozen-world argument). Pool-less contexts (`shared: None`
-            //     — unit tests, dry-run shapes) keep the pre-S101 drop, as
-            //     at the sibling displacement sites.
-            //
-            // (b) template-replacing-template (slot-less over slot-less
-            //     prior `Def`) — nothing to retain, but the outcome still
-            //     carries `prior_was_def` so the downgrade is not silent.
-            //
-            // The *semantic* cure for these T1-kind targets (module-grain
-            // reload with end-of-turn sequencing; design §10 T1) is S103;
-            // the outcome feeds the interim §18.1.1 `stale:` print.
-            let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), &entry);
-            let prior_slot = prior.callable_got_slot();
-            if let Some(shared) = shared
-                && let Some(prior_slot) = prior_slot
-                && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
-            {
-                shared
-                    .retained_code
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(RetainedCode::frozen(
-                        module,
-                        &name,
-                        Some(prior_slot),
-                        prior_code.clone(),
-                    ));
-            }
-            outcomes.push(RedefinitionOutcome {
-                fq: FQSymbol {
-                    module: module.clone(),
-                    symbol: name.clone(),
-                },
-                kind,
-                per_symbol,
-                prior_was_def: true,
-                old_slot: prior_slot,
-                new_slot: None,
-            });
+            outcomes.push(commit_slotted_def(&mut live, module, &name, &mut entry, shared)?);
+        } else if let Some(outcome) = commit_slotless_redef(&live, module, &name, &entry, shared) {
+            outcomes.push(outcome);
         }
         live.insert(name, entry);
     }
 
     Ok(outcomes)
+}
+
+/// Commit a callable staged `Def` (its `callable_got_slot()` is `Some`),
+/// re-pointing its staging-fresh GOT slot to a live slot and returning the
+/// redefinition outcome. The caller has already confirmed the staged entry
+/// carries a slot.
+///
+/// The staged slot (read via the `callable_got_slot()` chokepoint — the slot
+/// rides on the callable `DefKind` variant per the S83 reshape, FIXME
+/// 0356/0357) is meaningless in live's GOT (staging holds a fresh GOT Arc).
+///
+/// Redefinition slot authority (supersedes the pre-S101 "we must NOT introduce
+/// a second allocation policy" invariant): typecheck's Pass-1 `redef_slots` pin
+/// remains the fast-path identity — for an `AbiPreserving` redefinition the
+/// staged slot already equals the reused live slot — but THIS gate is the
+/// documented single authority that overrides it on `AbiChanging`, allocating a
+/// fresh live slot and freezing the old one (its code retained in the session
+/// pool so stale closures and in-flight frames keep a coherent old-ABI chain —
+/// design §4.3, no quiesce needed).
+///
+/// `AbiPreserving` also CARRIES OVER the prior `code` field — codegen's
+/// redefinition detection compares prior `code` against None to decide whether
+/// to emit a `Redefinition` trace event, and Decision 31 Scenario 2's
+/// per-redefinition reclaim happens when codegen replaces it. `AbiChanging`
+/// deliberately does NOT carry code: the fresh slot is a new world, and the
+/// prior code's lifetime belongs to the pool.
+fn commit_slotted_def(
+    live: &mut crate::code::SessionSymbolTable,
+    module: &ModuleFullPath,
+    name: &Symbol,
+    entry: &mut cranelisp_types::ModuleEntry<crate::code::Code>,
+    shared: Option<&crate::session_v4::SharedState>,
+) -> Result<crate::redefine::RedefinitionOutcome, CranelispError> {
+    use crate::redefine::{
+        allocate_live_got_slot, classify_redefinition, RedefKind, RedefinitionOutcome,
+        RetainedCode,
+    };
+    use cranelisp_types::{FQSymbol, ModuleEntry};
+
+    let (prior_slot, prior_code, kind, per_symbol, prior_was_def) =
+        match live.symbols.get(name) {
+            Some(prior @ ModuleEntry::Def { code, .. }) => {
+                let (kind, per_symbol) =
+                    classify_redefinition(name.as_ref(), Some(prior), &*entry);
+                (prior.callable_got_slot(), code.clone(), kind, per_symbol, true)
+            }
+            prior => {
+                let (kind, per_symbol) =
+                    classify_redefinition(name.as_ref(), prior, &*entry);
+                (None, None, kind, per_symbol, false)
+            }
+        };
+
+    // Fresh-slot is unconditional on ABI change, independent of the
+    // recorded caller set (invisible value captures exist — design
+    // §7.1) — but freezing requires the retention pool: without it
+    // the displaced `Code`'s pages would be freed while the frozen
+    // slot still points at them, so a pool-less context degrades to
+    // reuse-and-patch.
+    let effective_kind = match kind {
+        RedefKind::AbiChanging if shared.is_none() => RedefKind::AbiPreserving,
+        k => k,
+    };
+
+    let new_slot = match effective_kind {
+        RedefKind::New => match prior_slot {
+            // Defensive: a `New`-classified commit with a prior slot
+            // cannot arise (classification requires no prior Def
+            // slot), but reuse would be the safe answer.
+            Some(slot) => slot,
+            None => allocate_live_got_slot(live, module)?,
+        },
+        RedefKind::AbiPreserving => match prior_slot {
+            Some(slot) => slot,
+            None => allocate_live_got_slot(live, module)?,
+        },
+        RedefKind::AbiChanging => {
+            // Freeze: push the superseded `Code` into the retention
+            // pool BEFORE `live.insert` replaces the entry (the pool
+            // clone keeps the pages mapped; the old slot is never
+            // written again — Principle 20: after this commit no live
+            // entry carries the old index, so the illegal write is
+            // unreachable by representation).
+            let shared = shared.expect("AbiChanging requires a session (gated above)");
+            let old_slot = prior_slot.expect("AbiChanging requires a prior slot");
+            if let Some(code) = prior_code.clone() {
+                shared
+                    .retained_code
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(RetainedCode::frozen(module, name, Some(old_slot), code));
+            }
+            let fresh = allocate_live_got_slot(live, module)?;
+            crate::got_trace::emit_slot_freeze(module, name, old_slot, fresh);
+            fresh
+        }
+    };
+
+    if let ModuleEntry::Def { kind: def_kind, code, .. } = &mut *entry {
+        repoint_callable_slot(def_kind, new_slot);
+        // Preserve the prior code handle on the reuse path if staging
+        // didn't already write one (staging-side typecheck does not
+        // run codegen, so `code` is normally `None` for staged Def
+        // entries). `AbiChanging` starts its fresh slot code-less.
+        if code.is_none() && effective_kind != RedefKind::AbiChanging {
+            *code = prior_code;
+        }
+    }
+
+    Ok(RedefinitionOutcome {
+        fq: FQSymbol {
+            module: module.clone(),
+            symbol: name.clone(),
+        },
+        kind: effective_kind,
+        per_symbol,
+        prior_was_def,
+        old_slot: prior_slot,
+        new_slot: Some(new_slot),
+    })
+}
+
+/// Commit a slot-less staged `Def` that displaces a prior live `Def`, returning
+/// the T1-downgrade outcome (or `None` when the staged entry is not a `Def`, or
+/// no prior live `Def` exists — the no-outcome cases).
+///
+/// The SLOT-LESS-staged redefinition arms — both T1 shapes (S102 §9.1.1 gate
+/// widening: the gate emits an outcome for EVERY staged `Def` whose name had a
+/// prior live `Def`, any slot shape — outcomes are the only channel the driver
+/// sees, so a T1 shape that produces no outcome is invisible to the §18.1.1
+/// downgrade print):
+///
+/// (a) FIXME 0479 — a slotted prior with compiled code displaced by a slot-less
+///     staged Def (a concrete fn redefined as a polymorphic/constrained
+///     template or an `Overloaded` base). The caller's `live.insert` drops the
+///     prior entry — possibly the last `Code` Arc, freeing mapped JIT pages —
+///     while compiled callers still embed the prior's GOT slot: a use-after-free
+///     SIGSEGV on the next call. Retain the prior `Code` (frozen supersession,
+///     design §6.3) so the still-populated slot keeps dispatching the frozen old
+///     chain — memory-safe coherent-stale execution (the §4.3 frozen-world
+///     argument). Pool-less contexts (`shared: None` — unit tests, dry-run
+///     shapes) keep the pre-S101 drop, as at the sibling displacement sites.
+///
+/// (b) template-replacing-template (slot-less over slot-less prior `Def`) —
+///     nothing to retain, but the outcome still carries `prior_was_def` so the
+///     downgrade is not silent.
+///
+/// The *semantic* cure for these T1-kind targets (module-grain reload with
+/// end-of-turn sequencing; design §10 T1) is S103; the outcome feeds the interim
+/// §18.1.1 `stale:` print.
+fn commit_slotless_redef(
+    live: &crate::code::SessionSymbolTable,
+    module: &ModuleFullPath,
+    name: &Symbol,
+    entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
+    shared: Option<&crate::session_v4::SharedState>,
+) -> Option<crate::redefine::RedefinitionOutcome> {
+    use crate::redefine::{classify_redefinition, RedefinitionOutcome, RetainedCode};
+    use cranelisp_types::{FQSymbol, ModuleEntry};
+
+    if !matches!(entry, ModuleEntry::Def { .. }) {
+        return None;
+    }
+    let prior = live.symbols.get(name)?;
+    if !matches!(prior, ModuleEntry::Def { .. }) {
+        return None;
+    }
+
+    let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), entry);
+    let prior_slot = prior.callable_got_slot();
+    if let Some(shared) = shared
+        && let Some(prior_slot) = prior_slot
+        && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
+    {
+        shared
+            .retained_code
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(RetainedCode::frozen(
+                module,
+                name,
+                Some(prior_slot),
+                prior_code.clone(),
+            ));
+    }
+    Some(RedefinitionOutcome {
+        fq: FQSymbol {
+            module: module.clone(),
+            symbol: name.clone(),
+        },
+        kind,
+        per_symbol,
+        prior_was_def: true,
+        old_slot: prior_slot,
+        new_slot: None,
+    })
 }
 
 /// Re-point the GOT slot carried on a callable [`DefKind`] variant

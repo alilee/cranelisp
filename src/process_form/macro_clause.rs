@@ -1,9 +1,12 @@
 //! Macro-clause compiler (S87 §1.1 extraction from `process_form.rs`).
 //!
-//! The SINGLE clause-compiler implementation (`compile_macro_clause_core`) plus
-//! its `_with_state` adapter (resolver path, raw refs). The `_inline` adapter
-//! (the `&mut ModuleCompiler` Pass-2 path) lives in `macro_resolution.rs` since
-//! it sources its refs from `ctx`. This module is the **codegen** of a clause
+//! The SINGLE clause-compiler implementation (`compile_macro_clause_core`),
+//! taking a [`MacroClauseEnv`] of the threaded references. Both callers build
+//! the env from their own sources: the resolver path (`compile_macro_with_state`
+//! in `macro_resolution.rs`, raw refs + shared-state→aliases derivation) and the
+//! `_inline` adapter (the `&mut ModuleCompiler` Pass-2 path, also in
+//! `macro_resolution.rs`, sourcing from `ctx`). This module is the **codegen**
+//! of a clause
 //! (synthesize → expand-qq → build → check → `inline_jit_codegen_for_names`),
 //! distinct from `macro_resolution`'s *recognize/drive* concern
 //! (`src/CLAUDE.md §"Macro-clause single implementation"`).
@@ -13,36 +16,47 @@ use cranelisp_types::{
 };
 
 use crate::worker::{
-    ModuleCheckAccumulator, build_program_compat,
-    check_program_compat_no_gap, ensure_typecheck_product,
+    build_program_compat, check_program_compat_no_gap, ensure_typecheck_product,
     inline_jit_codegen_for_names,
 };
 
-use cranelisp_typecheck::CheckState;
+/// The session/table + resolution environment threaded through on-demand
+/// macro-clause compilation. Groups the cohesive reference set (module symbol
+/// tables, the module-alias + prelude-fallback resolution scope, the per-module
+/// typecheck products, and the optional live session) so the clause compiler
+/// stays under the 8-param cap (Principle 6 — complexity has a budget). Each
+/// entry shape (`compile_macro_clause_inline` from `&mut ModuleCompiler`, the
+/// resolver's `compile_macro_with_state` from raw refs) builds the env from its
+/// own reference sources; the values threaded are unchanged from the former
+/// flat parameter lists.
+pub(super) struct MacroClauseEnv<'a> {
+    pub symbol_tables:
+        &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    pub module_aliases: &'a cranelisp_types::ModuleAliases,
+    pub prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
+    pub typecheck_products:
+        &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    pub shared_state: Option<&'a crate::session_v4::SharedState>,
+}
 
 /// Compile a single macro clause — the SINGLE implementation shared by both
 /// entry shapes (FIXME 0109 Wave D collapse).
 ///
-/// Post-Decision-44 the `_with_state` (raw-refs, resolver path) and `_inline`
-/// (`&mut ModuleCompiler`, Pass-2 path) clause compilers had byte-identical
-/// bodies — the only difference was where the references came from. This core
-/// takes the references explicitly; the two thin adapters
-/// (`compile_macro_clause_with_state` / `compile_macro_clause_inline`) source
-/// them from their respective callers. No behavioural change: each adapter
-/// passes exactly the references its former body used (the `_with_state`
+/// Post-Decision-44 the resolver path (`compile_macro_with_state`, raw refs)
+/// and the `_inline` (`&mut ModuleCompiler`, Pass-2) clause compilers had
+/// byte-identical bodies — the only difference was where the references came
+/// from. This core takes them as a [`MacroClauseEnv`]; each caller builds the
+/// env from its own reference sources. No behavioural change: each passes
+/// exactly the references its former body used (the resolver path's
 /// shared-state→aliases/prelude resolution, incl. the unit-test leaked-default
-/// fallback, lives in that adapter, unchanged).
+/// fallback, lives in the caller, unchanged).
 pub(super) fn compile_macro_clause_core(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module_aliases: &cranelisp_types::ModuleAliases,
-    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    env: &MacroClauseEnv<'_>,
     target_module: &ModuleFullPath,
     macro_name: &Symbol,
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,
     span: Span,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
     // Step 1: Synthesize the defn Sexp.
     let synth_sexp = cranelisp_frontend::synthesize_macro_clause_defn(
@@ -62,9 +76,9 @@ pub(super) fn compile_macro_clause_core(
     // 2026-05-13 third amendment). `check_program_compat` runs the internal
     // Pass 1 + Pass 2 + finalize sequence in one call.
     check_program_compat_no_gap(
-        symbol_tables,
-        module_aliases,
-        prelude_fallback,
+        env.symbol_tables,
+        env.module_aliases,
+        env.prelude_fallback,
         target_module,
         &program,
     )?;
@@ -93,8 +107,8 @@ pub(super) fn compile_macro_clause_core(
     // S69 Submission 35: `ModuleEntry::Def.ast` is now `DefnVariant` (no
     // `name` field); the codegen `names` array is keyed off the already-
     // extracted `defn_name`, so the prior `Defn` reconstruction is dropped.
-    let tc_modules = symbol_tables;
-    ensure_typecheck_product(typecheck_products, target_module);
+    let tc_modules = env.symbol_tables;
+    ensure_typecheck_product(env.typecheck_products, target_module);
     let names = [defn_name.clone()];
     inline_jit_codegen_for_names(
         target_module,
@@ -102,54 +116,8 @@ pub(super) fn compile_macro_clause_core(
         tc_modules,
         None,
         &[],
-        shared_state,
+        env.shared_state,
     )?;
 
     Ok(())
-}
-
-/// Compile a single macro clause from the resolver's raw references (no
-/// `&mut ModuleCompiler`). Thin adapter over [`compile_macro_clause_core`].
-///
-/// `check_state` / `accumulator` / `next_type_id` are vestigial under the
-/// collapsed `check_forms` surface (kept for source-compat with the resolver
-/// call site). `module_aliases` / `prelude_fallback` derive from `shared_state`
-/// — when absent (unit-test paths) an empty leaked default is a safe stand-in
-/// (macro clause bodies use qualified `macros/*` refs, never aliases or the
-/// prelude bare-name fallback).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn compile_macro_clause_with_state(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut CheckState,
-    target_module: &ModuleFullPath,
-    macro_name: &Symbol,
-    clause_idx: usize,
-    clause: &cranelisp_frontend::MacroClause,
-    span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    shared_state: Option<&crate::session_v4::SharedState>,
-) -> Result<(), CranelispError> {
-    let _ = (check_state, accumulator, next_type_id);
-    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
-        Some(s) => &s.module_aliases,
-        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
-    };
-    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
-        Some(s) => &s.prelude_fallback,
-        None => Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default())),
-    };
-    compile_macro_clause_core(
-        symbol_tables,
-        module_aliases,
-        prelude_fallback,
-        target_module,
-        macro_name,
-        clause_idx,
-        clause,
-        span,
-        typecheck_products,
-        shared_state,
-    )
 }

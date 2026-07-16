@@ -1205,16 +1205,18 @@ fn index_typecheck_into_private(
             let info = cranelisp_frontend::parse_defmacro(&form)
                 .map_err(|e| format!("defmacro parse error: {e}"))?;
             crate::process_form::form_dispatch::register_macro_in_module(
-                priv_tables,
-                None,
+                &crate::process_form::form_dispatch::MacroRegisterEnv {
+                    symbol_tables: priv_tables,
+                    introspection: None,
+                    module_aliases: priv_aliases,
+                    prelude_fallback,
+                },
                 module,
                 &info.name,
                 &info,
                 &form,
                 &form,
                 None,
-                priv_aliases,
-                prelude_fallback,
             )
             .map_err(|e| format!("macro register error: {}", e.message()))?;
         } else {

@@ -853,7 +853,7 @@ pub(crate) fn run_transaction(
     session: &mut CompilerSession,
     target: &FQSymbol,
 ) -> TransactionReport {
-    let mut report = TransactionReport::new(target.clone());
+    let report = TransactionReport::new(target.clone());
 
     // 1. Reverse index — derived on demand (§3.3); zero cost on the body-only
     //    fast path, correct by construction against the live tables.
@@ -892,147 +892,187 @@ pub(crate) fn run_transaction(
     // 4. SCC condensation, reverse-topological (callees before callers).
     let sccs = condense_reverse_topo(&members);
 
-    // 5. The walk.
-    let mut propagates: HashMap<FQSymbol, bool> = HashMap::new();
-    propagates.insert(target.clone(), true);
-    let mut touched_modules: HashSet<ModuleFullPath> = HashSet::new();
-    let mut reported: HashSet<FQSymbol> = HashSet::new();
-
+    // 5. The walk — one reverse-topo pass over the SCCs (callees before
+    //    callers). Per-SCC recheck + propagation bookkeeping lives in
+    //    `process_scc`; the mutable walk state rides on `TransactionWalk`,
+    //    seeded with the target marked propagating (§4.1 step 1).
+    let mut walk = TransactionWalk::seeded(target, report);
     for scc in &sccs {
-        if !scc_should_visit(scc, &members, &propagates) {
-            for &i in scc {
-                propagates.insert(members[i].fq.clone(), false);
-            }
-            continue;
-        }
-
-        // Cross-module SCCs cannot arise (import acyclicity); all members
-        // share one home module.
-        let module = members[scc[0]].fq.module.clone();
-
-        // Re-typecheck inputs: the raw stored sexps of the members' BASE
-        // defns (a `$`-mangled variant re-mints through its base form).
-        let mut units: Vec<FQSymbol> = Vec::new();
-        for &i in scc {
-            let base = base_fq(&members[i].fq);
-            if !units.contains(&base) {
-                units.push(base);
-            }
-        }
-        match resolve_recheck_sexps(session, &module, &units) {
-            RecheckInputs::Sexps(sexps) => {
-                match session.recheck_units_for_transaction(&module, &sexps) {
-                    Ok(outcomes) => {
-                        let by_fq: HashMap<&FQSymbol, RedefKind> =
-                            outcomes.iter().map(|o| (&o.fq, o.kind)).collect();
-                        for &i in scc {
-                            let m = &members[i];
-                            let own = by_fq
-                                .get(&m.fq)
-                                .or_else(|| by_fq.get(&base_fq(&m.fq)))
-                                .copied();
-                            let green_changing = own.map(|k| k == RedefKind::AbiChanging);
-                            propagates.insert(
-                                m.fq.clone(),
-                                member_propagates(m.slotless, true, green_changing),
-                            );
-                        }
-                        for base in &units {
-                            if session.shared.broken.remove(base).is_some() {
-                                report.recovered.push(base.clone());
-                            }
-                            // §18.3 no-internal-artifacts: fold the user-facing
-                            // report name (a `__macro_*` clause → its owning
-                            // macro, a `$`-mangled mono → its base) at the push
-                            // site; `base`/`units` stay RAW for the sexp lookup
-                            // and the broken-registry key. Dedup on the folded
-                            // name so two clauses of one macro collapse.
-                            let display = render_caller_base(base);
-                            if reported.insert(display.clone()) {
-                                report.recompiled.push(display);
-                            }
-                        }
-                        touched_modules.insert(module.clone());
-                    }
-                    Err(e) => {
-                        let err = first_line(&e.to_string());
-                        for base in &units {
-                            mark_broken(
-                                &session.shared.symbol_tables,
-                                &session.shared.retained_code,
-                                &session.shared.broken,
-                                base,
-                                target,
-                                &err,
-                            );
-                            let display = render_caller_base(base);
-                            if reported.insert(display.clone()) {
-                                report.broken.push((display, err.clone()));
-                            }
-                        }
-                        for &i in scc {
-                            let m = &members[i];
-                            // Slotted BROKEN does not propagate; slot-less
-                            // BROKEN passes through (§4.1 case B).
-                            propagates.insert(m.fq.clone(), m.slotless);
-                        }
-                        touched_modules.insert(module.clone());
-                    }
-                }
-            }
-            RecheckInputs::ModuleGrain => {
-                // T2 (design §10): a member's raw sexp is unrecoverable even
-                // after backing-file rehydration — degrade this module to the
-                // module-grain reload and treat its members as
-                // recompiled-at-module-grain (conservative propagation).
-                let reloaded = module_grain_reload(session, &module);
-                for &i in scc {
-                    let m = &members[i];
-                    // §18.3 no-internal-artifacts: the report name folds a
-                    // `__macro_*` clause to its owning macro (the F3 reachable
-                    // case — a cross-module macro clause with no standalone
-                    // sexp routes here via T2); the broken-registry key stays
-                    // RAW (`base_fq`).
-                    let display = render_caller_base(&m.fq);
-                    if reloaded {
-                        propagates.insert(m.fq.clone(), true);
-                        if reported.insert(display.clone()) {
-                            report.recompiled.push(display);
-                        }
-                    } else {
-                        // No backing file to reload from: trap rather than
-                        // leave a stale caller silently unsound.
-                        let base = base_fq(&m.fq);
-                        let err = "definition source unavailable for dependent \
-                                   recompilation"
-                            .to_string();
-                        mark_broken(
-                            &session.shared.symbol_tables,
-                            &session.shared.retained_code,
-                            &session.shared.broken,
-                            &base,
-                            target,
-                            &err,
-                        );
-                        if reported.insert(display.clone()) {
-                            report.broken.push((display, err));
-                        }
-                        propagates.insert(m.fq.clone(), m.slotless);
-                    }
-                }
-                touched_modules.insert(module.clone());
-            }
-        }
+        process_scc(session, scc, &members, target, &mut walk);
     }
 
     // Persist refresh: affected modules re-enter the nice-worker persist
     // queue (a module holding a BROKEN symbol is skipped at write time — the
     // §18.8 cache-write poisoning — and self-heals on its first green turn).
-    for m in &touched_modules {
+    for m in &walk.touched_modules {
         session.shared.scheduler.mark_object_stale(m);
     }
 
-    report
+    walk.report
+}
+
+/// Mutable bookkeeping threaded through the SCC walk of a redefinition
+/// transaction: the per-member propagation decisions, the set of modules whose
+/// object cache must be marked stale, the report-name dedup set, and the report
+/// being assembled.
+struct TransactionWalk {
+    propagates: HashMap<FQSymbol, bool>,
+    touched_modules: HashSet<ModuleFullPath>,
+    reported: HashSet<FQSymbol>,
+    report: TransactionReport,
+}
+
+impl TransactionWalk {
+    /// Seed the walk with the redefinition target marked as propagating.
+    fn seeded(target: &FQSymbol, report: TransactionReport) -> Self {
+        let mut propagates: HashMap<FQSymbol, bool> = HashMap::new();
+        propagates.insert(target.clone(), true);
+        TransactionWalk {
+            propagates,
+            touched_modules: HashSet::new(),
+            reported: HashSet::new(),
+            report,
+        }
+    }
+}
+
+/// Process one SCC of the reverse-topo condensation: skip-or-recheck its
+/// members' base defns, record the per-member propagation decisions, and fold
+/// recompiled / broken / recovered names into the report. Callees are ordered
+/// before callers, so a member's `propagates` inputs are already decided.
+fn process_scc(
+    session: &mut CompilerSession,
+    scc: &[usize],
+    members: &[ClosureMember],
+    target: &FQSymbol,
+    walk: &mut TransactionWalk,
+) {
+    let TransactionWalk { propagates, touched_modules, reported, report } = walk;
+
+    if !scc_should_visit(scc, members, propagates) {
+        for &i in scc {
+            propagates.insert(members[i].fq.clone(), false);
+        }
+        return;
+    }
+
+    // Cross-module SCCs cannot arise (import acyclicity); all members
+    // share one home module.
+    let module = members[scc[0]].fq.module.clone();
+
+    // Re-typecheck inputs: the raw stored sexps of the members' BASE
+    // defns (a `$`-mangled variant re-mints through its base form).
+    let mut units: Vec<FQSymbol> = Vec::new();
+    for &i in scc {
+        let base = base_fq(&members[i].fq);
+        if !units.contains(&base) {
+            units.push(base);
+        }
+    }
+    match resolve_recheck_sexps(session, &module, &units) {
+        RecheckInputs::Sexps(sexps) => {
+            match session.recheck_units_for_transaction(&module, &sexps) {
+                Ok(outcomes) => {
+                    let by_fq: HashMap<&FQSymbol, RedefKind> =
+                        outcomes.iter().map(|o| (&o.fq, o.kind)).collect();
+                    for &i in scc {
+                        let m = &members[i];
+                        let own = by_fq
+                            .get(&m.fq)
+                            .or_else(|| by_fq.get(&base_fq(&m.fq)))
+                            .copied();
+                        let green_changing = own.map(|k| k == RedefKind::AbiChanging);
+                        propagates.insert(
+                            m.fq.clone(),
+                            member_propagates(m.slotless, true, green_changing),
+                        );
+                    }
+                    for base in &units {
+                        if session.shared.broken.remove(base).is_some() {
+                            report.recovered.push(base.clone());
+                        }
+                        // §18.3 no-internal-artifacts: fold the user-facing
+                        // report name (a `__macro_*` clause → its owning
+                        // macro, a `$`-mangled mono → its base) at the push
+                        // site; `base`/`units` stay RAW for the sexp lookup
+                        // and the broken-registry key. Dedup on the folded
+                        // name so two clauses of one macro collapse.
+                        let display = render_caller_base(base);
+                        if reported.insert(display.clone()) {
+                            report.recompiled.push(display);
+                        }
+                    }
+                    touched_modules.insert(module.clone());
+                }
+                Err(e) => {
+                    let err = first_line(&e.to_string());
+                    for base in &units {
+                        mark_broken(
+                            &session.shared.symbol_tables,
+                            &session.shared.retained_code,
+                            &session.shared.broken,
+                            base,
+                            target,
+                            &err,
+                        );
+                        let display = render_caller_base(base);
+                        if reported.insert(display.clone()) {
+                            report.broken.push((display, err.clone()));
+                        }
+                    }
+                    for &i in scc {
+                        let m = &members[i];
+                        // Slotted BROKEN does not propagate; slot-less
+                        // BROKEN passes through (§4.1 case B).
+                        propagates.insert(m.fq.clone(), m.slotless);
+                    }
+                    touched_modules.insert(module.clone());
+                }
+            }
+        }
+        RecheckInputs::ModuleGrain => {
+            // T2 (design §10): a member's raw sexp is unrecoverable even
+            // after backing-file rehydration — degrade this module to the
+            // module-grain reload and treat its members as
+            // recompiled-at-module-grain (conservative propagation).
+            let reloaded = module_grain_reload(session, &module);
+            for &i in scc {
+                let m = &members[i];
+                // §18.3 no-internal-artifacts: the report name folds a
+                // `__macro_*` clause to its owning macro (the F3 reachable
+                // case — a cross-module macro clause with no standalone
+                // sexp routes here via T2); the broken-registry key stays
+                // RAW (`base_fq`).
+                let display = render_caller_base(&m.fq);
+                if reloaded {
+                    propagates.insert(m.fq.clone(), true);
+                    if reported.insert(display.clone()) {
+                        report.recompiled.push(display);
+                    }
+                } else {
+                    // No backing file to reload from: trap rather than
+                    // leave a stale caller silently unsound.
+                    let base = base_fq(&m.fq);
+                    let err = "definition source unavailable for dependent \
+                               recompilation"
+                        .to_string();
+                    mark_broken(
+                        &session.shared.symbol_tables,
+                        &session.shared.retained_code,
+                        &session.shared.broken,
+                        &base,
+                        target,
+                        &err,
+                    );
+                    if reported.insert(display.clone()) {
+                        report.broken.push((display, err));
+                    }
+                    propagates.insert(m.fq.clone(), m.slotless);
+                }
+            }
+            touched_modules.insert(module.clone());
+        }
+    }
 }
 
 /// Strip a `$`-mangled variant name to its base defn FQ.

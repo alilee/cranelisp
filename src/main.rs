@@ -84,6 +84,51 @@ impl Action {
     }
 }
 
+/// The fully-resolved launch configuration produced by [`parse_args`] and
+/// consumed by [`run`] — the CLI surface reduced to one value (Principle 6 param
+/// budget; replaces the former 8-element tuple threaded between them).
+struct LaunchSpec {
+    action: Action,
+    project_root: PathBuf,
+    entry_module: String,
+    settings: SessionSettings,
+    agent_enabled: bool,
+    auto_accept: bool,
+    is_rule3: bool,
+    output_override: Option<PathBuf>,
+}
+
+/// The raw flags recognised by the argument parse loop, before resolution into a
+/// [`LaunchSpec`]. Grouped so the flag loop is a helper under the param budget.
+#[derive(Default)]
+struct ParsedFlags {
+    no_color: bool,
+    no_cache: bool,
+    priority_workers: Option<usize>,
+    nice_workers: Option<usize>,
+    action_run: bool,
+    action_link: bool,
+    output_override: Option<PathBuf>,
+    agent_on: bool,
+    agent_off: bool,
+    yes: bool,
+    target: Option<String>,
+}
+
+// The usage line. The agent-related advertisement is cfg-split so usage never
+// names a flag that immediately errors (MINOR-#3 consistency): an agent-capable
+// build advertises `--agent`/`--yes` (accepted); a feature-off build advertises
+// ONLY `--no-agent` (the sole still-valid agent flag — `--agent`/`--yes`
+// hard-error there, FIXME 0539).
+#[cfg(feature = "agent")]
+const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+                     [--no-cache] [--priority-workers N] [--nice-workers N] \
+                     [--agent | --no-agent] [--yes]";
+#[cfg(not(feature = "agent"))]
+const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+                     [--no-cache] [--priority-workers N] [--nice-workers N] \
+                     [--no-agent]";
+
 // ---------------------------------------------------------------------------
 // Main (pipeline-v4.md §2.2)
 // ---------------------------------------------------------------------------
@@ -135,21 +180,15 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3, output_override) =
-        parse_args();
-    cranelisp::style::init_color(settings.no_color);
+    let spec = parse_args();
+    cranelisp::style::init_color(spec.settings.no_color);
 
-    if let Err(e) = run(
-        action,
-        &project_root,
-        &entry_module,
-        settings,
-        agent_enabled,
-        auto_accept,
-        is_rule3,
-        output_override.as_deref(),
-    ) {
-        let entry_file = project_root.join(format!("{entry_module}.cl"));
+    // Captured before `run` consumes `spec` — the error path names the entry file.
+    let entry_file = spec
+        .project_root
+        .join(format!("{}.cl", spec.entry_module));
+
+    if let Err(e) = run(spec) {
         eprintln!("{}", format_error(&e, &entry_file));
         flush_traces();
         process::exit(1);
@@ -237,20 +276,22 @@ fn flush_traces() {
 /// One CompilerSession, one code path. Workers are persistent for the
 /// session lifetime. Run/Link/REPL differ only in what happens after
 /// compilation.
-#[allow(clippy::too_many_arguments)]
-fn run(
-    action: Action,
-    project_root: &Path,
-    entry_module_name: &str,
-    settings: SessionSettings,
-    agent_enabled: bool,
-    auto_accept: bool,
-    is_rule3: bool,
-    output_override: Option<&Path>,
-) -> Result<(), CranelispError> {
-    use std::io::{self, Write};
+fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
+    let LaunchSpec {
+        action,
+        project_root,
+        entry_module,
+        settings,
+        agent_enabled,
+        auto_accept,
+        is_rule3,
+        output_override,
+    } = spec;
+    let project_root: &Path = &project_root;
+    let entry_module_name: &str = &entry_module;
+    let output_override = output_override.as_deref();
 
-    // `agent_enabled` / `auto_accept` are consumed by the REPL arm's
+    // `agent_enabled` / `auto_accept` are threaded into `run_repl`'s
     // `s.enable_agent` only under `#[cfg(feature="agent")]`; feature-off they are
     // accepted no-ops (the `--agent` / `--yes` flags are still recognised, so a
     // script written for an agent build runs unchanged).
@@ -305,327 +346,15 @@ fn run(
         }
         // §6: REPL mode.
         Action::Repl => {
-            let stdout = io::stdout();
-            let mut stdout = stdout.lock();
-
-            // Wait for entry module (prelude) to be ready. §18.8 restart
-            // floor (S102 CS-0489): an entry-restore failure MUST NOT
-            // prevent the REPL from starting — catch it and degrade to the
-            // form-by-form entry load (green forms commit; failed forms are
-            // retained + reported below, and the module enters the §14.4
-            // error-blocked state with the definition-turn carve-out).
-            let startup = match startup {
-                Ok(()) => s.wait_inmem_complete().map_err(CranelispError::from),
-                Err(e) => Err(e),
-            };
-            let degraded_report = match startup {
-                Ok(()) => None,
-                Err(_) => s.recover_startup_failure(entry_module_name),
-            };
-
-            // S78 §3 / B1: startup typecheck is done — the eval thread now
-            // becomes the entry module's SOLE orchestrator. Transfer ownership
-            // so the scheduler never requeues the entry onto the pool for a
-            // concurrent re-typecheck while the eval thread drives it.
-            s.mark_entry_eval_owned();
-
-            // Initialize file watcher now that modules are loaded.
-            s.init_watcher();
-
-            // S91 Pillar 3: arm the importable-symbol burn-down EAGERLY at REPL
-            // start-up (R17 — eager-from-REPL-startup). REPL-only by
-            // construction: this is the SOLE arming point, so `--run`/`--link`/
-            // `--release` never enumerate the worklist (batch-mode-inert, R9).
-            // The nice workers drain it BEHIND object codegen (index warm-up in
-            // the slack); a `/search` issued before the burn-down completes
-            // serves partial results + an "indexing N modules…" note.
-            s.arm_importable_index();
-
-            // S88 W3: wire the embedded agent (the S1 `_agent_enabled` seam).
-            // REPL-only; selects the runtime provider (anthropic / ollama / stub
-            // by config) or stays dormant. Feature-off this call does not exist
-            // and `agent_enabled` is an accepted no-op (the `--agent` flag is
-            // still recognised so a script written for an agent build runs).
-            #[cfg(feature = "agent")]
-            s.enable_agent(agent_enabled, auto_accept);
-
-            // S91 FIXME 0410: scaffold a default `Cranelisp.toml` when the REPL
-            // is pointed at a §0.5 rule-3 project-root directory lacking one.
-            // REPL-only (this arm) + rule-3-only (the `is_rule3` gate) + never
-            // overwrite + graceful on a read-only dir — all enforced by
-            // `scaffold_project_config`. A new file emits the §0.5.7
-            // `[created Cranelisp.toml]` notice; an existing file is a silent
-            // no-op. The scaffold is resolution-neutral (every key commented).
-            // A newly-created file (Ok(true)) emits the §0.5.7 notice; an
-            // existing file (Ok(false)) or a graceful write failure is a
-            // silent no-op — never fatal, the REPL launch proceeds regardless.
-            if is_rule3 && matches!(s.scaffold_project_config(), Ok(true)) {
-                let _ = writeln!(stdout, "[created Cranelisp.toml]");
-            }
-
-            // §18.8/§5.1: the degraded-load report — one error line per
-            // failed form, naming the broken symbol — prints before the
-            // banner, so the first thing a locked-out user used to see (the
-            // fatal load error) is now the same information followed by a
-            // usable prompt.
-            if let Some(report) = &degraded_report {
-                let _ = writeln!(stdout, "{report}");
-            }
-
-            s.print_banner(&mut stdout);
-
-            // Sprint 106 (FIXMEs 0544 + 0551): the single input abstraction. On an
-            // interactive TTY it is a rustyline editor (history + inline editing,
-            // per-project `.cranelisp_history`); on piped/redirected stdin it reads
-            // fd 0 line-by-line WITHOUT read-ahead (byte-identical output). The
-            // same abstraction backs the agent consent-line read (§15.2), so there
-            // is never a second reader desyncing line discipline against it.
-            let mut input = ReplInput::new(project_root, &mut stdout);
-
-            let mut buffer = String::new();
-            let mut compile_ms: u64 = 0;
-            let mut eval_ms: u64 = 0;
-
-            loop {
-                // S108 (spec §17.19.3): the one-shot `search index complete.`
-                // completion notice. Polled at the clean prompt boundary — BEFORE
-                // the prompt is written — so it is emitted only between a completed
-                // prompt cycle and the next prompt (no mid-line interleave), by the
-                // sole writer (this thread; no worker-side stdout). It fires at most
-                // once, and only after a "indexing N modules…" not-ready note was
-                // shown this session (timing (b), USER-CONFIRMED) — so a session
-                // that never saw the index building sees NEITHER message.
-                //
-                // INTERACTIVE (TTY) ONLY (I-3): the async-delivery constraint
-                // §17.19.3 (2) forbids perturbing the byte-identical scripted/piped
-                // contract (§10.8). A non-TTY session CAN latch `note_shown` — the
-                // inline `indexing N…` note is synchronous `/search` output and is
-                // served on the non-TTY branch too — so gating on `note_shown`
-                // alone is not enough; a piped run catching the burn-down mid-flight
-                // would emit this async line at a timing-dependent boundary and
-                // break determinism. Gate on the TTY branch so the completion path
-                // is unreachable on non-TTY. Dim classification-comment role when
-                // colour is on; plain under `--no-color` via the global gate.
-                if input.is_interactive() && s.take_search_index_completion_notice() {
-                    // §10.3 R6 (ReplMetadata) — dim; FIXME 0561 resolves the
-                    // metadata role to dim (was italic). Plain under `--no-color`.
-                    let _ = writeln!(
-                        stdout,
-                        "{}",
-                        cranelisp::style::repl_metadata_line("; search index complete.")
-                    );
-                }
-
-                // Fresh-form prompt when the buffer is empty, continuation prompt
-                // while an unbalanced form is being accumulated. On the non-TTY
-                // branch `read_line` writes this to stdout verbatim (byte-identical
-                // to the pre-S106 `write_prompt`); on the TTY branch the editor
-                // owns the prompt via `readline`.
-                let prompt = if buffer.is_empty() {
-                    s.prompt_string(compile_ms, eval_ms)
-                } else {
-                    s.continuation_prompt_string(compile_ms, eval_ms)
-                };
-                let line = match input.read_line(&prompt, &mut stdout) {
-                    ReadOutcome::Line(l) => l,
-                    // Genuine EOF (Ctrl-D / closed stdin). FIXME 0551 (B): a
-                    // transient `WouldBlock`/`EINTR` is retried inside `read_line`,
-                    // NOT surfaced here as EOF — only a true terminal breaks.
-                    ReadOutcome::Eof => break,
-                };
-
-                buffer.push_str(&line);
-
-                // Slash commands are complete on a single line regardless of
-                // paren balance — their arguments may contain unbalanced parens
-                // (e.g., `/sh echo '(broken' > file.cl`).
-                if !buffer.trim_start().starts_with('/') && !s.parens_balanced(&buffer) {
-                    buffer.push('\n');
-                    // Loop back: the top prints the continuation prompt.
-                    continue;
-                }
-
-                let input_str = buffer.trim().to_string();
-                buffer.clear();
-
-                // §5.3 dispatch classifier (design/int/agent.md §2.4,
-                // repl/spec.md §17.1). Feature-OFF this whole block is absent and
-                // the `process_commands` path below is byte-identical to today —
-                // the divergence is the `Agent` arm only, which fires solely on
-                // input that today produces a parse-error diagnostic anyway.
-                //
-                // §15.2 — `/ask` is ALSO intercepted here (feature-on) so the
-                // Build write gate has the consent line-reader (the next input
-                // line). The reader is a `FnConsent` closure over `&mut input` —
-                // the SAME abstraction the loop reads from (§10.8: no parallel
-                // reader), alive only for the agent call, dropped before the next
-                // top-of-loop read. Feature-off `/ask` still flows through
-                // `process_commands` (the dispatch body prints "not built in").
-                #[cfg(feature = "agent")]
-                {
-                    let ask_text: Option<String> = input_str
-                        .strip_prefix("/ask")
-                        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-                        .map(|r| r.trim().to_string());
-                    // §5.3/§7.4 dormant fall-through (arch ruling e3f7d57): the
-                    // `Classify::Agent` route DIVERTS only when the agent is ACTIVE
-                    // (a provider is reachable). Dormant / `--agent` OFF ⇒ the input
-                    // flows through `process_commands`/`eval` exactly as the
-                    // feature-OFF build does (bare-unbound → `eval.rs` undefined-
-                    // symbol introspection; non-paren parse-error → `format_error`).
-                    // The dormant short-circuit inside `agent_turn` stays the guard
-                    // for the explicit `/ask` door ONLY (`ask_text` is unconditional).
-                    let agent_text: Option<String> = if s.agent_is_active() {
-                        match s.classify_for_agent(&input_str) {
-                            cranelisp::agent::Classify::Agent(text) => Some(text),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(text) = ask_text.or(agent_text) {
-                        let mut consent =
-                            cranelisp::agent::types::FnConsent(|| input.read_consent_line());
-                        s.agent_turn(&text, &mut stdout, &mut consent);
-                        drop(consent);
-                        s.sync_watcher();
-                        for msg in s.poll_and_reload() {
-                            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
-                            let _ = writeln!(
-                                stdout,
-                                "{}",
-                                cranelisp::style::repl_metadata_line(&msg)
-                            );
-                        }
-                        // Loop back: the top prints the next prompt.
-                        continue;
-                    }
-                }
-
-                match s.process_commands(&input_str, &mut stdout) {
-                    CommandResult::Nothing => {}
-                    CommandResult::Quit => break,
-                    CommandResult::Final(text) => {
-                        s.pretty_print(&text, &mut stdout);
-                    }
-                    CommandResult::Compile(src) => {
-                        let t0 = Instant::now();
-                        match s.eval(&src) {
-                            Ok(Some(result)) => {
-                                let t1 = Instant::now();
-                                let mut text = s.format_eval_result(&result);
-                                // S101 (repl/spec.md §18.3): the cascade
-                                // report renders after the §1.3 confirmation.
-                                if let Some(report) = s.take_cascade_report() {
-                                    text.push('\n');
-                                    text.push_str(&report);
-                                }
-                                let t2 = Instant::now();
-                                compile_ms = (t1 - t0).as_millis() as u64;
-                                eval_ms = (t2 - t1).as_millis() as u64;
-                                s.pretty_print(&text, &mut stdout);
-                                // E5 (agent.md §5.5) — record this green eval turn
-                                // on the agent's recent-turn ring, with the IDENTICAL
-                                // string the user just saw (Principle 7: reuse the
-                                // display boundary's own output, not a re-render). A
-                                // no-op when the agent is unconfigured. Feature-off
-                                // this call is absent → the read loop is byte-identical.
-                                #[cfg(feature = "agent")]
-                                s.record_repl_turn(
-                                    &input_str,
-                                    cranelisp::agent::types::ReplTurnOutcome::Ok(text.clone()),
-                                );
-                                // Persist definitions to backing file (repl/spec.md §15).
-                                // Genuine definitions only (F6): a display-only
-                                // bare-lookup Def must not rewrite the file.
-                                if result.is_defining() {
-                                    s.regenerate_backing_file();
-                                }
-                            }
-                            Ok(None) => {
-                                compile_ms = t0.elapsed().as_millis() as u64;
-                                eval_ms = 0;
-                                // Structural changes (import, mod, platform) also
-                                // need persistence. Regenerate if the module has content.
-                                s.regenerate_backing_file();
-                            }
-                            Err(e) => {
-                                compile_ms = t0.elapsed().as_millis() as u64;
-                                eval_ms = 0;
-                                let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
-                                // E5 (agent.md §5.5) — record this ERRORED eval turn
-                                // on the agent's recent-turn ring with the VERBATIM
-                                // diagnostic the user just saw. A failed form never
-                                // commits, so this ring is the only place the agent
-                                // can see it when the user asks "why doesn't that
-                                // typecheck?" No-op when the agent is unconfigured;
-                                // feature-off this call is absent (byte-identical).
-                                #[cfg(feature = "agent")]
-                                s.record_repl_turn(
-                                    &input_str,
-                                    cranelisp::agent::types::ReplTurnOutcome::Error(format!(
-                                        "Error: {e}"
-                                    )),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Sync watcher with any newly-loaded modules (e.g. from import).
-                s.sync_watcher();
-
-                // Poll file watcher for changed source files (repl/spec.md §14).
-                for msg in s.poll_and_reload() {
-                    // §10.3 R6: watcher/reload notes are REPL metadata (dim).
-                    let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
-                }
-
-                // Loop back: the top prints the next prompt.
-            }
-
-            // §10.8: persist the per-project history on session end (TTY only;
-            // covers both `/quit` and Ctrl-D). Non-fatal on failure.
-            input.save_history(&mut stdout);
-
-            // EOF reached. If a form was still being accumulated (unbalanced
-            // parens awaiting a continuation line that never came), it is an
-            // incomplete submission — report the parser's diagnostic rather
-            // than silently discarding it. A complete form at the prompt is
-            // submitted/executed, so an incomplete form at EOF MUST error
-            // (repl/spec.md §5.1 + spec/05-definitions.md §5.13.2; user ruling
-            // 2026-06-09; FIXME 0142). Slash commands and whitespace/comment-
-            // only buffers are not incomplete forms.
-            let pending = buffer.trim();
-            if !pending.is_empty()
-                && !pending.starts_with('/')
-                && !s.parens_balanced(&buffer)
-            {
-                match s.eval(&buffer) {
-                    Err(e) => {
-                        let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
-                    }
-                    // The parser should reject an unbalanced form; if it
-                    // somehow parses, surface any result for symmetry with the
-                    // in-loop path.
-                    Ok(Some(result)) => {
-                        let mut text = s.format_eval_result(&result);
-                        if let Some(report) = s.take_cascade_report() {
-                            text.push('\n');
-                            text.push_str(&report);
-                        }
-                        s.pretty_print(&text, &mut stdout);
-                    }
-                    Ok(None) => {}
-                }
-            }
-
-            let _ = writeln!(stdout);
-            // S101 R18: pin the final `.o`/`.meta` persist to the session's
-            // FINAL table state (expression turns mutate the table without a
-            // per-turn persist trigger), then drain it deterministically.
-            s.flush_final_persist();
-            s.wait_object_complete()?;
+            run_repl(
+                &mut s,
+                project_root,
+                entry_module_name,
+                agent_enabled,
+                auto_accept,
+                is_rule3,
+                startup,
+            )?;
         }
     }
 
@@ -633,104 +362,533 @@ fn run(
     Ok(())
 }
 
+/// The REPL arm of [`run`] (§6): startup recovery, prologue, the read-eval loop,
+/// and the EOF/persist epilogue. The final `s.shutdown()` is the caller's.
+fn run_repl(
+    s: &mut CompilerSession,
+    project_root: &Path,
+    entry_module_name: &str,
+    agent_enabled: bool,
+    auto_accept: bool,
+    is_rule3: bool,
+    startup: Result<(), CranelispError>,
+) -> Result<(), CranelispError> {
+    use std::io::{self, Write};
+
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    repl_prologue(
+        s,
+        entry_module_name,
+        is_rule3,
+        agent_enabled,
+        auto_accept,
+        startup,
+        &mut stdout,
+    );
+
+    // Sprint 106 (FIXMEs 0544 + 0551): the single input abstraction. On an
+    // interactive TTY it is a rustyline editor (history + inline editing,
+    // per-project `.cranelisp_history`); on piped/redirected stdin it reads
+    // fd 0 line-by-line WITHOUT read-ahead (byte-identical output). The
+    // same abstraction backs the agent consent-line read (§15.2), so there
+    // is never a second reader desyncing line discipline against it.
+    let mut input = ReplInput::new(project_root, &mut stdout);
+
+    let buffer = repl_read_eval_loop(s, &mut input, &mut stdout);
+
+    // §10.8: persist the per-project history on session end (TTY only;
+    // covers both `/quit` and Ctrl-D). Non-fatal on failure.
+    input.save_history(&mut stdout);
+
+    // EOF reached. If a form was still being accumulated (unbalanced
+    // parens awaiting a continuation line that never came), it is an
+    // incomplete submission — report the parser's diagnostic rather
+    // than silently discarding it. A complete form at the prompt is
+    // submitted/executed, so an incomplete form at EOF MUST error
+    // (repl/spec.md §5.1 + spec/05-definitions.md §5.13.2; user ruling
+    // 2026-06-09; FIXME 0142). Slash commands and whitespace/comment-
+    // only buffers are not incomplete forms.
+    let pending = buffer.trim();
+    if !pending.is_empty()
+        && !pending.starts_with('/')
+        && !s.parens_balanced(&buffer)
+    {
+        match s.eval(&buffer) {
+            Err(e) => {
+                let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
+            }
+            // The parser should reject an unbalanced form; if it
+            // somehow parses, surface any result for symmetry with the
+            // in-loop path.
+            Ok(Some(result)) => {
+                let mut text = s.format_eval_result(&result);
+                if let Some(report) = s.take_cascade_report() {
+                    text.push('\n');
+                    text.push_str(&report);
+                }
+                s.pretty_print(&text, &mut stdout);
+            }
+            Ok(None) => {}
+        }
+    }
+
+    let _ = writeln!(stdout);
+    // S101 R18: pin the final `.o`/`.meta` persist to the session's
+    // FINAL table state (expression turns mutate the table without a
+    // per-turn persist trigger), then drain it deterministically.
+    s.flush_final_persist();
+    s.wait_object_complete()?;
+    Ok(())
+}
+
+/// The REPL read-eval loop: prompt, read a line (accumulating unbalanced forms),
+/// route agent input (agent build), dispatch slash commands / eval, and poll the
+/// watcher. Breaks on EOF or `/quit`; returns the leftover input buffer (a
+/// possibly-incomplete pending form) for the caller's EOF handling.
+fn repl_read_eval_loop(
+    s: &mut CompilerSession,
+    input: &mut ReplInput,
+    stdout: &mut std::io::StdoutLock<'_>,
+) -> String {
+    use std::io::Write;
+
+    let mut buffer = String::new();
+    let mut compile_ms: u64 = 0;
+    let mut eval_ms: u64 = 0;
+
+    loop {
+        poll_search_index_notice(s, input, stdout);
+
+        // Fresh-form prompt when the buffer is empty, continuation prompt
+        // while an unbalanced form is being accumulated. On the non-TTY
+        // branch `read_line` writes this to stdout verbatim (byte-identical
+        // to the pre-S106 `write_prompt`); on the TTY branch the editor
+        // owns the prompt via `readline`.
+        let prompt = if buffer.is_empty() {
+            s.prompt_string(compile_ms, eval_ms)
+        } else {
+            s.continuation_prompt_string(compile_ms, eval_ms)
+        };
+        let line = match input.read_line(&prompt, stdout) {
+            ReadOutcome::Line(l) => l,
+            // Genuine EOF (Ctrl-D / closed stdin). FIXME 0551 (B): a
+            // transient `WouldBlock`/`EINTR` is retried inside `read_line`,
+            // NOT surfaced here as EOF — only a true terminal breaks.
+            ReadOutcome::Eof => break,
+        };
+
+        buffer.push_str(&line);
+
+        // Slash commands are complete on a single line regardless of
+        // paren balance — their arguments may contain unbalanced parens
+        // (e.g., `/sh echo '(broken' > file.cl`).
+        if !buffer.trim_start().starts_with('/') && !s.parens_balanced(&buffer) {
+            buffer.push('\n');
+            // Loop back: the top prints the continuation prompt.
+            continue;
+        }
+
+        let input_str = buffer.trim().to_string();
+        buffer.clear();
+
+        // §5.3 dispatch classifier + §15.2 `/ask` interception (agent build
+        // only; `try_agent_dispatch` diverts + returns `true` when the input
+        // routes to the agent). Feature-off this call is absent and the
+        // `process_commands` path below is byte-identical.
+        #[cfg(feature = "agent")]
+        if try_agent_dispatch(s, &input_str, input, stdout) {
+            // Loop back: the top prints the next prompt.
+            continue;
+        }
+
+        match s.process_commands(&input_str, stdout) {
+            CommandResult::Nothing => {}
+            CommandResult::Quit => break,
+            CommandResult::Final(text) => {
+                s.pretty_print(&text, stdout);
+            }
+            CommandResult::Compile(src) => {
+                handle_compile_result(
+                    s,
+                    &src,
+                    &input_str,
+                    stdout,
+                    &mut compile_ms,
+                    &mut eval_ms,
+                );
+            }
+        }
+
+        // Sync watcher with any newly-loaded modules (e.g. from import).
+        s.sync_watcher();
+
+        // Poll file watcher for changed source files (repl/spec.md §14).
+        for msg in s.poll_and_reload() {
+            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
+            let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
+        }
+
+        // Loop back: the top prints the next prompt.
+    }
+
+    buffer
+}
+
+/// REPL startup prologue: wait for (or degrade) the entry-module load, transfer
+/// eval-thread ownership, arm the watcher + importable index, wire the agent,
+/// scaffold a rule-3 `Cranelisp.toml`, print the degraded-load report and banner.
+fn repl_prologue(
+    s: &mut CompilerSession,
+    entry_module_name: &str,
+    is_rule3: bool,
+    agent_enabled: bool,
+    auto_accept: bool,
+    startup: Result<(), CranelispError>,
+    stdout: &mut std::io::StdoutLock<'_>,
+) {
+    use std::io::Write;
+
+    #[cfg(not(feature = "agent"))]
+    let _ = (agent_enabled, auto_accept);
+
+    // Wait for entry module (prelude) to be ready. §18.8 restart
+    // floor (S102 CS-0489): an entry-restore failure MUST NOT
+    // prevent the REPL from starting — catch it and degrade to the
+    // form-by-form entry load (green forms commit; failed forms are
+    // retained + reported below, and the module enters the §14.4
+    // error-blocked state with the definition-turn carve-out).
+    let startup = match startup {
+        Ok(()) => s.wait_inmem_complete().map_err(CranelispError::from),
+        Err(e) => Err(e),
+    };
+    let degraded_report = match startup {
+        Ok(()) => None,
+        Err(_) => s.recover_startup_failure(entry_module_name),
+    };
+
+    // S78 §3 / B1: startup typecheck is done — the eval thread now
+    // becomes the entry module's SOLE orchestrator. Transfer ownership
+    // so the scheduler never requeues the entry onto the pool for a
+    // concurrent re-typecheck while the eval thread drives it.
+    s.mark_entry_eval_owned();
+
+    // Initialize file watcher now that modules are loaded.
+    s.init_watcher();
+
+    // S91 Pillar 3: arm the importable-symbol burn-down EAGERLY at REPL
+    // start-up (R17 — eager-from-REPL-startup). REPL-only by
+    // construction: this is the SOLE arming point, so `--run`/`--link`/
+    // `--release` never enumerate the worklist (batch-mode-inert, R9).
+    // The nice workers drain it BEHIND object codegen (index warm-up in
+    // the slack); a `/search` issued before the burn-down completes
+    // serves partial results + an "indexing N modules…" note.
+    s.arm_importable_index();
+
+    // S88 W3: wire the embedded agent (the S1 `_agent_enabled` seam).
+    // REPL-only; selects the runtime provider (anthropic / ollama / stub
+    // by config) or stays dormant. Feature-off this call does not exist
+    // and `agent_enabled` is an accepted no-op (the `--agent` flag is
+    // still recognised so a script written for an agent build runs).
+    #[cfg(feature = "agent")]
+    s.enable_agent(agent_enabled, auto_accept);
+
+    // S91 FIXME 0410: scaffold a default `Cranelisp.toml` when the REPL
+    // is pointed at a §0.5 rule-3 project-root directory lacking one.
+    // REPL-only (this arm) + rule-3-only (the `is_rule3` gate) + never
+    // overwrite + graceful on a read-only dir — all enforced by
+    // `scaffold_project_config`. A new file emits the §0.5.7
+    // `[created Cranelisp.toml]` notice; an existing file is a silent
+    // no-op. The scaffold is resolution-neutral (every key commented).
+    // A newly-created file (Ok(true)) emits the §0.5.7 notice; an
+    // existing file (Ok(false)) or a graceful write failure is a
+    // silent no-op — never fatal, the REPL launch proceeds regardless.
+    if is_rule3 && matches!(s.scaffold_project_config(), Ok(true)) {
+        let _ = writeln!(stdout, "[created Cranelisp.toml]");
+    }
+
+    // §18.8/§5.1: the degraded-load report — one error line per
+    // failed form, naming the broken symbol — prints before the
+    // banner, so the first thing a locked-out user used to see (the
+    // fatal load error) is now the same information followed by a
+    // usable prompt.
+    if let Some(report) = &degraded_report {
+        let _ = writeln!(stdout, "{report}");
+    }
+
+    s.print_banner(stdout);
+}
+
+/// S108 (spec §17.19.3): emit the one-shot `search index complete.` completion
+/// notice at the clean prompt boundary — BEFORE the prompt is written, no
+/// mid-line interleave, by the sole writer (this thread). It fires at most once,
+/// and only after a "indexing N modules…" not-ready note was shown this session
+/// (timing (b), USER-CONFIRMED). INTERACTIVE (TTY) ONLY (I-3): the
+/// async-delivery constraint §17.19.3 (2) forbids perturbing the byte-identical
+/// scripted/piped contract (§10.8) — a non-TTY session can latch `note_shown`
+/// (the inline `indexing N…` note is synchronous `/search` output served on the
+/// non-TTY branch too), so gating on `note_shown` alone is not enough; gate on
+/// the TTY branch so the completion path is unreachable on non-TTY.
+fn poll_search_index_notice(
+    s: &mut CompilerSession,
+    input: &mut ReplInput,
+    stdout: &mut std::io::StdoutLock<'_>,
+) {
+    use std::io::Write;
+    if input.is_interactive() && s.take_search_index_completion_notice() {
+        // §10.3 R6 (ReplMetadata) — dim; FIXME 0561 resolves the
+        // metadata role to dim (was italic). Plain under `--no-color`.
+        let _ = writeln!(
+            stdout,
+            "{}",
+            cranelisp::style::repl_metadata_line("; search index complete.")
+        );
+    }
+}
+
+/// §5.3 dispatch classifier + §15.2 `/ask` interception (agent build only).
+/// Returns `true` when the input routed to the agent (the caller loops back);
+/// `false` when it should flow through `process_commands`/`eval` unchanged.
+///
+/// §15.2 — `/ask` is intercepted here so the Build write gate has the consent
+/// line-reader (the next input line). The reader is a `FnConsent` closure over
+/// `&mut input` — the SAME abstraction the loop reads from (§10.8: no parallel
+/// reader), alive only for the agent call, dropped before the next top-of-loop
+/// read. §5.3/§7.4 dormant fall-through (arch ruling e3f7d57): the
+/// `Classify::Agent` route DIVERTS only when the agent is ACTIVE (a provider is
+/// reachable); dormant / `--agent` OFF ⇒ the input flows through
+/// `process_commands`/`eval` exactly as the feature-OFF build does. The dormant
+/// short-circuit inside `agent_turn` stays the guard for the explicit `/ask`
+/// door ONLY (`ask_text` is unconditional).
+#[cfg(feature = "agent")]
+fn try_agent_dispatch(
+    s: &mut CompilerSession,
+    input_str: &str,
+    input: &mut ReplInput,
+    stdout: &mut std::io::StdoutLock<'_>,
+) -> bool {
+    use std::io::Write;
+
+    let ask_text: Option<String> = input_str
+        .strip_prefix("/ask")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+        .map(|r| r.trim().to_string());
+    let agent_text: Option<String> = if s.agent_is_active() {
+        match s.classify_for_agent(input_str) {
+            cranelisp::agent::Classify::Agent(text) => Some(text),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(text) = ask_text.or(agent_text) {
+        let mut consent =
+            cranelisp::agent::types::FnConsent(|| input.read_consent_line());
+        s.agent_turn(&text, stdout, &mut consent);
+        drop(consent);
+        s.sync_watcher();
+        for msg in s.poll_and_reload() {
+            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
+            let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
+        }
+        return true;
+    }
+    false
+}
+
+/// Evaluate a `CommandResult::Compile` source form and render the outcome:
+/// value + cascade report on `Ok(Some)`, backing-file regen on `Ok(None)`, the
+/// error line on `Err`; update the prompt's `compile_ms`/`eval_ms` timings and
+/// (agent build) record the turn on the recent-turn ring.
+fn handle_compile_result(
+    s: &mut CompilerSession,
+    src: &str,
+    input_str: &str,
+    stdout: &mut std::io::StdoutLock<'_>,
+    compile_ms: &mut u64,
+    eval_ms: &mut u64,
+) {
+    use std::io::Write;
+
+    #[cfg(not(feature = "agent"))]
+    let _ = input_str;
+
+    let t0 = Instant::now();
+    match s.eval(src) {
+        Ok(Some(result)) => {
+            let t1 = Instant::now();
+            let mut text = s.format_eval_result(&result);
+            // S101 (repl/spec.md §18.3): the cascade
+            // report renders after the §1.3 confirmation.
+            if let Some(report) = s.take_cascade_report() {
+                text.push('\n');
+                text.push_str(&report);
+            }
+            let t2 = Instant::now();
+            *compile_ms = (t1 - t0).as_millis() as u64;
+            *eval_ms = (t2 - t1).as_millis() as u64;
+            s.pretty_print(&text, stdout);
+            // E5 (agent.md §5.5) — record this green eval turn
+            // on the agent's recent-turn ring, with the IDENTICAL
+            // string the user just saw (Principle 7: reuse the
+            // display boundary's own output, not a re-render). A
+            // no-op when the agent is unconfigured. Feature-off
+            // this call is absent → the read loop is byte-identical.
+            #[cfg(feature = "agent")]
+            s.record_repl_turn(
+                input_str,
+                cranelisp::agent::types::ReplTurnOutcome::Ok(text.clone()),
+            );
+            // Persist definitions to backing file (repl/spec.md §15).
+            // Genuine definitions only (F6): a display-only
+            // bare-lookup Def must not rewrite the file.
+            if result.is_defining() {
+                s.regenerate_backing_file();
+            }
+        }
+        Ok(None) => {
+            *compile_ms = t0.elapsed().as_millis() as u64;
+            *eval_ms = 0;
+            // Structural changes (import, mod, platform) also
+            // need persistence. Regenerate if the module has content.
+            s.regenerate_backing_file();
+        }
+        Err(e) => {
+            *compile_ms = t0.elapsed().as_millis() as u64;
+            *eval_ms = 0;
+            let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
+            // E5 (agent.md §5.5) — record this ERRORED eval turn
+            // on the agent's recent-turn ring with the VERBATIM
+            // diagnostic the user just saw. A failed form never
+            // commits, so this ring is the only place the agent
+            // can see it when the user asks "why doesn't that
+            // typecheck?" No-op when the agent is unconfigured;
+            // feature-off this call is absent (byte-identical).
+            #[cfg(feature = "agent")]
+            s.record_repl_turn(
+                input_str,
+                cranelisp::agent::types::ReplTurnOutcome::Error(format!("Error: {e}")),
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::type_complexity)]
-fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, Option<PathBuf>) {
+fn parse_args() -> LaunchSpec {
     let args: Vec<String> = std::env::args().collect();
+    let flags = parse_arg_flags(&args);
 
-    // The usage line. The agent-related advertisement is cfg-split so usage never
-    // names a flag that immediately errors (MINOR-#3 consistency): an
-    // agent-capable build advertises `--agent`/`--yes` (accepted); a feature-off
-    // build advertises ONLY `--no-agent` (the sole still-valid agent flag —
-    // `--agent`/`--yes` hard-error there, FIXME 0539).
-    #[cfg(feature = "agent")]
-    const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
-                         [--no-cache] [--priority-workers N] [--nice-workers N] \
-                         [--agent | --no-agent] [--yes]";
-    #[cfg(not(feature = "agent"))]
-    const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
-                         [--no-cache] [--priority-workers N] [--nice-workers N] \
-                         [--no-agent]";
+    if flags.action_run && flags.action_link {
+        eprintln!("error: --run and --link cannot be used together");
+        process::exit(1);
+    }
 
-    let mut no_color = false;
-    let mut no_cache = false;
-    let mut priority_workers: Option<usize> = None;
-    let mut nice_workers: Option<usize> = None;
-    let mut action_run = false;
-    let mut action_link = false;
-    // §0.2.1.1 `-o <path>` output override (S106, FIXME 0550). Sets the `--link`
-    // output path explicitly, overriding the beside-the-source derivation. Only
-    // meaningful with `--link` (enforced after the parse loop).
-    let mut output_override: Option<PathBuf> = None;
-    // §0.6.1 agent toggle. `agent_on` = `--agent`, `agent_off` = `--no-agent`.
-    // When both flags are given, `--no-agent` wins (the safe default — off),
-    // enforced after the parse loop. On an agent-capable build `--agent` sets
-    // `agent_on`; on a feature-off build it hard-errors in the parse loop (so
-    // `agent_on` is never set — hence `mut` is agent-build-only, FIXME 0539).
-    #[cfg_attr(not(feature = "agent"), allow(unused_mut))]
-    let mut agent_on = false;
-    let mut agent_off = false;
-    // §0.6.2 `--yes` / `-y` autonomous-submit toggle (S89 §20.1). On an
-    // agent-capable build it is threaded onto `AgentState.auto_accept` when the
-    // agent is active; on a feature-off build `--yes`/`-y` hard-error in the
-    // parse loop (S106 ruling, FIXME 0539) — so `yes` is never set there (hence
-    // the agent-build-only `mut`). The `-y` SHORT form must be recognised as a
-    // FLAG, NOT swallowed as the REPL target (the `-y` false-green trap).
-    #[cfg_attr(not(feature = "agent"), allow(unused_mut))]
-    let mut yes = false;
-    let mut target: Option<String> = None;
+    if flags.no_cache && flags.action_link {
+        eprintln!("error: --no-cache is not supported with --link");
+        process::exit(1);
+    }
+
+    // §0.2.1.1: `-o <path>` names the `--link` artifact; it is meaningless in
+    // `--run` / REPL mode (no output artifact is produced).
+    if flags.output_override.is_some() && !flags.action_link {
+        eprintln!("error: -o <path> is only supported with --link");
+        eprintln!("{USAGE}");
+        process::exit(1);
+    }
+
+    let action = if flags.action_link {
+        Action::Link
+    } else if flags.action_run {
+        Action::Run
+    } else {
+        Action::Repl
+    };
+
+    // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
+    // default is off. The agent is a REPL-only, dev-session capability — it
+    // never participates in `--run`/`--link`, so the resolved value is only
+    // meaningful in REPL mode. The flags are accepted no-ops in a feature-off
+    // build (so a script written for an agent build runs); the `agent` feature
+    // build (S88 W3) threads `agent_enabled` into `s.enable_agent` (the runtime
+    // half of opt-in-twice — §6.4).
+    let agent_enabled = flags.agent_on && !flags.agent_off && matches!(action, Action::Repl);
+
+    // §20.1: `--yes` is meaningful ONLY with an active agent (it auto-answers the
+    // write-consent gate). Off by default; REPL-only (gated by `agent_enabled`,
+    // already Action::Repl). On a default / non-agent build it is a parsed no-op
+    // (this resolves to `false` and the consuming `enable_agent` is `#[cfg]`-gated).
+    let auto_accept = flags.yes && agent_enabled;
+
+    // Resolve (project_root, entry_module) per spec §0.5.1. `is_rule3` flags
+    // the directory-as-project launch (the §0.5.7 scaffold trigger).
+    let (project_root, entry_module, is_rule3) = resolve_target(flags.target.as_deref());
+
+    let codegen_behaviour = action.codegen_behaviour();
+    let run_mode = action.run_mode();
+
+    let settings = SessionSettings {
+        no_color: flags.no_color,
+        no_cache: flags.no_cache,
+        codegen_behaviour,
+        priority_workers: flags.priority_workers.unwrap_or(1),
+        nice_workers: flags.nice_workers.unwrap_or(1),
+        run_mode,
+    };
+
+    LaunchSpec {
+        action,
+        project_root,
+        entry_module,
+        settings,
+        agent_enabled,
+        auto_accept,
+        is_rule3,
+        output_override: flags.output_override,
+    }
+}
+
+/// The argument-recognition loop: walk `args`, matching each flag into
+/// [`ParsedFlags`]. Cross-flag validation + resolution into a [`LaunchSpec`] is
+/// the caller's ([`parse_args`]). A malformed flag exits the process here.
+fn parse_arg_flags(args: &[String]) -> ParsedFlags {
+    let mut flags = ParsedFlags::default();
     let mut i = 1;
 
     while i < args.len() {
         match args[i].as_str() {
             "--no-cache" => {
-                no_cache = true;
+                flags.no_cache = true;
                 i += 1;
             }
             "--no-color" => {
-                no_color = true;
+                flags.no_color = true;
                 i += 1;
             }
             "--priority-workers" => {
-                if i + 1 < args.len() {
-                    priority_workers = Some(args[i + 1].parse().unwrap_or_else(|_| {
-                        eprintln!("error: --priority-workers requires a number");
-                        process::exit(1);
-                    }));
-                    i += 2;
-                } else {
-                    eprintln!("error: --priority-workers requires a number");
-                    process::exit(1);
-                }
+                flags.priority_workers = Some(require_worker_count(args, i, "--priority-workers"));
+                i += 2;
             }
             "--nice-workers" => {
-                if i + 1 < args.len() {
-                    nice_workers = Some(args[i + 1].parse().unwrap_or_else(|_| {
-                        eprintln!("error: --nice-workers requires a number");
-                        process::exit(1);
-                    }));
-                    i += 2;
-                } else {
-                    eprintln!("error: --nice-workers requires a number");
-                    process::exit(1);
-                }
+                flags.nice_workers = Some(require_worker_count(args, i, "--nice-workers"));
+                i += 2;
             }
             "--run" => {
-                action_run = true;
+                flags.action_run = true;
                 i += 1;
             }
             "--link" => {
-                action_link = true;
+                flags.action_link = true;
                 i += 1;
             }
             // §0.2.1.1 `-o <path>` / `--output <path>` — the `--link` output-path
             // override (S106, FIXME 0550). Takes the next argument as the path.
             "-o" | "--output" => {
                 if i + 1 < args.len() {
-                    output_override = Some(PathBuf::from(&args[i + 1]));
+                    flags.output_override = Some(PathBuf::from(&args[i + 1]));
                     i += 2;
                 } else {
                     eprintln!("error: -o requires a path");
@@ -749,7 +907,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, 
             // in both builds.
             #[cfg(feature = "agent")]
             "--agent" => {
-                agent_on = true;
+                flags.agent_on = true;
                 i += 1;
             }
             #[cfg(not(feature = "agent"))]
@@ -762,7 +920,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, 
                 process::exit(1);
             }
             "--no-agent" => {
-                agent_off = true;
+                flags.agent_off = true;
                 i += 1;
             }
             // §0.6.2 `--yes` (long) / `-y` (short) — the autonomous-submit toggle
@@ -775,7 +933,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, 
             // REPL target (the false-green trap the B.5 short-flag test guards).
             #[cfg(feature = "agent")]
             "--yes" | "-y" => {
-                yes = true;
+                flags.yes = true;
                 i += 1;
             }
             #[cfg(not(feature = "agent"))]
@@ -793,75 +951,33 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, 
                 process::exit(1);
             }
             _ => {
-                if target.is_some() {
+                if flags.target.is_some() {
                     eprintln!("error: unexpected argument: {}", args[i]);
                     eprintln!("{USAGE}");
                     process::exit(1);
                 }
-                target = Some(args[i].clone());
+                flags.target = Some(args[i].clone());
                 i += 1;
             }
         }
     }
 
-    if action_run && action_link {
-        eprintln!("error: --run and --link cannot be used together");
-        process::exit(1);
-    }
+    flags
+}
 
-    if no_cache && action_link {
-        eprintln!("error: --no-cache is not supported with --link");
-        process::exit(1);
-    }
-
-    // §0.2.1.1: `-o <path>` names the `--link` artifact; it is meaningless in
-    // `--run` / REPL mode (no output artifact is produced).
-    if output_override.is_some() && !action_link {
-        eprintln!("error: -o <path> is only supported with --link");
-        eprintln!("{USAGE}");
-        process::exit(1);
-    }
-
-    let action = if action_link {
-        Action::Link
-    } else if action_run {
-        Action::Run
+/// Parse the numeric argument following a worker-count flag
+/// (`--priority-workers` / `--nice-workers`), exiting with the flag-specific
+/// error on a missing or non-numeric value.
+fn require_worker_count(args: &[String], i: usize, flag: &str) -> usize {
+    if i + 1 < args.len() {
+        args[i + 1].parse().unwrap_or_else(|_| {
+            eprintln!("error: {flag} requires a number");
+            process::exit(1);
+        })
     } else {
-        Action::Repl
-    };
-
-    // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
-    // default is off. The agent is a REPL-only, dev-session capability — it
-    // never participates in `--run`/`--link`, so the resolved value is only
-    // meaningful in REPL mode. The flags are accepted no-ops in a feature-off
-    // build (so a script written for an agent build runs); the `agent` feature
-    // build (S88 W3) threads `agent_enabled` into `s.enable_agent` (the runtime
-    // half of opt-in-twice — §6.4). Returned to `run`.
-    let agent_enabled = agent_on && !agent_off && matches!(action, Action::Repl);
-
-    // §20.1: `--yes` is meaningful ONLY with an active agent (it auto-answers the
-    // write-consent gate). Off by default; REPL-only (gated by `agent_enabled`,
-    // already Action::Repl). On a default / non-agent build it is a parsed no-op
-    // (this resolves to `false` and the consuming `enable_agent` is `#[cfg]`-gated).
-    let auto_accept = yes && agent_enabled;
-
-    // Resolve (project_root, entry_module) per spec §0.5.1. `is_rule3` flags
-    // the directory-as-project launch (the §0.5.7 scaffold trigger).
-    let (project_root, entry_module, is_rule3) = resolve_target(target.as_deref());
-
-    let codegen_behaviour = action.codegen_behaviour();
-    let run_mode = action.run_mode();
-
-    let settings = SessionSettings {
-        no_color,
-        no_cache,
-        codegen_behaviour,
-        priority_workers: priority_workers.unwrap_or(1),
-        nice_workers: nice_workers.unwrap_or(1),
-        run_mode,
-    };
-
-    (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3, output_override)
+        eprintln!("error: {flag} requires a number");
+        process::exit(1);
+    }
 }
 
 /// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.

@@ -32,16 +32,18 @@
         let info = cranelisp_frontend::parse_defmacro(&expanded).unwrap();
 
         form_dispatch::register_macro_in_module(
-            &symbol_tables,
-            Some(&introspection),
+            &form_dispatch::MacroRegisterEnv {
+                symbol_tables: &symbol_tables,
+                introspection: Some(&introspection),
+                module_aliases: &cranelisp_types::ModuleAliases::default(),
+                prelude_fallback: &cranelisp_typecheck::PreludeFallback::default(),
+            },
             &module,
             &info.name,
             &info,
             &expanded,
             &original,
             Some("(mdef x 1)".to_string()),
-            &cranelisp_types::ModuleAliases::default(),
-            &cranelisp_typecheck::PreludeFallback::default(),
         )
         .unwrap();
 
@@ -93,16 +95,18 @@
         let direct = cranelisp_frontend::parse("(defmacro m [e] e)").unwrap().remove(0);
         let info = cranelisp_frontend::parse_defmacro(&direct).unwrap();
         form_dispatch::register_macro_in_module(
-            &symbol_tables,
-            Some(&introspection),
+            &form_dispatch::MacroRegisterEnv {
+                symbol_tables: &symbol_tables,
+                introspection: Some(&introspection),
+                module_aliases: &cranelisp_types::ModuleAliases::default(),
+                prelude_fallback: &cranelisp_typecheck::PreludeFallback::default(),
+            },
             &module,
             &info.name,
             &info,
             &direct,
             &direct,
             None,
-            &cranelisp_types::ModuleAliases::default(),
-            &cranelisp_typecheck::PreludeFallback::default(),
         )
         .unwrap();
 
@@ -203,23 +207,17 @@
             module.clone(),
             crate::code::SessionSymbolTable::new_with_params(module.clone()),
         );
-        let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
         let module_aliases = cranelisp_types::ModuleAliases::default();
         let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
-        let mut check_state = CheckState::new(module.clone());
-        let mut accumulator = ModuleCheckAccumulator::new();
 
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: &symbol_tables,
-            next_type_id: &next_type_id,
-            check_state: &mut check_state,
             current_module: module.clone(),
             module_aliases: &module_aliases,
             prelude_fallback: &prelude_fallback,
             typecheck_products: &typecheck_products,
-            accumulator: &mut accumulator,
             scheduler: &scheduler,
             shared_state: None,
             macro_defining_modules: Vec::new(),
@@ -250,23 +248,17 @@
             module.clone(),
             crate::code::SessionSymbolTable::new_with_params(module.clone()),
         );
-        let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
         let module_aliases = cranelisp_types::ModuleAliases::default();
         let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
-        let mut check_state = CheckState::new(module.clone());
-        let mut accumulator = ModuleCheckAccumulator::new();
 
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: &symbol_tables,
-            next_type_id: &next_type_id,
-            check_state: &mut check_state,
             current_module: module.clone(),
             module_aliases: &module_aliases,
             prelude_fallback: &prelude_fallback,
             typecheck_products: &typecheck_products,
-            accumulator: &mut accumulator,
             scheduler: &scheduler,
             shared_state: None,
             macro_defining_modules: Vec::new(),
@@ -300,23 +292,17 @@
             module.clone(),
             crate::code::SessionSymbolTable::new_with_params(module.clone()),
         );
-        let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
         let module_aliases = cranelisp_types::ModuleAliases::default();
         let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
-        let mut check_state = CheckState::new(module.clone());
-        let mut accumulator = ModuleCheckAccumulator::new();
 
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: &symbol_tables,
-            next_type_id: &next_type_id,
-            check_state: &mut check_state,
             current_module: module.clone(),
             module_aliases: &module_aliases,
             prelude_fallback: &prelude_fallback,
             typecheck_products: &typecheck_products,
-            accumulator: &mut accumulator,
             scheduler: &scheduler,
             shared_state: None,
             macro_defining_modules: Vec::new(),
@@ -842,8 +828,13 @@
         let sexp = cranelisp_frontend::parse(&src).unwrap().remove(0);
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
         form_dispatch::register_macro_in_module(
-            tables, None, module, &info.name, &info, &sexp, &sexp, None,
-            aliases, prelude_fallback,
+            &form_dispatch::MacroRegisterEnv {
+                symbol_tables: tables,
+                introspection: None,
+                module_aliases: aliases,
+                prelude_fallback,
+            },
+            module, &info.name, &info, &sexp, &sexp, None,
         )
     }
 

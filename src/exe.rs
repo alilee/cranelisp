@@ -54,37 +54,8 @@ pub fn generate_startup_object(
     stub_entry_symbol: &str,
     platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
 ) -> Result<Vec<u8>, CranelispError> {
-    use cranelift::prelude::*;
-    use cranelisp_backend::cranelift_module::{
-        default_libcall_names, DataDescription, Linkage, Module,
-    };
+    use cranelisp_backend::cranelift_module::{default_libcall_names, Module};
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
-
-    // Bake a NUL-terminated rodata string and return its DataId (for the
-    // expected-hash + platform-name constants the layout-hash gate reads).
-    fn define_cstr_data(
-        obj_module: &mut ObjectModule,
-        sym: &str,
-        text: &str,
-    ) -> Result<cranelisp_backend::cranelift_module::DataId, CranelispError> {
-        let id = obj_module
-            .declare_data(sym, Linkage::Local, false, false)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare {sym}: {e}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })?;
-        let mut desc = DataDescription::new();
-        let mut bytes = text.as_bytes().to_vec();
-        bytes.push(0);
-        desc.define(bytes.into_boxed_slice());
-        obj_module
-            .define_data(id, &desc)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define {sym}: {e}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })?;
-        Ok(id)
-    }
 
     let isa = cranelisp_backend::build_isa(true)?;
 
@@ -95,10 +66,107 @@ pub fn generate_startup_object(
         })?;
     let mut obj_module = ObjectModule::new(obj_builder);
 
+    // Declare all imported symbols (phases separated by concern), then emit the
+    // entry-stub body from the collected ids.
+    let rt = declare_runtime_imports(&mut obj_module, entry_fn_name)?;
+    let layout_check_ids = declare_layout_checks(&mut obj_module, platform_layout_checks)?;
+    let platform_inits = declare_platform_inits(&mut obj_module, platform_manifest_names)?;
+    let start_func_id = declare_start_export(&mut obj_module, stub_entry_symbol)?;
+
+    let func = build_startup_func(
+        &mut obj_module,
+        &rt,
+        &layout_check_ids,
+        &platform_inits,
+        start_func_id,
+        main_returns_io,
+    )?;
+
+    let mut ctx = cranelift::codegen::Context::for_function(func);
+    obj_module
+        .define_function(start_func_id, &mut ctx)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define {stub_entry_symbol}: {e:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    let product = obj_module.finish();
+    product.emit().map_err(|e| CranelispError::CodegenError {
+        message: format!("failed to emit startup object: {e}"),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })
+}
+
+// Bake a NUL-terminated rodata string and return its DataId (for the
+// expected-hash + platform-name constants the layout-hash gate reads).
+fn define_cstr_data(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    sym: &str,
+    text: &str,
+) -> Result<cranelisp_backend::cranelift_module::DataId, CranelispError> {
+    use cranelisp_backend::cranelift_module::{DataDescription, Linkage, Module};
+    let id = obj_module
+        .declare_data(sym, Linkage::Local, false, false)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare {sym}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let mut desc = DataDescription::new();
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(0);
+    desc.define(bytes.into_boxed_slice());
+    obj_module
+        .define_data(id, &desc)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define {sym}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    Ok(id)
+}
+
+/// The five always-present imported runtime functions the startup stub calls:
+/// user `main`, the unified program driver (`cranelisp_run_program`), the
+/// runtime-error drain, libc `exit`, and the primitives-GOT initialiser.
+struct RuntimeImports {
+    main: cranelisp_backend::cranelift_module::FuncId,
+    run_program: cranelisp_backend::cranelift_module::FuncId,
+    check_runtime_error: cranelisp_backend::cranelift_module::FuncId,
+    exit: cranelisp_backend::cranelift_module::FuncId,
+    init_primitives: cranelisp_backend::cranelift_module::FuncId,
+}
+
+/// The per-platform layout-hash check symbols baked into the `start` stub
+/// (platform-interface.md §5.5.4 `--link` gate): the compare-and-abort
+/// intrinsic + per-platform (imported linked-hash, baked expected-hash, baked
+/// name) data ids.
+struct LayoutCheckIds {
+    check_fn: cranelisp_backend::cranelift_module::FuncId,
+    per_platform: Vec<(
+        cranelisp_backend::cranelift_module::DataId,
+        cranelisp_backend::cranelift_module::DataId,
+        cranelisp_backend::cranelift_module::DataId,
+    )>,
+}
+
+/// The platform-initialisation imports: the shared `cranelisp_init_platform`
+/// (present only when platforms exist) and one manifest fn per linked platform.
+struct PlatformInits {
+    init: Option<cranelisp_backend::cranelift_module::FuncId>,
+    manifests: Vec<cranelisp_backend::cranelift_module::FuncId>,
+}
+
+/// Declare the five always-present imported runtime functions.
+fn declare_runtime_imports(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    entry_fn_name: &str,
+) -> Result<RuntimeImports, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::{Linkage, Module};
+
     // Declare entry function as imported (user's main function, returns i64).
     let mut main_sig = obj_module.make_signature();
     main_sig.returns.push(AbiParam::new(types::I64));
-    let main_func_id = obj_module
+    let main = obj_module
         .declare_function(entry_fn_name, Linkage::Import, &main_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare {entry_fn_name}: {e}"),
@@ -119,7 +187,7 @@ pub fn generate_startup_object(
     run_program_sig.params.push(AbiParam::new(types::I8)); // main_returns_io (bool)
     run_program_sig.returns.push(AbiParam::new(types::I64)); // exit_code
     run_program_sig.returns.push(AbiParam::new(types::I32)); // error_kind
-    let run_program_func_id = obj_module
+    let run_program = obj_module
         .declare_function("cranelisp_run_program", Linkage::Import, &run_program_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare cranelisp_run_program: {e}"),
@@ -137,7 +205,7 @@ pub fn generate_startup_object(
     // `cranelisp-intrinsics` (force-linked via `cranelisp-exe-bundle`'s
     // `pub use …::panic`).
     let check_runtime_error_sig = obj_module.make_signature();
-    let check_runtime_error_func_id = obj_module
+    let check_runtime_error = obj_module
         .declare_function(
             "cranelisp_check_runtime_error",
             Linkage::Import,
@@ -151,7 +219,7 @@ pub fn generate_startup_object(
     // Declare `exit` as imported (libc, takes i32).
     let mut exit_sig = obj_module.make_signature();
     exit_sig.params.push(AbiParam::new(types::I32));
-    let exit_func_id = obj_module
+    let exit = obj_module
         .declare_function("exit", Linkage::Import, &exit_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare exit: {e}"),
@@ -169,7 +237,7 @@ pub fn generate_startup_object(
     // (`(str-len (str-concat …))`) reaches user code with an unpopulated GOT
     // unless we call it here directly. `LazyLock::force` is idempotent.
     let init_primitives_sig = obj_module.make_signature();
-    let init_primitives_func_id = obj_module
+    let init_primitives = obj_module
         .declare_function(
             "cranelisp_init_primitives",
             Linkage::Import,
@@ -180,59 +248,76 @@ pub fn generate_startup_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    // Declare the layout-hash check intrinsic + per-platform data symbols
-    // (platform-interface.md §5.5.4 `--link` gate). Mirrors backend's
-    // `generate_startup_object_checked` (int owns the startup `.o` emission, BC
-    // §3 invariant 7). For each check: an imported `__cranelisp_layout_hash_<name>`
-    // (the rlib's embedded hash), a baked expected-hash cstring, a baked name
-    // cstring; the compare-and-abort is `cranelisp_check_layout_hash`.
-    struct LayoutCheckIds {
-        check_fn: cranelisp_backend::cranelift_module::FuncId,
-        per_platform: Vec<(
-            cranelisp_backend::cranelift_module::DataId,
-            cranelisp_backend::cranelift_module::DataId,
-            cranelisp_backend::cranelift_module::DataId,
-        )>,
+    Ok(RuntimeImports {
+        main,
+        run_program,
+        check_runtime_error,
+        exit,
+        init_primitives,
+    })
+}
+
+/// Declare the layout-hash check intrinsic + per-platform data symbols
+/// (platform-interface.md §5.5.4 `--link` gate). Mirrors backend's
+/// `generate_startup_object_checked` (int owns the startup `.o` emission, BC §3
+/// invariant 7). For each check: an imported `__cranelisp_layout_hash_<name>`
+/// (the rlib's embedded hash), a baked expected-hash cstring, a baked name
+/// cstring; the compare-and-abort is `cranelisp_check_layout_hash`. `None` when
+/// no platform layout checks are requested.
+fn declare_layout_checks(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
+) -> Result<Option<LayoutCheckIds>, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::{Linkage, Module};
+
+    if platform_layout_checks.is_empty() {
+        return Ok(None);
     }
-    let layout_check_ids = if platform_layout_checks.is_empty() {
-        None
-    } else {
-        let mut sig = obj_module.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // linked hash ptr
-        sig.params.push(AbiParam::new(types::I64)); // expected hash ptr
-        sig.params.push(AbiParam::new(types::I64)); // platform name ptr
-        let check_fn = obj_module
-            .declare_function("cranelisp_check_layout_hash", Linkage::Import, &sig)
+    let mut sig = obj_module.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // linked hash ptr
+    sig.params.push(AbiParam::new(types::I64)); // expected hash ptr
+    sig.params.push(AbiParam::new(types::I64)); // platform name ptr
+    let check_fn = obj_module
+        .declare_function("cranelisp_check_layout_hash", Linkage::Import, &sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare cranelisp_check_layout_hash: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let mut per_platform = Vec::with_capacity(platform_layout_checks.len());
+    for check in platform_layout_checks {
+        let linked_sym = format!("__cranelisp_layout_hash_{}", check.name);
+        let linked_id = obj_module
+            .declare_data(&linked_sym, Linkage::Import, false, false)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare cranelisp_check_layout_hash: {e}"),
+                message: format!("failed to declare {linked_sym}: {e}"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        let mut per_platform = Vec::with_capacity(platform_layout_checks.len());
-        for check in platform_layout_checks {
-            let linked_sym = format!("__cranelisp_layout_hash_{}", check.name);
-            let linked_id = obj_module
-                .declare_data(&linked_sym, Linkage::Import, false, false)
-                .map_err(|e| CranelispError::CodegenError {
-                    message: format!("failed to declare {linked_sym}: {e}"),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?;
-            let expected_id = define_cstr_data(
-                &mut obj_module,
-                &format!("__cranelisp_expected_hash_{}", check.name),
-                &check.expected_hash,
-            )?;
-            let name_id = define_cstr_data(
-                &mut obj_module,
-                &format!("__cranelisp_layout_name_{}", check.name),
-                &check.name,
-            )?;
-            per_platform.push((linked_id, expected_id, name_id));
-        }
-        Some(LayoutCheckIds { check_fn, per_platform })
-    };
+        let expected_id = define_cstr_data(
+            obj_module,
+            &format!("__cranelisp_expected_hash_{}", check.name),
+            &check.expected_hash,
+        )?;
+        let name_id = define_cstr_data(
+            obj_module,
+            &format!("__cranelisp_layout_name_{}", check.name),
+            &check.name,
+        )?;
+        per_platform.push((linked_id, expected_id, name_id));
+    }
+    Ok(Some(LayoutCheckIds { check_fn, per_platform }))
+}
 
-    // Declare `cranelisp_init_platform` as imported (if platforms exist).
-    let init_func_id = if !platform_manifest_names.is_empty() {
+/// Declare `cranelisp_init_platform` (only when platforms exist) and each
+/// platform manifest function, all as imported.
+fn declare_platform_inits(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    platform_manifest_names: &[String],
+) -> Result<PlatformInits, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::{Linkage, Module};
+
+    let init = if !platform_manifest_names.is_empty() {
         let mut init_sig = obj_module.make_signature();
         init_sig.params.push(AbiParam::new(types::I64));
         Some(
@@ -247,8 +332,7 @@ pub fn generate_startup_object(
         None
     };
 
-    // Declare each platform manifest function as imported.
-    let mut manifest_func_ids = Vec::new();
+    let mut manifests = Vec::new();
     for manifest_name in platform_manifest_names {
         let manifest_sig = obj_module.make_signature();
         let fid = obj_module
@@ -257,20 +341,44 @@ pub fn generate_startup_object(
                 message: format!("failed to declare {manifest_name}: {e}"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        manifest_func_ids.push(fid);
+        manifests.push(fid);
     }
 
-    // Define the entry stub (exported). macOS exports `start` (linked
-    // `-e _start`); Linux exports `main` (crt calls it — the stub IS C `main`,
-    // so glibc/TLS/malloc are up before any user code runs; design §11.3).
+    Ok(PlatformInits { init, manifests })
+}
+
+/// Declare the entry stub (exported). macOS exports `start` (linked `-e _start`);
+/// Linux exports `main` (crt calls it — the stub IS C `main`, so glibc/TLS/malloc
+/// are up before any user code runs; design §11.3).
+fn declare_start_export(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    stub_entry_symbol: &str,
+) -> Result<cranelisp_backend::cranelift_module::FuncId, CranelispError> {
+    use cranelisp_backend::cranelift_module::{Linkage, Module};
     let start_sig = obj_module.make_signature();
-    let start_func_id = obj_module
+    obj_module
         .declare_function(stub_entry_symbol, Linkage::Export, &start_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare {stub_entry_symbol}: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+        })
+}
 
+/// Emit the entry-stub body: populate the primitives GOT, init platforms, run
+/// the layout-hash gate, drive the program via `cranelisp_run_program`, and
+/// branch on its `ProgramOutcome` to exit or drain+report the runtime error.
+fn build_startup_func(
+    obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
+    rt: &RuntimeImports,
+    layout_check_ids: &Option<LayoutCheckIds>,
+    platform_inits: &PlatformInits,
+    start_func_id: cranelisp_backend::cranelift_module::FuncId,
+    main_returns_io: bool,
+) -> Result<cranelift::codegen::ir::Function, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::Module;
+
+    let start_sig = obj_module.make_signature();
     let mut func = cranelift::codegen::ir::Function::with_name_signature(
         cranelift::codegen::ir::UserFuncName::user(0, start_func_id.as_u32()),
         start_sig,
@@ -286,13 +394,13 @@ pub fn generate_startup_object(
 
         // 0. Populate the primitives GOT slab before anything else (FIXME 0280).
         let init_primitives_ref =
-            obj_module.declare_func_in_func(init_primitives_func_id, builder.func);
+            obj_module.declare_func_in_func(rt.init_primitives, builder.func);
         builder.ins().call(init_primitives_ref, &[]);
 
         // 1. Initialize platforms before calling main.
-        if let Some(init_fid) = init_func_id {
+        if let Some(init_fid) = platform_inits.init {
             let init_ref = obj_module.declare_func_in_func(init_fid, builder.func);
-            for &manifest_fid in &manifest_func_ids {
+            for &manifest_fid in &platform_inits.manifests {
                 let manifest_ref = obj_module.declare_func_in_func(manifest_fid, builder.func);
                 let addr = builder.ins().func_addr(types::I64, manifest_ref);
                 builder.ins().call(init_ref, &[addr]);
@@ -303,7 +411,7 @@ pub fn generate_startup_object(
         // the compiler-computed expected hash against the rlib's statically
         // linked `__cranelisp_layout_hash_<name>` and abort on mismatch — before
         // main runs, so a stale platform refuses at process start.
-        if let Some(ref ids) = layout_check_ids {
+        if let Some(ids) = layout_check_ids {
             let check_ref = obj_module.declare_func_in_func(ids.check_fn, builder.func);
             for &(linked_id, expected_id, name_id) in &ids.per_platform {
                 let linked_gv = obj_module.declare_data_in_func(linked_id, builder.func);
@@ -324,13 +432,13 @@ pub fn generate_startup_object(
         // drive-main → drain → trampoline → drain sequence to
         // `cranelisp_run_program`. It returns `ProgramOutcome { exit_code,
         // error_kind }` in the two integer return registers.
-        let main_ref = obj_module.declare_func_in_func(main_func_id, builder.func);
+        let main_ref = obj_module.declare_func_in_func(rt.main, builder.func);
         let main_addr = builder.ins().func_addr(types::I64, main_ref);
         let returns_io_flag = builder
             .ins()
             .iconst(types::I8, if main_returns_io { 1 } else { 0 });
         let run_program_ref =
-            obj_module.declare_func_in_func(run_program_func_id, builder.func);
+            obj_module.declare_func_in_func(rt.run_program, builder.func);
         let run_inst = builder
             .ins()
             .call(run_program_ref, &[main_addr, returns_io_flag]);
@@ -356,7 +464,7 @@ pub fn generate_startup_object(
         builder.switch_to_block(error_block);
         builder.seal_block(error_block);
         let check_re_ref =
-            obj_module.declare_func_in_func(check_runtime_error_func_id, builder.func);
+            obj_module.declare_func_in_func(rt.check_runtime_error, builder.func);
         builder.ins().call(check_re_ref, &[]);
         // `cranelisp_check_runtime_error` exits on a set slot; defensively trap
         // if control returns (it won't on a genuine error_kind != 0).
@@ -366,26 +474,14 @@ pub fn generate_startup_object(
         builder.switch_to_block(clean_block);
         builder.seal_block(clean_block);
         let exit_code = builder.ins().ireduce(types::I32, exit_code_i64);
-        let exit_ref = obj_module.declare_func_in_func(exit_func_id, builder.func);
+        let exit_ref = obj_module.declare_func_in_func(rt.exit, builder.func);
         builder.ins().call(exit_ref, &[exit_code]);
         builder.ins().trap(TrapCode::user(1).unwrap());
 
         builder.finalize();
     }
 
-    let mut ctx = cranelift::codegen::Context::for_function(func);
-    obj_module
-        .define_function(start_func_id, &mut ctx)
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to define {stub_entry_symbol}: {e:?}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-
-    let product = obj_module.finish();
-    product.emit().map_err(|e| CranelispError::CodegenError {
-        message: format!("failed to emit startup object: {e}"),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    })
+    Ok(func)
 }
 
 // ── Main return type ────────────────────────────────────────────────────

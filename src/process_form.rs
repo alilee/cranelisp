@@ -167,6 +167,63 @@ pub fn process_cluster_once(
     // seams is retired; Pass-0 import/export install keeps only §8.6.5 ambiguity
     // detection (including the distinct-terminal prelude-overlap poison).
 
+    // Prologue: strategy setup + static cycle gate + prelude fallback/inject +
+    // Pass-0 structural peel + the signature barrier. Any of these can surface a
+    // dependency gap; the in-progress frame is dropped (atomic discard, live
+    // unchanged) and the caller drives the wait + retry-from-top.
+    if let Some(dep) = run_cluster_prologue(ctx, module, sexps, strategy)? {
+        return Ok(ClusterOnce::Gap { dep });
+    }
+
+    // --- Pass 1: register signatures / macros / default methods ---
+    let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
+
+    // Build AST for regular (non-macro) forms. Build is mode-agnostic;
+    // `(trace ...)` in `--link` standalone-binary mode fails at link time via
+    // the architecture's natural missing-symbol detection.
+    let program = build_program_compat(&regular_sexps)?;
+    let working_program = wrap_exprs_as_defns(&program);
+
+    pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut accumulator)?;
+
+    let intr = ctx.introspection;
+    for (name, info, sexp) in &macro_infos {
+        // Direct top-level defmacro: the authored form IS the defmacro form.
+        // CS-D2: capture the verbatim authored text (reader shorthand intact).
+        let authored_source = verbatim_source_slice(ctx, module, sexp);
+        register_macro_in_module(
+            &form_dispatch::MacroRegisterEnv {
+                symbol_tables: ctx.symbol_tables,
+                introspection: intr,
+                module_aliases: ctx.module_aliases,
+                prelude_fallback: ctx.prelude_fallback,
+            },
+            module, name, info, sexp, sexp, authored_source,
+        )?;
+    }
+
+    let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
+    accumulator.default_method_defns = defaults;
+
+    // --- Pass 2: per-sexp expand-then-check ---
+    let pass2_result = pass2_check_bodies_with_expansion(
+        ctx, module, sexps, &mut accumulator, &mut expanded_program,
+    )?;
+
+    finish_pass2(ctx, module, &working_program, &expanded_program, &mut accumulator, pass2_result)
+}
+
+/// Cluster prologue: strategy-specific setup (active module, static import
+/// closure, GOT clear + prelude fallback/inject on `Replace`), the Pass-0
+/// structural-form peel, and the signature barrier. Returns `Some(dep)` when any
+/// step surfaces a dependency gap (the caller drops the frame and retries from
+/// the top); `None` to proceed to Pass 1.
+fn run_cluster_prologue(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+    strategy: ModuleStrategy,
+) -> Result<Option<ModuleFullPath>, CranelispError> {
     // S93 signature/body pre-pass — the cluster's STATIC import closure
     // (`signature-body-prepass.md` §3.1/§4). Computed ONCE from this cluster's
     // Pass-0 `(import …)` decls; a cycle is a clean compile-time error (D0030
@@ -194,7 +251,7 @@ pub fn process_cluster_once(
         // Then ensure prelude is LOADED so the fallback has a table to consult.
         ensure_prelude_bit(ctx, module, sexps, true);
         if let Some(dep) = inject_prelude_if_needed(ctx, module, sexps)? {
-            return Ok(ClusterOnce::Gap { dep });
+            return Ok(Some(dep));
         }
     } else {
         // Additive (REPL eval): just set the active module. Module state
@@ -219,61 +276,8 @@ pub fn process_cluster_once(
     }
 
     // --- Pass 0: structural-form peel (import/export/mod/platform) ---
-    // Imported symbols must be in scope before pass1_register checks trait
-    // impl bodies. An unloaded dep is registered + blocked on, and the cluster
-    // retries from the top once it is live.
-    for sexp in sexps.iter() {
-        match classify_form(sexp, module)? {
-            // FIXME 0548 — record the persistence entry only AFTER `handle_*`
-            // resolves successfully (`BlockAction::Continue`). A structural form
-            // that FAILS resolution errors via `?` before we reach the record,
-            // so it leaves no trace on the persistence list `save.rs` re-emits —
-            // a failed import/export/mod/platform is never written into the
-            // regenerated backing `.cl`. (`Block` is not a failure: the dep must
-            // load and the cluster retries from the top, where the successful
-            // resume records it.) Applied uniformly across all four forms.
-            FormKind::Import(specs) => {
-                match handle_import(ctx, module, specs.clone())? {
-                    BlockAction::Continue => {
-                        record_imports_on_symbol_table(ctx, module, &specs);
-                    }
-                    BlockAction::Block { dep_module } => {
-                        return Ok(ClusterOnce::Gap { dep: dep_module });
-                    }
-                }
-            }
-            FormKind::Export(specs) => {
-                match handle_export(ctx, module, &specs)? {
-                    BlockAction::Continue => {
-                        record_exports_on_symbol_table(ctx, module, &specs);
-                    }
-                    BlockAction::Block { dep_module } => {
-                        return Ok(ClusterOnce::Gap { dep: dep_module });
-                    }
-                }
-            }
-            FormKind::Mod(decl) => {
-                match handle_mod(ctx, module, &decl)? {
-                    BlockAction::Continue => {
-                        record_submodule_on_symbol_table(ctx, module, &decl);
-                    }
-                    BlockAction::Block { dep_module } => {
-                        return Ok(ClusterOnce::Gap { dep: dep_module });
-                    }
-                }
-            }
-            FormKind::Platform(spec) => {
-                match handle_platform(ctx, module, &spec)? {
-                    BlockAction::Continue => {
-                        record_platform_on_symbol_table(ctx, module, &spec);
-                    }
-                    BlockAction::Block { dep_module } => {
-                        return Ok(ClusterOnce::Gap { dep: dep_module });
-                    }
-                }
-            }
-            _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
-        }
+    if let Some(dep) = pass0_peel_structural(ctx, module, sexps)? {
+        return Ok(Some(dep));
     }
 
     // --- Signature barrier (S93 Invariant PP; BC §6 ruling B) ---
@@ -293,47 +297,85 @@ pub fn process_cluster_once(
     if let Some(ref c) = closure
         && let Some(member) = dependency::gate_body_on_signature_barrier(ctx, module, c)?
     {
-        return Ok(ClusterOnce::Gap { dep: member });
+        return Ok(Some(member));
     }
+    Ok(None)
+}
 
-    // --- Pass 1: register signatures / macros / default methods ---
-    let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
-
-    // Build AST for regular (non-macro) forms. Build is mode-agnostic;
-    // `(trace ...)` in `--link` standalone-binary mode fails at link time via
-    // the architecture's natural missing-symbol detection.
-    let program = build_program_compat(&regular_sexps)?;
-    let working_program = wrap_exprs_as_defns(&program);
-
-    pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut accumulator)?;
-
-    let intr = ctx.introspection;
-    for (name, info, sexp) in &macro_infos {
-        // Direct top-level defmacro: the authored form IS the defmacro form.
-        // CS-D2: capture the verbatim authored text (reader shorthand intact).
-        let authored_source = verbatim_source_slice(ctx, module, sexp);
-        register_macro_in_module(
-            ctx.symbol_tables, intr, module, name, info, sexp, sexp, authored_source,
-            ctx.module_aliases, ctx.prelude_fallback,
-        )?;
+/// Pass 0 — peel structural forms (`import`/`export`/`mod`/`platform`).
+/// Imported symbols must be in scope before Pass-1 checks trait-impl bodies. An
+/// unloaded dep is registered + blocked on inside `handle_*` and returned here
+/// as `Some(dep)` so the cluster retries from the top once it is live.
+fn pass0_peel_structural(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+) -> Result<Option<ModuleFullPath>, CranelispError> {
+    for sexp in sexps.iter() {
+        match classify_form(sexp, module)? {
+            // FIXME 0548 — record the persistence entry only AFTER `handle_*`
+            // resolves successfully (`BlockAction::Continue`). A structural form
+            // that FAILS resolution errors via `?` before we reach the record,
+            // so it leaves no trace on the persistence list `save.rs` re-emits —
+            // a failed import/export/mod/platform is never written into the
+            // regenerated backing `.cl`. (`Block` is not a failure: the dep must
+            // load and the cluster retries from the top, where the successful
+            // resume records it.) Applied uniformly across all four forms.
+            FormKind::Import(specs) => {
+                match handle_import(ctx, module, specs.clone())? {
+                    BlockAction::Continue => {
+                        record_imports_on_symbol_table(ctx, module, &specs);
+                    }
+                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                }
+            }
+            FormKind::Export(specs) => {
+                match handle_export(ctx, module, &specs)? {
+                    BlockAction::Continue => {
+                        record_exports_on_symbol_table(ctx, module, &specs);
+                    }
+                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                }
+            }
+            FormKind::Mod(decl) => {
+                match handle_mod(ctx, module, &decl)? {
+                    BlockAction::Continue => {
+                        record_submodule_on_symbol_table(ctx, module, &decl);
+                    }
+                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                }
+            }
+            FormKind::Platform(spec) => {
+                match handle_platform(ctx, module, &spec)? {
+                    BlockAction::Continue => {
+                        record_platform_on_symbol_table(ctx, module, &spec);
+                    }
+                    BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
+                }
+            }
+            _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
+        }
     }
+    Ok(None)
+}
 
-    let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
-    accumulator.default_method_defns = defaults;
-
-    // --- Pass 2: per-sexp expand-then-check ---
-    let pass2_result = pass2_check_bodies_with_expansion(
-        ctx, module, sexps, &mut accumulator, &mut expanded_program,
-    )?;
-
+/// Finalize Pass 2: on `Complete`, run `finalize_cluster` then drive declared
+/// submodules (FIXME 0342); on `BlockedOnFqModule`, drive the unloaded FQ
+/// dependency and surface a gap for retry-from-top.
+fn finish_pass2(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+    expanded_program: &[TopLevel],
+    accumulator: &mut ModuleCheckAccumulator,
+    pass2_result: Pass2Result,
+) -> Result<ClusterOnce, CranelispError> {
     match pass2_result {
         Pass2Result::Complete => {
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            let outcome = finalize_cluster(
-                ctx, module, &expanded_program, &mut accumulator,
-            )?;
+            let outcome = finalize_cluster(ctx, module, expanded_program, accumulator)?;
             // FIXME 0342 — only AFTER the parent's symbols are committed to live
             // (finalize_cluster done) do we drive declared submodules. This is
             // the deferral that lets a submodule's `(import [super [helper]])`
@@ -786,7 +828,7 @@ fn process_regular_form(
     // macro head — it is the `:Type` token that binds this form per BC §1
     // invariant 9, and is prepended below so the frontend's `build_forms`
     // performs the `Expr::Annotate` pairing).
-    let effective_sexp = match try_expand_sexp(ctx, module, sexp, accumulator)? {
+    let effective_sexp = match try_expand_sexp(ctx, module, sexp)? {
         ExpandOutcome::Expanded(opt) => opt,
         ExpandOutcome::BlockedOnFqModule(dep) => {
             // Nothing has been appended to `expanded_program` for this form —
@@ -821,8 +863,13 @@ fn process_regular_form(
             // records below — one turn, one authored form, one emission.
             let authored_source = verbatim_source_slice(ctx, module, sexp);
             register_macro_in_module(
-                ctx.symbol_tables, intr, module, &info.name, &info, &form, sexp, authored_source,
-                ctx.module_aliases, ctx.prelude_fallback,
+                &form_dispatch::MacroRegisterEnv {
+                    symbol_tables: ctx.symbol_tables,
+                    introspection: intr,
+                    module_aliases: ctx.module_aliases,
+                    prelude_fallback: ctx.prelude_fallback,
+                },
+                module, &info.name, &info, &form, sexp, authored_source,
             )?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
