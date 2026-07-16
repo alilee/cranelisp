@@ -6935,16 +6935,18 @@
     #[test]
     fn check_result_slim_shape() {
         use crate::result::CheckResult;
-        // Only the two surviving fields are nameable; constructing with exactly
+        // Only the nameable fields are constructed; constructing with exactly
         // them (and reading them back) pins the slim shape.
         let r = CheckResult {
             warnings: Vec::new(),
             display: None,
+            unresolved_dispatch: Vec::new(),
         };
         let _ = &r.warnings;
         let _ = &r.display;
         assert_eq!(r.warnings.len(), 0);
         assert!(r.display.is_none());
+        assert!(r.unresolved_dispatch.is_empty());
     }
 
     // spec: spec/09-macros.md §9.3.4 — forward reference to undefined macro is

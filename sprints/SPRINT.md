@@ -2070,6 +2070,68 @@ convention (2 fns/shape), and the dispatch itself specified both faces per sibli
 The pre-TX-1 baseline was 10 (the /dev W-TC entry's "10 fail"); TX-1 → GREEN nets it
 to 9, +4 siblings = 13.
 
+### /dev (W-RD) — §3.11 finalization gate: R16/R17 + 0585 die-leg (2026-07-16, LANDED)
+
+Coordinated `cranelisp-typecheck` + `src/`(int) wave. **Baseline 13 → 8** (5 flips:
+2 R16/R17 + 3 VP-3/4/5). One §3.11 finalization gate, one shared diagnostic, two
+consumers + the check-side die-leg.
+
+**The finalize signal (typecheck).** `program/finalize.rs::collect_unresolved_dispatch`
+walks every defn body and records each **nullary `Self`-returning trait-method Apply**
+whose return-directed dispatch never selected an impl. Grounded in the dispatch
+OUTCOME, not surface concreteness. **Load-bearing timing fix:** the walk runs
+BEFORE `sweep_post_pass_outputs` drains `state.expr_types` — computing it at the
+end (post-sweep) made `method_return_dispatch_type` read an emptied map and
+report EVERY return-poly site (incl. the resolved rows 13–15) as unresolved. It
+is now computed immediately after `find_ambiguous_top_level_form`, where the
+per-span types are still settled. Populates the ratified
+`CheckResult.unresolved_dispatch: Vec<UnresolvedDispatchSite { span, method, gap:
+DispatchGap }>` (typecheck-local, `result.rs`; no `cranelisp-types` edit, no
+`CACHE_SCHEMA_VERSION` bump — stays 19). `method_self_in_return` /
+`method_return_dispatch_type` widened to `pub(crate)`.
+
+**0585 die-leg — class (a), check-side (VP-3/4/5).** `find_ambiguous_top_level_form`
+no longer skips the synthetic `__expr` wrapper as "polymorphic": `__expr` is an
+execution boundary, so its `allowed_vars` is not the sig-derived set but the
+BENIGN stale vars from resolved dispatches (`collect_resolved_dispatch_result_vars`).
+This flags a genuinely-free generic value ref (`gcount` in `(if c gcount gother)`)
+while leaving a resolved-dispatch stale var (`r` in `(let [r (add2 3 4)] r)`)
+untouched. `find_ambiguous_value_position`'s per-node verdict now consults the
+dispatch OUTCOME at a dispatch position (`value_position_is_ambiguous`) instead of
+raw `!is_concrete()` — the RD-3 fence. `AmbiguousForm::message` no longer leaks the
+internal `__expr` binder (0568).
+
+**Class (b) — int consumes the carrier at the two entry/eval seams it owns
+(Principle 19).** One shared §3.11 diagnostic: `exe::unresolved_dispatch_error` +
+`exe::first_dispatch_within` (span-containment filter). (1) REPL `__expr` eval —
+`eval.rs::codegen_and_execute` rejects BEFORE codegen when the evaluated body span
+contains a site (`(zed)`, `:Zeroable (zed)`), replacing the `__expr entry has no
+GOT slot` leak. (2) `--run`/`--link` `main` — `exe::validate_main` (new
+`unresolved_dispatch` param) rejects `(defn main [] (Pure (zed)))`, filtered to
+main's own body span. The carrier crosses typecheck→int via the ratified route:
+`check_forms` now returns `Result<CheckResult, CheckError>` (was `Vec<Warning>`);
+threaded through `process_cluster_with_staging` → `ProcessedCluster.unresolved_dispatch`
+(REPL) and persisted on `TypecheckProduct.unresolved_dispatch` at the commit seam
+(read by `validate_main` for `--run`/`--link`). `TypecheckProduct` is not serialized
+— no cache impact.
+
+**Acceptance.** R16/R17 GREEN (`unresolved_return_type_dispatch_ambiguity_error_neg`,
+`value_position_constraint_does_not_disambiguate_neg`); VP-3/4/5 GREEN
+(`generic_value_{in_if_branch,in_match_arm,as_vec_element}_indeterminate_neg`); RD-3
+fence GREEN (`arg_directed_dispatch_result_in_value_position_not_flagged`); RD-4/RD-5
+must-holds GREEN (rows 13–15 `concrete_ascription_*` / `context_resolves_*` /
+`nullary_return_poly_trait_method_dispatches_at_codegen` — an intermediate revision
+regressed these via the post-sweep timing bug, fixed by the move). `golden_clif_w0b`
+5/5 byte-identical (no codegen change for valid programs). Mode-uniform. typecheck
+`public-api.txt` regenerated (the `check_forms` return type + `CheckResult` field +
+`UnresolvedDispatchSite`/`DispatchGap`). Full suite **8 RED** — 4 vec-assoc siblings +
+`ownership_reuse` + `deftype_ctor_trailing` + `multi_arity_main` + SG-1 `derive`;
+every RED traces to a known open defect (no genuine regression).
+
+**FIXME 0624** (target `/design` typecheck): the §5 status flip in
+`design/typecheck/return-poly-dispatch-signal.md` is a `/design`-owned doc edit
+outside `/dev`'s boundary — **left open for `/design`**. Not a wave-gate blocker.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

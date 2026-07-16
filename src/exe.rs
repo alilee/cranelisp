@@ -403,7 +403,10 @@ pub fn generate_startup_object(
 ///
 /// Returns `Ok(())` for an acceptable `(Fn [] (IO _))` main; a spec-grounded
 /// error naming the required `(Fn [] (IO _))` shape otherwise.
-pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<(), CranelispError> {
+pub fn validate_main(
+    entry_symbols: &crate::code::SessionSymbolTable,
+    unresolved_dispatch: &[cranelisp_typecheck::UnresolvedDispatchSite],
+) -> Result<(), CranelispError> {
     let entry = entry_symbols.get("main").ok_or_else(|| {
         CranelispError::CodegenError {
             message: "entry module has no 'main' function".to_string(),
@@ -412,12 +415,61 @@ pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<
     })?;
 
     match entry {
-        ModuleEntry::Def { scheme, .. } => classify_main_return_type(&scheme.ty),
+        ModuleEntry::Def { scheme, ast, .. } => {
+            // 0611 class-(b) leg (Principle 19): typecheck records the
+            // unresolved-return-poly-dispatch signal but never rejects a
+            // poly-returning `main` (legitimate as a library defn). int owns the
+            // entry decision — a `main` whose evaluated body carries an
+            // unresolved return dispatch (`(defn main [] (Pure (zed)))`) is
+            // ambiguous at THIS execution boundary. Filtered to main's own body
+            // span so a sibling poly defn in the same module is not implicated.
+            if let Some(variant) = ast.as_ref()
+                && let Some(site) =
+                    first_dispatch_within(unresolved_dispatch, variant.body.span())
+            {
+                return Err(unresolved_dispatch_error(site));
+            }
+            classify_main_return_type(&scheme.ty)
+        }
         _ => Err(CranelispError::CodegenError {
             message: "'main' in entry module is not a function definition".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
     }
+}
+
+/// The ONE §3.11 ambiguity diagnostic shared by both class-(b) consumers — the
+/// REPL `__expr` eval path and [`validate_main`] (Principle 7 single source). An
+/// unresolved return-type-polymorphic dispatch (`(zed)` with no argument,
+/// annotation, or context to select an impl) reaching an execution boundary is
+/// a §3.11 ambiguity, NOT a backend GOT-slot leak. The message deliberately
+/// omits `GOT slot` / `__expr` / `codegen error` / `has no \`main\`` — the
+/// 0568 message-quality contract (spec §3.3.3 MUST (e)).
+pub fn unresolved_dispatch_error(
+    site: &cranelisp_typecheck::UnresolvedDispatchSite,
+) -> CranelispError {
+    CranelispError::TypeError {
+        message: format!(
+            "ambiguous type: the return-type-polymorphic call to `{}` selects no \
+             impl — no argument, annotation, or context pins its return type; add \
+             a `:Type` annotation to disambiguate (spec §3.11)",
+            site.method
+        ),
+        location: ErrorLocation::from_span(site.span),
+    }
+}
+
+/// The first unresolved-return-poly-dispatch site (if any) whose span lies
+/// WITHIN `body` — i.e. an unresolved dispatch reaching this execution
+/// boundary's evaluated body. Span containment filters the entry/eval body's
+/// own sites from a batch cluster's other (legitimately polymorphic) defns.
+pub fn first_dispatch_within(
+    sites: &[cranelisp_typecheck::UnresolvedDispatchSite],
+    body: Span,
+) -> Option<&cranelisp_typecheck::UnresolvedDispatchSite> {
+    sites
+        .iter()
+        .find(|s| s.span.start >= body.start && s.span.end <= body.end)
 }
 
 /// Friendly compile-time rejection of a `--link` build that references a
@@ -1078,7 +1130,7 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![], Box::new(Type::Int))),
         );
-        let err = validate_main(&st).unwrap_err();
+        let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("IO"), "names the IO requirement: {message}");
@@ -1100,7 +1152,7 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![], Box::new(Type::Bool))),
         );
-        let err = validate_main(&st).unwrap_err();
+        let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("IO"), "names the IO requirement: {message}");
@@ -1125,14 +1177,14 @@ mod tests {
             )),
         );
         // An `(Fn [] (IO Int))` main is the canonical batch shape — accepted.
-        assert!(validate_main(&st).is_ok());
+        assert!(validate_main(&st, &[]).is_ok());
     }
 
     // spec: design/backend/executable-generation.md §7 — missing main is error
     #[test]
     fn validate_main_missing() {
         let st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        let err = validate_main(&st).unwrap_err();
+        let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("no 'main' function"));
@@ -1149,7 +1201,7 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![], Box::new(Type::String))),
         );
-        let err = validate_main(&st).unwrap_err();
+        let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("IO"), "names the IO requirement: {message}");
@@ -1166,7 +1218,7 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
         );
-        let err = validate_main(&st).unwrap_err();
+        let err = validate_main(&st, &[]).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("zero-argument"));

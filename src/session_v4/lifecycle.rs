@@ -1404,7 +1404,16 @@ impl CompilerSession {
         // `trampoline`, so it stays exempt (§10.6.2).
         let module_path = ModuleFullPath::from(module_name);
         if let Some(table) = self.module_table(&module_path) {
-            crate::exe::validate_main(&table)?;
+            // 0611: the entry module's unresolved-return-poly-dispatch carrier
+            // (EMPTY for every valid module) — `validate_main` rejects a `main`
+            // whose body carries one with the §3.11 ambiguity (class (b)).
+            let dispatch = self
+                .shared
+                .typecheck_products
+                .get(&module_path)
+                .map(|tp| tp.unresolved_dispatch.clone())
+                .unwrap_or_default();
+            crate::exe::validate_main(&table, &dispatch)?;
         }
         // (If the entry table is absent, the code-ptr lookup below produces the
         // "no `main`" diagnostic — no separate handling needed here.)
@@ -1936,7 +1945,16 @@ impl CompilerSession {
         // Enforce the batch-mode signature `(Fn [] (IO _))` (spec §10.6 /
         // §12.6). A valid `main` always returns `IO _` after this gate — the
         // startup stub therefore always trampolines the IO result.
-        crate::exe::validate_main(&entry_table)?;
+        // 0611: the entry module's unresolved-return-poly-dispatch carrier
+        // (EMPTY for every valid module) routes a `main` whose body carries one
+        // to the §3.11 ambiguity (class (b)) instead of `main has no GOT slot`.
+        let dispatch = self
+            .shared
+            .typecheck_products
+            .get(&module)
+            .map(|tp| tp.unresolved_dispatch.clone())
+            .unwrap_or_default();
+        crate::exe::validate_main(&entry_table, &dispatch)?;
         drop(entry_table);
         // FIXME 0406 (test-discovery.md §4.5): refuse a `--link` build that
         // references a dev-session-only `PrimitiveExtern` (`discover-tests`)

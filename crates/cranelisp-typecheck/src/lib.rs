@@ -246,7 +246,7 @@ mod unify;
 pub use checker::{CheckState, PreludeFallback, TypeCheckEnv, advance_next_id_past_table};
 pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
 pub use form::{check_forms, check_type_expr};
-pub use result::{CheckError, CheckResult};
+pub use result::{CheckError, CheckResult, DispatchGap, UnresolvedDispatchSite};
 pub use signature_match::{signature_matches_exact, signature_matches_partial};
 pub use trace::{
     SymbolTableEnsureHook, SymbolTableEnsureOutcome, emit_symbol_table_ensure,

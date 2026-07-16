@@ -178,6 +178,7 @@ pub(crate) fn check_program_compat(
     (
         Option<cranelisp_types::ResolutionGap>,
         Vec<cranelisp_types::Warning>,
+        Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
         Vec<crate::redefine::RedefinitionOutcome>,
     ),
     CranelispError,
@@ -237,8 +238,8 @@ pub(crate) fn check_program_compat_no_gap(
         // gate-exempt anyway (S101, `redefine::is_gate_exempt_internal`).
         None,
     )? {
-        (None, _warnings, _redefs) => Ok(()),
-        (Some(gap), _warnings, _redefs) => Err(CranelispError::TypeError {
+        (None, _warnings, _dispatch, _redefs) => Ok(()),
+        (Some(gap), _warnings, _dispatch, _redefs) => Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
@@ -270,6 +271,7 @@ pub(crate) fn process_cluster_with_staging(
     (
         Option<cranelisp_types::ResolutionGap>,
         Vec<cranelisp_types::Warning>,
+        Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
         Vec<crate::redefine::RedefinitionOutcome>,
     ),
     CranelispError,
@@ -278,7 +280,7 @@ pub(crate) fn process_cluster_with_staging(
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
-        return Ok((None, Vec::new(), Vec::new()));
+        return Ok((None, Vec::new(), Vec::new(), Vec::new()));
     }
 
     let mut staging: crate::code::SessionSymbolTable =
@@ -301,16 +303,30 @@ pub(crate) fn process_cluster_with_staging(
         // non-fatal warnings (FIXME 0365 warning channel) back to the caller
         // so int can thread them onto `ProcessedCluster.warnings` and the
         // REPL can render them as `; warning: <message>` lines.
-        Ok(warnings) => {
+        Ok(check_result) => {
             let redefs = commit_staging_to_live(symbol_tables, module, staging, shared)?;
-            Ok((None, warnings, redefs))
+            // 0611: persist THIS module's unresolved-return-poly-dispatch
+            // carrier so `src/exe.rs::validate_main` can reject a `main` whose
+            // body carries one (the `--run`/`--link` class-(b) leg, Principle
+            // 19). EMPTY for every valid module; overwritten per re-check.
+            if let Some(sh) = shared {
+                sh.typecheck_products
+                    .entry(module.clone())
+                    .or_insert_with(|| crate::session_v4::TypecheckProduct {
+                        file_path: None,
+                        source_text: None,
+                        unresolved_dispatch: Vec::new(),
+                    })
+                    .unresolved_dispatch = check_result.unresolved_dispatch.clone();
+            }
+            Ok((None, check_result.warnings, check_result.unresolved_dispatch, redefs))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
         // yet loaded). Staging drops here (atomic discard, live unchanged);
         // the gap is handed back to `finalize_module` for FQ-auto-load
         // orchestration (FIXME 0268). On retry a fresh staging frame runs.
         // No warnings on the gap path — the cluster re-runs from the top.
-        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new(), Vec::new())),
+        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new(), Vec::new(), Vec::new())),
         // A genuine type error — staging drops, live unchanged.
         Err(e) => Err(check_error_to_cranelisp_error(e)),
     }
@@ -375,7 +391,7 @@ pub(crate) fn validate_forms_dry_run(
     // *clean* validation also discards (it is a dry run — the real commit
     // happens later through `process_commands`→`eval`, §15.3).
     match result {
-        Ok(_warnings) => Ok(()),
+        Ok(_check) => Ok(()),
         // A resolution gap is a not-yet-clean form for the validator's purpose;
         // surface it as an error so the repair loop re-prompts (U5 — no
         // error-classification; any non-Ok triggers repair).
@@ -841,6 +857,7 @@ pub(crate) fn ensure_typecheck_product(
         crate::session_v4::TypecheckProduct {
             file_path: None,
             source_text: None,
+            unresolved_dispatch: Vec::new(),
         }
     });
 }
@@ -1905,7 +1922,7 @@ fn checked_check_forms(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
-) -> Result<Vec<cranelisp_types::Warning>, cranelisp_typecheck::CheckError> {
+) -> Result<cranelisp_typecheck::CheckResult, cranelisp_typecheck::CheckError> {
     use std::panic::AssertUnwindSafe;
     // §16.2 SILENT contract: a caught validator panic is converted to a clean
     // `Err`, so the default panic hook's stderr banner ("thread … panicked at …",

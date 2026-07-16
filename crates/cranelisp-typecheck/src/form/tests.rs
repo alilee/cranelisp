@@ -909,7 +909,8 @@
             &no_aliases(),
             &no_fallback(),
         )
-        .expect("cluster with an accessor collision still checks clean");
+        .expect("cluster with an accessor collision still checks clean")
+        .warnings;
 
         // The collision must surface as a ShadowedName warning whose message
         // names the colliding accessor `v` — this is the channel int threads

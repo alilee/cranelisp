@@ -46,13 +46,13 @@ use std::cell::RefCell;
 
 use cranelisp_types::{
     CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry,
-    Span, SymbolTable, SymbolTables, TopLevel, Warning,
+    Span, SymbolTable, SymbolTables, TopLevel,
 };
 
 use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
 use crate::cluster::SymbolTableAccess;
 use crate::program::{CheckPass, ModuleCheckAccumulator};
-use crate::result::CheckError;
+use crate::result::{CheckError, CheckResult};
 
 /// Cluster-atomic typecheck entry surface.
 ///
@@ -69,16 +69,19 @@ use crate::result::CheckError;
 /// `symbol_tables` parameter is the shared-borrow universe of modules used
 /// for cross-module FQ resolution.
 ///
-/// Returns `Ok(warnings)` on success — the staging (or live) table carries
-/// registered entries with Pass 2 annotations on `ModuleEntry::Def` fields,
-/// and the returned `Vec<Warning>` carries the cluster's non-fatal diagnostics
-/// (drained from the internal `CheckResult`). This is the **warning channel**
-/// (FIXME 0365): the §5.2.6 accessor/binding collision guard records a
-/// [`WarningKind::ShadowedName`] diagnostic during accessor synthesis, and the
-/// int caller threads the returned warnings onto `ProcessedCluster.warnings`
-/// so the REPL can render them as `; warning: <message>` lines. An empty `Vec`
-/// means the cluster produced no diagnostics. (`Warning` is a `cranelisp-types`
-/// boundary type, so the channel is purely additive at the typecheck edge.)
+/// Returns `Ok(check_result)` on success — the staging (or live) table carries
+/// registered entries with Pass 2 annotations on `ModuleEntry::Def` fields, and
+/// the returned [`CheckResult`] carries the cluster's non-fatal diagnostics
+/// (`warnings` — the **warning channel**, FIXME 0365) plus the
+/// `unresolved_dispatch` carrier (0611: return-poly dispatch sites still
+/// unresolved at finalize, EMPTY for every valid program — int applies it at
+/// the entry/eval-result boundary). The §5.2.6 accessor/binding collision guard
+/// records a [`WarningKind::ShadowedName`] diagnostic during accessor
+/// synthesis; the int caller threads the returned warnings onto
+/// `ProcessedCluster.warnings` so the REPL can render them as `; warning:
+/// <message>` lines. (`Warning` is a `cranelisp-types` boundary type;
+/// `CheckResult`/`UnresolvedDispatchSite` are typecheck-owned single-consumer
+/// types — the channel is purely additive at the typecheck edge.)
 /// Returns `Err(CheckError::Gap(_))` when an FQ reference cannot be resolved
 /// (orchestrator retries the whole `check_forms` call with the same
 /// `parsed` list). Returns `Err(CheckError::TypeError { .. })` for
@@ -96,7 +99,7 @@ pub fn check_forms<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
     prelude_fallback: &PreludeFallback,
-) -> Result<Vec<Warning>, CheckError>
+) -> Result<CheckResult, CheckError>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -325,7 +328,7 @@ where
         )
         .map_err(|e| lift_error(e, &state))?;
 
-    Ok(result.warnings)
+    Ok(result)
 }
 
 /// Typecheck a standalone type expression against a symbol-table view,

@@ -337,7 +337,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// here, defer". This is what lets the call-context type (`(add-i64 (z) 5)`
     /// fixing `(z)` to `Int`) select the concrete impl when there is no argument
     /// to dispatch on.
-    fn method_return_dispatch_type(
+    pub(crate) fn method_return_dispatch_type(
         &self,
         state: &CheckState,
         method_name: &Symbol,
@@ -359,7 +359,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `TraitDecl` declaring `method_name`, via the shared bulk trait-decl scan
     /// ([`Self::find_trait_method_decl`]). "Method not found in any visible
     /// trait decl" defaults to `false`.
-    fn method_self_in_return(&self, state: &CheckState, method_name: &str) -> bool {
+    pub(crate) fn method_self_in_return(&self, state: &CheckState, method_name: &str) -> bool {
         self.find_trait_method_decl(state, method_name, |m| {
             type_expr_references_self(&m.ret_type)
         })

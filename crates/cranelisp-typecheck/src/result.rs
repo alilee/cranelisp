@@ -8,8 +8,41 @@
 //! pattern-match target for the gap-orchestration retry loop.
 
 use cranelisp_types::{
-    DisplayInfo, ErrorLocation, ResolutionGap, ResolveError, Warning,
+    DisplayInfo, ErrorLocation, ResolutionGap, ResolveError, Span, Symbol, Warning,
 };
+
+/// Why a return-type-polymorphic dispatch site is still unresolved at finalize
+/// (`design/typecheck/return-poly-dispatch-signal.md` §5). Typecheck-local — no
+/// `cranelisp-types` home, no cache-schema bump (the set is EMPTY for every
+/// valid program, so nothing worth caching crosses the boundary).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchGap {
+    /// A nullary `Self`-returning trait method (`(zed)` with `zed [] self`)
+    /// whose return-directed dispatch never selected an impl — no argument, no
+    /// disambiguating context (spec §3.11, R16).
+    ReturnTypePoly,
+    /// The same unresolved return dispatch under a value-position trait
+    /// CONSTRAINT (`:Zeroable (zed)`): the constraint is a satisfaction check,
+    /// not a concrete type, so it does not disambiguate (spec §3.11, R17).
+    ValuePositionConstraint,
+}
+
+/// A return-type-polymorphic dispatch site that remained UNRESOLVED after the
+/// final substitution — its return-directed dispatch never selected an impl
+/// (`dispatch.rs::method_return_dispatch_type` still `None`) and its
+/// discriminating type is still a free `Type::Var`. Grounded in the dispatch
+/// OUTCOME, not surface-type concreteness, so it is immune to the `(add2 3 4)`
+/// false positive (an arg-directed dispatch resolves its impl and is never in
+/// this set). See `design/typecheck/return-poly-dispatch-signal.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedDispatchSite {
+    /// The call site's span.
+    pub span: Span,
+    /// The unresolved trait method's name (`zed`).
+    pub method: Symbol,
+    /// Why it is unresolved (R16 vs R17).
+    pub gap: DispatchGap,
+}
 
 /// Transient REPL/display payload assembled during `check_forms`.
 ///
@@ -22,6 +55,15 @@ pub struct CheckResult {
     pub warnings: Vec<Warning>,
     /// Display info for REPL output (None in batch / module-load mode).
     pub display: Option<DisplayInfo>,
+    /// Return-type-polymorphic dispatch sites still UNRESOLVED at finalize
+    /// (`design/typecheck/return-poly-dispatch-signal.md`; carrier (A), 0611
+    /// ratified — `design/arch/bounded-contexts.md` §2). EMPTY for every valid
+    /// program. int applies it at the ONE entry/eval-boundary it owns — the
+    /// REPL `__expr` eval path and `src/exe.rs::validate_main` — emitting the
+    /// §3.11 ambiguity error instead of letting the residual leak to the
+    /// backend GOT-slot path (Principle 19: typecheck carries no entry
+    /// designation, so it records the signal; int applies it).
+    pub unresolved_dispatch: Vec<UnresolvedDispatchSite>,
 }
 
 /// Typed error returned by `cranelisp_typecheck::check_forms`. Per

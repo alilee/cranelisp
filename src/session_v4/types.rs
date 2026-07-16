@@ -281,6 +281,15 @@ pub struct TypecheckProduct {
     /// Module source text, retained in --repl mode for /source introspection.
     /// Sexp spans index into this string. None for cache-hit modules and batch mode.
     pub source_text: Option<String>,
+    /// The 0611 carrier — return-poly dispatch sites still UNRESOLVED at
+    /// finalize for THIS module (`design/typecheck/return-poly-dispatch-signal.md`;
+    /// carrier (A), `design/arch/bounded-contexts.md` §2). EMPTY for every valid
+    /// module. `src/exe.rs::validate_main` reads it for the entry module (the
+    /// `--run`/`--link` leg of class (b), Principle 19): a `(defn main [] (Pure
+    /// (zed)))` whose IO payload never resolved dies with the §3.11 ambiguity
+    /// instead of leaking `main has no GOT slot`. Written at the cluster commit
+    /// seam (`worker::process_cluster_with_staging`), overwritten per re-check.
+    pub unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
 // Sprint 58 Wave 3b (Decision 35): the `KeptJit` wrapper struct (Sprint 57

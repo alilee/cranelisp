@@ -29,6 +29,7 @@ use cranelisp_types::{ErrorLocation,
 };
 
 use crate::result::CheckResult;
+use crate::result::{DispatchGap, UnresolvedDispatchSite};
 
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme::mono;

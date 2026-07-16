@@ -423,7 +423,7 @@ fn finalize_cluster(
         );
     }
 
-    let (maybe_gap, cluster_warnings, redefinitions) = check_program_compat(
+    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) = check_program_compat(
         ctx.symbol_tables,
         ctx.module_aliases,
         ctx.prelude_fallback,
@@ -515,6 +515,12 @@ fn finalize_cluster(
     // recompilation transaction for `AbiChanging` outcomes after the target's
     // own codegen succeeds (design §13).
     processed.set_redefinitions(redefinitions);
+    // 0611 carrier — the return-poly dispatch sites still unresolved at
+    // finalize (EMPTY for every valid program). The eval driver consults these
+    // at the `__expr` eval-result boundary (class (b), Principle 19): a bare
+    // `(zed)` reaching the eval path dies with the §3.11 ambiguity instead of
+    // leaking the backend `__expr`-has-no-GOT-slot error.
+    processed.set_unresolved_dispatch(unresolved_dispatch);
 
     Ok(ClusterOnce::Done { processed, program })
 }

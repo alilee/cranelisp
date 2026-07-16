@@ -362,7 +362,15 @@ impl CompilerSession {
                             None => Ok(None),
                         };
                     }
-                    let check = CheckResult { warnings: cluster_warnings, display: None };
+                    let check = CheckResult {
+                        warnings: cluster_warnings,
+                        display: None,
+                        // 0611 carrier — the eval driver consults these at the
+                        // `__expr` eval-result boundary (class (b)) so a bare
+                        // `(zed)` dies with the §3.11 ambiguity instead of
+                        // leaking the backend `__expr`-has-no-GOT-slot error.
+                        unresolved_dispatch: processed.unresolved_dispatch().to_vec(),
+                    };
                     let eval_result = self.codegen_and_execute(&module, &program, &check)?;
                     // S101 dependent-recompilation transaction: clears broken
                     // records for recovered symbols (§18.6 direction 1) and
@@ -401,6 +409,34 @@ impl CompilerSession {
     ) -> Result<EvalResult, CranelispError> {
         // Ensure typecheck product exists for this module.
         crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, module);
+
+        // 0611 class-(b) leg (Principle 19): typecheck records the
+        // unresolved-return-poly-dispatch signal but never rejects the synthetic
+        // `__expr` eval wrapper (which may legitimately hold a poly VALUE for
+        // introspection display, §3.11.2). When the REPL must EVALUATE `__expr`
+        // to produce a value and its body carries an unresolved return dispatch
+        // (`(zed)`, `:Zeroable (zed)`), that is the §3.11 ambiguity — emit it
+        // here, BEFORE codegen, instead of leaking `__expr entry has no GOT
+        // slot`. Filtered to `__expr`'s own body span (a sibling poly defn in
+        // the same program is legitimate and untouched).
+        if !check.unresolved_dispatch.is_empty()
+            && let Some(eval_body_span) = program.iter().find_map(|t| match t {
+                // The evaluated top-level expression — a bare `TopLevel::Expr`
+                // OR the synthetic `__expr` wrapper defn (whichever form the
+                // upstream peel produced).
+                TopLevel::Expr(e) => Some(e.span()),
+                TopLevel::Defn(d)
+                    if d.name.as_ref() == crate::worker::SYNTHETIC_EXPR_WRAPPER =>
+                {
+                    d.variants.first().map(|v| v.body.span())
+                }
+                _ => None,
+            })
+            && let Some(site) =
+                crate::exe::first_dispatch_within(&check.unresolved_dispatch, eval_body_span)
+        {
+            return Err(crate::exe::unresolved_dispatch_error(site));
+        }
 
         // Sprint 66 Wave 3a-γ: the `discover-tests` / `run-test` /
         // `cranelisp_trace_format` intrinsics are registered unconditionally

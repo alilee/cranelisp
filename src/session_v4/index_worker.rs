@@ -1202,7 +1202,7 @@ fn index_typecheck_into_private(
     );
     drop(ctx);
     match res {
-        Ok(_warnings) => {
+        Ok(_check) => {
             // Commit the staged typed entries into the private module table so
             // the caller reads them out (the private table is discarded after).
             if let Some(mut live) = priv_tables.get_mut(module) {

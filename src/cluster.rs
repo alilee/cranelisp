@@ -100,6 +100,14 @@ pub struct ProcessedCluster {
     /// successful redefinition of a BROKEN symbol clears its record
     /// (`repl/spec.md` §18.6 recovery direction 1).
     pub(crate) redefinitions: Vec<crate::redefine::RedefinitionOutcome>,
+
+    /// The 0611 carrier — return-poly dispatch sites still UNRESOLVED at
+    /// finalize (`design/typecheck/return-poly-dispatch-signal.md`). EMPTY for
+    /// every valid program. The eval driver consults these at the `__expr`
+    /// eval-result boundary it owns (class (b), Principle 19) so a bare `(zed)`
+    /// dies with the §3.11 ambiguity instead of leaking the backend
+    /// `__expr`-has-no-GOT-slot error.
+    pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
 impl ProcessedCluster {
@@ -151,6 +159,20 @@ impl ProcessedCluster {
         self.redefinitions = redefinitions;
     }
 
+    /// Read-only access to the 0611 unresolved-return-poly-dispatch carrier —
+    /// consumed by the eval driver at the `__expr` eval-result boundary.
+    pub(crate) fn unresolved_dispatch(&self) -> &[cranelisp_typecheck::UnresolvedDispatchSite] {
+        &self.unresolved_dispatch
+    }
+
+    /// Attach the 0611 carrier (set by `process_form::finalize_cluster`).
+    pub(crate) fn set_unresolved_dispatch(
+        &mut self,
+        unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
+    ) {
+        self.unresolved_dispatch = unresolved_dispatch;
+    }
+
     /// Construct a `ProcessedCluster` from its parts. Used by
     /// `process_form::finalize_cluster` to carry the typecheck warning channel
     /// (FIXME 0365) out of a successful `check_forms` run onto
@@ -168,6 +190,7 @@ impl ProcessedCluster {
             resolved_imports,
             introspection_records,
             redefinitions: Vec::new(),
+            unresolved_dispatch: Vec::new(),
         }
     }
 
@@ -182,6 +205,7 @@ impl ProcessedCluster {
             resolved_imports: Vec::new(),
             introspection_records: Vec::new(),
             redefinitions: Vec::new(),
+            unresolved_dispatch: Vec::new(),
         }
     }
 }
