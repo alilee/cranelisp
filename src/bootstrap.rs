@@ -63,7 +63,7 @@ use cranelisp_types::{
 };
 use cranelisp_types::TypeName;
 
-use crate::code::SessionSymbolTable;
+use crate::code::{Code, SessionSymbolTable};
 
 /// A monomorphic scheme — `forall []. ty`. (int-local; typecheck's
 /// `crate::scheme::mono` is not part of typecheck's public surface.)
@@ -108,179 +108,81 @@ struct SynthCtor {
 }
 
 /// Register a synthetic ADT into `module` exactly as the
-/// `register_type_def_with_ctor_infos` cascade does (S79 Option 3a, FIXME 0319):
+/// `register_type_def_with_ctor_infos` cascade does (S79 Option 3a, FIXME 0319).
 ///
-/// - **Sum/enum** (distinct ctor names — `Option`/`Result`/`IO`): a separate
-///   `ModuleEntry::TypeDef` entry keyed by the type name carrying the
-///   constructor-name list, plus one got-slotted `ModuleEntry::Def { kind:
-///   DefKind::Constructor { type_def: None, .. } }` per constructor.
-/// - **Single-ctor product** (type-name == sole ctor-name — `Pair`): NO separate
-///   `TypeDef` entry. The lone ctor's got-slotted `Def` IS the `"Pair"` key and
-///   carries the **type facet** `DefKind::Constructor { type_def: Some(..) }`, so
-///   the same entry answers both as a constructor AND as its own type. The
-///   retired `ModuleEntry::TypeDef.constructor_scheme` smuggling field is gone —
-///   the product ctor's scheme lives on its own `Def.scheme`, its field names on
-///   `Def.param_names`.
+/// **R-2 caller wiring (S110 Phase 5, `design/arch/backend-keyed-consumer.md`
+/// §6; Principle 24 "Resolve once").** The ordered `(key, entry)` set an ADT
+/// registration produces is derived ONCE by
+/// [`cranelisp_types::build_adt_entries`] — the single derivation this synthetic
+/// seeder shares with typecheck's `deftype` writer
+/// (`register_type_def_with_ctor_infos`). Before S110 that shape was maintained
+/// as a near-line-for-line MIRROR across the two writers (the audit R-2 finding;
+/// the Principle-7 divergent-duplication class). This caller stays thin: it
+/// converts its `SynthCtor` input vocabulary into [`cranelisp_types::AdtCtorSpec`]s
+/// (pre-allocating each ctor's GOT slot from the session table — slot allocation
+/// is table state the pure builder cannot own, allocated in tag order) and
+/// inserts every returned pair verbatim. A synthetic module has no §8.6.5
+/// contest, so the bare-name `Import` alias pairs the builder returns need no
+/// classifier here — unlike typecheck, bootstrap inserts all pairs directly
+/// (builder rustdoc §"What the builder owns vs what callers keep").
 ///
-/// Each ctor `Def` has a scheme `forall [type_vars]. (Fn [field-tys] ADT)` (or
-/// bare `ADT` for nullary), `param_names` = field names, and an `ast` carrying a
-/// synthesised `DefnVariant` whose body is `Expr::ConstrADT`.
+/// The builder handles both facets: **sum/enum** (distinct ctor names —
+/// `Option`/`Result`/`IO`) get a separate `ModuleEntry::TypeDef` plus one
+/// got-slotted `DefKind::Constructor { type_def: None }` per ctor (bare-name
+/// `Import` alias onto the canonical `member_key(Type, Ctor)` `Def`);
+/// **single-ctor product** (type-name == sole ctor-name — `Pair`) gets ONE
+/// got-slotted ctor `Def` at the bare type-name key carrying the **type facet**
+/// (`type_def: Some(..)`), no separate `TypeDef`.
 ///
 /// `type_var_ids` are the (already-allocated) ids quantified in each ctor
-/// scheme; `adt_type` is `Type::ADT(fqtn, [Var(id)…])`.
+/// scheme; the builder derives `Type::ADT(fqtn, [Var(id)…])` from them.
 fn register_synth_adt(
     module: &mut SessionSymbolTable,
     fqtn: &FQTypeName,
-    type_name: &str,
     type_params: &[&str],
     type_var_ids: &[TypeId],
     adt_docstring: Option<&str>,
     ctors: &[SynthCtor],
 ) {
-    let adt_type = Type::ADT(
-        fqtn.clone(),
-        type_var_ids.iter().map(|&id| Type::Var(id)).collect(),
+    let type_param_syms: Vec<Symbol> = type_params.iter().map(|p| Symbol::from(*p)).collect();
+
+    // Build the caller-resolved specs, pre-allocating each ctor's GOT slot from
+    // the session table in tag order (the pure builder never sees a table). This
+    // preserves the as-built slot assignment: ctor N gets the N-th slot.
+    let specs: Vec<cranelisp_types::AdtCtorSpec> = ctors
+        .iter()
+        .map(|c| {
+            let got_slot = module.allocate_got_slot();
+            cranelisp_types::AdtCtorSpec::new(
+                Symbol::from(c.name),
+                c.fields
+                    .iter()
+                    .map(|f| cranelisp_types::FieldInfo {
+                        name: Symbol::from(f.name),
+                        ty: f.ty.clone(),
+                    })
+                    .collect(),
+                c.docstring.map(String::from),
+                c.internal,
+                got_slot,
+            )
+        })
+        .collect();
+
+    let entries = cranelisp_types::build_adt_entries::<Code>(
+        fqtn,
+        &type_param_syms,
+        type_var_ids,
+        adt_docstring,
+        &specs,
+        Visibility::Public,
     );
 
-    // **Product/sum split (S79 Option 3a, FIXME 0319), mirroring
-    // `register_type_def_with_ctor_infos`.** A single-ctor **product** (type
-    // name == sole ctor name, e.g. `Pair`) has its type and constructor collide
-    // on one symbol-table key. Rather than overwrite the got-slotted ctor `Def`
-    // with a `TypeDef` (the old model — which dropped `param_names` field names),
-    // the surviving `"Pair"` entry is the got-slotted ctor `Def` carrying a
-    // **type facet** (`type_def: Some(..)`). A sum/enum type registers a separate
-    // `TypeDef` and its ctors carry `type_def: None`.
-    let constructors: Vec<Symbol> = ctors.iter().map(|c| Symbol::from(c.name)).collect();
-    let type_def_info = TypeDefInfo {
-        name: fqtn.clone(),
-        type_params: type_params.iter().map(|p| Symbol::from(*p)).collect(),
-        constructors,
-    };
-    let is_product = ctors.len() == 1 && ctors[0].name == type_name;
-
-    for (tag, ctor) in ctors.iter().enumerate() {
-        let param_names: Vec<Symbol> =
-            ctor.fields.iter().map(|f| Symbol::from(f.name)).collect();
-
-        // Scheme: nullary → ADT; data ctor → (Fn [field-tys] ADT).
-        let scheme = if ctor.fields.is_empty() {
-            Scheme {
-                type_vars: type_var_ids.to_vec(),
-                constraints: HashMap::new(),
-                ty: adt_type.clone(),
-            }
-        } else {
-            Scheme {
-                type_vars: type_var_ids.to_vec(),
-                constraints: HashMap::new(),
-                ty: Type::Fn(
-                    ctor.fields.iter().map(|f| f.ty.clone()).collect(),
-                    Box::new(adt_type.clone()),
-                ),
-            }
-        };
-
-        // The product ctor (type-name == ctor-name) carries the type facet;
-        // sum/enum ctors carry `type_def: None`.
-        let ctor_type_def: Option<Box<TypeDefInfo>> = if is_product {
-            Some(Box::new(type_def_info.clone()))
-        } else {
-            None
-        };
-
-        // Synthesise the DefnVariant body wrapping Expr::ConstrADT — backend
-        // lowers this directly (DefKind::Constructor metadata is for pattern
-        // matching + introspection, not codegen).
-        let body_span = Span::SYNTHETIC;
-        let synth_params: Vec<(Symbol, Option<TypeExpr>)> =
-            param_names.iter().cloned().map(|n| (n, None)).collect();
-        let synth_body = Expr::ConstrADT {
-            type_name: fqtn.clone(),
-            tag,
-            fields: param_names
-                .iter()
-                .map(|n| Expr::Var {
-                    name: n.clone(),
-                    span: body_span,
-                    resolved_call: None,
-                    inferred_type: None,
-                })
-                .collect(),
-            span: body_span,
-            inferred_type: None,
-        };
-        let ast = DefnVariant {
-            params: synth_params,
-            body: synth_body,
-            span: body_span,
-        };
-
-        // The ctor is a concrete got-callable born with its slot (S83 deferred
-        // allocation, Principle 20): the slot rides on
-        // `DefKind::Constructor.got_slot`, not a flat `Def` field. Mirror
-        // `typecheck::register_type_def_with_ctor_infos` — allocate from the
-        // module's GOT before building.
-        let ctor_slot = module.allocate_got_slot();
-        let mut builder = ModuleEntry::def(
-            scheme,
-            DefKind::Constructor {
-                got_slot: ctor_slot,
-                type_name: fqtn.clone(),
-                tag,
-                field_count: ctor.fields.len(),
-                internal: ctor.internal,
-                type_def: ctor_type_def,
-                mode_summary: None,
-            },
-        )
-        .visibility(Visibility::Public)
-        .param_names(param_names)
-        .ast(ast);
-        // The product ctor has no separate TypeDef to hold the deftype-level
-        // docstring, so fall back to it when the ctor itself has none.
-        let ctor_doc = ctor.docstring.or(if is_product { adt_docstring } else { None });
-        if let Some(doc) = ctor_doc {
-            builder = builder.docstring(doc);
-        }
-        let entry = builder.build();
-        if is_product {
-            // Product dual-facet: single key at the type name (no canonical
-            // re-key, no alias) — mirrors typecheck `register_constructors`.
-            module.insert(Symbol::from(ctor.name), entry);
-        } else {
-            // **Uniform canonical keying (S109 W1, dotted-ctor-canonical-keys.md
-            // §1).** Seeded sum ctors are keyed identically to user `deftype`
-            // ctors: the real `Def` under `member_key(Type, Ctor)`, the bare name
-            // an `Import` alias onto it. No seeded/user split. Seeded types never
-            // share a ctor name within a module, so no §8.6.5 contest arises here.
-            let canonical_key = cranelisp_types::member_key(&fqtn.name, ctor.name);
-            module.insert(canonical_key.clone(), entry);
-            module.insert(
-                Symbol::from(ctor.name),
-                ModuleEntry::Import {
-                    source: cranelisp_types::FQSymbol {
-                        module: fqtn.module.clone(),
-                        symbol: canonical_key,
-                    },
-                    visibility: Visibility::Public,
-                },
-            );
-        }
-    }
-
-    // Register the sum/enum type's separate `TypeDef` entry (carries the
-    // constructor-name list). The product case has NO `TypeDef` — its type facet
-    // lives on the ctor `Def` registered above, under the shared type-name key.
-    if !is_product {
-        let docstring = adt_docstring.map(|d| d.to_string());
-        module.insert(
-            Symbol::from(type_name),
-            ModuleEntry::TypeDef {
-                info: type_def_info,
-                visibility: Visibility::Public,
-                docstring,
-            },
-        );
+    // Synthetic modules have no §8.6.5 contest — insert every pair verbatim
+    // (canonical ctor `Def`, product dual-facet `Def`, bare-name `Import` alias,
+    // and the sum `TypeDef`), in the builder's insertion order.
+    for (key, entry) in entries {
+        module.insert(key, entry);
     }
 }
 
@@ -562,7 +464,6 @@ fn register_macros_module(
         register_synth_adt(
             &mut macros,
             &slist_fqtn,
-            "SList",
             &["a"],
             &[slist_a],
             None,
@@ -603,7 +504,6 @@ fn register_macros_module(
         register_synth_adt(
             &mut macros,
             &sexp_fqtn,
-            "Sexp",
             &[],
             &[],
             None,
@@ -657,7 +557,6 @@ fn register_option_type(
     register_synth_adt(
         &mut primitives,
         &option_fqtn,
-        "Option",
         &["a"],
         &[option_a],
         Some("Optional value — None or (Some val)"),
@@ -705,7 +604,6 @@ fn register_pair_type(
     register_synth_adt(
         &mut primitives,
         &pair_fqtn,
-        "Pair",
         &["a", "b"],
         &[pair_a, pair_b],
         Some("Two-field product — (Pair first second)"),
@@ -751,7 +649,6 @@ fn register_result_type(
     register_synth_adt(
         &mut primitives,
         &result_fqtn,
-        "Result",
         &["a", "b"],
         &[result_a, result_b],
         Some("Success or failure — (Ok val) or (Err err)"),
@@ -796,7 +693,6 @@ fn register_io_type(
     register_synth_adt(
         &mut primitives,
         &io_fqtn,
-        "IO",
         &["a"],
         &[io_a],
         Some("Deferred IO computation tree"),
@@ -1077,7 +973,6 @@ fn register_trace_type(
     register_synth_adt(
         &mut primitives,
         &trace_fqtn,
-        "Trace",
         &[],
         &[],
         Some("Recorded execution call tree from (trace expr)"),
