@@ -1477,24 +1477,27 @@ fn multi_arity_same_written_var_independent_per_clause() {
 
 // spec: spec/05-definitions.md §5.1.2 — Multi-Signature: a multi-arity fn
 // CALLED from `main` in batch `--run` mode MUST compile and run like any other
-// function. This is the C-4 pre-existing defect, minimally reduced by /testing
-// (S109 W6.3): calling a 2+-clause `defn` from `main`'s body in `--run` aborts
-// with the misleading `entry module has no \`main\` function` even though `main`
-// is plainly defined. Reduction facts (all confirmed manually against
-// target/debug/cranelisp):
-//   - INDEPENDENT of W6.3 written type vars — reproduces with fully-concrete
+// function. This was the C-4 defect, minimally reduced by /testing (S109 W6.3):
+// calling a 2+-clause `defn` from `main`'s body in `--run` aborted with the
+// misleading `entry module has no \`main\` function` even though `main` was
+// plainly defined. FIXED at `303df28a` (S110) — a scoped reslot in typecheck's
+// finalize pass collapses the spurious-poly `main` calling an overloaded fn, so
+// it codegens as a real entry. The original int-side `lookup_main_code_ptr`
+// mode-divergence attribution was REFUTED (`94038b09`): the batch entry was
+// never emitted because typecheck left `main` spuriously polymorphic. Reduction
+// facts (confirmed manually against target/debug/cranelisp at repro time):
+//   - INDEPENDENT of W6.3 written type vars — reproduced with fully-concrete
 //     `:Int` params (zero type vars);
-//   - the multi-arity `defn` alone is fine; the trigger is CALLING it from
-//     `main`'s body (a `main` that does not reference it exits 0);
-//   - needs 2+ clauses — a single-clause parenthesised `([:Int x] x)` called
-//     from `main` runs correctly;
-//   - MODE-DIVERGENT — the identical `(defn h (…) (…))` + `(h 7)` evaluates
-//     correctly in the REPL; only batch `--run` fails. Attribution candidate:
-//     the int-side overload/batch-entry path (main's codegen/GOT-slot for a
-//     multi-arity call), NOT the W6.3 typecheck change.
+//   - the multi-arity `defn` alone was fine; the trigger was CALLING it from
+//     `main`'s body (a `main` that did not reference it exited 0);
+//   - needed 2+ clauses — a single-clause parenthesised `([:Int x] x)` called
+//     from `main` ran correctly;
+//   - was mode-divergent as a SYMPTOM — `(defn h (…) (…))` + `(h 7)` evaluated
+//     correctly in the REPL while batch `--run` failed — but the root cause was
+//     the typecheck finalize gate/reslot ordering, not an int/backend GOT slot.
 // The correct behaviour is exit 7 (`(h 7)` → clause 1 → 7 → `(Pure 7)`); this
-// guard is RED until the batch-entry defect is fixed, then flips GREEN.
-// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::lookup_main_code_ptr (batch-entry main GOT slot unpopulated when main calls a multi-arity fn — REPL evaluates the same call fine) found=S109 owner=/dev
+// guard is now GREEN and guards against regression of the finalize reslot.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
 #[test]
 fn multi_arity_call_from_main_batch_no_main_neg() {
     let out = Cranelisp::new()

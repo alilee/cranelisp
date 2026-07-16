@@ -1985,3 +1985,155 @@ fn value_position_constraint_does_not_disambiguate_neg() {
          MUST remain the §3.11 ambiguous-type error (§3.3.3 MUST (e)); got:\n{c}"
     );
 }
+
+// =============================================================================
+// §3.11 finalization gate × multi-arity overload deferral — S110 typecheck-chain
+// composition Blockers B1/B2 (`/review` typecheck-chain verdict, `939bda93`).
+//
+// The §3.11 gate `find_ambiguous_top_level_form` (finalize.rs) composes two
+// duties with INCOMPATIBLE timing against the overload drain
+// (`resolve_pending_overloads`): the §5.1.2 clause-independence leg MUST run
+// BEFORE the drain (the C-4 constraint, `303df28a`), while the §3.11.1
+// value-position scan MUST run AFTER it. W-RD (`91b8b12f`) + C-4 (`303df28a`)
+// pinned the whole pass pre-drain, breaking the gate in BOTH directions on a
+// DEFERRED multi-arity overload call: `infer.rs:585` mints an unresolved fresh
+// return var that the pre-drain gate reads. Both faces are mode-divergent
+// (REPL vs `--run`) — a divergence is itself a defect. The two repros below are
+// the durable record + trigger for the duty-split `/dev` (typecheck) fix; they
+// flip GREEN once the gate's two legs straddle the drain (B1's fresh var
+// unifies concrete → no false fire; B2's collapsed caller is `Concrete` → body
+// scanned). No numbered FIXME — these failing tests are the record.
+// =============================================================================
+
+// spec: spec/03-types.md §3.11 — MUST: a VALID program is not spuriously
+// rejected as ambiguous. BLOCKER B1 (wrong-reject). A multi-arity overload
+// `h` called inside a `let` binding at the REPL spuriously errors `ambiguous
+// type … (spec §3.11)` for a fully-determined program: `(h 7)` selects the
+// 1-arg `:Int` clause → `Int`, `(h 7 8)` selects the 2-arg clause → `Int` —
+// neither is ambiguous. The pre-drain §3.11.1 value-position scan reads the
+// still-unresolved deferred-overload return var (`infer.rs:585`) and false-
+// fires: `value_position_is_ambiguous` benign-lists only TRAIT-dispatch stale
+// vars (the RD-3 fence, `collect_resolved_dispatch_result_vars`), so a pending-
+// overload ret var is neither benign-listed nor trait-gated. Mode-divergent:
+// the SAME program under `--run` (`main` calling `(h 7)`) compiles and exits 7
+// — proof the REPL rejection is spurious. Bare `(h 7)` (no `let`) is also fine
+// (type settles at infer). The uncovered cell of the dispatch-variant coverage
+// matrix (RD-3 covered only the trait-arg-directed variant).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
+#[test]
+fn multi_arity_overload_call_in_let_not_spuriously_ambiguous() {
+    // Face 1 — REPL, 1-arg clause via `let`: `(h 7)` = 7, MUST NOT be ambiguous.
+    let one = repl_prims(
+        "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+         (let [r (h 7)] r)\n",
+    );
+    let c1 = format!("{}{}", one.stdout, one.stderr);
+    assert!(
+        !c1.contains("ambiguous"),
+        "B1: `(let [r (h 7)] r)` calling the 1-arg overload clause is fully \
+         determined (`(h 7)` : Int) — it MUST NOT be spuriously rejected as \
+         `ambiguous` (§3.11); got:\n{c1}"
+    );
+    assert!(
+        c1.contains(":primitives/Int 7"),
+        "B1: `(let [r (h 7)] r)` MUST yield the value 7 (clause 1 returns its \
+         arg); got:\n{c1}"
+    );
+
+    // Face 2 — REPL, the 2-arg sibling clause via `let`: `(h 7 8)` = 7, also
+    // fully determined, also spuriously rejected today (same gate/drain race).
+    let two = repl_prims(
+        "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+         (let [r (h 7 8)] r)\n",
+    );
+    let c2 = format!("{}{}", two.stdout, two.stderr);
+    assert!(
+        !c2.contains("ambiguous"),
+        "B1 sibling: `(let [r (h 7 8)] r)` calling the 2-arg overload clause is \
+         fully determined (`(h 7 8)` : Int) — it MUST NOT be spuriously rejected \
+         as `ambiguous` (§3.11); got:\n{c2}"
+    );
+    assert!(
+        c2.contains(":primitives/Int 7"),
+        "B1 sibling: `(let [r (h 7 8)] r)` MUST yield 7 (clause 2 returns its \
+         first arg); got:\n{c2}"
+    );
+
+    // Mode control (GREEN now): the SAME 1-arg call under `--run` inside `main`
+    // is accepted and exits 7 — the divergence proves the REPL rejection above
+    // is spurious, not a real ambiguity.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+             (defn main [] (let [r (h 7)] (Pure r)))\n",
+        )
+        .output();
+    assert!(
+        run.status.code() == Some(7),
+        "B1 mode control: `main` = `(Pure (h 7))` via `let` MUST compile+run to \
+         exit 7 under `--run` (it does today — hence the REPL reject is a \
+         mode-divergent spurious rejection); got exit {:?}:\n{}{}",
+        run.status.code(),
+        run.stdout,
+        run.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — MUST: an unpinned polymorphic value in a
+// codegen-reaching position is REJECTED ("add an annotation"). BLOCKER B2
+// (wrong-accept). Under `--run`, `(defn main [] (let [u []] (Pure (h 7))))` —
+// with the unpinned `(Vec a)` binding `u` — exits 7 instead of dying with the
+// §3.11.1 ambiguity: the spec-MUST reject is BYPASSED. `regeneralize_only_
+// polymorphic` runs AFTER the §3.11 gate, so a `main` spuriously-polymorphic at
+// gate time takes the §3.11.3 poly-SKIP, is then collapsed to `Concrete{slot}`,
+// and codegens with a NEVER-SCANNED body — the unpinned `[]` slips through.
+// Mode-divergent + contrasted with the concrete control below (which correctly
+// rejects), this isolates the overload-deferral interaction, not the `[]` scan
+// itself. The primary RED assertion is the `--run` reject.
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
+#[test]
+fn unpinned_vec_in_main_calling_overload_rejected_run_neg() {
+    // The wrong-accept: `main` binds an unpinned `(Vec a)` then calls the
+    // multi-arity overload. §3.11.1 MUST reject; today it exits 7.
+    let bad = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+             (defn main [] (let [u []] (Pure (h 7))))\n",
+        )
+        .output();
+    let bc = format!("{}{}", bad.stdout, bad.stderr);
+    assert!(
+        bad.status.code() != Some(7),
+        "B2: `(defn main [] (let [u []] (Pure (h 7))))` binds an UNPINNED \
+         `(Vec a)` (`u`) — §3.11.1 MUST reject it; it MUST NOT silently exit 7 \
+         (wrong-accept); got exit {:?}:\n{bc}",
+        bad.status.code()
+    );
+    assert!(
+        bc.contains("ambiguous"),
+        "B2: the unpinned `(Vec a)` binding MUST be rejected with the §3.11.1 \
+         ambiguity message, NOT bypassed; got:\n{bc}"
+    );
+
+    // Concrete control (GREEN now): the SAME shape without the overload call —
+    // `(Pure 3)` in place of `(Pure (h 7))` — correctly dies §3.11.1 (exit 1,
+    // "ambiguous … polymorphic value bound in `main`"). This proves the gate
+    // fires for the non-overload case; only the deferred-overload variant leaks.
+    let ctrl = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn main [] (let [u []] (Pure 3)))\n")
+        .output();
+    let cc = format!("{}{}", ctrl.stdout, ctrl.stderr);
+    assert!(
+        !ctrl.status.success() && cc.contains("ambiguous"),
+        "B2 concrete control: the SAME unpinned `(Vec a)` binding WITHOUT the \
+         overload call MUST be rejected §3.11.1 (it is today) — the contrast \
+         isolates the overload-deferral leak; got exit {:?}:\n{cc}",
+        ctrl.status.code()
+    );
+}

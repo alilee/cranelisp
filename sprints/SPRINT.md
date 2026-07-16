@@ -2405,6 +2405,49 @@ B2: --run + REPL faces, with the concrete-control positive), and `/dev`
 (typecheck) land the duty-split in-sprint. Per the failing-test rule these need
 no numbered FIXMEs once the repros land; I1/I2 ride the fix wave / /design.
 
+### /testing (B1/B2 repros + C-4 retag) — LANDED (2026-07-16)
+
+Committed the two Blocker repros the typecheck-chain review found, both verified
+RED-for-right-reason at HEAD (`939bda93`) before commit, plus retagged the now-GREEN
+C-4 guard. **Baseline 7 → 9** (2 new Blocker guards). Suite: 4593 tests, 9 RED,
+1 skipped, ~86s (build-inclusive).
+
+**B1 — wrong-reject** `tests/spec_03_types.rs::multi_arity_overload_call_in_let_not_spuriously_ambiguous`.
+REPL `(defn h ([:Int x] x) ([:Int x :Int y] x))` + `(let [r (h 7)] r)` spuriously
+errors `ambiguous type … (spec §3.11)`; MUST yield `:primitives/Int 7`. Three faces
+in one fn: (1) 1-arg clause via `let` (the primary RED — fails on the `ambiguous`
+assertion); (2) the two-arity sibling `(let [r (h 7 8)] r)` — ALSO wrong-rejected
+today (confirmed manually, span 8..15), a second RED cell of the same gate/drain
+race; (3) a GREEN `--run` mode control (`(defn main [] (let [r (h 7)] (Pure r)))`
+exits 7) proving the REPL rejection is spurious — the defect is mode-divergent.
+`// defect: class=wrong-reject locus=…finalize.rs::finalize_check_result_inner found=S110 owner=/dev`.
+
+**B2 — wrong-accept** `tests/spec_03_types.rs::unpinned_vec_in_main_calling_overload_rejected_run_neg`.
+`--run` `(defn main [] (let [u []] (Pure (h 7))))` (same `h` in scope) exits 7,
+bypassing the §3.11.1 unpinned-`(Vec a)` reject; MUST reject (non-7 / `"ambiguous"`).
+Primary RED = the `--run` exit-7 assertion. Bundled GREEN concrete control
+(`(defn main [] (let [u []] (Pure 3)))` → exit 1, `ambiguous … polymorphic value
+bound in main`) isolates the overload-deferral leak from the `[]`-scan itself. Also
+mode-divergent: the REPL face of the same shape correctly rejects the unpinned `[]`
+(span 8..10) — only `--run` leaks.
+`// defect: class=wrong-accept locus=…finalize.rs::finalize_check_result_inner found=S110 owner=/dev`.
+
+**C-4 retag** `tests/spec_05_definitions.rs::multi_arity_call_from_main_batch_no_main_neg`
+stays GREEN (C-4 fixed `303df28a`). Retagged from the REFUTED `class=mode-divergence
+locus=src/session_v4/lifecycle.rs::lookup_main_code_ptr` to `class=wrong-reject
+locus=…finalize.rs::finalize_check_result_inner found=S110 owner=/dev`; comment
+moved to past tense (the batch entry was never emitted because typecheck left `main`
+spuriously polymorphic — an int/GOT-slot symptom, typecheck root cause).
+
+RED set at HEAD (9): the 2 new B1/B2 above + the 7 pre-existing carries
+(`ownership_reuse::chaining_toggle_off_allocates_intermediate`;
+`spec_05_definitions::deftype_ctor_trailing_form_after_field_bracket_rejected_neg`;
+the four `vec_assoc_param_mutate_return_uaf::*`;
+`stdlib_conformance::stdlib_all_public_modules_compile_and_run`). These 9 all
+trace to open defects — no genuine regression. The B1/B2 pair flips GREEN when
+`/dev` (typecheck) lands the gate-duty-split (run §5.1.2 leg pre-drain, §3.11.1
+scan post-drain but pre-`sweep_post_pass_outputs`).
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
