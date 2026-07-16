@@ -1,10 +1,11 @@
 // cranelisp library: pipeline, REPL, and shared functionality.
 //
-// Sprint 67 hack-back (`/dev (int)`): only the modules that `src/main.rs`
-// imports via `use cranelisp::...` need to be `pub mod`. Everything else is
-// narrowed to `pub(crate) mod` — they are internal to the library crate, used
-// by sibling modules but not part of the binary-facing public surface. See
-// `design/arch/facades/int.md` §"Public surface".
+// Only the modules that `src/main.rs` imports via `use cranelisp::...` need to
+// be `pub mod`. Everything else is narrowed to `pub(crate) mod` — internal to
+// the library crate, used by sibling modules but not part of the binary-facing
+// surface. The int bounded context (a binary, no `public-api.txt` boundary) is
+// described in `design/arch/bounded-contexts.md` §6 + the `design/int/` design
+// docs + per-item source rustdoc.
 //
 // External consumers (binary + legacy tests via `cranelisp::...`):
 // - `observability`   — `src/main.rs:12` (panic-hook install, flush)
@@ -19,21 +20,18 @@ pub mod io_trace;
 pub mod style;
 pub(crate) mod styled;
 
-// Facade-cited but not yet reachable from external consumers — keep `pub`
-// so the dead_code lint accepts these as part of the published surface per
-// `design/arch/facades/int.md`. Once `process_cluster` / `insert_cluster`
-// activate on the hot path (FIXME 0176) and `bind_chain_analysis` re-wires
-// into the worker, these become live without further narrowing churn.
+// cluster — the cluster-atomic typecheck orchestration hot path (src/CLAUDE.md
+// §Cluster-atomic orchestration). `process_cluster` is the SOLE crate-crossing
+// where `ResolutionGap` values become scheduler calls; `insert_cluster` commits
+// the `ProcessedCluster` carrier. Live on every eval/`--run`/`--link` turn.
 pub mod cluster;
 
-// WorkerPool — facade entry point for the worker thread pool owned by
-// `CompilerSession`. Re-exported per `design/arch/facades/int.md` L25 + L201.
-// Sprint 67 Cluster B sub-fire 2a.
+// WorkerPool — entry point for the worker thread pool owned by
+// `CompilerSession` (bounded-contexts.md §6).
 pub mod worker_pool;
 
-// ObjectCache — facade entry point for the on-disk `.o` + sidecar cache
-// owned by `SharedState`. Re-exported per `design/arch/facades/int.md`
-// L519-549. Sprint 67 Cluster B sub-fire 3.
+// ObjectCache — entry point for the on-disk `.o` + sidecar cache owned by
+// `SharedState` (bounded-contexts.md §6).
 pub mod cache;
 
 // Internal — accessed only via `crate::*` paths inside the library.
@@ -58,7 +56,7 @@ pub(crate) mod expander;
 pub(crate) mod marshal;
 // session_setup — session-construction helpers independent of `CompilerSession`
 // (CacheState, ProjectConfig, lib/platform-dir assembly, prelude resolution,
-// exit-code determination, bind-chain analysis application). Formerly named
+// bind-chain analysis application). Formerly named
 // `session.rs`; the v3 `CompilerSession`/`Session` god-type it once held was
 // deleted in a prior sprint (FIXME 0109 Wave A — verified no v3 type remains;
 // renamed to shed the misleading "v3 lingering" connotation).
@@ -105,12 +103,12 @@ pub(crate) mod thread_util;
 pub(crate) mod watch;
 pub(crate) mod worker;
 
-// agent — embedded-agent module seam (Sprint 88 Phase 5, Wave 2 foundations).
-// Entirely `#[cfg(feature = "agent")]`: feature-off ⇒ this module does not
-// exist and the binary is byte-identical to today (design/int/agent.md §1,
-// §3.1; repl/spec.md §17.1). Holds the §5.3 dispatch classifier
-// (`classify_for_agent`) + the Wave-2 `agent_turn` placeholder. Wave 3 fills
-// the loop (rig `CompletionModel` + harvester + primer + pull) and adds the
-// `rig-core` optional dep under this feature — NOT this wave (agent.md §6).
+// agent — the embedded LLM advisor, entirely `#[cfg(feature = "agent")]`:
+// feature-off ⇒ this module does not exist and the default build is
+// byte-identical (design/int/agent.md §1, §3.1; repl/spec.md §17.1;
+// src/CLAUDE.md §"Embedded agent"). Holds the dispatch classifier
+// (`classify_for_agent`) + the live `agent_turn` model↔tool loop (provider
+// selection, harvester, primer, pull-as-visible-commands). The `rig-core`
+// optional dep rides this feature.
 #[cfg(feature = "agent")]
 pub mod agent;

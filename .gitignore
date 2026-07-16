@@ -9,6 +9,9 @@ _bmad/
 _bmad-output/
 profile.json.gz
 .claude-role
+# Dev-session artifacts (agent conversation trace, etc.) — not project source.
+# (The stray repo-root REPL-persistence `user.cl` is already ignored below.)
+agent_trace.txt
 # Claude Code transient lockfiles (scheduled-tasks subsystem etc.)
 .claude/*.lock
 repl/demos/runs/
