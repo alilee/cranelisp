@@ -2523,6 +2523,90 @@ typecheck) FAILED at seq 673 under concurrent link-test load; it PASSES in
 isolation and on both the clean full run and the repeat with-change full run.
 Load-sensitive subprocess behaviour in that test, orthogonal to the duty-split.
 
+### /review (finalize duty-split re-review) — CLEAN, chain closeable (2026-07-16, `cranelisp-typecheck`, `8c0fec36`)
+
+Focused re-review of the B1/B2 duty-split fix. **Gating verdict: the duty-split
+is COMPLETE — no partition gap, no new wrong-accept; the typecheck chain is
+closeable.** Zero Blockers; one Important residual (pre-existing, NOT
+introduced); two Minors.
+
+**The one thing to prove — proven.** The `AmbiguityScanPhase` partition
+(`defn.variants.len() > 1`) scans every defn in EXACTLY ONE phase, and LEG 1 is
+not a narrowed "clause-independence-only" check — it runs the FULL scan body
+(allowed-vars derivation, §3.11.3 poly skip, `find_ambiguous_value_position`
+over every clause body) on multi-arity defns at the byte-identical pre-drain
+position (diff-verified: the multi-arity path's only changes are the phase
+filter and a rename; the SigDispatch exemption feeds only the `is_entry_eval`
+branch, which is LEG-2/`__expr`-only). Live probes at HEAD (fresh binary,
+primitives-only prelude, clean cwd):
+- **Multi-arity + unpinned `[]` in a clause body** (`(defn f ([:Int x] (let [u
+  []] x)) ([:Int x :Int y] x))`) → §3.11.1 REJECT, REPL and `--run`, with the
+  0576 clause-arity message. NOT silently accepted — the feared B2-mirror-one-
+  arity-up does not exist.
+- **Multi-arity + `[]` + deferred-overload tail call** (clause ret = the
+  overload's fresh ret var — the shape that would poly-skip if multi-sig defns
+  took the §3.11.3 skip) → still REJECTS at the `[]`. Multi-sig defns never
+  take the poly skip (base-name `defn_type_vars` miss ⇒ `allowed_vars` empty ⇒
+  always scanned strictly), so no spuriously-poly multi-arity wrong-accept
+  window exists.
+- **`__expr` adjacency**: `(let [u []] (h 7))` and `(let [r (h 7)] (let [u []]
+  r))` both reject AT THE `[]` span — the new SigDispatch exemption does not
+  over-exempt a sibling unpinned var.
+
+**B1/B2 genuinely dead, mode-uniform** — re-probed live: B1 face 1 + 2-arity
+sibling → `:primitives/Int 7`; B1 `--run` control exit 7; B2 `--run` exit 1
+`ambiguous … bound in `main``, B2 REPL face rejects, concrete control rejects.
+
+**Exemption discipline correct.** `ResolvedCall::SigDispatch` is recorded only
+by `resolve_pending_overloads` on a successful resolution; a genuinely-
+unresolved overload errors IN the drain (`no matching signature for 'h' with
+arg types (Int, Int, Int)` — probed) and never reaches the scan carrying an
+exemption. The exemption mirrors the RD-3 trait fence exactly.
+
+**Ordering verified in source**: LEG 2 → `collect_unresolved_dispatch` →
+`refresh_multi_sig_variant_ret_types` → `drain_accessor_collisions` →
+`sweep_post_pass_outputs` — both span-map readers sit inside the pre-sweep
+window; no early return between LEG 1 and LEG 2 on the success path.
+`AmbiguityScanPhase` is `pub(super)` — no public-surface drift. Targeted
+must-hold run: **27/27 GREEN** (B1 all faces, B2 + control, the new unit pin,
+rows 13–15, RD-3 + both `generic_value_*_indeterminate_neg` fences, VP-3/4/5
+mint+die, R16/R17, C-4 + both ordering hazards, TX-1/TX-5, `golden_clif_w0b`
+5/5). I1's replacement comment is accurate (single-drain call-site claim
+verified).
+
+**Important R1 (PRE-EXISTING residual, not introduced — the B1 class one arity
+up, wrong-REJECT direction):** a multi-clause defn whose clause body let-binds
+a fully-determined deferred-overload call is still spuriously rejected:
+`(defn h ([:Int x] x) ([:Int x :Int y] x))` +
+`(defn g ([:Int a] (let [r (h 7)] a)) ([:Int a :Int b] a))` → `ambiguous type …
+1-arg arity clause of `g`` at the `(h 7)` span, REPL AND `--run` (mode-uniform),
+both let-bound-dropped and let-bound-returned variants; the single-clause twin
+is fixed by LEG 2. Cause: multi-arity bodies are (correctly, per the C-4
+constraint) verdicted PRE-drain, where the overload ret var is still fresh.
+Pre-fix, ALL defns were scanned pre-drain, so this cell was equally wrong
+before — the fix improved the class without completing it; completing it needs
+a finer discriminator than defn shape (e.g. exempt-by-`SigDispatch` inside LEG
+1 post-hoc, or a per-position deferral), which is I2/0349-class territory.
+Disposition: `/qa` cell (the S108 variant-matrix category: defn-arity ×
+ambiguity-source × position) + `/testing` repro (this note names it: the
+`(defn g …)` two-liner above) + `/dev` follow-up — S111 acceptable; NOT a gate
+on this chain.
+
+**Minor M1:** stale rustdoc on `find_ambiguous_top_level_form` (finalize.rs
+~456–459): "a bare-`Var` value type is a transient unresolved-dispatch shape
+pinned by its use, skipped" — false since the full-concreteness tightening (a
+bare var REJECTS unless dispatch-position/allowed; R1's probe fired on exactly
+such a bare var). Pre-existing prose adjacent to the edited band; fix with the
+R1 follow-up. **Minor M2 (observation only):** legit-poly multi-arity
+`(defn p ([x] x) ([x y] x))` is accepted while `(defn q ([x] (let [v x] v))
+([x y] x))` rejects with the §5.1.2 annotate-per-clause message — intended per
+clause-independence (the message is purpose-built), but the accept/reject
+asymmetry (bare-param return vs let-bound param use) is a variant-matrix cell
+`/qa` may want pinned.
+
+**Next skills:** `/sprint` — close the typecheck chain; carry R1 (+M1) as an
+S111 candidate with the named repro; `/qa` — R1 + M2 matrix cells.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
