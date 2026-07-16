@@ -1990,23 +1990,6 @@ where
         (Type::Var(id), id)
     }
 
-    /// Create a temporary mutable counter for functions that need `&mut TypeId`.
-    ///
-    /// Takes a snapshot of the atomic counter, returns a mutable local copy.
-    /// The caller must call `commit_next_id` after using it to advance the
-    /// atomic past any IDs allocated through the local counter.
-    ///
-    /// SAFETY: Only safe when the scheduler guarantees no concurrent allocation
-    /// (e.g., during module registration, which is serialized per module).
-    pub(crate) fn next_id_snapshot(&self) -> TypeId {
-        self.next_id.load(Ordering::Relaxed)
-    }
-
-    /// Advance the atomic counter to at least `new_val`.
-    /// Called after using a local counter from `next_id_snapshot`.
-    pub(crate) fn commit_next_id(&self, new_val: TypeId) {
-        self.next_id.fetch_max(new_val, Ordering::Relaxed);
-    }
 
     // --- Unification (delegate to unify module, borrow-splitting) ---
 
@@ -2590,13 +2573,21 @@ where
     ) -> Result<Type, ResolveError> {
         // Type-definition context (`deftype` field, platform sig): a `TypeVar`
         // that is not a declared parameter is an unbound reference and a miss is
-        // an error (`mint_free_var: None`). (Trait-method signatures do NOT route
-        // through here — they resolve via `traits/type_resolve.rs`, which mints
-        // their own type-var map; see FIXME 0590.) The caller's `var_map` is
-        // read-only here, so clone into a scratch map — no minting means the
-        // clone is never mutated.
+        // an error (`mint_free_var: None`). The caller's `var_map` is read-only
+        // here, so clone into a scratch map — no minting means the clone is
+        // never mutated.
         let mut scratch = var_map.clone();
-        self.resolve_type_expr_impl(texpr, &mut scratch, module_path, None, span)
+        self.resolve_type_expr_ctx(
+            texpr,
+            &mut scratch,
+            module_path,
+            None,
+            None,
+            &[],
+            crate::resolve::ConVars::None,
+            false,
+            span,
+        )
     }
 
     /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
@@ -2628,19 +2619,120 @@ where
         span: Span,
     ) -> Result<Type, ResolveError> {
         let mint = || self.fresh_var_id().1;
-        self.resolve_type_expr_impl(texpr, var_map, module_path, Some(&mint), span)
+        self.resolve_type_expr_ctx(
+            texpr,
+            var_map,
+            module_path,
+            Some(&mint),
+            None,
+            &[],
+            crate::resolve::ConVars::None,
+            false,
+            span,
+        )
     }
 
-    /// Shared resolution core for both the type-definition path
-    /// ([`resolve_type_expr_in_module`], `mint_free_var: None`) and the
-    /// annotation path ([`resolve_annotation_type_expr_in_module`],
-    /// `mint_free_var: Some(..)`).
-    fn resolve_type_expr_impl(
+    /// Resolve a **trait/impl-method signature** type expression (FIXME 0590,
+    /// former `resolve_trait_type_expr` mirror). `Self` — and every trait
+    /// type-parameter name in `self_params` — substitutes `self_type` (a var
+    /// `Type::Var(self_id)` in the decl context; a concrete ADT in the impl
+    /// context). Free lowercase names mint into `var_map` for co-reference,
+    /// exactly as an annotation does.
+    pub(crate) fn resolve_trait_sig_type_expr(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &mut std::collections::HashMap<Symbol, TypeId>,
+        module_path: &ModuleFullPath,
+        self_type: &Type,
+        self_params: &[Symbol],
+        span: Span,
+    ) -> Result<Type, ResolveError> {
+        let mint = || self.fresh_var_id().1;
+        self.resolve_type_expr_ctx(
+            texpr,
+            var_map,
+            module_path,
+            Some(&mint),
+            Some(self_type.clone()),
+            self_params,
+            crate::resolve::ConVars::None,
+            true,
+            span,
+        )
+    }
+
+    /// Resolve an **HKT trait-decl** signature type expression (FIXME 0590,
+    /// former `resolve_type_expr_hkt` mirror). A constructor variable named in
+    /// `con_var_map` produces `Type::Var(id)` bare and `Type::TyConApp(id, args)`
+    /// applied; every other free lowercase name mints into `var_map`.
+    pub(crate) fn resolve_hkt_sig_type_expr(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &mut std::collections::HashMap<Symbol, TypeId>,
+        module_path: &ModuleFullPath,
+        con_var_map: &std::collections::HashMap<Symbol, TypeId>,
+        span: Span,
+    ) -> Result<Type, ResolveError> {
+        let mint = || self.fresh_var_id().1;
+        self.resolve_type_expr_ctx(
+            texpr,
+            var_map,
+            module_path,
+            Some(&mint),
+            None,
+            &[],
+            crate::resolve::ConVars::Decl(con_var_map),
+            true,
+            span,
+        )
+    }
+
+    /// Resolve an **HKT impl-method** signature type expression (FIXME 0590,
+    /// former `resolve_type_expr_hkt_impl` mirror). A constructor-variable head
+    /// `(f a)` (name in `con_var_names`) substitutes the impl target ADT
+    /// `Type::ADT(target, args)`; every other free lowercase name mints.
+    pub(crate) fn resolve_hkt_impl_type_expr(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &mut std::collections::HashMap<Symbol, TypeId>,
+        module_path: &ModuleFullPath,
+        con_var_names: &[Symbol],
+        target: &cranelisp_types::FQTypeName,
+        span: Span,
+    ) -> Result<Type, ResolveError> {
+        let mint = || self.fresh_var_id().1;
+        self.resolve_type_expr_ctx(
+            texpr,
+            var_map,
+            module_path,
+            Some(&mint),
+            None,
+            &[],
+            crate::resolve::ConVars::Impl {
+                names: con_var_names,
+                target,
+            },
+            true,
+            span,
+        )
+    }
+
+    /// Shared resolution core: build the symbol-table `resolve_terminal` closure
+    /// and the [`crate::resolve::TypeExprCtx`], then call the ONE resolver. All
+    /// five entry points (deftype/platform, annotation, trait sig, HKT sig, HKT
+    /// impl sig) differ only in the head-binding *data* they pass — there is no
+    /// second `TypeExpr` recursion (FIXME 0590 §5 fifth-mirror invariant).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_type_expr_ctx(
         &self,
         texpr: &cranelisp_types::TypeExpr,
         var_map: &mut std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         mint_free_var: Option<&dyn Fn() -> TypeId>,
+        self_type: Option<Type>,
+        self_params: &[Symbol],
+        con_vars: crate::resolve::ConVars,
+        scalar_fastpath: bool,
         span: Span,
     ) -> Result<Type, ResolveError> {
         // Leaf-name resolution routes through the arbitrary-root scope resolve
@@ -2670,27 +2762,15 @@ where
             };
             self.scope_resolve_in(module_path, &name, span).ok().map(|resolved| resolved.entry)
         };
-        crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, mint_free_var, span)
-    }
-
-    /// Resolve a **qualified** `TypeRef` (`module: Some(..)`) appearing in a
-    /// trait-method signature to its `Type`, via the canonical
-    /// `resolve_type_expr_in_module` path (the same resolution `defn`/`deftype`
-    /// type refs use). Returns `None` if the qualified name does not resolve to
-    /// a type — the caller (`resolve_trait_type_expr`) then raises the
-    /// "unknown type" diagnostic. FIXME 0436 / spec §8.5: a qualified type ref
-    /// is the canonical form of the bare type, resolved against the named
-    /// module.
-    pub(crate) fn resolve_qualified_method_sig_type(
-        &self,
-        state: &CheckState,
-        tref: &cranelisp_types::TypeRef,
-        span: Span,
-    ) -> Option<Type> {
-        let texpr = cranelisp_types::TypeExpr::Named(tref.clone());
-        let empty_var_map = std::collections::HashMap::new();
-        self.resolve_type_expr_in_module(&texpr, &empty_var_map, &state.current_module, span)
-            .ok()
+        let ctx = crate::resolve::TypeExprCtx {
+            resolve_terminal: &resolve_terminal,
+            mint_free_var,
+            self_type,
+            self_params,
+            con_vars,
+            scalar_fastpath,
+        };
+        crate::resolve::resolve_type_expr(texpr, var_map, &ctx, span)
     }
 
     /// Check whether a constructor name refers to an internal constructor.

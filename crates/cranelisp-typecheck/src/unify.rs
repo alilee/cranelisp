@@ -249,6 +249,12 @@ pub fn occurs_check(subst: &Subst, id: TypeId, ty: &Type) -> bool {
 }
 
 /// Generate a fresh type variable, incrementing the counter.
+///
+/// Test-only since FIXME 0590: the last production caller (the deleted
+/// `resolve_trait_type_expr` mirror) routed through the atomic `&self`
+/// allocator; the remaining users are unit tests + `scheme::instantiate`
+/// (itself `#[cfg(test)]`).
+#[cfg(test)]
 pub fn fresh_var(next_id: &mut TypeId) -> Type {
     let id = *next_id;
     *next_id += 1;

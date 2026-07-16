@@ -394,8 +394,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         home: Option<&ModuleFullPath>,
         fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
-        let mut local_next_id = self.next_id_snapshot();
-
         // Check if this is an HKT trait (constructor variables used in Applied position)
         let is_hkt = !decl.type_params.is_empty()
             && decl.methods.iter().any(|m| {
@@ -449,39 +447,41 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .map_err(cranelisp_types::CranelispError::from)?;
 
-        // Pre-seed var_map: trait type params map to concrete self type.
-        let mut var_map: HashMap<Symbol, Type> = HashMap::new();
-        for param in &decl.type_params {
-            var_map.insert(param.clone(), concrete_self.clone());
-        }
-
-        // A qualified type ref in an impl-method signature resolves
-        // canonically against the named module (FIXME 0436 / spec §8.5),
-        // mirroring the deftrait path. Bare names keep the intrinsic fast-path.
-        let resolve_qualified =
-            |tref: &cranelisp_types::TypeRef| -> Option<Type> {
-                self.resolve_qualified_method_sig_type(state, tref, method_defn.span)
-            };
+        // FIXME 0590: route through the ONE resolver via the trait-sig wrapper.
+        // `Self` and every trait type-parameter name (`decl.type_params`)
+        // substitute `concrete_self` (here a concrete ADT). Free lowercase names
+        // mint into `var_map` for co-reference; a qualified type ref resolves
+        // canonically through `scope_resolve_in` (FIXME 0436 / spec §8.5).
+        let module = state.current_module.clone();
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
 
         // Build concrete param types
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
             .map(|(_, p)| {
-                resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, &mut local_next_id, &resolve_qualified)
+                self.resolve_trait_sig_type_expr(
+                    p,
+                    &mut var_map,
+                    &module,
+                    &concrete_self,
+                    &decl.type_params,
+                    method_defn.span,
+                )
+                .map_err(cranelisp_types::CranelispError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_ty = resolve_trait_type_expr(
-            &method_sig.ret_type,
-            &concrete_self,
-            method_defn.span,
-            &mut var_map,
-            &mut local_next_id,
-            &resolve_qualified,
-        )?;
-
-        self.commit_next_id(local_next_id);
+        let ret_ty = self
+            .resolve_trait_sig_type_expr(
+                &method_sig.ret_type,
+                &mut var_map,
+                &module,
+                &concrete_self,
+                &decl.type_params,
+                method_defn.span,
+            )
+            .map_err(cranelisp_types::CranelispError::from)?;
 
         // Snapshot side maps for per-defn delta extraction
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
@@ -704,10 +704,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method_sig: &TraitMethodSig,
         fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
-        let mut local_next_id = self.next_id_snapshot();
         // Build con_var_map: constructor variable name -> resolve to ADT name
-        // For HKT impls, we substitute constructor vars with the target ADT.
-        // Use resolve_type_expr_hkt_impl which produces concrete ADT types.
+        // For HKT impls, we substitute constructor vars with the target ADT via
+        // the HKT-impl sig wrapper, which produces concrete ADT types.
         let mut type_var_map: HashMap<Symbol, TypeId> = HashMap::new();
 
         // Determine the arity of the constructor from the trait signature
@@ -716,12 +715,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }).expect("invariant: HKT trait must use constructor param in Applied position");
 
         // Build the concrete self type: ADT(target, [fresh_vars...])
-        let type_arg_vars: Vec<Type> = (0..arity)
-            .map(|_| {
-                let (ty, _) = crate::unify::fresh_var_id(&mut local_next_id);
-                ty
-            })
-            .collect();
+        let type_arg_vars: Vec<Type> = (0..arity).map(|_| self.fresh_var_id().0).collect();
         // Phase B Part 1.4(3): HKT impls may target ADT-shaped types only
         // (intrinsics have no type parameters and don't carry HKT shape).
         // Still use the centralised resolver to get a typed error if the
@@ -730,30 +724,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
             .map_err(cranelisp_types::CranelispError::from)?;
         let concrete_self = Type::ADT(target_fqtn.clone(), type_arg_vars);
+        let module = state.current_module.clone();
 
         // Build param types using HKT-aware resolution that substitutes
         // constructor variable applications with concrete ADT applications
+        // (FIXME 0590 — the ONE resolver via the HKT-impl sig wrapper).
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
-            .map(|(_, p)| resolve_type_expr_hkt_impl(
-                p,
-                &decl.type_params,
-                &target_fqtn,
-                &mut type_var_map,
-                &mut local_next_id,
-                impl_.span,
-            ))
+            .map(|(_, p)| {
+                self.resolve_hkt_impl_type_expr(
+                    p,
+                    &mut type_var_map,
+                    &module,
+                    &decl.type_params,
+                    &target_fqtn,
+                    impl_.span,
+                )
+                .map_err(cranelisp_types::CranelispError::from)
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_ty = resolve_type_expr_hkt_impl(
-            &method_sig.ret_type,
-            &decl.type_params,
-            &target_fqtn,
-            &mut type_var_map,
-            &mut local_next_id,
-            impl_.span,
-        )?;
+        let ret_ty = self
+            .resolve_hkt_impl_type_expr(
+                &method_sig.ret_type,
+                &mut type_var_map,
+                &module,
+                &decl.type_params,
+                &target_fqtn,
+                impl_.span,
+            )
+            .map_err(cranelisp_types::CranelispError::from)?;
 
         // Pre-unify the dispatch parameter with the concrete self type
         if let Some(param_idx) = method_sig.hkt_param_index
@@ -761,8 +762,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             self.unify(state, param_ty, &concrete_self, method_defn.span)?;
         }
-
-        self.commit_next_id(local_next_id);
 
         // Snapshot side maps for per-defn delta extraction
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();

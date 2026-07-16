@@ -1,115 +1,17 @@
-//! Per-submodule test module for `type_resolve.rs` — the `TypeExpr -> Type`
-//! resolution free functions (`resolve_trait_type_expr`) and default-method
-//! body construction (`build_default_body`). Relocated verbatim from the
-//! pooled `traits/tests.rs` (S102 FIXME 0497 de-pool), now a sibling of the
-//! code it exercises, per METHOD §2.2 / Principle 23.
+//! Per-submodule test module for `type_resolve.rs` — default-method body
+//! construction (`build_default_body`). Relocated verbatim from the pooled
+//! `traits/tests.rs` (S102 FIXME 0497 de-pool), now a sibling of the code it
+//! exercises, per METHOD §2.2 / Principle 23.
+//!
+//! FIXME 0590: the former `resolve_trait_type_expr` unit tests were deleted with
+//! the mirror they exercised; their cases (Self substitution, type-var fresh /
+//! pre-seed / co-reference) are re-homed onto the canonical resolver's tests in
+//! `crate::resolve::tests` (now covering the `Self` and con-var arms too).
 
-use std::collections::HashMap;
-
-use cranelisp_types::{Span, Symbol, Type, TypeExpr, TypeId};
+use cranelisp_types::{Span, Symbol};
 
 use super::*;
 use crate::traits::test_helpers::*;
-
-// -----------------------------------------------------------------------
-// resolve_trait_type_expr
-// -----------------------------------------------------------------------
-
-// spec: 07-traits §7.1.1 — self type resolves to implementing type
-#[test]
-fn test_resolve_trait_type_expr_self() {
-    let mut var_map = HashMap::new();
-    let mut next_id: TypeId = 100;
-    let result = resolve_trait_type_expr(
-        &TypeExpr::SelfType,
-        &Type::Int,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    assert_eq!(result, Type::Int);
-}
-
-// spec: 07-traits §7.1.4 — named type in trait signature resolves to concrete type
-#[test]
-fn test_resolve_trait_type_expr_named() {
-    let mut var_map = HashMap::new();
-    let mut next_id: TypeId = 100;
-    let result = resolve_trait_type_expr(
-        &TypeExpr::Named(cranelisp_types::TypeRef::new(None, cranelisp_types::TypeName::from("Bool"))),
-        &Type::Int,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    assert_eq!(result, Type::Bool);
-}
-
-// spec: 07-traits §7.1.4 — type variable in trait sig gets fresh var
-#[test]
-fn test_resolve_trait_type_expr_type_var_gets_fresh_var() {
-    let mut var_map = HashMap::new();
-    let mut next_id: TypeId = 100;
-    let result = resolve_trait_type_expr(
-        &TypeExpr::TypeVar(Symbol::from("b")),
-        &Type::Float,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    assert!(matches!(result, Type::Var(_)));
-    assert_ne!(result, Type::Float);
-}
-
-// spec: 07-traits §7.1.4 — pre-seeded type var reuses existing mapping
-#[test]
-fn test_resolve_trait_type_expr_type_var_preseeded() {
-    let mut var_map = HashMap::new();
-    var_map.insert(Symbol::from("a"), Type::Int);
-    let mut next_id: TypeId = 100;
-    let result = resolve_trait_type_expr(
-        &TypeExpr::TypeVar(Symbol::from("a")),
-        &Type::Float,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    assert_eq!(result, Type::Int);
-}
-
-// spec: 07-traits §7.1.4 — same type variable name reuses same var across calls
-#[test]
-fn test_resolve_trait_type_expr_same_var_reused() {
-    let mut var_map = HashMap::new();
-    let mut next_id: TypeId = 100;
-    let r1 = resolve_trait_type_expr(
-        &TypeExpr::TypeVar(Symbol::from("b")),
-        &Type::Int,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    let r2 = resolve_trait_type_expr(
-        &TypeExpr::TypeVar(Symbol::from("b")),
-        &Type::Int,
-        Span::SYNTHETIC,
-        &mut var_map,
-        &mut next_id,
-        &|_| None,
-    )
-    .unwrap();
-    assert_eq!(r1, r2);
-}
 
 // -----------------------------------------------------------------------
 // build_default_body (default method-body generation)

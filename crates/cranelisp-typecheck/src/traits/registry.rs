@@ -170,13 +170,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
-        let mut local_next_id = self.next_id_snapshot();
         // Create fresh type var IDs for each constructor param
         let mut con_var_map: HashMap<Symbol, TypeId> = HashMap::new();
         for param_name in &decl.type_params {
             let (_, id) = self.fresh_var_id();
             con_var_map.insert(param_name.clone(), id);
         }
+        let module = state.current_module.clone();
 
         // Build a modified decl with hkt_param_index set on each method
         let mut modified_decl = decl.clone();
@@ -195,10 +195,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let param_tys: Vec<Type> = method
                 .params
                 .iter()
-                .map(|(_, p)| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span))
+                .map(|(_, p)| {
+                    self.resolve_hkt_sig_type_expr(
+                        p,
+                        &mut type_var_map,
+                        &module,
+                        &con_var_map,
+                        decl.span,
+                    )
+                    .map_err(cranelisp_types::CranelispError::from)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let ret_ty =
-                resolve_type_expr_hkt(&method.ret_type, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span)?;
+            let ret_ty = self
+                .resolve_hkt_sig_type_expr(
+                    &method.ret_type,
+                    &mut type_var_map,
+                    &module,
+                    &con_var_map,
+                    decl.span,
+                )
+                .map_err(cranelisp_types::CranelispError::from)?;
 
             // Collect all var IDs (constructor + regular)
             let mut all_vars: Vec<TypeId> = con_var_map.values().copied().collect();
@@ -253,7 +269,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         );
 
-        self.commit_next_id(local_next_id);
         Ok(())
     }
 
@@ -319,43 +334,43 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         trait_type_params: &[Symbol],
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let mut local_next_id = self.next_id_snapshot();
+        // FIXME 0590: route through the ONE resolver via the trait-sig wrapper.
+        // `Self` and every trait type-parameter name (`trait_type_params`)
+        // substitute `self_type` (here a var `Type::Var(type_var_id)`). Free
+        // lowercase names mint into `var_map` for co-reference. A qualified type
+        // ref (`:primitives/Int`) resolves canonically against the named module
+        // through the shared `scope_resolve_in` seam (FIXME 0436 / spec §8.5).
         let self_type = Type::Var(type_var_id);
-
-        // Pre-seed var_map: trait type params map to self_type.
-        let mut var_map: HashMap<Symbol, Type> = HashMap::new();
-        for param in trait_type_params {
-            var_map.insert(param.clone(), self_type.clone());
-        }
-
-        // A qualified type ref in a method signature (`:primitives/Int`)
-        // resolves canonically against the named module — the same
-        // `resolve_type_expr_in_module` path the `defn`/`deftype`-field type
-        // refs use (FIXME 0436 / spec §8.5). Bare names keep the intrinsic
-        // fast-path inside `resolve_trait_type_expr`.
-        let resolve_qualified =
-            |tref: &cranelisp_types::TypeRef| -> Option<Type> {
-                self.resolve_qualified_method_sig_type(state, tref, span)
-            };
+        let module = state.current_module.clone();
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
 
         let param_types: Vec<Type> = method
             .params
             .iter()
             .map(|(_, p)| {
-                resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id, &resolve_qualified)
+                self.resolve_trait_sig_type_expr(
+                    p,
+                    &mut var_map,
+                    &module,
+                    &self_type,
+                    trait_type_params,
+                    span,
+                )
+                .map_err(cranelisp_types::CranelispError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_type = resolve_trait_type_expr(
-            &method.ret_type,
-            &self_type,
-            span,
-            &mut var_map,
-            &mut local_next_id,
-            &resolve_qualified,
-        )?;
+        let ret_type = self
+            .resolve_trait_sig_type_expr(
+                &method.ret_type,
+                &mut var_map,
+                &module,
+                &self_type,
+                trait_type_params,
+                span,
+            )
+            .map_err(cranelisp_types::CranelispError::from)?;
 
-        self.commit_next_id(local_next_id);
         Ok(Type::Fn(param_types, Box::new(ret_type)))
     }
 }

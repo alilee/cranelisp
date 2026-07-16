@@ -225,6 +225,66 @@
         assert!(matches!(err, CheckError::TypeError { .. }));
     }
 
+    /// TX-10 (FIXME 0590 Step A): the platform-sig `check_type_expr` mints each
+    /// free type-var name on first sight (replacing the deleted
+    /// `collect_type_var_ids` pre-walk). The mint-on-miss must reproduce the
+    /// pre-walk's shared ids: two occurrences of `a` in one sig co-refer to ONE
+    /// id, while `a` and `b` stay DISTINCT.
+    // spec: spec/03-types.md §3.3 — free type-var co-reference within one sig
+    #[test]
+    fn check_type_expr_free_var_coreference_and_distinctness() {
+        use cranelisp_types::Type;
+
+        let modules = modules();
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+
+        // (Fn [a b a] b): the two `a` share one id; `a` and `b` are distinct.
+        let sig = TypeExpr::FnType(
+            vec![
+                TypeExpr::TypeVar(Symbol::from("a")),
+                TypeExpr::TypeVar(Symbol::from("b")),
+                TypeExpr::TypeVar(Symbol::from("a")),
+            ],
+            Box::new(TypeExpr::TypeVar(Symbol::from("b"))),
+        );
+        let ty = check_type_expr::<(), ()>(
+            &sig,
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+            &module_path(),
+            Span::SYNTHETIC,
+        )
+        .expect("free-var sig resolves");
+        match ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 3);
+                assert!(matches!(params[0], Type::Var(_)));
+                assert_eq!(params[0], params[2], "both `a` occurrences share one id");
+                assert_eq!(params[1], *ret, "both `b` occurrences share one id");
+                assert_ne!(params[0], params[1], "`a` and `b` must be distinct ids");
+            }
+            other => panic!("expected Fn type, got {other:?}"),
+        }
+
+        // A `/`-qualified name is a module-qualified reference, never a var, so
+        // it does NOT mint — it falls to a resolution error (F2/0589).
+        let qual = TypeExpr::TypeVar(Symbol::from("user/int"));
+        let err = check_type_expr::<(), ()>(
+            &qual,
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+            &module_path(),
+            Span::SYNTHETIC,
+        )
+        .expect_err("a `/`-qualified TypeVar must not mint");
+        assert!(matches!(err, CheckError::TypeError { .. }));
+    }
+
     /// Multi-form forward-reference: two defns where the second body
     /// references the first. Both signatures must register in Pass 1 before
     /// any body checks in Pass 2 — this is the Pass-1-to-Pass-2 state

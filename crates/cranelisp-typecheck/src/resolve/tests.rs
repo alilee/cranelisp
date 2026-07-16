@@ -92,6 +92,30 @@
         TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))
     }
 
+    /// FIXME 0590 compatibility shim: the former 5-arg `resolve_type_expr`
+    /// `(resolve_terminal, mint_free_var)` params collapsed into a
+    /// [`TypeExprCtx`]. These tests exercise the ctx-None regime (no `Self`, no
+    /// con-vars — the deftype/annotation/platform contexts); the sig-context
+    /// arms (`Self`, HKT con-vars, the tightening) are covered by the dedicated
+    /// tests at the end of this module.
+    fn resolve_via(
+        texpr: &TypeExpr,
+        var_map: &mut HashMap<Symbol, TypeId>,
+        resolve_terminal: &dyn Fn(&TypeRef) -> Option<Entry>,
+        mint_free_var: Option<&dyn Fn() -> TypeId>,
+        span: Span,
+    ) -> Result<Type, ResolveError> {
+        let ctx = TypeExprCtx {
+            resolve_terminal,
+            mint_free_var,
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::None,
+            scalar_fastpath: false,
+        };
+        resolve_type_expr(texpr, var_map, &ctx, span)
+    }
+
     // spec: 03-types §3.1 — resolve primitive type names to bare Type values
     #[test]
     fn test_resolve_primitives() {
@@ -107,7 +131,7 @@
             ("String", Type::String),
         ] {
             assert_eq!(
-                resolve_type_expr(&named(name), &mut var_map, &r, None, span).unwrap(),
+                resolve_via(&named(name), &mut var_map, &r, None, span).unwrap(),
                 expected
             );
         }
@@ -125,7 +149,7 @@
         let _ = prim_fqtn("Int"); // FQ identity is irrelevant to the result.
         let r = resolver(&map);
 
-        let ty = resolve_type_expr(&named("Int"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&named("Int"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::Int);
         assert!(!matches!(ty, Type::ADT(..)));
     }
@@ -137,7 +161,7 @@
         let map: HashMap<&'static str, Entry> = HashMap::new();
         let r = resolver(&map);
 
-        let err = resolve_type_expr(&named("Foo"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err();
+        let err = resolve_via(&named("Foo"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err();
         assert!(matches!(err, ResolveError::TypeNotFound { .. }));
     }
 
@@ -149,7 +173,7 @@
         map.insert("Color", typedef_entry("Color", 0));
         let r = resolver(&map);
 
-        let ty = resolve_type_expr(&named("Color"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&named("Color"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Color"), vec![]));
     }
 
@@ -161,7 +185,7 @@
         let r = resolver(&map);
 
         let fn_texpr = TypeExpr::FnType(vec![named("Int")], Box::new(named("Bool")));
-        let ty = resolve_type_expr(&fn_texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&fn_texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::Fn(vec![Type::Int], Box::new(Type::Bool)));
     }
 
@@ -173,7 +197,7 @@
         let map: HashMap<&'static str, Entry> = HashMap::new();
         let r = resolver(&map);
 
-        let ty = resolve_type_expr(
+        let ty = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -191,7 +215,7 @@
         let map: HashMap<&'static str, Entry> = HashMap::new();
         let r = resolver(&map);
 
-        let err = resolve_type_expr(
+        let err = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -209,7 +233,7 @@
         let map: HashMap<&'static str, Entry> = HashMap::new();
         let r = resolver(&map);
 
-        assert!(resolve_type_expr(&TypeExpr::SelfType, &mut var_map, &r, None, Span::SYNTHETIC).is_err());
+        assert!(resolve_via(&TypeExpr::SelfType, &mut var_map, &r, None, Span::SYNTHETIC).is_err());
     }
 
     // spec: 03-types §3.2.2 — resolve applied type :(Option Int) to ADT
@@ -224,7 +248,7 @@
             TypeRef::new(None, TypeName::from("Option")),
             vec![named("Int")],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Option"), vec![Type::Int]));
     }
 
@@ -242,13 +266,13 @@
             vec![named("Int"), named("Bool")],
         );
         assert!(matches!(
-            resolve_type_expr(&too_many, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
+            resolve_via(&too_many, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
 
         let too_few = TypeExpr::Applied(TypeRef::new(None, TypeName::from("Option")), vec![]);
         assert!(matches!(
-            resolve_type_expr(&too_few, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
+            resolve_via(&too_few, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
     }
@@ -264,7 +288,7 @@
             TypeRef::new(None, TypeName::from("Foo")),
             vec![named("Int")],
         );
-        assert!(resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).is_err());
+        assert!(resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).is_err());
     }
 
     // spec: 03-types §3.3 — applied type with type variable argument
@@ -280,7 +304,7 @@
             TypeRef::new(None, TypeName::from("Option")),
             vec![TypeExpr::TypeVar(Symbol::from("a"))],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Option"), vec![Type::Var(5)]));
     }
 
@@ -297,7 +321,7 @@
             TypeRef::new(None, TypeName::from("Either")),
             vec![named("Int"), named("String")],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(
             ty,
             Type::ADT(test_fqtn("Either"), vec![Type::Int, Type::String])
@@ -316,7 +340,7 @@
         map.insert("Box", product_ctor_entry("Box", 0));
         let r = resolver(&map);
 
-        let ty = resolve_type_expr(&named("Box"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&named("Box"), &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Box"), vec![]));
     }
 
@@ -334,7 +358,7 @@
             TypeRef::new(None, TypeName::from("Wrap")),
             vec![named("Int")],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Wrap"), vec![Type::Int]));
 
         // Wrong arity on a product type still fails the arity gate.
@@ -343,7 +367,7 @@
             vec![named("Int"), named("Bool")],
         );
         assert!(matches!(
-            resolve_type_expr(&bad, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
+            resolve_via(&bad, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
     }
@@ -380,7 +404,7 @@
             TypeRef::new(None, TypeName::from("Vec")),
             vec![named("Int")],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, None, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(prim_fqtn("Vec"), vec![Type::Int]));
     }
 
@@ -398,13 +422,13 @@
             vec![named("Int"), named("Bool")],
         );
         assert!(matches!(
-            resolve_type_expr(&too_many, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
+            resolve_via(&too_many, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
 
         let zero = TypeExpr::Applied(TypeRef::new(None, TypeName::from("Vec")), vec![]);
         assert!(matches!(
-            resolve_type_expr(&zero, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
+            resolve_via(&zero, &mut var_map, &r, None, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
     }
@@ -442,7 +466,7 @@
         let r = resolver(&map);
         let mint = minter(500);
 
-        let ty = resolve_type_expr(
+        let ty = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -465,7 +489,7 @@
         let r = resolver(&map);
         let mint = minter(500);
 
-        let a1 = resolve_type_expr(
+        let a1 = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -473,7 +497,7 @@
             Span::SYNTHETIC,
         )
         .unwrap();
-        let a2 = resolve_type_expr(
+        let a2 = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -481,7 +505,7 @@
             Span::SYNTHETIC,
         )
         .unwrap();
-        let b = resolve_type_expr(
+        let b = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("b")),
             &mut var_map,
             &r,
@@ -508,7 +532,7 @@
         let mint = minter(500);
 
         let mut clause1 = HashMap::new();
-        let c1 = resolve_type_expr(
+        let c1 = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut clause1,
             &r,
@@ -518,7 +542,7 @@
         .unwrap();
 
         let mut clause2 = HashMap::new();
-        let c2 = resolve_type_expr(
+        let c2 = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut clause2,
             &r,
@@ -548,7 +572,7 @@
         let mint = minter(500);
 
         // Lowercase `TypeVar` mints.
-        let mints = resolve_type_expr(
+        let mints = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -558,7 +582,7 @@
         assert_eq!(mints.unwrap(), Type::Var(500));
 
         // Unknown uppercase `Named` still errors, mint allocator notwithstanding.
-        let err = resolve_type_expr(
+        let err = resolve_via(
             &named("Foo"),
             &mut var_map,
             &r,
@@ -577,7 +601,7 @@
             vec![named("Foo")],
         );
         assert!(matches!(
-            resolve_type_expr(&nested, &mut var_map, &r2, Some(&mint), Span::SYNTHETIC)
+            resolve_via(&nested, &mut var_map, &r2, Some(&mint), Span::SYNTHETIC)
                 .unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
@@ -602,7 +626,7 @@
                 TypeExpr::TypeVar(Symbol::from("a")),
             ],
         );
-        let ty = resolve_type_expr(&texpr, &mut var_map, &r, Some(&mint), Span::SYNTHETIC).unwrap();
+        let ty = resolve_via(&texpr, &mut var_map, &r, Some(&mint), Span::SYNTHETIC).unwrap();
         assert_eq!(
             ty,
             Type::ADT(test_fqtn("Pair"), vec![Type::Var(500), Type::Var(500)]),
@@ -625,7 +649,7 @@
 
         // `:user/int` arrives (frontend-mis-tagged) as a `TypeVar` carrying the
         // full qualified string. With a mint allocator present it STILL errors.
-        let err = resolve_type_expr(
+        let err = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("user/int")),
             &mut var_map,
             &r,
@@ -638,7 +662,7 @@
         assert!(var_map.is_empty(), "a qualified name must not be recorded as a var");
 
         // A BARE lowercase sibling in the same call DOES mint (control).
-        let ok = resolve_type_expr(
+        let ok = resolve_via(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &mut var_map,
             &r,
@@ -647,4 +671,261 @@
         )
         .unwrap();
         assert_eq!(ok, Type::Var(500));
+    }
+
+    // =======================================================================
+    // FIXME 0590 — sig-context arms re-homed from the deleted mirror suite:
+    // Self substitution, HKT con-var interception, and the Named-fabrication
+    // deletion (the tightening). Cases mirror the former
+    // `traits/type_resolve/tests.rs::resolve_trait_type_expr` unit suite.
+    // =======================================================================
+
+    fn con_map(pairs: &[(&str, u32)]) -> HashMap<Symbol, TypeId> {
+        pairs.iter().map(|(n, id)| (Symbol::from(*n), *id)).collect()
+    }
+
+    // spec: 07-traits §7.1.1 — `Self` in a trait/impl-method sig substitutes the
+    // ctx `self_type` (a concrete ADT in the impl context here).
+    #[test]
+    fn ctx_self_type_substitutes() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let self_ty = Type::Int;
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: None,
+            self_type: Some(self_ty.clone()),
+            self_params: &[],
+            con_vars: ConVars::None,
+            scalar_fastpath: true,
+        };
+        let got = resolve_type_expr(&TypeExpr::SelfType, &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(got, Type::Int);
+    }
+
+    // spec: 03-types §3.9.3 — `Self` outside a sig context (self_type = None) is
+    // the existing `TypeNotFound("Self")` error (byte-identical to pre-0590).
+    #[test]
+    fn ctx_self_type_none_errors() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: None,
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::None,
+            scalar_fastpath: true,
+        };
+        let err = resolve_type_expr(&TypeExpr::SelfType, &mut var_map, &ctx, Span::SYNTHETIC).unwrap_err();
+        assert!(matches!(err, ResolveError::TypeNotFound { .. }));
+    }
+
+    // spec: 07-traits §7.1.4 — a trait type-parameter name (in `self_params`)
+    // aliases `Self`: `a` resolves to `self_type`, NOT a minted fresh var.
+    #[test]
+    fn ctx_trait_type_param_aliases_self() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(700);
+        let params = [Symbol::from("a")];
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: Some(Type::Var(9)),
+            self_params: &params,
+            con_vars: ConVars::None,
+            scalar_fastpath: true,
+        };
+        let got = resolve_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("a")),
+            &mut var_map,
+            &ctx,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert_eq!(got, Type::Var(9), "trait param `a` must alias self_type, not mint");
+        assert!(var_map.is_empty(), "an aliased trait param must not be minted");
+    }
+
+    // spec: 07-traits §7.1.4 — a free lowercase name in a sig mints on miss and
+    // co-references: two occurrences of `b` share one id, `c` gets a distinct id.
+    #[test]
+    fn ctx_sig_free_var_mints_and_corefers() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(800);
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: Some(Type::Var(1)),
+            self_params: &[],
+            con_vars: ConVars::None,
+            scalar_fastpath: true,
+        };
+        // (Fn [b b] c): first b mints 800, second b co-refers, c mints 801.
+        let sig = TypeExpr::FnType(
+            vec![TypeExpr::TypeVar(Symbol::from("b")), TypeExpr::TypeVar(Symbol::from("b"))],
+            Box::new(TypeExpr::TypeVar(Symbol::from("c"))),
+        );
+        let got = resolve_type_expr(&sig, &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(
+            got,
+            Type::Fn(vec![Type::Var(800), Type::Var(800)], Box::new(Type::Var(801)))
+        );
+    }
+
+    // spec: 03-types §3.7 — HKT decl con-var: bare `f` → `Type::Var(con_id)`;
+    // applied `(f a)` → `Type::TyConApp(con_id, [args])`.
+    #[test]
+    fn ctx_hkt_decl_con_var_interception() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(900);
+        let cm = con_map(&[("f", 5)]);
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::Decl(&cm),
+            scalar_fastpath: true,
+        };
+        // bare f
+        let bare = resolve_type_expr(&TypeExpr::TypeVar(Symbol::from("f")), &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(bare, Type::Var(5));
+        // (f a)
+        let applied = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("f")),
+            vec![TypeExpr::TypeVar(Symbol::from("a"))],
+        );
+        let got = resolve_type_expr(&applied, &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(got, Type::TyConApp(5, vec![Type::Var(900)]));
+    }
+
+    // spec: 07-traits §7.2 — HKT impl con-var: `(f a)` substitutes the impl
+    // target ADT → `Type::ADT(target, [args])`.
+    #[test]
+    fn ctx_hkt_impl_con_var_substitutes_target() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(1000);
+        let names = [Symbol::from("f")];
+        let target = test_fqtn("Option");
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::Impl { names: &names, target: &target },
+            scalar_fastpath: true,
+        };
+        let applied = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("f")),
+            vec![TypeExpr::TypeVar(Symbol::from("a"))],
+        );
+        let got = resolve_type_expr(&applied, &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(got, Type::ADT(test_fqtn("Option"), vec![Type::Var(1000)]));
+    }
+
+    // spec: 07-traits §7.2 — TX-5 unit representative: an unknown uppercase Named
+    // in an HKT *decl* sig now ERRORS (the never-error fabrication arm is
+    // deleted), instead of fabricating an empty-module ADT.
+    #[test]
+    fn ctx_hkt_decl_unknown_named_errors_neg() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new(); // Ghosttype not present
+        let r = resolver(&map);
+        let mint = minter(1100);
+        let cm = con_map(&[("f", 5)]);
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::Decl(&cm),
+            scalar_fastpath: true,
+        };
+        let err = resolve_type_expr(&named("Ghosttype"), &mut var_map, &ctx, Span::SYNTHETIC).unwrap_err();
+        match err {
+            ResolveError::TypeNotFound { name, .. } => assert_eq!(name.as_ref(), "Ghosttype"),
+            other => panic!("expected TypeNotFound(Ghosttype), got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.2 — TX-6 unit obligation (i)/(iii): an unknown Named
+    // leaf in an HKT *impl* sig ERRORS and names the unknown type (the mirror-3
+    // target-module fabrication is deleted).
+    #[test]
+    fn ctx_hkt_impl_unknown_named_errors_neg() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
+        let mint = minter(1200);
+        let names = [Symbol::from("f")];
+        let target = test_fqtn("Option");
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::Impl { names: &names, target: &target },
+            scalar_fastpath: true,
+        };
+        let err = resolve_type_expr(&named("Ghosttype"), &mut var_map, &ctx, Span::SYNTHETIC).unwrap_err();
+        match err {
+            ResolveError::TypeNotFound { name, .. } => assert_eq!(name.as_ref(), "Ghosttype"),
+            other => panic!("expected TypeNotFound(Ghosttype), got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.2 — TX-6 unit obligation (ii) positive control: a KNOWN
+    // in-scope Named in the same HKT-impl position RESOLVES (the error above is
+    // the unknown-ness, not the position).
+    #[test]
+    fn ctx_hkt_impl_known_named_resolves() {
+        let mut var_map = HashMap::new();
+        let mut map: HashMap<&'static str, Entry> = HashMap::new();
+        map.insert("Color", typedef_entry("Color", 0));
+        let r = resolver(&map);
+        let mint = minter(1300);
+        let names = [Symbol::from("f")];
+        let target = test_fqtn("Option");
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: Some(&mint),
+            self_type: None,
+            self_params: &[],
+            con_vars: ConVars::Impl { names: &names, target: &target },
+            scalar_fastpath: true,
+        };
+        let got = resolve_type_expr(&named("Color"), &mut var_map, &ctx, Span::SYNTHETIC).unwrap();
+        assert_eq!(got, Type::ADT(test_fqtn("Color"), vec![]));
+    }
+
+    // spec: 03-types §3.1 — the intrinsic scalar fast-path (FIXME 0590 §3):
+    // a bare `Int` resolves to `Type::Int` in a sig context even when the
+    // resolver map cannot reach it (preserving the former mirror behaviour).
+    #[test]
+    fn ctx_intrinsic_scalar_fastpath_without_terminal() {
+        let mut var_map = HashMap::new();
+        let map: HashMap<&'static str, Entry> = HashMap::new(); // deliberately empty
+        let r = resolver(&map);
+        let ctx = TypeExprCtx {
+            resolve_terminal: &r,
+            mint_free_var: None,
+            self_type: Some(Type::Var(1)),
+            self_params: &[],
+            con_vars: ConVars::None,
+            scalar_fastpath: true,
+        };
+        for (n, ty) in [("Int", Type::Int), ("Bool", Type::Bool), ("String", Type::String)] {
+            assert_eq!(resolve_type_expr(&named(n), &mut var_map, &ctx, Span::SYNTHETIC).unwrap(), ty);
+        }
     }

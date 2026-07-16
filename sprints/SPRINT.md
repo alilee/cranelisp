@@ -1941,6 +1941,84 @@ touch, not a wave-gate blocker.
 `/testing` (sibling repros) this sprint; schedule the §3.7 S111 change-set.
 `/qa` — action 0623 into the plan.
 
+### /dev (W-TC 0590)
+
+**Task.** Landed the four-mirror `TypeExpr` resolver convergence (FIXME 0590,
+`design/typecheck/type-expr-resolver-convergence.md`). Typecheck-internal; no
+`cranelisp-types` touch, no cache bump, `public-api.txt` byte-identical (`mod
+resolve` private, zero baseline hits — confirmed).
+
+**Four call sites collapsed onto the ONE `resolve::resolve_type_expr`** behind a
+`TypeExprCtx { resolve_terminal, mint_free_var, self_type, self_params, con_vars,
+scalar_fastpath }` head-resolution context (data-only, no recursion):
+- `registry.rs::build_method_type` (trait-decl sig) → `resolve_trait_sig_type_expr`
+  (`self_type = Some(Var(self_id))`, `self_params = trait_type_params`).
+- `registry.rs::register_hkt_trait` (HKT decl sig) → `resolve_hkt_sig_type_expr`
+  (`con_vars = Decl(con_var_map)`).
+- `impl_check.rs::check_impl_method` (trait-impl sig) → `resolve_trait_sig_type_expr`
+  (`self_type = Some(concrete_self)`, a concrete ADT).
+- `impl_check.rs::check_hkt_impl_method` (HKT impl sig) → `resolve_hkt_impl_type_expr`
+  (`con_vars = Impl { names, target }`).
+
+**Deleted mirrors** (`traits/type_resolve.rs`): `resolve_trait_type_expr`,
+`resolve_type_expr_hkt`, `resolve_type_expr_hkt_impl`, plus their now-dead
+`type_from_intrinsic_ref` helper and the whole `resolve_trait_type_expr` unit
+suite (re-homed onto the canonical resolver's tests, now covering `Self` +
+con-var arms). Step A: `form.rs::check_type_expr` dropped `collect_type_var_ids`,
+mints on-miss via `resolve_annotation_type_expr_in_module` (F2/0589 `/`-guard now
+applies to platform sigs too). Dead `next_id_snapshot`/`commit_next_id` removed;
+`unify::fresh_var` gated `#[cfg(test)]`. Step C rustdoc corrected (trait/HKT sigs
+mint via `Some`; they DO route the one resolver now).
+
+**The never-error `Named` fabrication arms are DELETED** — an unknown Named in a
+sig routes through `resolve_terminal` and errors (§3 ruling). The var_map value
+type folded `Type → TypeId`; the trait-type-param→self aliasing moved onto
+`self_params`. The bare-scalar fast-path (`Int/Bool/Float/String`) is retained
+BUT gated `scalar_fastpath` — ON only in the three sig contexts (former mirror
+behaviour), OFF in deftype/annotation/platform (zero regression: bare `:Int`
+without import still errors per §8.9.1). Gating this was required — an
+unconditional fast-path regressed two spec_08 negatives.
+
+**Blast-radius scout (before the fabrication flip):** grepped every HKT
+deftrait/impl sig across `tests/ stdlib/ examples/ exemplar/`. The only HKT sigs
+are Functor/Foldable-style using con-var `(f a)`/`(f b)` heads + `(Fn …)` +
+bare type-vars — ZERO bare user `Named` heads that relied on fabrication. No
+stdlib/exemplar HKT impls at all. The `Ghosttype` HKT sigs are the TX-5/TX-6
+tests themselves (expected to now error). Mirror-1 tightening is purely additive
+(bare user types previously errored — nothing could rely on the error).
+Conclusion: no legitimate program breaks at the flip.
+
+**TX flips:** TX-5 (`hkt_trait_sig_unknown_named_errors_neg`) flipped GREEN
+(unknown HKT Named now errors). TX-8/TX-9 (FV-13/FV-14 fences) hold GREEN. TX-6
+covered by re-homed typecheck unit tier (`ctx_hkt_impl_unknown_named_errors_neg`
++ known-Named positive control). TX-10 co-reference pinned at `check_type_expr`'s
+caller (`form/tests.rs::check_type_expr_free_var_coreference_and_distinctness`:
+two `a` share one id, `a`≠`b`, `/`-qualified never mints).
+
+**TX-1 is spec-ill-formed — FILED FIXME 0625 (`target: /testing`).** TX-1's test
+writes the return type as capital `Self`, which spec/07-traits §7 line 57 says is
+an ordinary named type that fails resolution (only lowercase `self` is the
+keyword; the frontend maps only `self` to `SelfType`). The convergence target —
+bare user type `MyType` resolving in a trait sig — is CORRECT (verified: `(m
+[:MyType x] :MyType)` registers). TX-1 cannot flip GREEN against a spec-conforming
+compiler without wrongly resolving capital `Self`. FIXME 0625 requests the
+one-token test fix (`Self` → `self`); it flips GREEN with no compiler change.
+
+**Baseline: 11 → 10** (TX-5 flipped; TX-1 blocked on the FIXME-0625 test fix →
+9 once landed). Remaining 9: VP-3/4/5, R16/R17, spec_05 ×2, ownership_reuse,
+SG-1 `derive` — W-TC adds none. `golden_clif_w0b` GREEN (5/5). Full suite: 4575
+pass / 10 fail / 1 skip. Typecheck unit suite 702/702. Release gate clean
+(`cargo check` lib+tests zero-warning; no new clippy lints).
+
+**Fifth-mirror invariant holds:** zero `fresh_var`/`fresh_var_id` inside any
+`TypeExpr`-matching function (only the checker-wrapper mint closures + a doc
+ref); zero mint-on-miss `HashMap` insert in a `TypeExpr` walk outside
+`resolve.rs` (registry's `con_var_map.insert` is pre-loop setup). A new
+resolution context is a new `TypeExprCtx` construction — greppable for `/review`.
+
+**Next skills:** `/review` (narrow typecheck) — change-set review. `/testing` —
+action FIXME 0625 (TX-1 `Self`→`self`) so it flips GREEN.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

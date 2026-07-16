@@ -340,11 +340,12 @@ where
 /// (FIXME 0230).
 ///
 /// This is **not** new inference machinery — it is a thin wrapper over the
-/// existing `resolve_type_expr_in_module` path (Principle 6: one general
-/// TypeExpr resolver + thin typed entries). A platform sig is a single type
-/// expression, not a program form, so there is no body inference and no
-/// generalisation; free type variables (`:a`) are each given a fresh `TypeId`
-/// (the sig is implicitly universally quantified over them).
+/// existing `resolve_annotation_type_expr_in_module` path (Principle 6: one
+/// general TypeExpr resolver + thin typed entries; FIXME 0590 Step A). A
+/// platform sig is a single type expression, not a program form, so there is no
+/// body inference and no generalisation; free type variables (`:a`) each mint a
+/// fresh `TypeId` on first sight (the sig is implicitly universally quantified
+/// over them), co-referencing repeats.
 ///
 /// In cluster mode (`ctx` is `SymbolTableAccess::Cluster`) the first-hop view
 /// unions staging+live for `current_module`, exactly as the cluster entry's
@@ -405,52 +406,19 @@ where
         }
     };
 
-    // Allocate a fresh `TypeId` for each free type-var name in the sig.
+    // FIXME 0590 Step A: mint a fresh `TypeId` for each free type-var name on
+    // first sight (mint-on-miss), replacing the former `collect_type_var_ids`
+    // pre-walk. The annotation resolver mints and records into `var_map`, so
+    // multiple occurrences of one name in the sig co-refer (`(Fn [a] a)` shares
+    // one id) — byte-identical to the deleted pre-walk's shared ids, without a
+    // second `TypeExpr` traversal that could silently diverge (§4/§5). A
+    // `/`-qualified name is a module-qualified reference and never mints
+    // (F2/0589), falling to the `TypeNotFound` error.
     let mut var_map: std::collections::HashMap<cranelisp_types::Symbol, cranelisp_types::TypeId> =
         std::collections::HashMap::new();
-    collect_type_var_ids(expr, &env, &mut var_map);
 
-    env.resolve_type_expr_in_module(expr, &var_map, current_module, span)
+    env.resolve_annotation_type_expr_in_module(expr, &mut var_map, current_module, span)
         .map_err(CheckError::from)
-}
-
-/// Walk a `TypeExpr` and allocate a fresh `TypeId` for each distinct free
-/// type-variable name (`TypeExpr::TypeVar`), recording it in `var_map`. Used
-/// by [`check_type_expr`] to quantify a standalone platform sig over its
-/// type vars before leaf-name resolution.
-fn collect_type_var_ids<C, L>(
-    expr: &cranelisp_types::TypeExpr,
-    env: &TypeCheckEnv<'_, C, L>,
-    var_map: &mut std::collections::HashMap<cranelisp_types::Symbol, cranelisp_types::TypeId>,
-) where
-    C: CodeStore,
-    L: LinkerStore,
-{
-    use cranelisp_types::TypeExpr;
-    match expr {
-        TypeExpr::TypeVar(name) => {
-            var_map
-                .entry(name.clone())
-                .or_insert_with(|| env.fresh_var_id().1);
-        }
-        TypeExpr::FnType(params, ret) => {
-            for p in params {
-                collect_type_var_ids(p, env, var_map);
-            }
-            collect_type_var_ids(ret, env, var_map);
-        }
-        TypeExpr::Applied(_name, args) => {
-            for a in args {
-                collect_type_var_ids(a, env, var_map);
-            }
-        }
-        TypeExpr::Named(_) | TypeExpr::SelfType => {}
-        // A `Bounds([..])` carries trait references, not type-variable names —
-        // nothing to collect here. The bound binder's fresh constrained var is
-        // allocated by the annotation consumer (`register_defn_signature`), not
-        // by this standalone-sig type-var quantifier. (FIXME 0346.)
-        TypeExpr::Bounds(_) => {}
-    }
 }
 
 /// Lift a failed inner-dispatcher `CranelispError` to `CheckError`, promoting
