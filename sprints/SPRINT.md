@@ -2318,6 +2318,93 @@ Handoff to `/testing`: the committed `// defect:` line on the repro is unchanged
 locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner
 owner=/dev`, dropping the `mode-divergence`/`lifecycle.rs` attribution.
 
+### /review (typecheck chain 0590+W-RD+C-4) — 2 BLOCKERS: gate/drain ordering composition (2026-07-16)
+
+Reviewed `5ed07d60` (0590 resolver convergence) + `91b8b12f` (W-RD §3.11 gate) +
+`303df28a` (C-4 scoped reslot), narrow typecheck (`program/finalize.rs` pass
+ordering the focus). **Each change-set is individually sound and its claims
+verified** — all 30 targeted flips/guards GREEN (R16/R17, VP-3/4/5, RD-3 fence,
+rows 13–15, TX-1/TX-5, multi-arity-main, mono-root + self-call hazard units,
+`golden_clif_w0b` 5/5 at HEAD); public-API claims exact (0590/C-4 zero baseline
+diff, W-RD's carrier regen matches; carrier not serialized — no schema bump
+needed); 0590's fifth-mirror invariant holds (ONE `TypeExprCtx` construction at
+`checker.rs::resolve_type_expr_ctx`, zero mint inside any `TypeExpr` walk;
+blast-radius scout corpora-complete, the non-HKT direction purely additive).
+C-4's gate answers all three probes: mono-root NOT demoted, non-main (`g`) and
+multi-sig (`k`) callers collapse via the scoped pass + 0432 refresh, `empty`/`id`
+stay genuinely `Polymorphic`.
+
+**But the COMPOSITION is not sound.** `find_ambiguous_top_level_form` (§3.11
+gate, finalize.rs:974) carries two duties with incompatible timing: the §5.1.2
+clause-independence leg MUST run before `resolve_pending_overloads` (993 — the
+C-4-documented constraint), while the §3.11.1 value-position scan MUST run after
+it. Pinning the whole pass pre-drain breaks the §3.11 gate in BOTH directions on
+deferred multi-arity overload calls (`infer.rs:585` mints an unresolved fresh
+ret var the gate then reads):
+
+- **BLOCKER B1 (wrong-reject, W-RD die-leg).** REPL `(defn h ([:Int x] x)
+  ([:Int x :Int y] x))` then `(let [r (h 7)] r)` → spurious `ambiguous type …
+  (spec §3.11)` for a valid program (both arities; probe-verified, pristine
+  cwd + `(import [primitives [*]])`). `collect_resolved_dispatch_result_vars`
+  exempts only TRAIT-dispatch stale vars; a pending-overload ret var is neither
+  benign-listed nor trait-gated in `value_position_is_ambiguous`, so the
+  surface-concreteness verdict false-fires. The RD-3 fence covered one cell of
+  the dispatch-variant family (trait arg-directed) — multi-arity overload
+  deferral is the uncovered variant (the standing coverage-matrix class).
+  Bare `(h 7)` and `:Int (let …)` are fine; auto-curry is immune (type settles
+  at infer).
+- **BLOCKER B2 (wrong-accept, C-4 placement).** `regeneralize_only_polymorphic`
+  (1024) runs AFTER the gate, so a defn spuriously-poly at gate time takes the
+  §3.11.3 poly-skip, is then collapsed to `Concrete{slot}`, and codegens with a
+  NEVER-SCANNED body. Probe: `(defn main [] (let [u []] (Pure (h 7))))` --run →
+  exit 7, while the control `(defn main [] (let [u []] (Pure 3)))` correctly
+  dies `ambiguous … polymorphic value bound in main` (exit 1). The unpinned
+  `(Vec a)` binding bypasses the spec-MUST §3.11.1 reject.
+
+Root cause (shared, and the FIXME-0349 recurring class NOT converged — now a
+THIRD instance): pass4-mono pinning got the 2nd full regeneralize (0349), the
+overload-drain pinning got the scoped 3rd pass (C-4), and now the READ-side
+consumers (gate + benign-var set) sit mis-positioned against the same late
+pinning. "Settled" is encoded positionally, not representationally (Principles
+18/20); three regeneralize-family passes (`regeneralize_defn_schemes` ×2,
+`resettle_polymorphic_schemes`, `regeneralize_only_polymorphic`) now share
+near-identical reslot bodies.
+
+**Fix direction (for /dev typecheck, one wave):** split the gate's duties —
+run the §5.1.2 clause-independence leg pre-drain (unchanged position), then
+`resolve_pending_overloads` + `resolve_auto_curry` + the C-4 scoped reslot, then
+the §3.11.1 value-position scan AND (optionally) `collect_unresolved_dispatch`
+post-drain but still pre-`sweep_post_pass_outputs` (1044 — `expr_types` stays
+live, so the W-RD rows-13–15 timing constraint is preserved). Post-drain, B1's
+fresh var is unified concrete (no false fire) and B2's collapsed caller is
+`Concrete` (body scanned). Re-verify RD-3 + rows 13–15 + VP-3/4/5 + both C-4
+hazard units at the new positions.
+
+**Important I1:** the stale comment at finalize.rs:991–992 ("overloads and
+auto-curry already resolved per-defn") documents a FALSE invariant —
+`resolve_pending_overloads` has exactly ONE call site (finalize:993); nothing
+drains per-defn. It plausibly steered both waves' placement reasoning; fix with
+the wave. **Important I2 (route /design typecheck, with /arch visibility per
+the recurrence rule):** converge the regeneralize family + give "drained/
+settled" a representational carrier instead of positional convention — the
+0349-class has now recurred three times. **Minor M1:** `collect_unresolved_
+dispatch` walks only `TopLevel::Defn` bodies of the cluster and consumers filter
+to main/`__expr` spans, so an indirect shape (`(defn f [] (zed)) (defn main []
+(Pure (f)))`) still gets the "no main" misdirect, and a trait-impl method body
+site is unrecorded — consistent with the ratified scope, diagnostic-quality
+residual only.
+
+**Gating verdict: NOT CLEAN as composed — 2 Blockers.** No revert warranted
+(the three landings' own targets are real, additive, and byte-identical on
+codegen; the two defects are new corner shapes, not regressions of prior
+GREENs), but the chain must not be called done: `/qa` should attribute both
+shapes (`class=wrong-reject` / `class=wrong-accept`,
+`locus=finalize.rs::finalize_check_result_inner` gate/drain ordering), `/testing`
+commit the two failing-not-ignored repros (B1: REPL + the two-arity sibling;
+B2: --run + REPL faces, with the concrete-control positive), and `/dev`
+(typecheck) land the duty-split in-sprint. Per the failing-test rule these need
+no numbered FIXMEs once the repros land; I1/I2 ride the fix wave / /design.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
