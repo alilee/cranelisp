@@ -4,7 +4,17 @@ target: /sprint
 filed_by: /arch
 filed_at: 2026-07-16
 sprint_filed: 110
-status: open
+status: deferred
+deferred_to: S111
+deferred_rationale: >
+  /sprint scheduling decision (S110 Phase 5). The fix is a MEANING change to the
+  persisted `callees` feed requiring a `CACHE_SCHEMA_VERSION` bump. S111 already
+  opens a schema-19→20 window for the vec-assoc ownership fix (ownership-inference.md
+  §3.7 / FIXME 0623), so 0621 rides THAT window — one coordinated bump instead of two,
+  and it is evidence-gated (the session-transaction reverse index that would bite is
+  not yet live in the dev session, per 0621 §Impact). Trigger stays: the /dev (typecheck)
+  `user_fn_refs` → `storage_fq()` flip + renamed-import & bare-accessor `callees` unit
+  pins + the schema bump, all in the S111 vec-assoc schema change-set.
 refers_to: crates/cranelisp-typecheck/src/checker.rs::record_reference_target
   (`user_fn_refs.insert(span, resolved.fq)` — the `callees` feed);
   cranelisp_types::Resolved::storage_fq (the correct identity, landed S110

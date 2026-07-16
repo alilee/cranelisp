@@ -2794,6 +2794,13 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | B1/B2 | /dev (typecheck) | finalize duty-split | (shim §II.3) | (shim) | — `8c0fec36`: `AmbiguityScanPhase` — §5.1.2 leg pre-drain, §3.11.1 scan post-drain; SigDispatch exemption; I1 fixed. B1/B2 GREEN mode-uniform, all must-holds hold, golden 5/5. **Baseline 9→7** |
 | tc-rerev | /review | duty-split re-review | (shim §II.3) | (shim) | — `6efa3b05`: **CLEAN, 0 Blockers** — partition gap disproven (multi-arity gets full scan pre-drain). R1 (pre-existing safe-dir wrong-reject 1-arity-up = 0349/I2)→S111; M1/M2 minor. **TYPECHECK CHAIN CLOSED** |
 | W2/W-RD rule | /arch | vec-assoc ownership class + 0611 carrier | (shim §II.3) | (shim) | — spine §3.7: 3-layer root cause (ResultMode gap + false COW `Fresh` + facts unreachable via prelude); `MayAliasOf` + reachability ruled, schema 19→20, **CARRY S111** (siblings = the trigger); recognizer re-scoped not deleted; 0611 RATIFIED-(A) typecheck-local + deleted; W-RD unblocked; FIXMEs 0623 (/qa) + 0624 (/design tc) |
+| W-SRC 0627 rule | /design (int) | repl line-budget shortfall | (shim §II.3) | (shim) | — `70c0df73`: budget infeasible (source ~5,320 > budget ~4,530); ruled **(A)** split `format.rs` on the value-vs-type seam + ratify `commands.rs` whole ≤1,700 (B-split rejected, fragments §1.5 helpers); binding A-cut in §1.6.1; 0627 deleted |
+| W-SRC 0627 cut | /dev (int) | format.rs A-split re-cut | (shim §II.3) | (shim) | — `1e87242e`: mechanical behaviour-invariant split → `format.rs` 1,093 + `format_type.rs` 828 (both <1,500); golden byte-identical, baseline 7 RED, zero pub-API; one min visibility widen (private→pub(crate) for a cross-file call). int.md §3.3 staleness → folds into 0607 |
+| W-SRC 0608 | /dev (src) | over-budget function batch | (shim §II.3) | (shim) | — `cf3e4379`: 6 worst fns decomposed on existing phase seams (`run` 394→85 etc.); **4th param-cap violator found** (assessment named 3) → all ≤8 via role-named context structs; no stale sprint-history to relocate (0607 clean); baseline 7 RED, golden green, zero pub-API |
+| W-SRC 0609 rule | /qa | phantom-shim reachability | (shim §II.3) | (shim) | — read-only verdict: shim **DEAD** (0571 unconditional abs-gap + Pass-1 recognition = privacy gate foreclose every route; `Type`/`MacroInMem` arms have zero constructors); FIXME's "delete helpers too" **WRONG** — `find_named_var_span*` live via 0571 arm. Delete shim-fn only + land latent-coupling comment. Rec: small /testing pin for the privacy-diagnostic seam (S111) |
+| W-SRC 0609+0610 | /dev (src) | S87 residue + repo hygiene | (shim §II.3) | (shim) | — `96c7903a`+`bd41fb13`: shim-fn deleted (helpers kept, verdict executed) + 3 stale-doc fixes + coupling comment; 2 dead accessors deleted; `allow(dead_code)` swept (8 items deleted, 1 stale allow removed, rest justified test-only); `extra_jit_symbols` vestige dropped (6 sites); unwrap→`unreachable!` w/ invariant; `.gitignore` agent_trace.txt (user.cl already ignored) + `lib.rs` comments refreshed. Baseline 7 RED, zero pub-API |
+| 0619 item 2 | /dev (typecheck) | carrier self-recursion carve-out | (shim §II.3) | (shim) | — `316bee97`: variant (i) provenance gate (frame-index for nested let/fn shadow; `current_defn` suppression for param-name collision); type-checking unchanged (carrier-value gate only); Part A verified backend landmine comments present at BOTH seams (apply.rs+literals.rs, name 0619). 3 failing-first pins, baseline 7 RED, zero pub-API. **0583 producer precision fully closed; 0619 deleted** |
+| W-SRC sched | /sprint | 0621 callees-alias deferral | — | — | — `callees` records alias `Resolved.fq` not `storage_fq()`; benign until session-transaction reverse index goes live (not yet); fix needs a schema bump → **DEFERRED S111** to ride the vec-assoc 19→20 window (one coordinated bump). Trigger preserved |
 
 ## Notes
 
@@ -2872,3 +2879,26 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
   dispatched** — one sprint-wide `/testing` invocation authoring the failing e2e set from
   `PLAN §S110` (buckets A–J), failing-not-ignored, the gate before any consuming `/dev`
   wave. On its green-for-right-reason return, Stage 2 begins on the serial spine, W0 first.
+- **Phase 5 — CENTREPIECE COMPLETE (2026-07-16):** the 0583 backend-half landed across W0→W3
+  (grep-zero backend, −993 LOC, `4c899dd9`+`be06f6cb`), the typecheck chain closed
+  (0590/W-RD/C-4 + the finalize duty-split, `8c0fec36`/`6efa3b05`), and the **producer
+  precision is now fully closed** — all four axes (key values 0616, carrier value 0620,
+  map instance 0622) plus the last review residue (0619 item 2, `316bee97`). Baseline **7 RED**,
+  all carries (4 vec-assoc siblings §3.7, ownership_reuse/0528, deftype_ctor_trailing/S107,
+  SG-1 derive/0613). Centrepiece residue disposition: **0618** (/arch interfaces narrative) +
+  **0624** (/design tc return-poly §5) + **0626** (/design int cache severance) = doc-currency,
+  in flight; **0621** (callees alias) DEFERRED S111 (rides the vec-assoc schema-20 bump).
+- **Phase 5 — src-audit HYGIENE DRAIN COMPLETE (2026-07-16):** the broad-scope debt drain
+  (R-1/R-4/R-5/R-6) landed behaviour-invariant, baseline 7 RED throughout, zero library
+  pub-API movement: **0606**+**0627** repl god-file → 5 cohesive files (5,237 LOC → worst 1,645,
+  ratified; `3944a4bc`/`70c0df73`/`1e87242e`), **0608** over-budget batch (6 fns + 4 param-cap
+  structs, `cf3e4379`), **0609** S87 residue + DEAD phantom-shim delete (`/qa`-ruled;
+  `96c7903a`), **0610** repo/comment hygiene (`bd41fb13`). Remaining src-track tail: **C-4**
+  bootstrap.rs R-2 caller wiring (folds with any remaining W-SRC), **0607** int-doc currency
+  (absorbs the int.md §3.3 five-file flag). **Next:** finish doc currency (0607/0618/0624/0626),
+  then Phase 6 (user-proxy assessment + `/audit` on `cranelisp-backend` verifying grep-zero).
+- **S111 carries (recorded):** 4 vec-assoc COW siblings + ownership §3.7 fix (schema 19→20,
+  FIXME 0623 matrix), **0621** callees-alias (rides that bump), **0604** index-race
+  re-attribution, **0613**/**0614**/**0615** SG-attribution catches (0613 quasiquote wants a
+  /spec boundary confirmation — the "legal wherever an expression is legal" default), 0590
+  R1/I2 (0349 3rd instance), the /qa privacy-diagnostic e2e pin.
