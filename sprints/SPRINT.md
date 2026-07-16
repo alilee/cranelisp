@@ -1295,6 +1295,78 @@ UAF, etc.); `cargo check --workspace --tests` + clippy clean (no new lints); no
 BUILD_ID, per design §8). W3 can now delete `lenient_mono_from_expr` + the
 lenient arm (both dead on the live path).
 
+### /dev (W1) — the call seam (2026-07-16, BLOCKED on a producer gap → FIXME 0620)
+
+Flipped the `apply.rs` dispatch funnel from resolution-by-scan to a keyed read of
+the `MonoExpr::{Apply,Var}.resolved_target` carrier → the ONE
+`CompileContext::entry_at(&FQSymbol)` fetch (the `ctor_meta_at` generalisation:
+direct two-level map read, NO chain-follow / NO alias substitution / NO global
+scan — Rev-2 §1.3) → discriminate on the fetched entry's `DefKind`. **The core flip
+is CORRECT (`golden_clif_w0b` 5/5 GREEN byte-identical), but W1 is BLOCKED by a
+BROAD producer gap and did NOT land** (would add ~6 new e2e REDs beyond the ~13
+baseline).
+
+**Sites flipped (S1,S2,S5,S6,S7,S8,S9) — each lost its apply-site resolver caller:**
+- **S1** `apply.rs` BuiltinFn `is_extern_primitive` GOT-vs-extern — was
+  `resolve_got_target(op_name).is_some()`; now `entry_at(apply_target).callable_got_slot().is_some()`.
+- **S2** BuiltinFn platform GOT-flip — same `resolve_got_target` → `entry_at` flip.
+- **S5** `compile_consuming_arg_list_moded` borrow-elision — was
+  `resolve_callee_summary(name)`; now `entry_at(fq).mode_summary()` (the `callee`
+  name param retired). `resolve_callee_summary` keeps its W2 caller (S15).
+- **S6** `compile_direct_call` poll arm — was `resolve_poll_effect_target`; now the
+  `DefKind::PlatformEffect { poll_shape: true }` arm off the ONE fetch.
+- **S7** `compile_direct_call` unified GOT dispatch — was `resolve_got_target`; now
+  `entry.callable_got_slot()` off the fetch (home == `fq.module`, byte-identical
+  (symbol, slot)). `resolve_got_target` keeps its W2 callers (S10/S13).
+- **S8** platform fn-name stamp — was `resolve_platform_effect_target`; now the
+  `DefKind::PlatformEffect` discriminator off the same fetch (`fq_name = home/fq.symbol`).
+- **S9** `PrimitiveExtern` ABI key — was `resolve_extern_target`; now the
+  `DefKind::PrimitiveExtern` arm (`fq.symbol` IS the ABI key).
+- **Locals-before-keyed-read (0619 item 2, §1.1 pinned invariant):** `compile_var_apply`
+  checks `variables.contains_key(name)` FIRST (moved above the ctor/keyed arms) so
+  a shadowing local (the producer's self-recursion carve-out over-matches it) is
+  never mis-dispatched to the carrier's FQ. Commented as the pinned invariant.
+- `resolve_platform_effect_target` / `resolve_poll_effect_target` /
+  `resolve_extern_target` lost their SOLE (apply-site) callers → `#[allow(dead_code)]`
+  + W3-delete note (kept for their `resolution/tests.rs` unit callers; deleted in
+  W3 §3 S23). `data_constructor_info` deleted (dead after S3). `entry_at` added to
+  `CompileContext` (context.rs) as the §1.3 reader.
+
+**BLOCKER — S3/S4 (ctor `Apply`) + all member-aliased references, FIXME 0620 →
+/arch.** The §1.1 carrier for a sum ctor / field accessor MUST be the canonical
+`member_key` terminal (`IO.Pure`, `Box.v`), but the producer records the bare
+**alias** (`Pure`, `v`) — `cranelisp_types::resolve::Resolved.fq` (resolve.rs:458/687)
+composes `symbol: canonical_symbol(WRITTEN_NAME)`, not the terminal storage key
+where `Resolved.entry` lives. `entry_at` (direct read) lands on the `Import` alias
+and misses (`undefined function: v`/`Pure`). BROAD: every bare sum-ctor construction
++ every field-accessor call, same-module and imported. Dispatch-leg Apply carriers
+(trait/sig-dispatch/auto-curry) are UNAFFECTED (they record the mangled key
+directly). The W0.1b sweep table mis-attributed the ctor recorder to `instantiate_ctor`;
+the actual recorder is `record_reference_target` → `scope_resolve`, which emits the
+alias. **Fix is cross-crate (cranelisp-types resolve.rs OR typecheck
+record_reference_target) — out of the backend-narrow boundary → flagged to /arch
+(FIXME 0620), NOT improvised (Rev-2 forbids a backend chain-follow).** S3/S4 are
+therefore kept on the UNTOUCHED legacy `lookup_constructor` resolver (Rev-2 §1.2
+option b, "the wave has not arrived" — NOT a hybrid; the ctor kind is simply not
+flipped) so ctors still compile; only the member-aliased accessor calls (UserFn
+kind, keyed path) red the e2e suite.
+
+**KC-W0-6 (backend fixture sidecars):** NOT done — ~23 backend unit fixtures
+(`poll_codegen`/`par_codegen`/`dispatch`/`extern_call`/`module_assembly`/`launch`
+tests) hand-build empty `resolved_targets` and now hard-miss the keyed read;
+populating them is co-land-with-W1 work, deferred until the producer gap unblocks
+a landable W1 (populating fixtures that can't ship is premature).
+
+**Tree state / next.** The W1 backend implementation is complete, builds clean
+(`cargo check`/`--tests`/clippy zero warnings), and is `golden_clif_w0b` 5/5
+byte-identical — but is left UNCOMMITTED (stashed after committing this note +
+FIXME 0620) because it reds the suite pending the producer fix. Sequence to land:
+(1) /arch rules FIXME 0620 (canonical terminal-key carrier for member-aliased
+refs); (2) a typecheck-or-types /dev change-set lands it (+ per-leg unit pins);
+(3) re-deploy /dev (backend) → pop the W1 stash, flip S3/S4 to the keyed
+`ctor_meta_at` read, populate the KC-W0-6 fixture sidecars, verify golden +
+13-RED-baseline-unchanged, commit.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
