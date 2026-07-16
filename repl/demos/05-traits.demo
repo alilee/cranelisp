@@ -40,5 +40,28 @@
 (defn bigger? [a b] (> (size a) (size b)))
 (bigger? (MkBox 5 5) (MkBox 3 4))
 
+; Most methods are chosen by their arguments. A few are chosen by their RETURN
+; type — zed takes no arguments and yields a value of its own type:
+
+(deftrait Zeroable (zed [] self))
+(impl Zeroable Int (defn zed [] 0))
+(impl Zeroable Float (defn zed [] 0.0))
+
+; A bare name always self-documents — here, zed's polymorphic scheme:
+
+zed
+
+; Call it with nothing to pin the return type and inference has no way to choose
+; an impl. The REPL says exactly what to do — an actionable type error, never an
+; opaque internal failure:
+
+(zed)
+
+; Annotate the type you want, and dispatch resolves to that impl:
+
+:Int (zed)
+:Float (zed)
+
 ; This is the machinery behind show, =, <, and + — one name, many types,
-; resolved by inference. The Sudoku domain uses Eq and Ord the same way.
+; resolved by inference, or pinned by a :Type annotation when the return type
+; alone selects the impl. The Sudoku domain uses Eq and Ord the same way.
