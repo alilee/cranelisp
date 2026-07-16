@@ -662,19 +662,21 @@ fn ctor_value_and_pattern_position_prelude_provided_twin() {
 // starts behaving like the glob-export `_neg` twin below), which then fires the
 // §8.6.5 prelude-overlap poison SPURIOUSLY and fails `num.bits.test` with
 // "ambiguous bare name 'bit-and' — provided by distinct sources
-// 'num.bits/bit-and' and 'primitives/bit-and'". Reproduced live (racy, under the
-// concurrent background file-index feed over the full stdlib); the deterministic
-// WRITE trigger could NOT be reduced free-standing — this leg holds the correct
-// pole and goes RED if the phantom write ever becomes deterministic here.
-// FIXME(/dev): the phantom-prelude write is unlocalized. Only `bit-and` leaks
-//   into `prelude`, never the identically-shaped `bit-or`/`bit-xor` wrappers, so
-//   it is a concurrent mis-attribution — a bare `bit-and → primitives/bit-and`
-//   edge written into the `prelude` module's table during the racy background
-//   index of the full stdlib. Trace with CRANELISP_MODULE_TRACE over `stdlib/`.
-//   The seam where the poison FIRES is src/imports.rs::insert_detecting_ambiguity
-//   (prelude-overlap branch, ~L547-560, via `prelude_terminal`); the ROOT is the
-//   WRITE into prelude's table, not the fire. Attribution owed to /qa.
-// defect: class=enumeration-miss locus=src/imports.rs::insert_detecting_ambiguity found=S109 owner=/dev
+// 'num.bits/bit-and' and 'primitives/bit-and'"; the deterministic WRITE trigger
+// could NOT be reduced free-standing — this leg holds the correct pole and goes
+// RED if the phantom write ever becomes deterministic here.
+// FIXME(/qa): RE-SCOPED S110 (FIXME 0604 §"S110 /dev disposition"). The
+//   background file-index feed is NOT the writer: it is provably INERT under the
+//   `--run` recipe (`arm_importable_index` is REPL-only, `main.rs:342`;
+//   instrumentation: `index_one_module` fires 0× under `--run`, 39× under REPL),
+//   and `--no-cache` gates its cache channel besides. Only `bit-and` leaks (never
+//   the identically-shaped `bit-or`/`bit-xor`), a concurrent mis-attribution — a
+//   bare `bit-and → primitives/bit-and` edge written into `prelude`'s live table
+//   during the FOREGROUND concurrent compile of num.bits + num.bits.test +
+//   prelude + prelude's re-exported domain modules. The poison FIRES (correctly)
+//   at src/imports.rs::insert_detecting_ambiguity (~L547-560); the ROOT is the
+//   foreground WRITE. /qa re-attribution + a foreground repro owed.
+// defect: class=shared-state-write-race locus=src/(foreground concurrent-compile: process_form/imports/worker) found=S109 owner=/qa
 #[test]
 fn super_import_wrapper_over_specific_prelude_compiles_clean() {
     Cranelisp::new()

@@ -10,18 +10,36 @@
 // is an ordinary REPL command. The agent reaches it via the ordinary read-only
 // pull (`src/agent/pull.rs` ALLOWLIST).
 //
-// The model is read-or-produce-`.meta`, one-artifact (R13):
-//   (a) module present in the scheduler ModuleState registry  -> SKIP (real path
-//       owns it; the indexer reads its `.meta` later).
+// IN-MEMORY ISOLATION (S91, `design/int/index-worker-isolation.md` §3.1): the
+// index typecheck runs entirely against a function-local PRIVATE substrate (a
+// deep-cloned `symbol_tables` snapshot + fresh aliases + a private
+// prelude-fallback snapshot, §3.2), so the live `SharedState` maps are
+// byte-unchanged BY CONSTRUCTION — there is no residue to remove (the retired
+// "typecheck-into-live then REMOVE the residue (R13)" model). The feed's
+// primary output is the in-memory `importable_indices` rows.
+//
+// The DISK cache half (the §25.5 index→import `.meta` cache-hit) is NOT yet
+// severed: branch (c) still writes a benign `.meta` + manifest entry. Its
+// retirement is proposed by `index-worker-isolation.md` §3.3 but is DEFERRED —
+// it (a) does NOT fix the FIXME-0604 phantom (the index feed is inert under the
+// `--run` recipe; the writer is FOREGROUND — re-scoped, see 0604's S110
+// disposition) and (b) breaks the committed §25.5 e2e pins in `tests/search.rs`,
+// so the §25.5 retirement must be a /design-coordinated wave (agent.md §25 +
+// /qa test updates), not a unilateral /dev severance (FIXME 0626).
+//
+// The three per-module branches (§25.1):
+//   (a) module present in the scheduler ModuleState registry  -> read its rows
+//       from the LIVE table (E3 loaded-module feed) or skip (row-less).
 //   (b) valid `.meta` (schema+BUILD_ID gate AND int's source-content gate)
 //       -> deserialise the SymbolTable, read its public entries, NO typecheck.
-//   (c) no/stale `.meta`  -> typecheck once on the nice worker against throwaway
-//       staging (the validate_forms_dry_run discard substrate), wrapped in CF.2
-//       `catch_unwind`, then `cache::write_meta` (no `.o`, no register_module),
-//       then read public entries.
+//   (c) no/stale `.meta`  -> typecheck once on the nice worker against the
+//       PRIVATE substrate, wrapped in CF.2 `catch_unwind`, read public entries
+//       out of the private snapshot, then write a benign `.meta` (§25.5; no
+//       `.o`, no `register_module`).
 //
 // REPL-only by construction (R17): the worklist is enumerated ONLY at REPL
-// startup; `--run`/`--link`/`--release` never enumerate it.
+// startup (`arm_burndown`); `--run`/`--link`/`--release` never enumerate it, so
+// no index pass runs and no `.meta` is ever read or written in batch modes.
 //
 // Abandon-on-flush/shutdown (R18): the burn-down is best-effort warm-up, never a
 // correctness obligation. Index work yields to object codegen and is never
@@ -890,7 +908,8 @@ fn index_one_module(shared: &SharedState, module: &ModuleFullPath) {
         return;
     }
 
-    // Branch (c): no/stale `.meta` — typecheck once, write `.meta`, populate.
+    // Branch (c): no/stale `.meta` — typecheck once (into the private substrate),
+    // write `.meta`, populate.
     index_branch_c(shared, module, &file, Some(cache_dir));
 }
 
@@ -925,16 +944,23 @@ fn try_branch_b(
     Some(public_entries_from_table(&table))
 }
 
-/// Branch (c): typecheck once on the nice worker through the real
-/// import-installing + typecheck path (`cluster::process_cluster`, the discard
-/// substrate's full sibling — it installs the module's own `(import …)` decls
-/// and runs `check_forms`), wrapped in CF.2 `catch_unwind` (§25.4). On a clean
-/// check the typed entries land in the LIVE `symbol_tables[module]` table; the
-/// indexer reads its public entries, writes a benign `.meta` (no `.o`, no
-/// `register_module`), records the indices, then REMOVES the live residue so the
-/// four `SharedState` maps stay byte-unchanged (R13). On an Err or a caught
-/// panic, the per-module index-skip leaves NO `.meta` and continues the
-/// burn-down — never a crash, never a killed worker.
+/// Branch (c): typecheck once on the nice worker against a **function-local,
+/// isolated private substrate** (`checked_typecheck_module` — a deep-cloned
+/// private `symbol_tables` snapshot + fresh aliases + a private prelude-fallback
+/// snapshot; it installs the module's own `(import …)` decls and runs
+/// `check_forms` against those PRIVATE maps only), wrapped in CF.2 `catch_unwind`
+/// (§25.4). On a clean check the typed entries are read back OUT of the private
+/// snapshot (dropped at function return), a benign `.meta` is written (no `.o`,
+/// no `register_module`) so a later real `/import` is a cache-hit (§25.5), and
+/// the indices are recorded.
+///
+/// In-memory isolation (S91, `index-worker-isolation.md` §3.1): the live
+/// `symbol_tables` / `module_aliases` / `prelude_fallback` maps are
+/// byte-unchanged **by construction** — the typecheck runs entirely against the
+/// private snapshot, so there is no residue to remove (the retired
+/// "typecheck-into-live then REMOVE the residue (R13)" / `process_cluster`
+/// model). On an Err or a caught panic, the per-module index-skip leaves NO
+/// `.meta` and continues the burn-down — never a crash, never a killed worker.
 fn index_branch_c(
     shared: &SharedState,
     module: &ModuleFullPath,
@@ -945,7 +971,7 @@ fn index_branch_c(
         Ok(Some(entries)) => {
             // Clean check. Write a benign `.meta` (no `.o`, no register_module)
             // so a later real `/import` of this module is a cache-hit (§25.5),
-            // built from the typed entries we read out of live before cleanup.
+            // built from the typed entries we read out of the private snapshot.
             //
             // EXCEPT for a MACRO-carrying module (0569 regression fence): its
             // index `.meta` is INCOMPLETE for a real import — it holds the macro's
@@ -992,6 +1018,12 @@ fn index_branch_c(
 /// `SymbolTable` (R13/R14). No `.o`. The `.meta` makes a later real `/import` a
 /// cache-hit (§25.5). Also records the module's source hash so `is_cache_valid`
 /// finds it on the import path.
+///
+/// (This benign-`.meta` write is the §25.5 index→import cache-hit optimization.
+/// Its retirement is proposed by `index-worker-isolation.md` §3.3 but is NOT
+/// landed here — it re-scopes with FIXME 0604; see that FIXME's S110 disposition.
+/// The in-memory isolation the contract ratifies IS in place: the typecheck runs
+/// against `checked_typecheck_module`'s private snapshot, never live.)
 fn write_index_meta(
     shared: &SharedState,
     module: &ModuleFullPath,
@@ -1038,17 +1070,23 @@ fn write_index_meta(
     }
 }
 
-/// Run the real import-installing + typecheck path for `module` over its source,
-/// wrapped in CF.2 `catch_unwind` (§25.4 — the nice-worker catch, NOT inherited
-/// from the priority worker), then read its typed public entries OUT of live and
-/// REMOVE the live residue (R13). Returns:
+/// Run the real import-installing + typecheck path for `module` over its source
+/// against a **function-local, isolated private substrate**, wrapped in CF.2
+/// `catch_unwind` (§25.4 — the nice-worker catch, NOT inherited from the
+/// priority worker), then read its typed public entries out of that private
+/// substrate (dropped at function return). Returns:
 ///   `Ok(Some(entries))` — clean check; entries are `(name, scheme.ty, entry)`.
 ///   `Ok(None)`          — no checkable forms.
 ///   `Err(reason)`       — a typecheck error/gap OR a caught panic (0432-shaped).
 ///
-/// The module is NEVER `register_module`'d (no scheduler entry). The four
-/// `SharedState` maps are restored to their pre-index state on EVERY path — the
-/// session-state-residue invariant (R13).
+/// INDEX-ISOLATION (S110, `index-worker-isolation.md` §2/§3): the module is
+/// NEVER `register_module`'d, and NONE of the live `SharedState` substrate is
+/// written — not `symbol_tables`, not `module_aliases`, and (as of §3.2) not
+/// `prelude_fallback` either. The four maps are byte-unchanged **by
+/// construction, not by undo**: there is no residue to remove because there is
+/// no live write to make (the retired "typecheck-into-live then REMOVE the
+/// residue (R13)" model). Every intermediate the index typecheck needs is a
+/// private snapshot dropped at function end.
 #[allow(clippy::type_complexity)]
 fn checked_typecheck_module(
     shared: &SharedState,
@@ -1058,18 +1096,14 @@ fn checked_typecheck_module(
     let source = std::fs::read_to_string(file).map_err(|e| format!("read error: {e}"))?;
     let sexps = cranelisp_frontend::parse(&source).map_err(|e| format!("parse error: {e}"))?;
 
-    // ZERO shared-state mutation (R13 by construction; race-free against the
-    // eval thread). The indexer runs the import-install + typecheck against a
-    // PRIVATE, isolated symbol-tables map — a shallow snapshot of the live
-    // tables for dependency reads (`primitives`, `prelude`, …) plus a fresh
-    // entry for the indexed module. The four `SharedState` maps are NEVER
-    // written, so there is no residue and no TOCTOU race with a concurrent
-    // real `(import …)` of the same module on the eval thread (the prior
-    // process_cluster-into-live approach mutated `shared.symbol_tables` and
-    // raced — a concurrent eval-thread import of the same module could be
-    // clobbered by the indexer's cleanup). Discovery/dependency resolution is
-    // read-only against live; all writes land in the private map, dropped at
-    // function end.
+    // ZERO shared-state mutation (INDEX-ISOLATION by construction; race-free
+    // against the eval thread). The indexer runs the import-install + typecheck
+    // against a PRIVATE, isolated symbol-tables map — a deep snapshot of the live
+    // tables for dependency reads (`primitives`, `prelude`, …) plus a fresh entry
+    // for the indexed module. The live `SharedState` maps are NEVER written, so
+    // there is no residue and no TOCTOU race with a concurrent real `(import …)`
+    // of the same module on the eval thread. All writes land in the private map,
+    // dropped at function end.
     let private_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
         dashmap::DashMap::new();
     for entry in shared.symbol_tables.iter() {
@@ -1082,6 +1116,16 @@ fn checked_typecheck_module(
         cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone()),
     );
     let private_aliases = cranelisp_types::ModuleAliases::default();
+    // §3.2 — snapshot the prelude-fallback bits into a PRIVATE clone. The index
+    // typecheck's installers/`check_forms` only READ the fallback today, but a
+    // live `&shared.prelude_fallback` handle threaded into an install/typecheck
+    // call is a standing invitation for a future write leak and defeats the §5
+    // reviewer grep ("no live `&shared.*` map into an install/typecheck/register
+    // call"). Reading a consistent private snapshot makes the isolation total by
+    // construction (the fallback bits are session-stable, so the snapshot is a
+    // faithful read view). Same clone shape as `private_tables`.
+    let private_prelude_fallback: cranelisp_typecheck::PreludeFallback =
+        shared.prelude_fallback.clone();
 
     let module_cl = module.clone();
 
@@ -1094,7 +1138,7 @@ fn checked_typecheck_module(
         index_typecheck_into_private(
             &private_tables,
             &private_aliases,
-            &shared.prelude_fallback,
+            &private_prelude_fallback,
             &module_cl,
             &sexps,
         )
@@ -1889,7 +1933,7 @@ mod tests {
     /// A minimal `SharedState` for the FIXME-0562 branch-(a)/hook pins. Mirrors
     /// `worker/tests.rs::test_shared_state`; no workers spawned, no codegen runs.
     /// The only fields the index-worker branch reads are `scheduler`,
-    /// `symbol_tables`, and `importable_indices`.
+    /// `symbol_tables`, and `importable_indices`. Caching disabled.
     fn test_shared_state() -> SharedState {
         use std::sync::atomic::{AtomicBool, AtomicU32};
         use std::sync::Mutex;
@@ -1914,6 +1958,74 @@ mod tests {
             run_mode: crate::session_v4::RunMode::Repl,
             test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         }
+    }
+
+    // spec: design/int/index-worker-isolation.md §2/§3.1/§3.2 (FIXME 0604) —
+    // IN-MEMORY INDEX-ISOLATION: `checked_typecheck_module` runs the index
+    // typecheck against a function-local PRIVATE substrate (deep-cloned
+    // `symbol_tables` snapshot + fresh aliases + a private prelude-fallback
+    // snapshot), so it mutates NO live `SharedState` map — not `symbol_tables`,
+    // not `module_aliases`, and (as of §3.2) not `prelude_fallback`. The indexed
+    // module never appears in the LIVE `symbol_tables` (it is read out of the
+    // private snapshot, which is dropped). Fail-on-revert: reintroduce the retired
+    // typecheck-into-live model (or thread `&shared.prelude_fallback` and let a
+    // callee write it) and one assertion below flips RED.
+    // defect: class=shared-state-write-race locus=src/session_v4/index_worker.rs::checked_typecheck_module found=S110 owner=/dev
+    #[test]
+    fn index_typecheck_mutates_no_live_shared_state() {
+        let shared = test_shared_state();
+        let module = m("mod1");
+
+        // Seed live state so a mutation would be observable: a prelude-fallback
+        // bit for the indexed module and an unrelated live table.
+        shared.prelude_fallback.insert(module.clone(), true);
+        shared.symbol_tables.insert(
+            m("other"),
+            cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(m("other")),
+        );
+        let fallback_before: Vec<(ModuleFullPath, bool)> = shared
+            .prelude_fallback
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        let live_keys_before: HashSet<ModuleFullPath> =
+            shared.symbol_tables.iter().map(|e| e.key().clone()).collect();
+
+        // Drive the index typecheck against a real source file. Its outcome
+        // (Ok/Err) is immaterial to this pin — the invariant is that NONE of the
+        // live maps are written, whatever the result.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("mod1.cl");
+        std::fs::write(&src, "(import [primitives [Int]])\n(defn f [:Int x] :Int x)\n").unwrap();
+        let _ = checked_typecheck_module(&shared, &module, &src);
+
+        // The indexed module was typechecked into the PRIVATE snapshot and MUST
+        // NOT have been written into the live `symbol_tables` (the S91 isolation;
+        // the retired mutate-live model would leave a `mod1` entry here).
+        assert!(
+            !shared.symbol_tables.contains_key(&module),
+            "IN-MEMORY ISOLATION §3.1: the indexed module MUST NOT be written into \
+             the live symbol_tables (typecheck runs against the private snapshot)"
+        );
+        // The live table set is byte-unchanged (no adds, no drops).
+        let live_keys_after: HashSet<ModuleFullPath> =
+            shared.symbol_tables.iter().map(|e| e.key().clone()).collect();
+        assert_eq!(
+            live_keys_before, live_keys_after,
+            "IN-MEMORY ISOLATION: the index typecheck must not add/remove live tables"
+        );
+        // §3.2: the prelude-fallback map is byte-unchanged — the index typecheck
+        // reads a private snapshot, never the live map.
+        let fallback_after: Vec<(ModuleFullPath, bool)> = shared
+            .prelude_fallback
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        assert_eq!(
+            fallback_before, fallback_after,
+            "ISOLATION §3.2: the index typecheck must not mutate the live \
+             prelude_fallback (it reads a private snapshot)"
+        );
     }
 
     /// Register `module` with the scheduler and drive it to `ModulePool::Failed`.

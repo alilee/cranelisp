@@ -2132,6 +2132,59 @@ every RED traces to a known open defect (no genuine regression).
 `design/typecheck/return-poly-dispatch-signal.md` is a `/design`-owned doc edit
 outside `/dev`'s boundary — **left open for `/design`**. Not a wave-gate blocker.
 
+### /dev (0604) — index-feed isolation: IN-MEMORY half landed, defect RE-SCOPES to foreground (2026-07-16)
+
+Narrow-deployed `src/` (int), `src/session_v4/index_worker.rs`. **LOCATE-before-patch
+(mandatory heisenbug discipline) yielded a re-scope, not a fix at the named seam.**
+
+**Decisive finding (instrumentation + static proof).** The 0604 recipe is
+`--run --no-cache`; under it the background index feed is **provably inert**:
+`arm_importable_index()` is REPL-only (`main.rs:342`), and a temporary `eprintln`
+at the branch entry measured **`index_one_module` firing 0× under `--run`, 39×
+under REPL**. `--no-cache` gates the cache channel besides. So the design contract's
+prime suspect (the §3.3 §25.5 cache channel) **cannot** be the writer for the recipe
+— this is the contract's own §4 re-scope arm, confirmed. The residual phantom writer
+is on the **FOREGROUND** concurrent-compile path (num.bits + num.bits.test + prelude +
+prelude's re-exported domain modules). Even REPL-with-cache cannot produce THIS
+phantom structurally (the index writes `num.bits.meta`, never `prelude`'s table; the
+private submodule `num.bits.test` is never indexed). The write is **quiet in the /dev
+environment**: 0 fires across ~175 iterations (`--run --no-cache`, clean-cwd REPL, and
+REPL-with-cache).
+
+**Landed (the ratified IN-MEMORY isolation half, `index-worker-isolation.md` §3.1/§3.2):**
+- §3.2 prelude-fallback snapshot — `checked_typecheck_module` reads a private
+  `shared.prelude_fallback.clone()`, so no live `&shared.*` map is threaded into any
+  index install/typecheck/register call (the §5 grep's map-threading half is total).
+- §3.1 stale docstrings rewritten (top-of-file, `index_branch_c`,
+  `checked_typecheck_module`) — the retired mutate-live/`process_cluster`/"REMOVE the
+  residue (R13)" framing is gone; docs describe the S91 private-substrate model.
+- Unit test `index_typecheck_mutates_no_live_shared_state` (fail-on-revert on the
+  in-memory isolation). Twin guards (`spec_08_prelude_outer_scope.rs`) stay GREEN.
+
+**NOT landed — §3.3 cache-channel severance DEFERRED → FIXME 0626 (target `/design` int).**
+Reverted after finding it (a) does not fix 0604 (writer is foreground) and (b) reddens
+the baseline: it retires §25.5, breaking 3 committed e2e pins
+(`search_branch_c_stale_meta_typechecks_writes_meta`,
+`search_burndown_arms_at_repl_startup_neg_not_on_first_search`,
+`search_index_to_import_is_meta_cache_hit` — `agent.md §25.1/§25.5`). The §25.5
+retirement needs a /design-coordinated wave (agent.md §25 + /qa test updates + /dev
+severance together), not a unilateral /dev break.
+
+**Re-scope actions:** FIXME 0604 re-targeted `/dev` → `/qa` (foreground writer needs
+re-attribution + a repro), annotated with the disposition; the
+`spec_08_prelude_outer_scope.rs` repro-family `// defect:` retagged
+`class=enumeration-miss` → `class=shared-state-write-race`, owner `/qa`. Do NOT delete
+0604 (defect not closed).
+
+**Verify-after-fix.** ≥25× recipe sweep vs real stdlib: 0/30 `--run` + 0/30 REPL
+(== pre-fix baseline — the recipe never engaged the index feed, so the change cannot
+regress it). `concurrency_capacity::same_token_capacity_...` = its OWN defect: FAILS
+CONSISTENTLY ~151–156ms vs a 150ms overlap threshold in `--run` (index inert; not
+this change) — attribute separately to `/qa` (effect-concurrency track). SG-1 `derive`
+failure is the quasiquote/0605 issue, NOT num.bits (num.bits compiles clean in the
+37-module gate here). **Baseline unchanged (8 RED); release gate clean
+(check/clippy zero warnings in the touched file).**
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

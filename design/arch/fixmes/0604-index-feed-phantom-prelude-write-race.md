@@ -1,6 +1,7 @@
 ---
 number: 0604
-target: /dev
+target: /qa
+re_scoped_from: /dev (S110 — per contract §4; see "S110 /dev disposition" below)
 filed_by: /qa
 filed_at: 2026-07-15
 sprint_filed: 109
@@ -10,6 +11,10 @@ refers_to: src/session_v4/index_worker.rs (branch (c) `index_branch_c` — the
   writers it drives (src/imports.rs); poison-consumer (CORRECT, do not touch)
   at src/imports.rs::insert_detecting_ambiguity ~L547-560. Narrow-deploy
   /dev to src/ (int); /design (int) records the isolation contract.
+  RE-SCOPED S110: the recipe's residual writer is on the FOREGROUND concurrent-
+  compile path (src/process_form/, src/imports.rs, src/worker.rs), NOT the
+  index feed — the index feed is proven inert under the `--run` recipe. See the
+  disposition section.
 status: open
 ---
 
@@ -116,3 +121,89 @@ live — with `/design` (int) recording the contract.
 3. Twin guards stay GREEN; the `concurrency_capacity` verify step recorded.
 4. `/testing` retro-tags the repro family `// defect:` (class TBD by `/qa` —
    candidate: new `shared-state-write-race` vocabulary entry; request it).
+
+## S110 /dev disposition — the IN-MEMORY isolation LANDED, §3.3 DEFERRED, the recipe writer RE-SCOPES to foreground
+
+`/dev` (int) narrow-deployed S110, `src/session_v4/index_worker.rs`.
+
+### What landed (the IN-MEMORY isolation half of `index-worker-isolation.md` §3)
+
+- **§3.2 prelude-fallback SNAPSHOTTED.** `checked_typecheck_module` clones
+  `shared.prelude_fallback` into a function-local `private_prelude_fallback`; the
+  index typecheck reads the private snapshot — no live `&shared.*` map is now
+  threaded into any install/typecheck/register call (the §5 grep's map-threading
+  half is total).
+- **§3.1 stale docstrings REWRITTEN** (top-of-file note, `index_branch_c`,
+  `checked_typecheck_module`) — the retired mutate-live-then-undo /
+  `process_cluster` / "REMOVE the residue (R13)" framing is gone; the docs now
+  describe the S91 private-substrate model accurately (and record the §3.3
+  deferral inline).
+- Unit test at the isolation seam:
+  `index_typecheck_mutates_no_live_shared_state` (fail-on-revert — pins that the
+  index typecheck mutates no live `symbol_tables` / `prelude_fallback`). Twin
+  guards (`tests/spec_08_prelude_outer_scope.rs`) stay GREEN; baseline REDs
+  unchanged.
+
+### What did NOT land — §3.3 cache-channel severance DEFERRED (FIXME filed to /design)
+
+The §3.3 severance (delete `write_index_meta`; stop `try_branch_b`'s
+`record_source_hash`) is **NOT landed**, for two reasons surfaced during
+implementation:
+
+1. **It does not fix this defect** (the re-scope below): the writer is FOREGROUND,
+   so severing the index feed's cache channel changes nothing for the recipe.
+2. **It retires §25.5, which breaks three committed e2e pins** in
+   `tests/search.rs` — `search_branch_c_stale_meta_typechecks_writes_meta`,
+   `search_burndown_arms_at_repl_startup_neg_not_on_first_search`,
+   `search_index_to_import_is_meta_cache_hit` (they assert branch (c) writes a
+   `.meta` and the index→import cache-hit, per `agent.md §25.1/§25.5`). Retiring
+   §25.5 must be a /design-coordinated wave (update `agent.md §25` + `/qa`
+   updates those tests), not a unilateral /dev severance that reddens the
+   baseline. Coordination FIXME **0626** filed `target: /design (int)`.
+
+### Why the recipe RE-SCOPES to the foreground (contract §4, CONFIRMED)
+
+The deterministic recipe is `--run --no-cache`. Under it the index feed is
+**provably inert**, so severing its channels cannot change the recipe's outcome:
+
+1. **`--run` never arms the index.** `arm_importable_index()` is called only from
+   `main.rs`'s REPL arm (`main.rs:342`); `arm` is its sole worklist populator;
+   `run_one_index_task` drains an empty worklist and returns `false`. So
+   `index_one_module` / `index_branch_c` / `write_index_meta` are UNREACHABLE
+   under `--run`. **Instrumentation confirms it: `index_one_module` fires 0×
+   under `--run`, 39× under REPL** (a temporary `eprintln` at the branch entry,
+   removed after measuring).
+2. **`--no-cache` gates the cache channel independently.** `write_index_meta`
+   and `try_branch_b`'s recorder both require `cache_dir = Some`, which is `None`
+   under `--no-cache`.
+
+Both hold in the recipe, so the `/sprint` 16/16 fires under `--run --no-cache`
+did **not** involve the index feed. Even the one mode where the cache channel is
+fully live (REPL **with** cache) cannot produce THIS phantom: the index writes
+`num.bits.meta` (not `prelude`'s table), and `num.bits.test` is a PRIVATE
+`(mod- test)` submodule that the feed drops from the worklist and never indexes,
+so no index artifact ever touches the `num.bits.test` super-import resolution.
+
+**Conclusion (per contract §4):** the residual writer of the phantom
+`bit-and → primitives/bit-and` terminal is on the **FOREGROUND** concurrent-
+compile path — the eval thread + priority/nice workers building `num.bits` +
+`num.bits.test` + `prelude` + prelude's ~13 re-exported domain modules
+concurrently — not the background index feed. Attribution moves off
+int-isolation. **`/qa` re-attribution + a foreground repro are owed** (the write
+is quiet in the `/dev` environment: 0 fires across ~175 iterations spanning
+`--run --no-cache`, clean-cwd REPL `--no-cache`, and REPL-with-cache).
+
+### Guard / verify notes
+
+- The ≥25× recipe sweep against the real stdlib lands as behavioural
+  verification: 0/30 `--run` + 0/30 REPL post-fix (== the pre-fix baseline —
+  the recipe never engaged the index feed, so the isolation cannot regress it).
+  It is **not** a fail-on-revert guard for the recipe defect (that guard must
+  ride the eventual FOREGROUND fix, once `/qa`/`/testing` reduce a repro).
+- **`concurrency_capacity::same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks`
+  is its OWN defect (attribute separately).** Re-run ≥25× (+12× idle): it FAILS
+  CONSISTENTLY (not intermittently) at ~151–156ms against a 150ms overlap
+  threshold, in `--run` mode (index feed inert — cannot be perturbed by this
+  change). This is a timing-threshold / effect-concurrency-overlap defect on the
+  `/dev` VM, unrelated to the index-feed write-race and unaffected by this
+  change-set. Owner: `/qa` triage (effect-concurrency track), NOT folded here.
