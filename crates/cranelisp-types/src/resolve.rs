@@ -64,7 +64,7 @@
 use crate::error::{CranelispError, ErrorLocation};
 use crate::module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, LinkerStore, ModuleAliases, ModuleEntry, SymbolTables,
-    resolve_terminal_entry_and_home,
+    resolve_terminal_entry_home_and_key,
 };
 use crate::newtype::{FQSymbol, ModuleFullPath, Symbol, TraitName, TypeName};
 use crate::span::Span;
@@ -360,20 +360,56 @@ impl From<ResolveError> for CranelispError {
 }
 
 /// A successfully resolved name: the canonical entry, its defining (home)
-/// module, and the fully-qualified identity that addresses it.
+/// module, and TWO identities — the **reference identity** (`fq`) and the
+/// **storage identity** (`storage_key` / [`Resolved::storage_fq`]).
 ///
 /// The home module is the chain-follow terminus (the module that owns the
-/// canonical, non-`Import` entry). `fq` composes `home` + the canonical local
-/// symbol, so callers needing an identity (macro-head dispatch, GOT
-/// addressing, error attribution) read it directly without recomposing.
+/// canonical, non-`Import` entry).
+///
+/// **The two identities (FIXME 0620,
+/// `design/arch/backend-keyed-consumer.md` §1.1):**
+///
+/// - `fq` = `home` + `canonical_symbol(written name)` — the *reference*
+///   identity: how the caller spelled the name, homed at the terminus. This
+///   is the display/attribution/`callees` identity (macro-head dispatch,
+///   error messages, §8.6.4 remedies). It does **NOT** in general address the
+///   entry in `home`'s table: across a member alias (`v` → `Box.v`,
+///   `Pure` → `IO.Pure`) or a renamed import/export (`[(foo bar)]`) the
+///   written spelling is an `Import`-edge alias, not the table key.
+/// - `storage_key` — the *storage* identity: the exact symbol-table key the
+///   chain-follow terminated at (the last followed edge's `source.symbol`,
+///   or the written name when no edge renamed). `symbol_tables[home]
+///   [storage_key]` IS the terminal entry, always. This is the identity a
+///   keyed consumer (the backend `entry_at` read, the `resolved_targets`
+///   carrier) must record — captured here, at the ONE place it is knowable,
+///   because a `ModuleEntry` does not carry its own key (Principle 24
+///   "Resolve once": the walk that found the entry reports where it found
+///   it; no consumer ever reconstructs the key from a written spelling).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Resolved<C: CodeStore = ()> {
     /// The canonical (non-`Import`/non-`Reexport`) entry the name resolves to.
     pub entry: ModuleEntry<C>,
     /// The module that defines the canonical entry (chain-follow terminus).
     pub home: ModuleFullPath,
-    /// The fully-qualified identity addressing the canonical entry.
+    /// The reference identity: `home` + the canonical written spelling. For
+    /// storage addressing use [`Resolved::storage_fq`] — see the type-level
+    /// rustdoc for the distinction.
     pub fq: FQSymbol,
+    /// The terminal storage key: the exact key the entry sits under in
+    /// `home`'s table ("whichever storage key HIT"). Equals the written
+    /// spelling iff no followed `Import`/`Reexport` edge renamed.
+    pub storage_key: Symbol,
+}
+
+impl<C: CodeStore> Resolved<C> {
+    /// The storage identity as an [`FQSymbol`] — `home` + [`Self::storage_key`].
+    /// The key a direct two-level table read (`symbol_tables[module][symbol]`)
+    /// fetches this exact terminal entry with; the `resolved_targets` carrier
+    /// value (`design/arch/backend-keyed-consumer.md` §1.1).
+    pub fn storage_fq(&self) -> FQSymbol {
+        FQSymbol { module: self.home.clone(), symbol: self.storage_key.clone() }
+    }
 }
 
 /// The single general resolution primitive: resolve `name` from
@@ -448,9 +484,10 @@ where
         .cloned()
         .ok_or_else(|| not_found(name, current_module, span))?;
 
-    let (entry, home) =
-        chain_follow_committed(symbol_tables, first_hop, current_module, head, current_module.clone())
-            .ok_or_else(|| not_found(name, current_module, span))?;
+    let (entry, home, storage_key) = chain_follow_committed(
+        symbol_tables, first_hop, current_module, head, current_module.clone(), sym,
+    )
+    .ok_or_else(|| not_found(name, current_module, span))?;
 
     visibility_check(&entry, &home, current_module, name, span)?;
 
@@ -458,6 +495,7 @@ where
         fq: FQSymbol { module: home.clone(), symbol: canonical_symbol(name) },
         entry,
         home,
+        storage_key,
     })
 }
 
@@ -668,9 +706,9 @@ where
     let resolved_module = substitute_module_alias(module_aliases, module_part);
     // Chain-follow the symbol within the named module too (a qualified name
     // may land on a re-export that points further on).
-    let (entry, home) =
-        resolve_terminal_entry_and_home(symbol_tables, &resolved_module, symbol_part).ok_or_else(
-            || {
+    let (entry, home, storage_key) =
+        resolve_terminal_entry_home_and_key(symbol_tables, &resolved_module, symbol_part)
+            .ok_or_else(|| {
                 if symbol_tables.get(&resolved_module).is_none() {
                     ResolveError::QualifiedModuleUnknown {
                         module: resolved_module.clone(),
@@ -680,13 +718,13 @@ where
                 } else {
                     not_found(symbol_part, &resolved_module, span)
                 }
-            },
-        )?;
+            })?;
     visibility_check(&entry, &home, current_module, symbol_part, span)?;
     Ok(Resolved {
         fq: FQSymbol { module: home.clone(), symbol: canonical_symbol(symbol_part) },
         entry,
         home,
+        storage_key,
     })
 }
 
@@ -727,12 +765,13 @@ fn chain_follow_committed<C, L>(
     current_module: &ModuleFullPath,
     head: ModuleEntry<C>,
     home: ModuleFullPath,
-) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+    key: Symbol,
+) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
 where
     C: CodeStore,
     L: LinkerStore,
 {
-    chain_follow_committed_depth(symbol_tables, first_hop, current_module, head, home, 0)
+    chain_follow_committed_depth(symbol_tables, first_hop, current_module, head, home, key, 0)
 }
 
 /// [`chain_follow_committed`]'s recursive body with the same-module-arm depth
@@ -747,8 +786,9 @@ fn chain_follow_committed_depth<C, L>(
     current_module: &ModuleFullPath,
     head: ModuleEntry<C>,
     home: ModuleFullPath,
+    key: Symbol,
     depth: usize,
-) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -760,19 +800,23 @@ where
         ModuleEntry::Import { source, .. } if source.module == *current_module => {
             // Same-module member alias — follow through the caller's view so a
             // same-cluster staged canonical `Def` is visible. The alias and its
-            // canonical target are both in `current_module`, so `home` is unchanged.
-            let next = first_hop.lookup(&source.symbol)?.clone();
+            // canonical target are both in `current_module`, so `home` is unchanged;
+            // the followed edge's `source.symbol` becomes the candidate storage key.
+            let next_key = source.symbol.clone();
+            let next = first_hop.lookup(&next_key)?.clone();
             chain_follow_committed_depth(
-                symbol_tables, first_hop, current_module, next, home, depth + 1,
+                symbol_tables, first_hop, current_module, next, home, next_key, depth + 1,
             )
         }
         ModuleEntry::Import { source, .. } => {
             // Delegate the cross-module remainder to the existing committed
             // chain-follow primitive — single source of truth for the walk
-            // (it carries its own depth cap).
-            resolve_terminal_entry_and_home(symbol_tables, &source.module, source.symbol.as_ref())
+            // (it carries its own depth cap and threads the storage key).
+            resolve_terminal_entry_home_and_key(
+                symbol_tables, &source.module, source.symbol.as_ref(),
+            )
         }
-        _ => Some((head, home)),
+        _ => Some((head, home, key)),
     }
 }
 

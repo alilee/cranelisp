@@ -1449,10 +1449,13 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_types::ResolutionScope<'a, C, L
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_types::ResolutionScope<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResolutionScope<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResolutionScope<'a, C, L>
-pub struct cranelisp_types::Resolved<C: cranelisp_types::CodeStore>
+#[non_exhaustive] pub struct cranelisp_types::Resolved<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Resolved::entry: cranelisp_types::ModuleEntry<C>
 pub cranelisp_types::Resolved::fq: cranelisp_types::FQSymbol
 pub cranelisp_types::Resolved::home: cranelisp_types::ModuleFullPath
+pub cranelisp_types::Resolved::storage_key: cranelisp_types::Symbol
+impl<C: cranelisp_types::CodeStore> cranelisp_types::Resolved<C>
+pub fn cranelisp_types::Resolved<C>::storage_fq(&self) -> cranelisp_types::FQSymbol
 impl<C> core::marker::Freeze for cranelisp_types::Resolved<C> where C: core::marker::Freeze
 impl<C> core::marker::Send for cranelisp_types::Resolved<C>
 impl<C> core::marker::Sync for cranelisp_types::Resolved<C>

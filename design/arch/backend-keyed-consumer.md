@@ -87,10 +87,14 @@ the storage identity is in hand:
 - `infer_var` — the S101 `record_user_fn_ref` chokepoint (F1: the FQ is already
   computed there for the `callees` feed), widened to record EVERY
   statically-resolved table reference kind (user fn, primitive, ctor, effect,
-  extern), keyed at the Var span. Records the terminal STORAGE key (chain-follow
-  already yields it).
-- `instantiate_ctor` — construction-position ctors (the mirror of the S109
-  pattern-sidecar mint, same storage-key discipline).
+  extern), keyed at the Var span. Records the terminal STORAGE key via
+  `Resolved::storage_fq()` — **NOT `Resolved.fq`** (the W1.1/0620 correction,
+  §1.1.2: `fq` composes the WRITTEN spelling, which is an alias for
+  member-canonical-keyed symbols and renamed imports; the walk-surfaced
+  `storage_key` is the terminal table key).
+- `instantiate_ctor` — construction-position ctors reached through the typed
+  ctor path + ALL pattern-position ctors (the S109 pattern-sidecar mint, same
+  storage-key discipline: "whichever storage key HIT" is the probe key).
 - The dispatch-selection seams (`monomorphise_call` / sig-dispatch /
   auto-curry resolution writeback) — the selected mangled entry's FQ, keyed at
   the Apply span.
@@ -98,6 +102,23 @@ the storage identity is in hand:
 `/design` (typecheck) may refine the exact seam list; the binding property is
 **recording happens where resolution happens** (Principle 24) — never a second
 post-hoc resolution pass.
+
+**The carrier value-source rule (binding, W1.1/0620).** No `resolved_targets`
+value is EVER composed from a written spelling. Every insert's `FQSymbol`
+comes from exactly one of three sources:
+
+1. **walk-resolved** — `Resolved::storage_fq()` (the terminal storage key the
+   `cranelisp-types` resolution walk surfaced; the ONLY actor that knows it,
+   since a `ModuleEntry` does not carry its own table key);
+2. **mint-resolved** — the exact probe/registration key in hand at the seam
+   (`instantiate_ctor`'s canonical-vs-bare probe hit, `dotted_member_identity`'s
+   `member_key` probe, `register_mono_entry`'s mangled key, the fn-value
+   rewrite's minted mangle, the W0.1b `TraitImpl.impl_module` + mangle);
+3. **transport** — copying an existing carrier entry to a new span (the
+   AutoCurry callee-span transport).
+
+A new writer that builds `FQSymbol { module, symbol: <written name> }` is the
+0620 defect class reintroduced — `/review` REJECTS it on sight.
 
 ### 1.1.1 Storage-module derivation for dispatch legs (S110 W0.1 `/arch` ruling)
 
@@ -207,7 +228,13 @@ change-set):**
   renamed AST so the carrier reaches codegen).
 
 **Completeness sweep — every kind W1/W2 will key-read, against the §1.1
-producer inventory:**
+producer inventory.** *(W0.1 module-axis sweep, retained for the findings it
+grounded. Its ctor row MIS-ATTRIBUTED the recorder — a bare
+construction/reference ctor or accessor Var is recorded by
+`record_reference_target`, NOT `instantiate_ctor` — and the sweep verified
+only the recorded MODULE, never the recorded SYMBOL against the terminal
+storage key. Both defects of method are cured by the §1.1.2 recorder-grounded
+re-sweep, which supersedes this table as the completeness statement.)*
 
 | Reference kind (carrier leg) | Writer seam | Recorded module | Actual storage | Verdict |
 |---|---|---|---|---|
@@ -220,7 +247,7 @@ producer inventory:**
 | SigDispatch — mono self-recursion / inner-constrained / inner-hop | monomorphise.rs 399/843/988 | caller (explicit) | caller | correct |
 | AutoCurry — plain fn target | `resolve_auto_curry` | caller's module | target's home | **GAP — callee-span transport** |
 | Fn-value mono rewrite (Var at arg position) | `rename_var_at_span` — no carrier update | stale template FQ / absent | caller (minted mono) | **GAP — sidecar update at rename** |
-| Ctor construction/reference + dotted `Type.member` (Var span) | `instantiate_ctor` / `dotted_member_identity` | storage key that HIT / `fqtn.module` | same (S109 canonical keying) | correct |
+| Ctor construction/reference + dotted `Type.member` (Var span) | ~~`instantiate_ctor` / `dotted_member_identity`~~ **bare spellings: `record_reference_target`; dotted spelling only: `dotted_member_identity`** | storage key that HIT / `fqtn.module` | same (S109 canonical keying) | ~~correct~~ **MIS-ATTRIBUTED — the bare-spelling recorder emitted the ALIAS symbol (FIXME 0620); ruled + fixed §1.1.2** |
 | Pattern ctors (sidecar) | S109 §10 | storage key that HIT | same | correct |
 | Platform effect / extern (Var span; plain Apply keys off the callee Var) | Var leg | terminal home | platform / `primitives` module | correct |
 | Synthetic bodies (accessors / ctor `ConstrADT`) | direct at synthesis (W0.b) | just-registered canonical key | same | correct by construction |
@@ -238,6 +265,150 @@ BEFORE W1** — not folded into W1 (cross-crate where W1 is backend-narrow, and
 Rev-2 forbids discovering producer gaps via backend misses). One unit pin per
 fixed leg (cross-module trait dispatch carrier; imported-target curry
 carrier; fn-value rewrite carrier), mirroring the W0.1 pins.
+*(W0.1b landed `144828d1`; the W1 flip subsequently re-blocked on the SYMBOL
+axis — §1.1.2.)*
+
+### 1.1.2 Terminal-storage-key derivation for alias-resolved references (S110 W1.1 `/arch` ruling — FIXME 0620)
+
+**The defect (0620, third producer gap of the initiative).** For every
+**member-canonical-keyed** symbol — every sum ctor and every field accessor
+(S109 keying: the real `Def` lives under `member_key(Type, member)`; the bare
+name is an `Import` alias) — the carrier recorded the bare-ALIAS FQ
+(`{home, "Pure"}`, `{home, "v"}`), not the terminal storage key
+(`{home, "IO.Pure"}`, `{home, "Box.v"}`). W1's `entry_at` (direct read, no
+chain-follow — §1.3, by design) lands on the alias entry and hard-misses.
+Root cause: `cranelisp_types::Resolved.fq` composes
+`{home, canonical_symbol(WRITTEN_NAME)}` — the home is the chain-follow
+terminus (right), the symbol is the written spelling (wrong for storage).
+The recorder (`record_reference_target` → `def_resolved` → `scope_resolve`)
+recorded `fq` verbatim.
+
+**The class is broader than member keys.** The ruling sweep found the same
+gap wherever a followed `Import`/`Reexport` edge RENAMES: **renamed imports
+`[(foo bar)]` and renamed re-exports** (grammar §2 — symmetric rename forms),
+including a qualified `m2/bar` landing on a renaming re-export. Written
+spelling `bar`, storage key `foo` — identical hard-miss shape.
+
+**Why neither filed candidate was adoptable as filed.**
+
+- *Candidate 1 (repoint `Resolved.fq` at the terminal key)* — rejected.
+  `fq` is the reference/display identity consumed by macro-head dispatch,
+  error attribution, `callees`, the §8.6.4 remedy text, and the display
+  surfaces under S20/S21 byte-identity pins. Repointing it makes `(v box)`'s
+  `v` display as `Box.v` and a renamed `bar` display as `foo` — a
+  user-visible regression riding a producer fix.
+- *Candidate 2 as filed ("derive off `Resolved.entry`'s storage key")* — not
+  implementable literally. A `ModuleEntry` does not carry its own table key:
+  a field accessor is a plain `UserFn` `Def` with nothing identifying its
+  `Type.field` key, and NOTHING on any terminal entry can recover a renamed
+  import's original name. Per-kind reconstruction (mirroring
+  `instantiate_ctor`'s `member_key` probe) would cover ctors only — a patch
+  that leaves accessors needing a re-probe (a second resolution, violating
+  Principle 24) and renamed imports broken forever.
+
+**RULING — the uniform fix: the walk surfaces the terminal storage key; the
+recorder records it.** The resolution walk is the ONE actor that knows the
+terminal key (it looks the terminal up BY that key — the last followed edge's
+`source.symbol`, or the written name when no edge renamed). Two halves:
+
+1. **`cranelisp-types` (landed with this ruling, additive):** `Resolved`
+   gains `storage_key: Symbol` + `storage_fq() -> FQSymbol` (`{home,
+   storage_key}`), threaded through `chain_follow_committed` and
+   `chain_follow_to_home` (new `pub(crate)
+   resolve_terminal_entry_home_and_key`; the public
+   `resolve_terminal_entry_and_home` is now its projection). `Resolved.fq`
+   is UNTOUCHED — every display/attribution consumer is byte-identical by
+   construction. `Resolved` is not serialized (no serde derives): zero cache
+   surface. Baseline: +2 additive lines + `#[non_exhaustive]` (policy
+   alignment; no external construction sites exist — verified). Unit pins:
+   `resolve/tests.rs::storage_key_*` (member alias, renamed import,
+   qualified renaming re-export, prelude-fallback alias, unaliased
+   identity).
+2. **`cranelisp-typecheck` (`/dev`, one small change-set):** in
+   `record_reference_target`, the `resolved_targets` insert takes
+   `resolved.storage_fq()` instead of `resolved.fq` (the ONE line at
+   checker.rs:1429); `builtin_storage_fq`'s `def_resolved` arm likewise
+   returns the resolution's `storage_fq()` (same value today — unrenamed
+   prelude chains — flipped for structural uniformity). `user_fn_refs` (the
+   `callees` feed) STAYS on `resolved.fq` in this change-set — `callees` is
+   persisted `.meta.json` whose value stability is pinned this window; its
+   own alias residual is FIXME 0621. Unit pins per leg: member-aliased ctor
+   carrier == canonical `member_key`; member-aliased accessor carrier ==
+   canonical `member_key`; renamed-import carrier == source storage key.
+
+This is the structural close of the producer-gap class ("Resolve once,
+record the entry's identity"): combined with the §1.1 value-source rule, a
+carrier value composed from a written spelling is no longer something a
+correct writer can produce by accident — walk-resolved kinds get the key from
+the walk, mint-resolved kinds record the key they just probed/registered,
+and transports copy existing carrier entries.
+
+**Recorder-grounded re-sweep (supersedes the §1.1.1 table as the completeness
+statement).** Every kind the backend will key-read (W1 + W2), by its ACTUAL
+recorder, verifying the recorded SYMBOL against the terminal storage key.
+Recorder census grep-verified this ruling: the only `resolved_targets`
+writers are `record_reference_target` (checker.rs), the dotted leg
+(infer.rs:347), `record_dispatch_target` (callees.rs), the mono legs
+(monomorphise.rs:399/843/988), and the fn-value/AutoCurry sites
+(mono_collect.rs:98/750); plus the `pattern_ctors` sidecar
+(`instantiate_ctor`) and direct synthetic population (W0.b).
+
+| # | Reference kind | ACTUAL recorder | Recorded symbol | Terminal storage key | Verdict |
+|---|---|---|---|---|---|
+| 1 | User fn, bare same-module (Var) | `record_reference_target` → `scope_resolve` | written name | same key | correct |
+| 2 | User fn, plain/glob import or re-export chain, unrenamed (Var) | same | written name (edges preserve it) | same | correct |
+| 3 | User fn, **renamed** import/export `[(foo bar)]` (Var) | same | **alias `bar`** | `foo` | **GAP → fixed by `storage_fq()`** |
+| 4 | Qualified `m/sym` through a renaming re-export (Var) | same (`resolve_qualified` path) | **alias** | source key | **GAP → fixed (walk threads the key through `resolve_terminal_entry_home_and_key`)** |
+| 5 | **Sum ctor, bare** (construction, callee, or value position; user `deftype` AND bootstrap-seeded alike) | `record_reference_target` — **NOT `instantiate_ctor`** (the §1.1.1 mis-attribution) | **bare alias `Pure`** | `member_key` (`IO.Pure`) | **GAP (0620) → fixed** |
+| 6 | **Field accessor, bare** (call or fn-value position) | same | **bare alias `v`** | `Box.v` | **GAP (0620) → fixed** |
+| 7 | Product ctor, bare (Var) | same | type-name key (dual facet — no alias edge) | same | correct |
+| 8 | Hand-seeded internal ctor (`Bind` — bare storage key) | same (internal-reject gates precede) | bare name | bare name (no alias) | correct |
+| 9 | Dotted `Type.member` (ctor or accessor, Var) | `dotted_member_identity` (infer.rs:347 leg) | `member_key` probe key | same — "exactly what the probe hits" | correct (verified checker.rs:1592) |
+| 10 | Pattern ctors (sidecar; bare, dotted, qualified) | `instantiate_ctor` canonical-then-bare probe | whichever probe key HIT | same by construction | correct (S109 §10) |
+| 11 | Self-recursion carve-out (Var) | `record_reference_target` env-shadow arm | `{current_module, defn name}` | defn registers under its bare name | correct |
+| 12 | Platform effect / extern / slot-carried primitive (Var; plain Apply keys off the callee Var) | `record_reference_target` | written name (unrenamed chains) / renamed → row 3 | same | correct (renames covered by fix) |
+| 13 | Primitive/operator BuiltinFn (Apply) | `record_dispatch_target` → `builtin_storage_fq` | jit name via `def_resolved`, `primitives` fallback | same (prelude re-export chain preserves the jit name) | correct (flip to `storage_fq()` for uniformity — same value) |
+| 14 | Trait method — call/deferred/value/curry-inner (Apply) | `record_dispatch_target` → TraitMethod arm | `{impl_module (shell), mangle}` | mangle IS the key in the writer's table | correct (W0.1b, `144828d1`) |
+| 15 | SigDispatch — pass-4 mint / dedup / self-recursion / inner legs (Apply) | monomorphise.rs writers | `{caller, mangled}` at `register_mono_entry` | mint key | correct (mint-resolved) |
+| 16 | SigDispatch — overload pending (Apply) | `resolve_pending_overloads` | `{current == defining, mangled}` | same (run-local same-module gate) | correct by reach |
+| 17 | AutoCurry — plain fn target (Apply) | callee-span transport (mono_collect.rs:748) | copy of the callee Var's carrier | inherits rows 1–6 | correct AFTER the Var-leg fix (alias gap propagated here transitively; fixed transitively) |
+| 18 | Fn-value mono rewrite (Var at arg) | sidecar insert at rename (mono_collect.rs:98) | `{current, minted mangle}` | mint key | correct (W0.1b) |
+| 19 | Synthetic bodies (accessor arms / ctor `ConstrADT`) | direct population at synthesis | just-registered canonical key | same | correct by construction (W0.b) |
+
+**No other alias/rename shapes exist**: the rename surface of the language is
+exactly the `Import`/`Reexport` edge's `source.symbol` (member aliases,
+renamed imports, renamed re-exports, glob-member bare aliases are all this
+one edge shape), and the walk now threads the key across every edge — there
+is no second mechanism by which a written spelling can diverge from a storage
+key. Mangled names (`f$Int+Int`, `Trait.method$Type`) never pass through
+alias edges (mint-resolved, rows 14–15).
+
+**Behaviour-invariance + cache verdict.** The types half changes no consumer
+(`fq` untouched; `storage_key` unread until the `/dev` flip; `Resolved`
+unserialized). The typecheck half changes only `resolved_targets` VALUES —
+unread by any live consumer until the W1 re-deploy (the stashed backend flip)
+— and the field's documented MEANING ("the storage key that HIT") is
+unchanged: this is conformance repair of wrong values, not a meaning change,
+so **NO `CACHE_SCHEMA_VERSION` bump** (schema-19 window, the 0472 precedent);
+`BUILD_ID` staleness invalidates any dev cache carrying alias-valued views
+across the compiler rebuild.
+
+**W1 gating verdict (supersedes §1.1.1's).** After the `/dev` recorder
+change-set lands with its pins, the re-sweep shows **NO remaining producer
+gap for any W1 kind (rows 1–17 all storage-key-correct)** — the W1 re-deploy
+(pop `stash@{0}`, flip S3/S4 to the keyed `ctor_meta_at` read, populate the
+KC-W0-6 fixtures) proceeds with no further producer prerequisites. The W2
+value-seam legs (nullary ctor as value, accessor as fn-value) ride the same
+Var-leg recorder and are fixed by the same change — no separate W2 producer
+work remains either.
+
+**Residual (out of this fix, filed):** `user_fn_refs`/`callees` still records
+`Resolved.fq`, so a renamed-import or bare-accessor `UserFn` reference
+persists an alias edge — dependency-sort edge misses (benign; Kahn fallback)
+and, once the S101 session-transaction reverse index goes live, silent
+affected-set starvation. Aligning `callees` onto `storage_fq()` is a
+`.meta.json` MEANING change (schema bump) — **FIXME 0621** (`target:
+/sprint`) schedules it at the next schema-bump window.
 
 ### 1.2 The no-soft-fallback REJECT criterion (Rev-2 — binding on every wave)
 
@@ -642,7 +813,17 @@ diff rides the same schema-19 window — `ModuleEntry::TraitImpl.impl_module` +
 default) + the §1.1.1 typecheck derivation fixes (trait-leg module off the
 shell; AutoCurry callee-span transport; fn-value rewrite sidecar update).
 Baseline regen + `interfaces.md` + rustdoc ride that change-set. Still no
-additional schema bump.
+additional schema bump. *(Landed `144828d1`.)*
+
+**W1.1 addendum (0620 ruling, §1.1.2):** the types half — `Resolved.
+storage_key` + `storage_fq()` threaded through both chain-follow walks —
+landed WITH the ruling (additive, `Resolved` unserialized, +2 baseline lines
++ `#[non_exhaustive]`, five `resolve/tests.rs::storage_key_*` pins). The
+pinned `/dev` (typecheck) change-set: `record_reference_target`'s
+`resolved_targets` insert flips `resolved.fq` → `resolved.storage_fq()`;
+`builtin_storage_fq`'s `def_resolved` arm likewise; `user_fn_refs` stays on
+`.fq` (FIXME 0621); unit pins per §1.1.2. No schema bump (value-only,
+schema-19 window).
 
 ---
 

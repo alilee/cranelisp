@@ -1604,10 +1604,15 @@ No changes from v1.
 
 ```rust
 // crates/cranelisp-types/src/resolve.rs
+#[non_exhaustive]
 pub struct Resolved<C: CodeStore = ()> {
     pub entry: ModuleEntry<C>,
     pub home: ModuleFullPath,
-    pub fq: FQSymbol,
+    pub fq: FQSymbol,          // reference identity: home + canonical WRITTEN spelling
+    pub storage_key: Symbol,   // storage identity: the terminal table key (S110 W1.1, FIXME 0620)
+}
+impl<C: CodeStore> Resolved<C> {
+    pub fn storage_fq(&self) -> FQSymbol;   // { home, storage_key } — the keyed-consumer carrier value
 }
 
 pub fn resolve<C, L>(
@@ -1637,6 +1642,8 @@ pub enum ResolveError {
     PrivateInaccessible { name, defining_module, from_module, visibility_found, span },
 }
 ```
+
+**The two identities on `Resolved` (S110 W1.1, FIXME 0620).** `fq` is the *reference* identity — `home` + the canonical **written** spelling — consumed by display, error attribution, macro-head dispatch, §8.6.4 remedies, and `callees`. It does NOT in general address the entry: across a member alias (`v` → `Box.v`, `Pure` → `IO.Pure`), a renamed import/export (`[(foo bar)]`), or a renaming re-export, the written spelling is an `Import`-edge alias, not the table key. `storage_key` / `storage_fq()` is the *storage* identity — the exact key the chain-follow terminated at, captured by the walk itself (the only actor that knows it; a `ModuleEntry` does not carry its own key). Keyed consumers — the `resolved_targets` carrier feeding the backend's `entry_at` direct read (`design/arch/backend-keyed-consumer.md` §1.1) — record `storage_fq()`, never `fq`. Composing a storage identity from a written spelling is the 0620 defect class.
 
 The single types-owned query that turns a name into a resolved symbol-table entry — following imports/reexports, §8.6.6 module-path aliases, visibility, and Principle-17 chain-following. **Resolving a name is a query over the symbol-table data structure** (no inference, no unification, no substitution), so by Principle 15 (behaviour lives with the type) and Principle 7 (single source) it belongs in `cranelisp-types`, extending the `ensure_module_exists` + `got_data_symbol_name` + chain-follow precedent. It is pure over `symbol_tables` + `module_aliases` (both types-owned), generic over `<C, L>`, and carries **no `CheckState`** — which is what keeps it in the data-only crate.
 

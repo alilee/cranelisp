@@ -658,3 +658,112 @@ fn seam_synthetic_names_skip() {
     assert!(reject_def_over_binding(&scope, &Symbol::from("cmp$Int"), Span::SYNTHETIC).is_ok());
     assert!(reject_def_over_binding(&scope, &Symbol::from("__expr"), Span::SYNTHETIC).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// storage_key — the terminal STORAGE identity surfaced by the walk (FIXME
+// 0620; design/arch/backend-keyed-consumer.md §1.1). `fq` stays the written
+// reference identity; `storage_fq()` is what a keyed consumer records.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn storage_key_equals_written_name_for_unaliased_terminal() {
+    // No edge renamed ⇒ storage identity == reference identity.
+    let tables = tables_with(&[(
+        "user",
+        "foo",
+        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+    )]);
+    let user = ModuleFullPath::from("user");
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &user, "foo", Span::SYNTHETIC)
+        .expect("foo resolves");
+    assert_eq!(r.storage_key, Symbol::from("foo"));
+    assert_eq!(r.storage_fq(), r.fq);
+}
+
+#[test]
+fn storage_key_surfaces_member_alias_terminal_not_written_name() {
+    // The 0620 exemplar: the bare accessor/ctor name is an `Import` alias onto
+    // the canonical `member_key` Def (`v` → `Box.v`, S109 keying). The carrier
+    // identity is the terminal storage key; `fq` keeps the written spelling.
+    let tables = tables_with(&[
+        ("m", "Box.v", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        ("m", "v", import("m", "Box.v", Visibility::Public)),
+    ]);
+    let m = ModuleFullPath::from("m");
+    let mref = tables.get(&m).unwrap();
+    let view = View::single(&mref);
+    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &m, "v", Span::SYNTHETIC)
+        .expect("bare alias resolves");
+    assert_eq!(r.home, m);
+    assert_eq!(r.storage_key, Symbol::from("Box.v"), "storage identity = terminal key");
+    assert_eq!(r.fq.symbol, Symbol::from("v"), "reference identity = written spelling");
+}
+
+#[test]
+fn storage_key_surfaces_renamed_import_terminal() {
+    // `(import [dep [(foo bar)]])` (grammar §2 rename): the written `bar` is
+    // the alias; the Def's storage key in its home is `foo`. Same gap class as
+    // the member alias — only the walk knows the terminal key.
+    let tables = tables_with(&[
+        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        ("user", "bar", import("dep", "foo", Visibility::Private)),
+    ]);
+    let user = ModuleFullPath::from("user");
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let r = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &user, "bar", Span::SYNTHETIC)
+        .expect("renamed import resolves");
+    assert_eq!(r.home, ModuleFullPath::from("dep"));
+    assert_eq!(r.storage_key, Symbol::from("foo"));
+    assert_eq!(r.fq.symbol, Symbol::from("bar"));
+}
+
+#[test]
+fn storage_key_surfaces_through_qualified_renaming_reexport() {
+    // Qualified `m2/bar` where m2 publicly re-exports dep's `foo` under `bar`:
+    // the qualified walk chain-follows to the terminal — storage key `foo`.
+    let tables = tables_with(&[
+        ("dep", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        ("m2", "bar", import("dep", "foo", Visibility::Public)),
+    ]);
+    let user = ModuleFullPath::from("user");
+    let tables_user = {
+        // Resolving from a third module: user's own (empty) table is the view.
+        tables
+            .entry(user.clone())
+            .or_insert_with(|| SymbolTable::<(), ()>::new_with_params(user.clone()));
+        tables
+    };
+    let uref = tables_user.get(&user).unwrap();
+    let view = View::single(&uref);
+    let r = resolve_bare(&tables_user, &dashmap::DashMap::new(), &view, &user, "m2/bar", Span::SYNTHETIC)
+        .expect("qualified renamed re-export resolves");
+    assert_eq!(r.home, ModuleFullPath::from("dep"));
+    assert_eq!(r.storage_key, Symbol::from("foo"));
+    assert_eq!(r.fq.symbol, Symbol::from("bar"));
+}
+
+#[test]
+fn storage_key_surfaces_member_alias_through_prelude_fallback() {
+    // A prelude-provided bare ctor alias (`mk` → `P.mk`, both in prelude, the
+    // bootstrap-seeded shape): the fallback retry inherits the storage key.
+    let tables = tables_with(&[
+        ("prelude", "P.mk", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
+        ("prelude", "mk", import("prelude", "P.mk", Visibility::Public)),
+    ]);
+    let user = ModuleFullPath::from("user");
+    tables
+        .entry(user.clone())
+        .or_insert_with(|| SymbolTable::<(), ()>::new_with_params(user.clone()));
+    let prelude = ModuleFullPath::from("prelude");
+    let uref = tables.get(&user).unwrap();
+    let view = View::single(&uref);
+    let aliases: ModuleAliases = dashmap::DashMap::new();
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &user, Some(&prelude));
+    let r = scope.resolve("mk", Span::SYNTHETIC).expect("prelude fallback resolves");
+    assert_eq!(r.home, prelude);
+    assert_eq!(r.storage_key, Symbol::from("P.mk"));
+    assert_eq!(r.fq.symbol, Symbol::from("mk"));
+}

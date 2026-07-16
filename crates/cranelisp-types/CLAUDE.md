@@ -82,6 +82,17 @@ Fields that LOOK optional but are contractually required downstream:
 
 ## Resolution primitive (`resolve.rs`) traps
 
+- **`Resolved` carries TWO identities — pick deliberately** (S110 W1.1, FIXME
+  0620): `fq` = reference identity (home + canonical WRITTEN spelling — for
+  display, error attribution, macro-head dispatch, §8.6.4 remedies, `callees`);
+  `storage_key`/`storage_fq()` = storage identity (the exact terminal table
+  key, surfaced by the walk). For member aliases (`v` → `Box.v`), renamed
+  imports (`[(foo bar)]`), and renaming re-exports the two DIVERGE — a direct
+  keyed read (`symbol_tables[module][symbol]`) of `fq` MISSES. Any consumer
+  that will re-fetch the entry by key records `storage_fq()`; composing a
+  storage identity from a written spelling is the 0620 defect class
+  (`design/arch/backend-keyed-consumer.md` §1.1.2). Pins:
+  `resolve/tests.rs::storage_key_*`.
 - `split_qualified`/`canonical_symbol` require BOTH `/`-parts non-empty:
   bare `/`, `//`, `foo/`, `/bar` are literal names (Principle 16, FIXME
   0328/0331). A `/`-named operator mis-resolving means a guard was lost —

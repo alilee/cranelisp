@@ -1367,6 +1367,58 @@ refs); (2) a typecheck-or-types /dev change-set lands it (+ per-leg unit pins);
 `ctor_meta_at` read, populate the KC-W0-6 fixture sidecars, verify golden +
 13-RED-baseline-unchanged, commit.
 
+### /arch (0620 ruling + producer re-sweep) — RULED; types half LANDED (2026-07-16)
+
+**Ruling (`backend-keyed-consumer.md` §1.1.2, FIXME 0620 deleted).** Neither
+filed candidate as filed: candidate 1 (repoint `Resolved.fq`) rejected — `fq`
+is the display/attribution/`callees` reference identity under the S20/S21
+byte-identity pins; candidate 2 as filed ("derive off `Resolved.entry`'s
+storage key") is not implementable — a `ModuleEntry` does not carry its own
+table key (an accessor is a plain `UserFn` `Def`), and the class is BROADER
+than member keys: **renamed imports/re-exports `[(foo bar)]` (grammar §2)
+hit the identical gap**, unrecoverable from any terminal entry. The uniform
+fix: **the walk surfaces the terminal storage key** — `Resolved` gains
+`storage_key` + `storage_fq()` (threaded through both chain-follow walks; the
+only actor that knows the key) — and the recorder records THAT.
+`Resolved.fq` untouched → display byte-identical by construction.
+
+**Landed by /arch (types half, behaviour-invariant):** `Resolved.storage_key`
++ `storage_fq()` + `#[non_exhaustive]`; `chain_follow_committed`/
+`chain_follow_to_home` thread the key (`resolve_terminal_entry_home_and_key`
+pub(crate) sibling; the public fn is now its projection); 5 unit pins
+(`resolve/tests.rs::storage_key_*`: member alias, renamed import, qualified
+renaming re-export, prelude-fallback alias, unaliased identity); types
+`public-api.txt` +2 additive; `interfaces.md` two-identities narrative; types
+CLAUDE.md trap entry. Workspace compiles untouched; types suite 199/199.
+
+**→ /dev (typecheck) ACTION — the ~3-line recorder flip + pins (unblocks W1):**
+1. `checker.rs::record_reference_target` — the `resolved_targets` insert
+   (checker.rs:1429) takes `resolved.storage_fq()` instead of
+   `resolved.fq.clone()`. `user_fn_refs` (the `callees` feed) STAYS on
+   `resolved.fq` — persisted-value stability; residual filed as FIXME 0621.
+2. `callees.rs::builtin_storage_fq` — the `def_resolved` arm returns the
+   resolution's `storage_fq()` (same value today; structural uniformity).
+3. Unit pins per §1.1.2: member-aliased ctor carrier == `member_key`
+   (`Pure` → `IO.Pure`); member-aliased accessor carrier == `member_key`
+   (`v` → `Box.v`); renamed-import carrier == source storage key.
+4. NO `CACHE_SCHEMA_VERSION` bump (value-only conformance repair inside the
+   schema-19 window; carrier unread until W1; `BUILD_ID` covers dev-cache
+   skew).
+
+**Re-sweep verdict (the class close).** §1.1.2's recorder-grounded 19-row
+table traces the ACTUAL recorder for every reference kind (the §1.1.1 sweep
+had mis-attributed the ctor recorder to `instantiate_ctor`; the bare-spelling
+recorder is `record_reference_target`) and verifies recorded SYMBOL ==
+terminal storage key. After the /dev flip: **NO remaining producer gap for
+any W1 OR W2 kind** — rows 1–19 all storage-key-correct; the rename surface
+of the language is exactly the `Import`-edge `source.symbol`, which the walk
+now threads across every edge. §1.1's new carrier value-source rule
+(walk-resolved `storage_fq()` / mint-resolved probe-or-registration key /
+transport — NEVER a written spelling) is the structural close; `/review`
+rejects violations on sight. **W1 re-deploy (pop `stash@{0}`, flip S3/S4 to
+keyed `ctor_meta_at`, populate KC-W0-6 fixtures) is GO once the /dev flip
+lands — no further producer prerequisites, W2 producer work also nil.**
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

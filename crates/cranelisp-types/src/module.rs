@@ -2599,19 +2599,42 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
+    resolve_terminal_entry_home_and_key(modules, module_path, name)
+        .map(|(entry, home, _key)| (entry, home))
+}
+
+/// Keyed sibling of [`resolve_terminal_entry_and_home`]: additionally returns
+/// the terminal **storage key** — the exact symbol-table key under which the
+/// terminal (non-`Import`) entry sits in `home`'s table. For an unaliased name
+/// this equals `name`; across a member alias (`v` → `Box.v`), a renamed
+/// import/export (`[(foo bar)]`), or any `Import`/`Reexport` chain whose edges
+/// rename, it is the LAST followed edge's `source.symbol` — the only place the
+/// storage identity is knowable (a `ModuleEntry` does not carry its own key).
+/// Feeds `Resolved.storage_key` (resolve.rs) — the FIXME-0620 carrier
+/// identity; see `design/arch/backend-keyed-consumer.md` §1.1.
+pub(crate) fn resolve_terminal_entry_home_and_key<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: &ModuleFullPath,
+    name: &str,
+) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
     let entry = {
         let guard = modules.get(module_path)?;
         guard.get(name).cloned()?
     };
-    chain_follow_to_home(modules, entry, module_path.clone(), 0)
+    chain_follow_to_home(modules, entry, module_path.clone(), Symbol::from(name), 0)
 }
 
 fn chain_follow_to_home<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     entry: ModuleEntry<C>,
     home: ModuleFullPath,
+    key: Symbol,
     depth: usize,
-) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+) -> Option<(ModuleEntry<C>, ModuleFullPath, Symbol)>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -2622,13 +2645,14 @@ where
     match &entry {
         ModuleEntry::Import { source, .. } => {
             let next_home = source.module.clone();
+            let next_key = source.symbol.clone();
             let next_entry = {
                 let guard = modules.get(&source.module)?;
-                guard.get(source.symbol.as_ref()).cloned()?
+                guard.get(next_key.as_ref()).cloned()?
             };
-            chain_follow_to_home(modules, next_entry, next_home, depth + 1)
+            chain_follow_to_home(modules, next_entry, next_home, next_key, depth + 1)
         }
-        _ => Some((entry, home)),
+        _ => Some((entry, home, key)),
     }
 }
 
