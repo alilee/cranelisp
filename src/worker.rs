@@ -1096,21 +1096,15 @@ pub fn derive_codegen_batch(
 ///    §9.6).
 /// 6. Notifies the scheduler per compiled symbol.
 ///
-/// `extra_jit_symbols` carries additional JIT symbol registrations needed by
-/// the REPL eval path (trace-runtime overrides, test-runner externs). Regular
-/// worker invocations pass an empty slice.
-///
 /// The JIT is wrapped in `Arc<Jit>` so a single compile call producing N
 /// functions can store N `Code` entries sharing one JIT (see
 /// `src/session_v4.rs` `Code` doc — /arch Phase 3a §3).
-#[allow(clippy::too_many_arguments)]
 pub fn inline_jit_codegen_for_module(
     scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
-    extra_jit_symbols: &[(String, *const u8)],
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
     // 1. Derive compilation batch from `program` and the module's symbol
@@ -1130,7 +1124,6 @@ pub fn inline_jit_codegen_for_module(
         &names,
         tc_modules,
         introspection,
-        extra_jit_symbols,
         shared_state,
     )?;
 
@@ -1159,25 +1152,22 @@ pub fn inline_jit_codegen_for_module(
 ///   `compile_macro_clause_inline`) — passes a single-element `names` for the
 ///   synthesised `__macro_{name}_clause_{idx}` defn. Macro-clause callers
 ///   notify the scheduler themselves in their outer loop.
-#[allow(clippy::too_many_arguments)]
 pub fn inline_jit_codegen_for_names(
     module: &ModuleFullPath,
     names: &[Symbol],
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
-    extra_jit_symbols: &[(String, *const u8)],
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
     if names.is_empty() {
         return Ok(());
     }
-    // S76 W-Collapse: `extra_jit_symbols` is retained for signature
-    // compatibility (REPL eval path no longer threads trace symbols). The
-    // unified `Jit::new(symbol_tables)` derives the entire JIT symbol set —
+    // The unified `Jit::new(symbol_tables)` derives the entire JIT symbol set —
     // intrinsics (incl. trace + the 2 parked test intrinsics are folded in
     // below), per-module GOT data symbols, platform-effect jit-names — so int
-    // assembles nothing by hand.
-    let _ = (extra_jit_symbols, shared_state);
+    // assembles nothing by hand; `shared_state` is threaded for future use by
+    // this seam but not read here.
+    let _ = shared_state;
 
     // 3. Build the JIT — the whole symbol set derives from `symbol_tables`
     //    (BC §3 / D41). The host-promised `discover-tests` extern
@@ -2064,7 +2054,6 @@ fn handle_typecheck_work_shared(
                 &program,
                 &shared.symbol_tables,
                 shared.introspection.as_ref(),
-                &[],
                 Some(shared),
             )?;
 

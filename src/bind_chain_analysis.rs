@@ -65,37 +65,6 @@ pub fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
     defn.variants[0].body = transform_expr(body, symbol_tables, current_module);
 }
 
-/// Transform bind chains in a standalone expression (REPL eval path).
-///
-/// Sprint 67 hack-back: REPL eval-expression path currently does not invoke
-/// auto-scheduling (only `auto_schedule_defn` runs in `session.rs`). Retained
-/// for future activation; narrowed + `#[allow(dead_code)]`.
-#[allow(dead_code)]
-pub(crate) fn auto_schedule_expr<C: CodeStore, L: LinkerStore>(
-    expr: &mut Expr,
-    symbol_tables: &SymbolTables<C, L>,
-    current_module: &ModuleFullPath,
-) {
-    let owned = std::mem::replace(
-        expr,
-        Expr::BoolLit { value: false, span: Span::SYNTHETIC, inferred_type: None },
-    );
-    *expr = transform_expr(owned, symbol_tables, current_module);
-}
-
-/// Transform bind chains in an owned expression (for DefnVariant bodies).
-///
-/// Sprint 67 hack-back: no current consumer. Retained as a primitive; narrowed
-/// + `#[allow(dead_code)]`.
-#[allow(dead_code)]
-pub(crate) fn auto_schedule_expr_owned<C: CodeStore, L: LinkerStore>(
-    expr: Expr,
-    symbol_tables: &SymbolTables<C, L>,
-    current_module: &ModuleFullPath,
-) -> Expr {
-    transform_expr(expr, symbol_tables, current_module)
-}
-
 // ---------------------------------------------------------------------------
 // Expression transformation
 // ---------------------------------------------------------------------------

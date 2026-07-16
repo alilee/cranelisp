@@ -144,14 +144,6 @@ pub fn resolve_platform_path(
     None
 }
 
-/// Get the user's home directory.
-#[allow(dead_code)]
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-}
-
 /// Validate a DLL's declared ABI version against the host's `ABI_VERSION`.
 ///
 /// Extracted from `load_platform_dll` (Step 4) as the smallest testable owner
@@ -592,10 +584,10 @@ fn require_io_return(ty: &Type, platform_name: &str, fn_name: &str) -> Result<()
 
 /// Check if a Sexp is a `(platform name)` form.
 ///
-/// Sprint 67 hack-back: predicate is currently unused — structural-decl
-/// extraction in `worker::extract_module_declarations` inlines the shape
-/// check. Retained for symmetry with `extract_platform_name`; narrowed +
-/// `#[allow(dead_code)]`.
+/// No production caller — structural-decl extraction in
+/// `worker::extract_module_declarations` inlines the shape check; referenced
+/// only by this module's unit tests. Retained for symmetry with
+/// `extract_platform_name`, so `#[allow(dead_code)]` (dead in a non-test build).
 #[allow(dead_code)]
 pub(crate) fn is_platform_form(sexp: &Sexp) -> bool {
     if let Sexp::List(elems, _) = sexp
@@ -609,9 +601,9 @@ pub(crate) fn is_platform_form(sexp: &Sexp) -> bool {
 
 /// Extract the platform name from a `(platform name)` form.
 ///
-/// Sprint 67 hack-back: extractor currently unused (call sites inlined into
-/// worker decl extraction). Retained for the canonical shape; narrowed +
-/// `#[allow(dead_code)]`.
+/// No production caller (call sites inlined into worker decl extraction);
+/// referenced only by this module's unit tests. Retained for the canonical
+/// shape, so `#[allow(dead_code)]` (dead in a non-test build).
 #[allow(dead_code)]
 pub(crate) fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
     if let Sexp::List(elems, span) = sexp

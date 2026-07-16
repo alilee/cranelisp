@@ -21,9 +21,9 @@ pub type SessionSymbolTable = cranelisp_types::SymbolTable<Code, ()>;
 /// Strongly typed alias for the integration layer's `ModuleEntry`
 /// instantiation. `C = Code` (matches `SessionSymbolTable`).
 ///
-/// Sprint 67 hack-back: no current callers — `ModuleEntry<Code>` is spelled
-/// inline where used. Retained as the canonical alias name; narrowed +
-/// `#[allow(dead_code)]`.
+/// No production callers — `ModuleEntry<Code>` is spelled inline where used;
+/// referenced only by this module's unit tests. Retained as the canonical
+/// alias name, so `#[allow(dead_code)]` (dead in a non-test build).
 #[allow(dead_code)]
 pub(crate) type SessionModuleEntry = cranelisp_types::ModuleEntry<Code>;
 

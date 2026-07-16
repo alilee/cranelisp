@@ -136,10 +136,10 @@
     }
 
     // spec: spec/08-modules.md §8.5.4 — I4 (0571.2). `module_has_no_member_error`
-    // is the SINGLE author of the "module X has no member Y" diagnostic (shared
-    // by the FQ-gap decision arm and `phantom_member_diagnostic` — no
-    // display-envelope mirror, Principle 7). It formats the message and locates
-    // the user's verbatim `<module>/<member>` reference span.
+    // is the SINGLE author of the "module X has no member Y" diagnostic (called
+    // only by the FQ-gap decision arm — no display-envelope mirror, Principle 7).
+    // It formats the message and locates the user's verbatim `<module>/<member>`
+    // reference span.
     #[test]
     fn module_has_no_member_error_authors_message_and_locates_ref_span() {
         let sexps = cranelisp_frontend::parse("(mathx/helper 1)").unwrap();
@@ -711,9 +711,9 @@
     }
 
     // -----------------------------------------------------------------------
-    // FIXME 0490 — phantom-member diagnostic: the span-attribution walker
-    // (`find_named_var_span`) that gives the member-not-found error a real
-    // source location instead of the phantom path's `0..0`.
+    // 0571 member-not-found diagnostic: the span-attribution walker
+    // (`find_named_var_span`) that gives the "module X has no member Y" error a
+    // real source location at the user's reference site instead of `0..0`.
     // -----------------------------------------------------------------------
 
     fn var(name: &str, start: u32, end: u32) -> Expr {

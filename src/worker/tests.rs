@@ -344,7 +344,6 @@
             &names,
             &symbol_tables,
             Some(&introspection),
-            &[],
             None,
         )
         .expect("unified codegen should succeed for a trivial int-returning defn");
@@ -437,7 +436,6 @@
             &names,
             &symbol_tables,
             None,
-            &[],
             None,
         )
         .expect("worker codegen succeeds for a trivial int-returning defn");
@@ -503,7 +501,6 @@
             &names,
             &symbol_tables,
             None,
-            &[],
             None,
         )
         .expect("worker codegen succeeds");
@@ -593,7 +590,6 @@
             &names,
             &symbol_tables,
             None,
-            &[],
             None,
         )
         .expect("__expr compiles through the uniform G6 path");

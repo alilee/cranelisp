@@ -615,13 +615,6 @@ impl CompilerSession {
         Ok(ModuleIntroductionOutcome::Blank)
     }
 
-    /// Backwards-compatible alias for the Blank branch only. Kept for callers
-    /// that want create-if-absent semantics without inspecting the outcome.
-    #[allow(dead_code)]
-    pub fn introduce_module_blank(&self, path: &ModuleFullPath) {
-        let _ = cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, path);
-    }
-
     /// Cache probe for `introduce_module`'s branch 2. Returns
     /// `Some(decoded_table)` iff cache reports a valid entry with an `.o`
     /// file present. Errors (cache read failures) bubble up as
@@ -873,10 +866,8 @@ impl CompilerSession {
         &self.warnings
     }
 
-    /// Mutable accessor for the warnings accumulator. Used by the eventual
-    /// worker → session warning merge path; for now the public method
-    /// surface is the load-bearing change.
-    #[allow(dead_code)]
+    /// Mutable accessor for the warnings accumulator. `eval` overwrites it with
+    /// the merged per-cluster warning set at the end of a turn (`eval.rs`).
     pub fn warnings_mut(&mut self) -> &mut Vec<Warning> {
         &mut self.warnings
     }

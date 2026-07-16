@@ -253,58 +253,6 @@ pub fn rc_inc(val: i64) {
 }
 
 // ---------------------------------------------------------------------------
-// Debug helpers (test-only)
-// ---------------------------------------------------------------------------
-
-/// Debug: dump the heap structure of a runtime Sexp value.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn debug_dump_sexp(val: i64, depth: usize) {
-    let indent = "  ".repeat(depth);
-    if val < NULLARY_THRESHOLD {
-        eprintln!("{indent}[nullary tag={val}]");
-        return;
-    }
-    let tag = unsafe { read_i64(val, PAYLOAD_OFFSET) };
-    let field0 = unsafe { read_i64(val, FIELD0_OFFSET) };
-    match tag {
-        TAG_SEXP_INT => eprintln!("{indent}SexpInt({field0}) @ {val:#x}"),
-        TAG_SEXP_FLOAT => eprintln!("{indent}SexpFloat({}) @ {val:#x}", f64::from_bits(field0 as u64)),
-        TAG_SEXP_BOOL => eprintln!("{indent}SexpBool({}) @ {val:#x}", field0 != 0),
-        TAG_SEXP_STR => eprintln!("{indent}SexpStr({:?}) @ {val:#x}", read_runtime_string(field0)),
-        TAG_SEXP_SYM => eprintln!("{indent}SexpSym({:?}) @ {val:#x}", read_runtime_string(field0)),
-        TAG_SEXP_LIST => {
-            eprintln!("{indent}SexpList @ {val:#x}:");
-            debug_dump_slist(field0, depth + 1);
-        }
-        TAG_SEXP_BRACKET => {
-            eprintln!("{indent}SexpBracket @ {val:#x}:");
-            debug_dump_slist(field0, depth + 1);
-        }
-        _ => eprintln!("{indent}UNKNOWN tag={tag} field0={field0:#x} @ {val:#x}"),
-    }
-}
-
-/// Debug: dump an SList chain.
-#[cfg(test)]
-#[allow(dead_code)]
-fn debug_dump_slist(mut slist: i64, depth: usize) {
-    let indent = "  ".repeat(depth);
-    loop {
-        if slist < NULLARY_THRESHOLD {
-            eprintln!("{indent}SNil");
-            break;
-        }
-        let _tag = unsafe { read_i64(slist, PAYLOAD_OFFSET) };
-        let head = unsafe { read_i64(slist, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(slist, FIELD1_OFFSET) };
-        eprintln!("{indent}SCons @ {slist:#x}:");
-        debug_dump_sexp(head, depth + 1);
-        slist = tail;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -465,7 +465,6 @@ impl CompilerSession {
             program,
             &self.shared.symbol_tables,
             self.shared.introspection.as_ref(),
-            &[],
             Some(&self.shared),
         )?;
 

@@ -26,7 +26,7 @@
 use cranelisp_types::{ErrorLocation,
     CranelispError,
     Expr, MatchArm, ModuleFullPath, ModuleStrategy,
-    ResolutionGap, Sexp, Span, TopLevel,
+    Sexp, Span, TopLevel,
 };
 
 use crate::worker::{
@@ -477,36 +477,35 @@ fn finalize_cluster(
         ctx.shared_state,
     )?;
     if let Some(gap) = maybe_gap {
-        // FIXME 0490 — phantom-member diagnostic. typecheck's qualified-name
-        // resolution (`checker::lookup`) probes a current-module-relative CHILD
-        // path `<current>.<qualifier>` BEFORE the absolute module; when the
-        // absolute module IS loaded but the MEMBER is missing, the absolute
-        // candidate produces NO gap, so the CHILD gap (`user.primitives/…`)
-        // survives and would drive here — hunting a phantom submodule and
-        // reporting `module 'user.primitives' referenced by 'user.primitives/...'
-        // not found` at `0..0` (three lies: phantom module, `'...'` placeholder,
-        // bogus span). Detect the shape at this int seam and report
-        // member-not-found against the REAL loaded module instead. (The deeper
-        // ordering cure — typecheck preferring the loaded absolute module over
-        // the phantom child — is a `/typecheck` FIXME.)
-        if let Some(err) = phantom_member_diagnostic(ctx, module, &gap, expanded_program) {
-            return Err(err);
-        }
         // 0571 (B4/B5 + AL-3): the qualified-reference gap now fires
         // unconditionally on a member-absent abs module (typecheck
         // `resolve_qualified`). INT owns the decision from the module's LIVE
         // state (Principle 3/17 — typecheck stays scheduler-free). The
         // reference-site span makes every diagnostic actionable (AL-3), replacing
         // the `Span::SYNTHETIC` module-head span the wrap reported at.
+        //
+        // Latent coupling (0609, shim removal): the deleted `phantom_member_diagnostic`
+        // int shim once caught a current-module-relative CHILD gap
+        // (`<current>.<qualifier>/<member>`) that typecheck's `checker::lookup`
+        // synthesised BEFORE probing the absolute module — a member-absent loaded
+        // module could survive as a phantom child gap. That shape is now
+        // foreclosed: 0571 made member-absent gap unconditionally on the absolute
+        // module, and Pass-1 macro recognition hard-errors on `PrivateInaccessible`
+        // for a qualified non-macro atom (the de-facto privacy gate). The removal
+        // relies on that hard-error path: `checker.rs` `lookup`'s `Err(_)` arm
+        // swallows the absolute probe's privacy error into a phantom child gap, so
+        // if recognition ever stops hard-erroring there, the honest cure is in
+        // typecheck (surface the absolute probe's privacy error from `lookup`) —
+        // NOT a re-grown int shim.
         if let Some(dep) = gap_target_module(&gap) {
             let member = gap_member(&gap);
             // Module present AND terminal (`fq_module_is_loaded`) ⇒ its
             // signatures are fully published, so the member GENUINELY does not
             // exist ⇒ the honest "module X has no member Y" at the reference
             // site (§8.5.4). Authored via the single `module_has_no_member_error`
-            // seam (I4, 0571.2 — the sole author of this diagnostic, shared with
-            // `phantom_member_diagnostic`). Never re-drive a terminal module (the
-            // member stays absent on every retry — an infinite loop).
+            // seam (I4, 0571.2 — the sole author of this diagnostic, and now its
+            // sole caller). Never re-drive a terminal module (the member stays
+            // absent on every retry — an infinite loop).
             if fq_module_is_loaded(ctx, &dep) {
                 return Err(module_has_no_member_error(expanded_program, &dep, &member));
             }
@@ -567,61 +566,14 @@ fn finalize_cluster(
     Ok(ClusterOnce::Done { processed, program })
 }
 
-/// FIXME 0490 — turn a phantom-submodule resolution gap into an honest
-/// member-not-found diagnostic against the REAL loaded module.
-///
-/// Fires only for the exact shape the mis-resolution produces: a gap whose
-/// module is `<current>.<qualifier>` (a single-component child of the
-/// referencing module — typecheck's `checker::lookup` synthesises this
-/// current-module-relative probe) where `<qualifier>` names a REAL, loaded
-/// module. That is precisely the "qualified reference to a loaded module whose
-/// member does not exist" case: the loaded absolute-module candidate produced
-/// no gap of its own, so the phantom child gap survived. Every other shape —
-/// a genuine unloaded nested submodule (`<current>.<child>` where `<child>` is
-/// NOT itself a loaded module), a bare-module gap, a non-child qualifier —
-/// returns `None` and drives/errors normally.
-fn phantom_member_diagnostic(
-    ctx: &ModuleCompiler,
-    module: &ModuleFullPath,
-    gap: &ResolutionGap,
-    program: &[TopLevel],
-) -> Option<CranelispError> {
-    let (gap_module, member) = match gap {
-        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
-            (fq.module.clone(), fq.symbol.to_string())
-        }
-        ResolutionGap::Type(fqt) => (fqt.module.clone(), fqt.name.to_string()),
-        _ => return None,
-    };
-    // Is `gap_module` a single-component child `<current>.<qualifier>` of the
-    // referencing module? (A genuine dotted submodule path is not this shape.)
-    let qualifier = gap_module.as_ref().strip_prefix(&format!("{module}."))?;
-    if qualifier.is_empty() || qualifier.contains('.') {
-        return None;
-    }
-    // Only fire when `<qualifier>` names a REAL loaded module — a genuine
-    // missing submodule (`<qualifier>` not a loaded module) must still drive.
-    if !fq_module_is_loaded(ctx, &ModuleFullPath::from(qualifier)) {
-        return None;
-    }
-    // Locate the user's reference span so the diagnostic carries a real source
-    // location (`<qualifier>/<member>` is the verbatim AST var name) rather
-    // than the `0..0` the phantom-module path emitted.
-    Some(module_has_no_member_error(
-        program,
-        &ModuleFullPath::from(qualifier),
-        &member,
-    ))
-}
-
 /// The single author of the §8.5.4 "module X has no member Y" diagnostic (I4,
-/// 0571.2). BOTH the FQ-gap decision arm (`process_cluster_once`, a member-absent
-/// terminal module) and `phantom_member_diagnostic` (the current-module-relative
-/// mis-resolution shape) route the message + reference-span lookup through here,
-/// so the diagnostic has exactly one authoring site — no display-envelope mirror
-/// (Principle 7). Locates the user's verbatim `<module>/<member>` reference span
-/// so the error carries a real source location, falling back to `Span::SYNTHETIC`
-/// when the var name is not found in the program.
+/// 0571.2). The FQ-gap decision arm (`finalize_cluster`, a member-absent
+/// terminal module) is its sole caller and routes the message + reference-span
+/// lookup through here, so the diagnostic has exactly one authoring site — no
+/// display-envelope mirror (Principle 7). Locates the user's verbatim
+/// `<module>/<member>` reference span so the error carries a real source
+/// location, falling back to `Span::SYNTHETIC` when the var name is not found in
+/// the program.
 fn module_has_no_member_error(
     program: &[TopLevel],
     module: &ModuleFullPath,
@@ -639,8 +591,9 @@ fn module_has_no_member_error(
 }
 
 /// Find the span of an `Expr::Var` named `target` inside a top-level form (a
-/// bare expression or a defn body). Used only by `phantom_member_diagnostic`
-/// to attribute the member-not-found diagnostic to the user's reference.
+/// bare expression or a defn body). Used by `module_has_no_member_error` and the
+/// FQ-gap decision arm to attribute the member-not-found diagnostic to the
+/// user's reference.
 fn find_named_var_span_in_toplevel(tl: &TopLevel, target: &str) -> Option<Span> {
     match tl {
         TopLevel::Expr(e) => find_named_var_span(e, target),
@@ -956,7 +909,14 @@ fn process_regular_form(
 fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     // Collect qualified symbol names for this module from the TC symbol table.
     let symbols: Vec<cranelisp_types::Symbol> = {
-        let table = ctx.symbol_tables.get(&ctx.current_module).unwrap();
+        let table = ctx.symbol_tables.get(&ctx.current_module).unwrap_or_else(|| {
+            unreachable!(
+                "invariant: clear_module_codegen runs only on the Replace path, whose \
+                 target module's symbol table was registered (introduced blank / \
+                 preserved for slot reuse) before this compile and set as current_module \
+                 immediately prior — see process_cluster's Replace arm"
+            )
+        });
         table.all_symbols()
             .filter_map(|(name, entry)| {
                 // Only clear codegen for definitions owned by this module,

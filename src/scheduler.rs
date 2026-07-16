@@ -1993,16 +1993,6 @@ impl CompileScheduler {
         self.is_cached_module(module)
     }
 
-    /// Remove a module from the cache-loaded set. Used when a cached
-    /// module's source file changes and the cached artefact is invalidated.
-    /// `re_register_module` already calls this internally — exposed here
-    /// for direct callers that want to invalidate without re-enqueueing.
-    #[allow(dead_code)]
-    pub fn cached_module_remove(&self, module: &ModuleFullPath) {
-        let mut state = self.lock();
-        state.cached_modules.remove(module);
-    }
-
     /// Check if the scheduler is in shutdown state.
     pub fn is_shutdown(&self) -> bool {
         let state = self.lock();
@@ -2122,47 +2112,6 @@ impl CompileScheduler {
     // -----------------------------------------------------------------------
     // Internal helpers (all take &mut SchedulerState to avoid re-locking)
     // -----------------------------------------------------------------------
-
-    /// Check if all priority work has been exhausted.
-    ///
-    /// Returns true when no more work items can appear:
-    /// - The modules map is empty (no work registered), or
-    /// - All work queues are empty (TypecheckFirst, TypecheckNext), AND
-    /// - No modules are in TypecheckWorking (which could produce new work
-    ///   via register_module).
-    ///
-    /// This covers several scenarios:
-    /// - All modules TypecheckDone/Complete/Failed: no more work.
-    /// - Some modules TypecheckBlocked with nothing to unblock them:
-    ///   no active workers means no new notifications will come.
-    ///
-    /// Retained after Sprint 57 Wave 4 G9 removed its only caller — future
-    /// callers (object-codegen exhaustion, hot-flush promotion) may want
-    /// the same check. Kept for documentation + possible re-use.
-    #[allow(dead_code)]
-    fn all_inmem_complete_locked(state: &SchedulerState) -> bool {
-        // If queues have items, work is available (covered by the
-        // try_take logic above, but double-check for completeness).
-        if !state.typecheck_first.is_empty()
-            || !state.typecheck_next.is_empty()
-        {
-            return false;
-        }
-        // If any module is being actively processed, it could produce
-        // new work (register deps).
-        let any_working = state.modules.values()
-            .any(|ms| ms.pool == ModulePool::TypecheckWorking);
-        if any_working {
-            return false;
-        }
-        // Check for cached modules needing inmem loading (Level 4 work).
-        let cached_needing_inmem = state.typecheck_done.iter().any(|module| {
-            state.modules.get(module)
-                .map(|ms| !ms.inmem_done && ms.object_done)
-                .unwrap_or(false)
-        });
-        !cached_needing_inmem
-    }
 
     /// Set a module's pool. Does NOT add/remove from deques — caller
     /// is responsible for deque management.

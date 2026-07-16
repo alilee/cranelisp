@@ -115,7 +115,6 @@ pub(super) fn compile_macro_clause_core(
         &names,
         tc_modules,
         None,
-        &[],
         env.shared_state,
     )?;
 

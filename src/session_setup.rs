@@ -2,14 +2,13 @@
 //
 // This module provides:
 // - CacheState: manifest tracking for .o caching
-// - Utility functions: lib dirs, prelude resolution, exit code
+// - Utility functions: lib dirs, prelude resolution
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     CranelispError, ModuleFullPath, Program, Span,
-    Type,
 };
 
 use cranelisp_backend::cache::manifest as cache_manifest;
@@ -500,23 +499,6 @@ pub fn resolve_prelude(
     }
 
     None
-}
-
-/// Determine the process exit code from the already-unwrapped inner value.
-///
-/// Per spec section 10.6.1:
-/// - If the inner type is `Int`, use the integer value as the exit code.
-/// - Otherwise, exit code is 0.
-///
-/// Sprint 67 hack-back: narrowed to `pub(crate)` + `#[allow(dead_code)]` —
-/// no current callers (the exit-code derivation is currently inline in
-/// `main.rs`); retained as the canonical spec §10.6.1 mapping.
-#[allow(dead_code)]
-pub(crate) fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
-    match inner_ty {
-        Type::Int => value as i32,
-        _ => 0,
-    }
 }
 
 // `inject_prelude_import` DELETED (S76 W-Absorb). It was a dead `pub(crate)`
