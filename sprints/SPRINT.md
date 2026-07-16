@@ -1783,6 +1783,84 @@ producer is COMPLETE across all carriers × construction paths — W3 pops
 family, and runs the §3 grep gate with NO further producer prerequisites.
 This is the last producer touch of the 0583 initiative.**
 
+### /dev (W3 re-deploy) — 0622 producer fix + W3 backend deletion (2026-07-16, LANDED)
+
+Coordinated typecheck (0622 map-provenance fix) + backend (staged W3
+deletion) re-deploy per the `/arch` §1.1.3 ruling. Two commits on `main`.
+
+**Step 1 — the 0622 map-instance fix (`4c899dd9`, typecheck-only, no
+`cranelisp-types` diff, no schema bump).** Three edits, all "read the right
+map" per the check-run pairing rule:
+1. `traits/monomorphise.rs::finalize_mono_codegen_view` — signature takes the
+   per-instance `resolutions: &MethodResolutions` (was `resolved_targets:
+   &HashMap`); the view is now built as `MonoExpr::from_expr(body,
+   &resolutions.pattern_ctors, &resolutions.resolved_targets)` — BOTH sidecars
+   off the one per-instance map. The `:516–518` false-assumption comment is
+   deleted and the pairing rule stated in its place. P7 caller passes
+   `&resolutions`.
+2. `program/register.rs::register_test_fn_mono_roots` — the sibling cell:
+   `build_concrete_codegen_view(..)` now takes `&resolutions.pattern_ctors,
+   &resolutions.resolved_targets)` (the per-root recheck maps), not
+   `state.method_resolutions.*` (closes the cross-run retry edge).
+3. `program/finalize.rs::sweep_post_pass_outputs` — added
+   `accumulator.pattern_ctors.extend(taken.pattern_ctors)` so the sweep of the
+   3-field `MethodResolutions` is total (was dropping `pattern_ctors`;
+   behaviour-invariant today).
+
+**The 2 (+1) unit pins** (`program/tests.rs`, spec: §1.1.3): a
+`collect_resolved_ctors` walker + a `mono_match_arm_ctor` finder, then —
+(i) `mono_ctor_pattern_view_cross_module_carries_resolved_ctor` (RED on main:
+arm `None`; GREEN after: `lib/Box`), (ii)
+`mono_ctor_pattern_view_cross_run_same_module_carries_resolved_ctor` (the
+REPL-incremental twin — template checked in run 1, first concrete call in run 2;
+RED on main; GREEN after: `test/Box`), (iii)
+`mono_ctor_pattern_view_same_run_carries_resolved_ctor` (regression guard —
+GREEN on main too). RED-on-main verified by reverting the one-line
+`finalize_mono_codegen_view` fix: pins (i)/(ii) fail with `left: None`, (iii)
+passes — then the fix restored. These pins ARE the failing-not-ignored 0622
+record (no `/testing` e2e — an e2e cannot fail on main while S19 stands).
+Typecheck unit suite 696→699 tests, all GREEN.
+
+**Step 2 — pop the staged W3 backend deletion (`be06f6cb`).** `git stash pop`
+of `stash@{0}` applied CLEANLY (backend-only, 13 files, disjoint from the
+typecheck fix; stash auto-dropped on success). The deletion (net **-993 LOC**,
+209 ins / 1202 del): `resolve_driven` + `resolve_chain` + the arbitrary-order
+`symbol_tables.iter()` global scan; the ten resolver entry points
+(`resolve_got_target`, `resolve_is_callable_target`,
+`resolve_vec_query_primitive`, `resolve_callee_summary`,
+`resolve_platform_effect_target`, `resolve_poll_effect_target`,
+`resolve_extern_target`, `resolve_func_arity`, `lookup_constructor`,
+`resolve_got_entry`); the S19 None-arm fallback + S20 folded onto
+`ctor_meta_at(arm.resolved_ctor)`; the backend `lenient_mono_from_expr` wrapper
++ the `lib.rs:909` lenient rebuild arm; the 8 dead resolver unit tests + the
+`mod.rs` re-export trim.
+
+**Acceptance — all met:**
+- **Grep gate GREEN (the zero-resolver structural proof).** The acceptance
+  grep `resolve_driven|fn resolve_.*_target|fn lookup_constructor|lenient_mono_from_expr`
+  and the full W3 gate both return ZERO live-code matches in
+  `crates/cranelisp-backend/src/` — every remaining occurrence is rustdoc /
+  comment. `resolution.rs` retains exactly `got_data_symbol_name` +
+  `inner_fn_discriminator_for`.
+- `golden_clif_w0b` **5/5 GREEN byte-identical**.
+- Backend unit suite **408/408 GREEN**; typecheck unit suite **699/699 GREEN**.
+- Full suite back to the **11-RED baseline** (VP-3/4/5 ×3
+  [`generic_value_use_mono` if/match/vec], R16/R17 ×2 [`spec_03_types`
+  value-position-constraint + unresolved-return-type-dispatch], 0590 ×2
+  [`spec_07_traits` hkt-sig + bare-user-type-sig], spec_05 ×2 [ctor-trailing-form
+  + multi-arity-no-main], `ownership_reuse` chaining-toggle-off, SG-1 `derive`
+  quasiquote). W3 restored 11, added none — the ~53 stdlib cross-module-mono
+  hard-miss REDs the staged deletion caused are all GREEN (stdlib conformance
+  now fails ONLY on `derive`, the pre-existing SG-1 quasiquote defect).
+- `cargo check --workspace --tests` clean; clippy clean at all edit sites (the
+  only warnings are the pre-existing project-wide `result_large_err` +
+  doc-list baseline). No public-API/schema/cache impact (typecheck value-only,
+  backend deletion).
+
+**For `/audit`:** the resolution seam is now grep-zero — the backend performs
+ZERO name resolution; the 0583 backend half is complete and the four-axis
+producer space (key / value-source / storage-key / map-provenance) is closed.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
