@@ -172,6 +172,12 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // direct run and reproduced under the harness, 2026-07-10).
         ("34-async-io-leaf.cl", &[4]),
         ("35-ctor-disambiguation.cl", &[100]),
+        // 36: multi-signature `defn` dispatch (spec §5.1.2), unblocked by the
+        // S110 C-4 fix (303df28a) — an entry `main` calling an overloaded fn
+        // dispatches and returns cleanly, mode-uniform (`--run` == `--link`).
+        // Eight `pass=1` sub-tests (arity dispatch ×3, type dispatch ×3,
+        // default-overload ×2) → exit 8; a drop below 8 signals a regression.
+        ("36-multi-arity.cl", &[8]),
     ]
 }
 
