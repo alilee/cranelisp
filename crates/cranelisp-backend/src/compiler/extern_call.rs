@@ -121,6 +121,7 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -196,13 +197,26 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
     };
     enrich_defn_from_side_maps(&mut defn, &check.method_resolutions, &check.expr_types);
 
+    // W1 (KC-W0-6): the BuiltinFn arm keys the GOT-vs-direct-extern discrimination
+    // off the Apply-span carrier. `sconcat` is seeded slot-carried in `primitives`,
+    // so the carrier is `primitives/sconcat` — the keyed read finds the slot and
+    // dispatches GOT-indirect (not a `Linkage::Import` the JIT can't resolve).
+    let mut resolved_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    resolved_targets.insert(
+        apply_span,
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("primitives"),
+            symbol: Symbol::from("sconcat"),
+        },
+    );
+
     let user_module = ModuleFullPath::from("user");
     let name = defn.name.clone();
     {
         let mut st = tables
             .entry(user_module.clone())
             .or_insert_with(|| SymbolTable::new(user_module.clone()));
-        st.insert(name.clone(), make_def_entry(defn));
+        st.insert(name.clone(), make_def_entry_with_targets(defn, &resolved_targets));
     }
 
     let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
@@ -252,10 +266,14 @@ fn test_extern_primitive_without_resolved_call_fails() {
         result.is_err(),
         "macros/sconcat without resolved_call should fail"
     );
+    // S110 W1 (Rev-2 §1.2): a call reaching codegen with neither a `resolved_call`
+    // nor a `resolved_target` carrier is a hard `CodegenError` at the keyed read —
+    // the loud no-soft-fallback backstop that replaced the old scan's
+    // "undefined function" surface for the carrier-absent case.
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
-        err_msg.contains("undefined function"),
-        "error should be 'undefined function', got: {err_msg}"
+        err_msg.contains("no resolved_target carrier") || err_msg.contains("undefined function"),
+        "error should name the missing carrier (W1 keyed read), got: {err_msg}"
     );
 }
 

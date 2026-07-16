@@ -2379,8 +2379,118 @@
         );
     }
 
+    // ---------------------------------------------------------------------
+    // S110 W1.1 (§1.1.2, FIXME 0620) — the alias-class close. For a
+    // member-canonical-keyed symbol (sum ctor, field accessor) OR a renamed
+    // import, `Resolved.fq` composes the WRITTEN alias spelling; the recorder
+    // now records `resolved.storage_fq()` (the terminal STORAGE key the walk
+    // surfaced) so W1's `entry_at` direct read lands on the real Def. Carriers
+    // ride UNREAD until W1 — these assert the PRODUCER records the storage key.
+    // spec: design/arch/backend-keyed-consumer.md §1.1.2
+    // ---------------------------------------------------------------------
+
+    // Member-aliased BARE ctor: `(Some 3)` where `Some` is a bare Import alias
+    // of the canonical `member_key(Maybe, Some)` = `Maybe.Some`. The bare Var
+    // must carry `test/Maybe.Some` (terminal storage key), NOT `test/Some`
+    // (the written alias `resolved.fq` composed pre-flip).
+    #[test]
+    fn resolved_target_bare_ctor_carrier_is_canonical_member_key() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype Maybe Nothing (Some [:Int v]))\n\
+             (defn use-some [] (Some 3))",
+        );
+        let view = main_codegen_view_of(&tc, "use-some");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let bare_fq =
+            targets.iter().find(|(l, _)| l == "Some").and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            bare_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: cranelisp_types::member_key(&TypeName::from("Maybe"), "Some"),
+            }),
+            "bare ctor `Some` Var must carry the canonical member_key storage \
+             identity test/Maybe.Some, not the written alias test/Some; \
+             collected: {targets:?}"
+        );
+    }
+
+    // Member-aliased BARE field accessor: `(v b)` where `v` is a bare Import
+    // alias of the canonical `member_key(Box, v)` = `Box.v` (a plain `UserFn`
+    // Def — nothing on the entry identifies its `Type.field` key, so ONLY the
+    // walk-surfaced storage key recovers it). The bare Var must carry
+    // `test/Box.v`, NOT the written alias `test/v`.
+    #[test]
+    fn resolved_target_bare_accessor_carrier_is_canonical_member_key() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype Box [:Int v])\n\
+             (defn get-v [:Box b] (v b))",
+        );
+        let view = main_codegen_view_of(&tc, "get-v");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let accessor_fq =
+            targets.iter().find(|(l, _)| l == "v").and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            accessor_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("test"),
+                symbol: cranelisp_types::member_key(&TypeName::from("Box"), "v"),
+            }),
+            "bare accessor `v` Var must carry the canonical member_key storage \
+             identity test/Box.v, not the written alias test/v; \
+             collected: {targets:?}"
+        );
+    }
+
+    // Renamed import `[lib [foo as bar]]`: the local key is `bar`, the source
+    // storage key is `foo`. Referencing `bar` must carry the SOURCE storage key
+    // `lib/foo` (what `entry_at` reads), NOT `lib/bar` (the home + written
+    // spelling `resolved.fq` composed pre-flip — no such entry exists).
+    #[test]
+    fn resolved_target_renamed_import_carrier_is_source_storage_key() {
+        let mut tc = tc_with_prims();
+        // `foo` (0-arg, returns Int) lives in module `lib`.
+        tc.set_current_module(ModuleFullPath::from("lib"));
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn foo [] 0)");
+        // Back in `test`: import `foo` RENAMED to `bar`, then call `(bar)`.
+        tc.set_current_module(ModuleFullPath::from("test"));
+        tc.symbol_table_mut().insert(
+            Symbol::from("bar"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("lib"),
+                    symbol: Symbol::from("foo"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        check_src(&mut tc, "(defn use-bar [] (bar))");
+        let view = main_codegen_view_of(&tc, "use-bar");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let bar_fq =
+            targets.iter().find(|(l, _)| l == "bar").and_then(|(_, fq)| fq.clone());
+        assert_eq!(
+            bar_fq,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("lib"),
+                symbol: Symbol::from("foo"),
+            }),
+            "renamed-import `bar` Var must carry the SOURCE storage key lib/foo, \
+             not the written alias lib/bar; collected: {targets:?}"
+        );
+    }
+
     // FIXME 0619 leg 1 (Important) — `builtin_storage_fq` must NOT capture a
     // same-named USER fn when grounding a `BuiltinFn` jit name. In a
+    // prelude-suppressed module (no primitives glob) a local `(defn add-i64 …)`
     // prelude-suppressed module (no primitives glob) a local `(defn add-i64 …)`
     // is legal (add-i64 is not in scope, §8.6.4 does not fire); `(+ 1 2)`
     // short-circuits to `BuiltinFn { add-i64 }` (FIXME 0185), and the Apply-span

@@ -119,7 +119,19 @@ fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
         &module_aliases,
         module_path,
     );
-    jit.compile_defn(&defn, compile_ctx)
+    // W1 (KC-W0-6): the `(async-read …)` callee Var reads its `resolved_target`
+    // at the poll/platform dispatch. The body's callee Var carries `Span::SYNTHETIC`
+    // and is the sole reference node here, so keying the carrier at SYNTHETIC →
+    // `user/async-read` (the entry seeded above) lands the W1 keyed read.
+    let mut resolved_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    resolved_targets.insert(
+        Span::SYNTHETIC,
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("async-read"),
+        },
+    );
+    jit.compile_defn_with_targets(&defn, &resolved_targets, compile_ctx)
         .expect("compile")
         .clif_ir
 }

@@ -179,6 +179,28 @@ where
         Self::extract_constructor(entry)
     }
 
+    /// The ONE keyed fetch (S110 W1, `backend-keyed-consumer.md` §1.3) — the
+    /// `ctor_meta_at` generalisation. A DIRECT two-level map read
+    /// (`symbol_tables.get(&fq.module)` → `table.get(fq.symbol)`), NO
+    /// import-chain walk, NO alias substitution, NO global fallback, NO
+    /// DashMap-iteration order. The fetched entry is cloned out (the guard is
+    /// released immediately, so no shard lock is held across codegen emission);
+    /// callers discriminate on its `DefKind` — got-slot dispatch via
+    /// `callable_got_slot()`, platform/poll via `DefKind::PlatformEffect`,
+    /// extern via `DefKind::PrimitiveExtern`, ctor via `DefKind::Constructor`,
+    /// ownership summary via `mode_summary()`, arity via `param_names`.
+    ///
+    /// Carrier-miss (a `None` `resolved_target` on a table-reference kind) or
+    /// entry-miss (`Some(fq)` that fetches nothing here) is a hard
+    /// `CodegenError` at the call site (Principle 18; Rev-2 no-soft-fallback) —
+    /// this reader itself just reports `None`, and the caller names the
+    /// reference + the missing carrier in the error.
+    pub(crate) fn entry_at(&self, fq: &FQSymbol) -> Option<(ModuleFullPath, ModuleEntry<C>)> {
+        let table = self.symbol_tables.get(&fq.module)?;
+        let entry = table.get(fq.symbol.as_ref())?;
+        Some((fq.module.clone(), entry.clone()))
+    }
+
     /// Extract constructor metadata from a module entry.
     ///
     /// Post-S70: constructors are uniformly `ModuleEntry::Def { kind:

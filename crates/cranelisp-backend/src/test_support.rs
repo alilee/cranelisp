@@ -45,6 +45,12 @@ pub(crate) struct TestCheckResult {
     // call resolutions, so this field holds the bare `resolved_calls`
     // map shape — exactly what `enrich_defn_from_side_maps` consumes.
     pub(crate) method_resolutions: HashMap<Span, cranelisp_types::ResolvedCall>,
+    /// S110 W1 (KC-W0-6): the span-keyed dispatch carriers the backend keyed
+    /// reads consume, threaded into each enriched defn's `codegen_view`. Keyed
+    /// by the referencing `Var`/`Apply` span → the TERMINAL storage FQ (what the
+    /// typecheck producer's `storage_fq()` records). Empty for fixtures whose
+    /// bodies drive no keyed dispatch.
+    pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
     pub(crate) expr_types: HashMap<Span, Type>,
@@ -58,6 +64,7 @@ pub(crate) struct TestCheckResult {
 pub(crate) fn empty_check() -> TestCheckResult {
     TestCheckResult {
         method_resolutions: HashMap::new(),
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -286,17 +293,46 @@ pub(crate) fn enrich_expr_from_side_maps(
 /// direct-write (`make_def_entry_slot`) assign an explicit slot and read
 /// the pointer back via `table.got.load_slot(slot)`.
 pub(crate) fn make_def_entry(defn: Defn) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, None)
+    make_def_entry_inner(defn, None, &HashMap::new())
+}
+
+/// Like `make_def_entry` (slot-less, FuncId-called `__expr__`-style entry) but
+/// threads the W1 dispatch carriers (KC-W0-6) into the `codegen_view` build so a
+/// body dispatching through the flipped BuiltinFn/direct-call seam carries the
+/// Apply/callee `resolved_target` the keyed read consumes.
+pub(crate) fn make_def_entry_with_targets(
+    defn: Defn,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+) -> cranelisp_types::ModuleEntry {
+    make_def_entry_inner(defn, None, resolved_targets)
 }
 
 /// Like `make_def_entry` but assigns an explicit GOT slot (for tests that
 /// exercise the GOT-slot direct-write, or insert more than one compilable
 /// defn that must be reachable GOT-indirect).
 pub(crate) fn make_def_entry_slot(defn: Defn, slot: usize) -> cranelisp_types::ModuleEntry {
-    make_def_entry_inner(defn, Some(slot))
+    make_def_entry_inner(defn, Some(slot), &HashMap::new())
 }
 
-pub(crate) fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::ModuleEntry {
+/// Like `make_def_entry_slot` but threads the W1 dispatch carriers (KC-W0-6)
+/// into the entry's `codegen_view` build, so a `compile_to_module` fixture whose
+/// body dispatches through the flipped call seam carries the callee `resolved_target`
+/// the keyed read consumes. `resolved_targets` maps each call/callee span to the
+/// TERMINAL storage FQ (e.g. an imported platform effect keys the effect's home,
+/// not the caller's import alias — mirroring `storage_fq()`).
+pub(crate) fn make_def_entry_slot_with_targets(
+    defn: Defn,
+    slot: usize,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+) -> cranelisp_types::ModuleEntry {
+    make_def_entry_inner(defn, Some(slot), resolved_targets)
+}
+
+pub(crate) fn make_def_entry_inner(
+    defn: Defn,
+    slot: Option<usize>,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+) -> cranelisp_types::ModuleEntry {
     use cranelisp_types::{
         DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
     };
@@ -324,7 +360,7 @@ pub(crate) fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp
         v
     });
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), resolved_targets)
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),
@@ -388,6 +424,114 @@ pub(crate) fn test_codegen_view(
     }
 }
 
+/// KC-W0-6 (S110 W1): produce the span-keyed dispatch carriers a hand-built
+/// CLIF-probe fixture needs after the W1 flip. Walk `body`; for every `Apply`
+/// whose callee is a bare `Var` named in `user_fns`, map BOTH the `Apply` span
+/// AND the callee-`Var` span to `<module>/<name>` — the FQ the fixture stored
+/// the entry under. Mirrors the typecheck producer's per-reference resolution
+/// for the closed world the fixture builds by hand (one module, no import
+/// chains, so the storage key IS the written name). Names NOT in `user_fns`
+/// (locals, inline-primitive `BuiltinFn` callees) are left un-carried.
+pub(crate) fn call_carriers(
+    body: &Expr,
+    module: &ModuleFullPath,
+    user_fns: &[&str],
+) -> HashMap<Span, cranelisp_types::FQSymbol> {
+    let mut out = HashMap::new();
+    collect_call_carriers(body, module, user_fns, &mut out);
+    out
+}
+
+fn collect_call_carriers(
+    e: &Expr,
+    module: &ModuleFullPath,
+    user_fns: &[&str],
+    out: &mut HashMap<Span, cranelisp_types::FQSymbol>,
+) {
+    if let Expr::Apply { callee, span, .. } = e
+        && let Expr::Var { name, span: cspan, .. } = &**callee
+        && user_fns.contains(&name.as_ref())
+    {
+        let fq = cranelisp_types::FQSymbol { module: module.clone(), symbol: name.clone() };
+        out.insert(*span, fq.clone());
+        out.insert(*cspan, fq);
+    }
+    match e {
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, v) in bindings {
+                collect_call_carriers(v, module, user_fns, out);
+            }
+            collect_call_carriers(body, module, user_fns, out);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            collect_call_carriers(cond, module, user_fns, out);
+            collect_call_carriers(then_branch, module, user_fns, out);
+            collect_call_carriers(else_branch, module, user_fns, out);
+        }
+        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+            collect_call_carriers(body, module, user_fns, out);
+        }
+        Expr::Apply { callee, args, .. } => {
+            collect_call_carriers(callee, module, user_fns, out);
+            for a in args {
+                collect_call_carriers(a, module, user_fns, out);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_call_carriers(scrutinee, module, user_fns, out);
+            for arm in arms {
+                collect_call_carriers(&arm.body, module, user_fns, out);
+            }
+        }
+        Expr::VecLit { elements, .. } => {
+            for el in elements {
+                collect_call_carriers(el, module, user_fns, out);
+            }
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for f in fields {
+                collect_call_carriers(f, module, user_fns, out);
+            }
+        }
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            collect_call_carriers(launched, module, user_fns, out);
+            collect_call_carriers(continuation, module, user_fns, out);
+        }
+        _ => {}
+    }
+}
+
+/// Insert a minimal `NotDetermined` `UserFn` entry so the W1 keyed read
+/// (`entry_at`) HITS for a fixture that otherwise only DECLARES its callees as
+/// `FuncId`s. No GOT slot ⇒ `compile_direct_call` reaches its `FuncId` tail
+/// (the pre-W1 batch/test direct-call shape) — byte-identical CLIF, the entry
+/// exists only so the keyed read resolves instead of hard-missing.
+pub(crate) fn insert_user_fn_stub(table: &mut SymbolTable, name: &str, arity: usize) {
+    use cranelisp_types::{DefKind, Scheme, UserFnState};
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty: Type::Fn((0..arity).map(|_| Type::Int).collect(), Box::new(Type::Int)),
+    };
+    table.insert(
+        Symbol::from(name),
+        ModuleEntry::Def {
+            scheme,
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: (0..arity).map(|i| Symbol::from(format!("p{i}"))).collect(),
+            kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
+            callees: vec![],
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            codegen_view: None,
+            code: None,
+            value_use: false,
+        },
+    );
+}
+
 /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via
 /// `compile_to_module`, finalize JIT, execute, and return the i64 result.
 ///
@@ -421,7 +565,7 @@ pub(crate) fn test_compile_and_run(
         let mut st = tables
             .entry(module.clone())
             .or_insert_with(|| SymbolTable::new(module.clone()));
-        st.insert(name.clone(), make_def_entry(defn));
+        st.insert(name.clone(), make_def_entry_with_targets(defn, &check.resolved_targets));
     }
 
     let mut jit = Jit::new_with_symbols(&[])?;
@@ -549,11 +693,17 @@ pub(crate) fn test_compile_program_and_run(
                         span: variant.span,
                     };
                     names.push(variant_defn.name.clone());
-                    st.insert(variant_defn.name.clone(), make_def_entry(variant_defn));
+                    st.insert(
+                        variant_defn.name.clone(),
+                        make_def_entry_with_targets(variant_defn, &check.resolved_targets),
+                    );
                 }
             } else {
                 names.push(defn.name.clone());
-                st.insert(defn.name.clone(), make_def_entry(defn));
+                st.insert(
+                    defn.name.clone(),
+                    make_def_entry_with_targets(defn, &check.resolved_targets),
+                );
             }
         }
     }

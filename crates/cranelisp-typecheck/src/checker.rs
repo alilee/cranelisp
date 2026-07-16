@@ -1365,15 +1365,22 @@ where
     /// `Expr::Var`.
     ///
     /// - **`resolved_targets`** — the backend keyed-consumer carrier (S110
-    ///   0583, `design/arch/backend-keyed-consumer.md` §1.1). Keyed at the
-    ///   referencing `Var` span, the value is `resolved.fq` — "whichever
-    ///   storage key HIT" — for EVERY table-resolved kind (user fn, primitive,
-    ///   constructor, platform effect, host-promised extern, mangled/mono
-    ///   variants a chain-follow lands on — any terminal `ModuleEntry::Def`).
-    ///   Rides UNREAD in W0/W0.1 (behaviour-invariant); W1 keys the backend's
-    ///   ONE fetch on it.
+    ///   0583, `design/arch/backend-keyed-consumer.md` §1.1/§1.1.2). Keyed at
+    ///   the referencing `Var` span, the value is `resolved.storage_fq()` — the
+    ///   TERMINAL STORAGE key the walk surfaced, "whichever storage key HIT" —
+    ///   for EVERY table-resolved kind (user fn, primitive, constructor,
+    ///   platform effect, host-promised extern, mangled/mono variants a
+    ///   chain-follow lands on — any terminal `ModuleEntry::Def`). This is NOT
+    ///   `resolved.fq`: for a member-canonical-keyed symbol (sum ctor, field
+    ///   accessor) or a renamed import/re-export, `fq` composes the WRITTEN
+    ///   alias spelling while `storage_fq()` carries the terminal table key the
+    ///   backend's `entry_at` reads directly (FIXME 0620, W1.1). Rides UNREAD
+    ///   in W0/W0.1 (behaviour-invariant); W1 keys the backend's ONE fetch on
+    ///   it.
     /// - **`user_fn_refs`** — the `Def.callees` edge feed (FIXME 0470, S101).
-    ///   The SAME `FQSymbol`, kept only when the terminal is a `DefKind::UserFn`
+    ///   Records `resolved.fq` (NOT `storage_fq()`) — `callees` is a persisted
+    ///   `.meta.json` value pinned this schema window; its own alias residual
+    ///   is FIXME 0621. Kept only when the terminal is a `DefKind::UserFn`
     ///   `Def` (a `UserFn`-filtered PROJECTION of the single resolution).
     ///   `BuiltinFn` is always available (no codegen dependency); non-`UserFn`
     ///   redefinition falls back to module-grain reload
@@ -1426,7 +1433,7 @@ where
             state
                 .method_resolutions
                 .resolved_targets
-                .insert(span, resolved.fq.clone());
+                .insert(span, resolved.storage_fq());
             if let ModuleEntry::Def { kind, .. } = &resolved.entry
                 && matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
             {

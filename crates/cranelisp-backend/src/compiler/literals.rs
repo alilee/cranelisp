@@ -207,21 +207,6 @@ where
         }
     }
 
-    /// Look up the tag and field count for a data constructor.
-    ///
-    /// Supports module-qualified names (e.g. `macros/SexpInt`): strips the module
-    /// prefix for registry lookups which store unqualified names.
-    pub(crate) fn data_constructor_info(
-        &self,
-        name: &Symbol,
-    ) -> Option<(usize, usize)> {
-        let (_fqtn, ctor_info) = self.ctx.lookup_constructor(name.as_ref())?;
-        if ctor_info.fields.is_empty() {
-            None
-        } else {
-            Some((ctor_info.tag, ctor_info.fields.len()))
-        }
-    }
 
     // --- Operator-as-value support (spec §7.6) ---
 

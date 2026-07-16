@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, ConcreteType, CranelispError, HeapHeader, MonoExpr, ResolvedCall, Span, Symbol};
+use cranelisp_types::{DefKind, ErrorLocation, ConcreteType, CranelispError, FQSymbol, HeapHeader, ModuleEntry, MonoExpr, ResolvedCall, Span, Symbol};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
@@ -151,12 +151,20 @@ where
 {
     // --- Function application ---
 
+    #[allow(clippy::too_many_arguments)] // +1 for the S110 W1 dispatch carrier
     pub(crate) fn compile_apply(
         &mut self,
         callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
         resolved_call: Option<&ResolvedCall>,
+        // S110 W1 (`backend-keyed-consumer.md` §1.1): the Apply-span
+        // `resolved_target` — the STORAGE FQ typecheck resolved the dispatch leg
+        // to. The keyed-read carrier for the `resolved_call`-present paths
+        // (BuiltinFn / TraitMethod / SigDispatch). `None` for a bare-`Var`-callee
+        // direct call (that carrier is on the callee `Var` node, read in
+        // `compile_var_apply`).
+        apply_target: Option<&FQSymbol>,
         apply_type: Option<&cranelisp_types::Type>,
         // B3.4 (§4.1): the NoEscape + eligibility verdict for a use-site
         // data-constructor call, computed at the `Apply` dispatch (the sole node
@@ -311,6 +319,7 @@ where
                             args,
                             span,
                             resolved_call,
+                            apply_target,
                             apply_type,
                             saved_tail,
                             false,
@@ -327,6 +336,7 @@ where
                             args,
                             span,
                             resolved_call,
+                            apply_target,
                             apply_type,
                             saved_tail,
                             false,
@@ -340,7 +350,7 @@ where
         // non-lenient apply does NOT touch `sparked_args`; the pointer-identity
         // guard in `maybe_force_sparked_arg` ensures its own argument slice never
         // matches an enclosing apply's installed map.
-        self.dispatch_apply(callee, args, span, resolved_call, apply_type, saved_tail, stack)
+        self.dispatch_apply(callee, args, span, resolved_call, apply_target, apply_type, saved_tail, stack)
     }
 
     /// Dispatch a (non-TCO, args-not-in-tail) application through the resolved-
@@ -354,6 +364,9 @@ where
         args: &[MonoExpr],
         span: Span,
         resolved_call: Option<&ResolvedCall>,
+        // S110 W1: the Apply-span dispatch carrier (§1.1). Consumed by the
+        // `resolved_call`-present path (`compile_resolved_call`).
+        apply_target: Option<&FQSymbol>,
         apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
         // B3.4 (§4.1): stack-eligibility hint for a use-site constructor call;
@@ -362,7 +375,7 @@ where
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
-            return self.compile_resolved_call(resolved.clone(), args, span, saved_tail);
+            return self.compile_resolved_call(resolved.clone(), args, span, saved_tail, apply_target);
         }
 
         // Regular function call: callee must be a Var referring to a known function,
@@ -420,6 +433,11 @@ where
         args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
+        // S110 W1 (§1.1): the Apply-span `resolved_target` — the STORAGE FQ of
+        // the dispatch-selected callee. For BuiltinFn/TraitMethod/SigDispatch this
+        // is the keyed-read carrier the S1/S2/S5/S6/S7/S8/S9 sites consume;
+        // AutoCurry (a value-seam leg) is untouched this wave.
+        apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
@@ -549,29 +567,26 @@ where
                     // cache-mode in-process linker (`cache::linker::Linker`)
                     // cannot resolve via dlsym. Primitives registered in
                     // `PRIMITIVES_TABLE` (see `cranelisp-primitives::PRIMITIVES_TABLE`)
-                    // resolve through `resolve_got_target`'s global-fallback
-                    // walk of `symbol_tables`.
+                    // have a populated GOT slot.
                     //
-                    // `is_extern_primitive` also covers Trace ADT field
-                    // accessors (`cranelisp_trace_name`, `_params`, `_result`,
-                    // `_children`, `_nanos`, `_first_child_nanos`) which are
-                    // **int-hosted intrinsics**, registered via
-                    // `JITBuilder::symbol()` from `int_intrinsics()` (see
-                    // `src/session_v4.rs`). They are NOT in any module's
-                    // SymbolTable. For those names, fall back to direct
-                    // extern — the JIT's symbol_lookup_fn resolves them.
-                    // The cache linker similarly registers them at load
-                    // time via `linker.register_symbol(name, ptr)`.
+                    // S110 W1 (§1.1/§1.3 — S1): the GOT-vs-direct-extern
+                    // discrimination is now a keyed read of the Apply carrier, not
+                    // a symbol-table scan. A slot-carried primitive (the fetched
+                    // entry answers `callable_got_slot()`) dispatches GOT-indirect;
+                    // otherwise it is the documented `resolved_target`-with-no-slot
+                    // / known-extern-name arm — an **int-hosted intrinsic** (Trace
+                    // ADT field accessors `cranelisp_trace_name`/`_params`/… or the
+                    // like) registered via `JITBuilder::symbol()` from
+                    // `int_intrinsics()` and NOT a GOT-dispatched SymbolTable entry;
+                    // it lowers as a by-name `Linkage::Import` the JIT/cache linker
+                    // resolves. (Rev-2: no scan fallback — a slotless carrier is the
+                    // extern arm, a bare miss is the extern arm; both by-name.)
                     let sym = Symbol::from(op_name.as_ref());
-                    if crate::compiler::resolve_got_target(
-                        self.ctx.symbol_tables,
-                        self.ctx.module_aliases,
-                        &self.ctx.current_module,
-                        &sym,
-                    )
-                    .is_some()
-                    {
-                        return self.compile_direct_call(&sym, &arg_vals, span);
+                    let has_got_slot = apply_target
+                        .and_then(|fq| self.ctx.entry_at(fq))
+                        .is_some_and(|(_, e)| e.callable_got_slot().is_some());
+                    if has_got_slot {
+                        return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
                     }
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
@@ -596,27 +611,26 @@ where
                     // `Linkage::Import` (resolved by `dlsym` in JIT / `ld` in
                     // `--link`).
                     //
-                    // TRANSITIONAL MECHANICS: `resolve_got_target` returns
-                    // `Some((module, slot))` IFF the entry carries the new
-                    // `got_slot: Some(_)` shape; the as-built shape carries
-                    // `got_slot: None` (the worker stores the fn ptr via a
-                    // host-allocated slot + `JITBuilder::symbol(jit_name,
-                    // ptr)` direct extern, §9). So this `if`-guard activates
-                    // the new arm exactly when int/platform flip to the
-                    // DLL-exported-GOT model, and keeps the as-built
-                    // direct-extern path live until then — no mode fork, no
-                    // flag (Principle 11). When the flip completes the
+                    // TRANSITIONAL MECHANICS: the fetched entry answers
+                    // `callable_got_slot()` IFF it carries the new `got_slot:
+                    // Some(_)` shape; the as-built shape carries `got_slot: None`
+                    // (the worker stores the fn ptr via a host-allocated slot +
+                    // `JITBuilder::symbol(jit_name, ptr)` direct extern, §9). So
+                    // this `if`-guard activates the new arm exactly when
+                    // int/platform flip to the DLL-exported-GOT model, and keeps
+                    // the as-built direct-extern path live until then — no mode
+                    // fork, no flag (Principle 11). When the flip completes the
                     // `compile_extern_call` fallback below becomes dead for
                     // platform fns (the expected narrowing signal).
+                    //
+                    // S110 W1 (§1.1/§1.3 — S2): keyed read of the Apply carrier
+                    // replaces the `resolve_got_target` scan; behaviour-identical
+                    // (the carrier records the same entry the scan terminated at).
                     let sym = Symbol::from(op_name.as_ref());
-                    if crate::compiler::resolve_got_target(
-                        self.ctx.symbol_tables,
-                        self.ctx.module_aliases,
-                        &self.ctx.current_module,
-                        &sym,
-                    )
-                    .is_some()
-                    {
+                    let has_got_slot = apply_target
+                        .and_then(|fq| self.ctx.entry_at(fq))
+                        .is_some_and(|(_, e)| e.callable_got_slot().is_some());
+                    if has_got_slot {
                         // `compile_direct_call` emits the GOT-indirect dispatch AND
                         // stamps the platform fn-name into the returned Effect
                         // node's field-3 when the target is a `DefKind::PlatformEffect`
@@ -627,7 +641,7 @@ where
                         // path alike — and it lands at node-construction time (before
                         // the force), so the baked name survives a thunk panic on the
                         // fault path.
-                        return self.compile_direct_call(&sym, &arg_vals, span);
+                        return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
                     }
                     // As-built fallback: direct `Linkage::Import` against the
                     // mangled jit_name (the platform fn ptr reaches the JIT via
@@ -660,7 +674,7 @@ where
                         // GOT-indirect path (Ring 0 primitives have GOT
                         // slots per FIXME 0174 resolution).
                         let sym = Symbol::from(op_name.as_ref());
-                        self.compile_direct_call(&sym, &arg_vals, span)
+                        self.compile_direct_call(&sym, &arg_vals, span, apply_target)
                     }
                 }
             }
@@ -690,9 +704,9 @@ where
                 // temporaries to `Borrowed` params owe a post-call dec.
                 let sym = Symbol::from(mangled_name.as_ref());
                 let (arg_vals, post_call_decs) =
-                    self.compile_consuming_arg_list_moded(args, &sym)?;
+                    self.compile_consuming_arg_list_moded(args, apply_target)?;
                 self.in_tail_position = saved_tail;
-                let result = self.compile_direct_call(&sym, &arg_vals, span)?;
+                let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
                 self.emit_post_call_decs(&post_call_decs);
                 Ok(result)
             }
@@ -700,9 +714,9 @@ where
                 // User function — moded consuming convention (§3.1).
                 let sym = Symbol::from(mangled_name.as_ref());
                 let (arg_vals, post_call_decs) =
-                    self.compile_consuming_arg_list_moded(args, &sym)?;
+                    self.compile_consuming_arg_list_moded(args, apply_target)?;
                 self.in_tail_position = saved_tail;
-                let result = self.compile_direct_call(&sym, &arg_vals, span)?;
+                let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
                 self.emit_post_call_decs(&post_call_decs);
                 Ok(result)
             }
@@ -753,8 +767,49 @@ where
         // constructor. `false` ⇒ heap. Ignored for non-constructor callees.
         stack: bool,
     ) -> Result<Value, CranelispError> {
-        // Check if this is a data constructor call.
-        if let Some((tag, field_count)) = self.data_constructor_info(name) {
+        // === Locals-BEFORE-keyed-read (S110 W1, FIXME 0619 item 2 — the §1.1
+        // pinned invariant). ===
+        // The environment/locals binding is checked FIRST, before ANY keyed read
+        // of the callee `Var`'s `resolved_target`. The producer's self-recursion
+        // carve-out over-matches a same-named local (it records the enclosing
+        // fn's storage FQ on a shadowing local Var), so a keyed read taken before
+        // the locals check would mis-dispatch a local closure call to the
+        // carrier's FQ. Checking `variables` first makes a shadowing local
+        // unconditionally win the closure-call path — the carrier is never
+        // consulted for it.
+        if self.variables.contains_key(name) {
+            let callee_val = self.compile_expr(callee)?;
+            // Closure body is a user function — consuming convention.
+            let arg_vals = self.compile_consuming_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            return self.compile_closure_call(callee_val, &arg_vals, span);
+        }
+
+        // The callee `Var`'s carrier — the terminal STORAGE key typecheck
+        // resolved (§1.1.2). Computed ONCE here and reused by both the S3/S4
+        // ctor branch and the S5/S7 direct-call branch. For a construction-
+        // position ctor this is now the CANONICAL `m/Type.Ctor` `member_key`
+        // (the W1.1/0620 recorder flip records `resolved.storage_fq()`, not the
+        // bare alias), so the keyed `ctor_meta_at` read below lands on the real
+        // `DefKind::Constructor` `Def` — a direct read, NO chain-follow.
+        let callee_target = match callee {
+            MonoExpr::Var { resolved_target, .. } => resolved_target.as_ref(),
+            _ => None,
+        };
+
+        // === S3/S4 — data-constructor call (keyed, S110 W1). ===
+        // Flipped from the legacy `lookup_constructor` chain-follow to the keyed
+        // `ctor_meta_at` read off the callee's carrier — now safe because the
+        // producer records the canonical `member_key` for ctors (FIXME 0620
+        // recorder flip). This removes the last apply-site caller of
+        // `lookup_constructor` (Rev-2 §1.2: the ctor kind flips whole, no
+        // hybrid; the value-position nullary/ctor-as-value sites are the
+        // untouched-legacy W2 kinds). A non-ctor carrier (or a fn callee)
+        // returns `None` from `extract_constructor` and falls through to the
+        // S5/S7 keyed direct-call arm below. Covers data AND nullary ctors so no
+        // ctor Var callee reaches `compile_direct_call`.
+        if let Some((fqtn, meta)) = callee_target.and_then(|fq| self.ctx.ctor_meta_at(fq)) {
+            let field_count = meta.fields.len();
             if args.len() != field_count {
                 return Err(CranelispError::CodegenError {
                     message: format!(
@@ -777,37 +832,32 @@ where
             // bare-word move of its single field (no alloc/header/tag). Classify
             // by the ctor's parent type (`value_layout` ignores the ADT's type
             // args, so `ADT(fqtn, [])` classifies exactly). `None` off-toggle /
-            // non-`Value` ⇒ the heap/stack path below, byte-identical.
-            if let Some((fqtn, _)) = self.ctx.lookup_constructor(name.as_ref()) {
-                let adt_ty = ConcreteType::ADT(fqtn, vec![]);
-                if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
-                    return Ok(v);
-                }
+            // non-`Value` ⇒ the heap/stack path below, byte-identical. `fqtn`
+            // comes off the SAME legacy lookup — no second scan.
+            let adt_ty = ConcreteType::ADT(fqtn, vec![]);
+            if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
+                return Ok(v);
             }
             // B3.4 (§4.1/§4.2): a NoEscape, all-scalar-payload constructor call in
             // a non-self-recursive function places its aggregate on a Cranelift
             // stack slot (immortal-RC header) instead of the RC heap. `stack` is
             // the verdict from `constructor_call_stack_eligible`; `false` ⇒ heap
             // `emit_alloc`, byte-identical to pre-B3.4.
-            return self.emit_adt_construct_stackable(tag, &arg_vals, span, stack);
+            return self.emit_adt_construct_stackable(meta.tag, &arg_vals, span, stack);
         }
 
-        // Check if the callee is a local variable (holding a closure value).
-        if self.variables.contains_key(name) {
-            let callee_val = self.compile_expr(callee)?;
-            // Closure body is a user function — consuming convention.
-            let arg_vals = self.compile_consuming_arg_list(args)?;
-            self.in_tail_position = saved_tail;
-            return self.compile_closure_call(callee_val, &arg_vals, span);
-        }
-
-        // Not a local variable: user function — moded consuming convention
-        // (§3.1). A bare `Var` callee with no resolved_call reaches dispatch
-        // here; `resolve_callee_summary` keys the per-position elision off the
-        // resolved callee, byte-identical when the callee carries no summary.
-        let (arg_vals, post_call_decs) = self.compile_consuming_arg_list_moded(args, name)?;
+        // S5/S7 — user function (keyed): moded consuming convention (§3.1). A bare
+        // `Var` callee with no resolved_call reaches dispatch here; the keyed read
+        // of the callee `Var`'s carrier (`callee_target`, computed above) keys the
+        // per-position elision + GOT dispatch off the resolved callee,
+        // byte-identical when the callee carries no summary. The ctor kind was
+        // fully handled above, so a `None` carrier here is a genuine non-ctor
+        // reference (a hard error downstream if the carrier is absent — Rev-2,
+        // never a fall-through to the scan).
+        let (arg_vals, post_call_decs) =
+            self.compile_consuming_arg_list_moded(args, callee_target)?;
         self.in_tail_position = saved_tail;
-        let result = self.compile_direct_call(name, &arg_vals, var_span)?;
+        let result = self.compile_direct_call(name, &arg_vals, var_span, callee_target)?;
         self.emit_post_call_decs(&post_call_decs);
         Ok(result)
     }
@@ -955,14 +1005,15 @@ where
     fn compile_consuming_arg_list_moded(
         &mut self,
         args: &[MonoExpr],
-        callee: &Symbol,
+        // S110 W1 (§1.1/§1.3 — S5): the callee's STORAGE FQ. The `ModeSummary`
+        // is read off the ONE fetched entry instead of the `resolve_callee_summary`
+        // scan (the callee-name param the scan needed is retired). `None` ⇒ no
+        // summary (the byte-identical-off fast path below).
+        resolved_target: Option<&FQSymbol>,
     ) -> Result<ModedArgList, CranelispError> {
-        let summary = crate::compiler::resolve_callee_summary(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            callee,
-        );
+        let summary = resolved_target
+            .and_then(|fq| self.ctx.entry_at(fq))
+            .and_then(|(_, entry)| entry.mode_summary().cloned());
         // Fast path: no summary (or an ABI-conservative one) ⇒ the elision cannot
         // fire on any position, so route through the unmodified consuming helper.
         // This is the structural byte-identical-off guarantee — the moded arm
@@ -1102,43 +1153,84 @@ where
         name: &Symbol,
         arg_vals: &[Value],
         span: Span,
+        // S110 W1 (`backend-keyed-consumer.md` §1.1/§1.3): the STORAGE FQ of the
+        // callee. The ONE keyed fetch (`entry_at`) replaces the four
+        // apply-site resolvers (`resolve_poll_effect_target`,
+        // `resolve_got_target`, `resolve_platform_effect_target`,
+        // `resolve_extern_target` — S6/S7/S8/S9). Locals are filtered upstream
+        // (`compile_var_apply`), so a call reaching here MUST carry a target.
+        resolved_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // --- Poll-construction arm (FIXME 0457 / S94 R1, byte-identical-off) ---
+        // Rev-2 (§1.2): NO soft fallback. A carrier-`None` on a table-reference
+        // call is a hard `CodegenError` — never a fall-through to the retired
+        // name-resolver scan; entry-miss likewise (§1.3, Principle 18).
+        let fq = resolved_target.ok_or_else(|| CranelispError::CodegenError {
+            message: format!(
+                "call to '{name}' reached codegen with no resolved_target carrier \
+                 (S110 W1 keyed read; backend-keyed-consumer.md §1.2)"
+            ),
+            location: ErrorLocation::from_span(span),
+        })?;
+        let (home, entry) = self.ctx.entry_at(fq).ok_or_else(|| CranelispError::CodegenError {
+            message: format!(
+                "resolved_target '{fq}' for call '{name}' fetched no symbol-table \
+                 entry (S110 W1 entry-miss; backend-keyed-consumer.md §1.3)"
+            ),
+            location: ErrorLocation::from_span(span),
+        })?;
+
+        // Whether the fetched entry is a platform effect (drives S6 poll + S8
+        // stamp). Read once off the ONE fetched entry.
+        let platform_effect_poll: Option<(usize, Vec<cranelisp_types::Type>)> = match &entry {
+            ModuleEntry::Def { kind, scheme, .. }
+                if matches!(
+                    kind.as_ref(),
+                    DefKind::PlatformEffect { poll_shape: true, .. }
+                ) =>
+            {
+                let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() else {
+                    unreachable!("matched poll-shape PlatformEffect above")
+                };
+                // The effect's param types (for the state-closure capture-dec
+                // glue). A platform effect's scheme is a concrete `Fn`.
+                let params = match &scheme.ty {
+                    cranelisp_types::Type::Fn(ps, _ret) => ps.clone(),
+                    _ => Vec::new(),
+                };
+                Some((*got_slot, params))
+            }
+            _ => None,
+        };
+        let is_platform_effect = matches!(
+            &entry,
+            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
+        );
+
+        // --- S6: Poll-construction arm (FIXME 0457 / S94 R1, byte-identical-off) ---
         // A poll-shape platform effect (`DefKind::PlatformEffect { poll_shape:
         // true }`) is NOT called at the site; instead the backend loads its
         // poll-fn from the GOT and builds an `IO_TAG_EFFECT_POLL` node over a
         // host-built state-closure (`design/backend/io-trampoline.md §12`). Keyed
-        // on the data field, no cargo feature; a blocking effect (every v6
-        // platform) returns `None` here and takes the unchanged call path below,
-        // so the default build constructs no poll node and is byte-identical.
-        // `scheduling_class` is surfaced here (S96 A4 step 0) but the bake/peel is
-        // keyed ONLY on `poll_shape` (the one uniform peel) — the class gates the
-        // producer-side injection, not this consumer. Bound `_` here.
-        if let Some((module_path, slot, param_types, _scheduling_class)) =
-            crate::compiler::resolve_poll_effect_target(
-                self.ctx.symbol_tables,
-                self.ctx.module_aliases,
-                &self.ctx.current_module,
-                name,
-            )
-        {
-            return self.compile_poll_effect(&module_path, slot, &param_types, arg_vals, span);
+        // on the fetched entry's data field, no cargo feature; a blocking effect
+        // (every v6 platform) is `None` here and takes the unchanged call path
+        // below, so the default build constructs no poll node and is
+        // byte-identical. `scheduling_class` gates only the producer-side
+        // injection, not this consumer.
+        if let Some((slot, param_types)) = platform_effect_poll {
+            return self.compile_poll_effect(&home, slot, &param_types, arg_vals, span);
         }
 
-        // --- Unified GOT path (target: works for both JIT and object codegen) ---
+        // --- S7: Unified GOT path (target: works for both JIT and object codegen) ---
         // Uses global_value(DataId) which Cranelift lowers to:
         //   JIT (is_pic=false): movz+movk (absolute address)
         //   Object (is_pic=true): ADRP+ADD (PC-relative relocation)
         //
-        // Slot assignments are read directly from `symbol_tables` — no env
-        // abstraction. See design/backend/compile-to-module.md §12.
-        if let Some((module_path, slot)) = crate::compiler::resolve_got_target(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            name,
-        ) {
-            let got_sym = crate::compiler::got_data_symbol_name(&module_path);
+        // The GOT slot is read off the ONE fetched entry via `callable_got_slot()`
+        // (the same accessor `resolve_got_target`'s read closure used); the GOT
+        // data symbol keys on the entry's STORAGE module (`home == fq.module`), so
+        // the emitted (symbol, slot) pair is byte-identical to the pre-W1 scan.
+        if let Some(slot) = entry.callable_got_slot() {
+            let got_sym = crate::compiler::got_data_symbol_name(&home);
             let data_id = self.module
                 .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
                 .map_err(|e| CranelispError::CodegenError {
@@ -1146,6 +1238,7 @@ where
                     location: ErrorLocation::from_span(span),
                 })?;
             let node_val = self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals)?;
+            // --- S8: platform fn-name stamp ---
             // Step 2/4 of the fault-guarded dispatch funnel (S81 / FIXME 0327;
             // BC §3 + §5 invariant 9 Option A). When this GOT-indirect dispatch
             // resolved a `DefKind::PlatformEffect`, the call returned an
@@ -1167,54 +1260,48 @@ where
             // unifies the happy path (which was ALSO `<unknown>` for bare imports).
             // ONLY a `DefKind::PlatformEffect` target stamps — user fns / primitives
             // / trait methods reach `compile_direct_call` too and must not be
-            // written to (their result is not an Effect node).
-            if let Some((eff_module, _slot, bare)) =
-                crate::compiler::resolve_platform_effect_target(
-                    self.ctx.symbol_tables,
-                    self.ctx.module_aliases,
-                    &self.ctx.current_module,
-                    name,
-                )
-            {
-                let fq_name = format!("{eff_module}/{bare}");
+            // written to (their result is not an Effect node). The FQ name is
+            // composed from the ONE fetched entry's storage identity
+            // (`home`/`fq.symbol`) — byte-identical to the pre-W1
+            // `resolve_platform_effect_target` `(eff_module, bare)`.
+            if is_platform_effect {
+                let fq_name = format!("{}/{}", home, fq.symbol);
                 self.stamp_platform_fn_name(node_val, &fq_name, span)?;
             }
             return Ok(node_val);
         }
 
-        // Kind-driven `PrimitiveExtern` arm (test-discovery.md §6; BC §3
+        // --- S9: Kind-driven `PrimitiveExtern` arm (test-discovery.md §6; BC §3
         // invariant 8 / §7 types). A host-promised extern (`discover-tests`)
-        // carries `got_slot: None`, so the GOT-indirect resolution above
-        // misses it; it has no `FuncId` in `func_ids` either (no codegen body).
-        // Lower it as a `Linkage::Import` against the entry key — the symbol
-        // table key IS the ABI name — identical in shape to the platform-effect
-        // / intrinsic import path. The body is settled at JIT-finalize via
-        // `Jit::define_symbol` (int's session-init promise) or surfaces as an
-        // unresolved-symbol link error in `--link` (no friendly rejection).
-        if let Some(abi_key) = crate::compiler::resolve_extern_target(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            name,
-        ) {
-            return self.compile_extern_call(&abi_key, arg_vals, span);
-        }
-
-        // Direct call: look up FuncId and emit `call`.
+        // carries no GOT slot, so the S7 arm above misses it; it has no `FuncId`
+        // in `func_ids` either (no codegen body). Lower it as a `Linkage::Import`
+        // against the entry key — the symbol-table key IS the ABI name — identical
+        // in shape to the platform-effect / intrinsic import path. The body is
+        // settled at JIT-finalize via `Jit::define_symbol` (int's session-init
+        // promise) or surfaces as an unresolved-symbol link error in `--link`.
+        if matches!(&entry, ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::PrimitiveExtern))
         {
-            let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
-                CranelispError::CodegenError {
-                    message: format!("undefined function: {name}"),
-                    location: ErrorLocation::from_span(span),
-                }
-            })?;
-
-            let local_func = self
-                .module
-                .declare_func_in_func(*func_id, self.builder.func);
-            let call = self.builder.ins().call(local_func, arg_vals);
-            Ok(self.builder.inst_results(call)[0])
+            return self.compile_extern_call(fq.symbol.as_ref(), arg_vals, span);
         }
+
+        // Non-resolver tail: a direct `call` via a `FuncId` from the compilation
+        // unit's `func_ids` map. This is NOT a name-resolver (a direct map lookup
+        // by name — no import-chain walk, no precedence, no `symbol_tables` scan),
+        // so it is Rev-2-compliant. It is reached only when the fetched entry
+        // carries no dispatch mechanism (no GOT slot, not extern, not poll) — in
+        // the live session path every callable carries a GOT slot, so the S7 arm
+        // wins and this is effectively the batch/test-harness tail.
+        let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: format!("undefined function: {name}"),
+                location: ErrorLocation::from_span(span),
+            }
+        })?;
+        let local_func = self
+            .module
+            .declare_func_in_func(*func_id, self.builder.func);
+        let call = self.builder.ins().call(local_func, arg_vals);
+        Ok(self.builder.inst_results(call)[0])
     }
 
     /// Bake the platform fn's fully-qualified name as a relocated, position-

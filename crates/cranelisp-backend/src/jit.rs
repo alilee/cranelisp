@@ -593,6 +593,30 @@ impl Jit {
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
+        self.compile_defn_with_targets(
+            defn,
+            &std::collections::HashMap::new(),
+            compile_ctx,
+        )
+    }
+
+    /// Like [`Self::compile_defn`] but threads the W1 dispatch carriers
+    /// (`resolved_targets`, span-keyed) into the lenient view build (KC-W0-6).
+    /// After the W1 flip a poll/platform/extern/direct-call site reads the
+    /// callee's `resolved_target`; a harness that seeds a `DefKind::PlatformEffect`
+    /// / `PrimitiveExtern` / user-fn entry supplies the FQ it stored it under so
+    /// the keyed read (`entry_at`) lands. `compile_defn` above passes an empty
+    /// map for the fixtures whose bodies drive no keyed read.
+    pub(crate) fn compile_defn_with_targets<C, L>(
+        &mut self,
+        defn: &Defn,
+        resolved_targets: &std::collections::HashMap<Span, cranelisp_types::FQSymbol>,
+        compile_ctx: CompileContext<'_, C, L>,
+    ) -> Result<CompileArtifacts, CranelispError>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
         self.ctx.func.signature = self.build_sig(defn.params().len());
         self.ctx.func.name =
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
@@ -623,7 +647,7 @@ impl Jit {
         // (Var→Mixed). W3 migrates this helper onto a `from_expr`-/typecheck-built
         // view and deletes `lenient_mono_from_expr` + the backend lenient entry
         // point entirely.
-        let body = crate::lenient_mono_from_expr(defn.body());
+        let body = crate::lenient_mono_from_expr(defn.body(), resolved_targets);
         // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
         // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing
         // the module through a method (`self.module_mut()`) would re-borrow

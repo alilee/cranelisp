@@ -382,6 +382,16 @@ fn launch_continuation_consuming_call_on_capture_keeps_it_live() {
         vec![(Symbol::from("keep$String"), 1)].into_iter().collect();
     let tables = empty_tables();
     let aliases = empty_aliases();
+    // W1 (KC-W0-6): the continuation's `(keep$String h)` call reads the callee's
+    // `resolved_target`. Seed a NotDetermined stub so `entry_at` resolves it (→
+    // FuncId tail, byte-identical) and thread the carrier at the call span.
+    {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+        insert_user_fn_stub(&mut st, "keep$String", 1);
+        tables.insert(ModuleFullPath::from("user"), st);
+    }
+    let entry_targets =
+        call_carriers(entry.body(), &ModuleFullPath::from("user"), &["keep$String"]);
 
     {
         let ctx = jit.build_compile_context(
@@ -401,7 +411,7 @@ fn launch_continuation_consuming_call_on_capture_keeps_it_live() {
             &aliases,
             ModuleFullPath::from("user"),
         );
-        jit.compile_defn(&entry, ctx).unwrap();
+        jit.compile_defn_with_targets(&entry, &entry_targets, ctx).unwrap();
     }
     let entry_ptr = jit
         .finalize_and_get_ptr(&Symbol::from("entry"), 0)

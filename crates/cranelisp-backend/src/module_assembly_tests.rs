@@ -225,6 +225,16 @@ fn test_compile_with_default_method_defns() {
     let program: Program = vec![TopLevel::Defn(main_defn)];
     let mut check = empty_check();
     check.default_method_defns.push(default_defn);
+    // W1 (KC-W0-6): `main`'s plain `(default-ne 1 2)` call reads the callee Var's
+    // carrier — the default method's own home `user/default-ne` (resolves to the
+    // FuncId tail, byte-identical).
+    check.resolved_targets.insert(
+        Span::new(10, 20),
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("default-ne"),
+        },
+    );
 
     let value = test_compile_program_and_run(&program, &check, &empty_tables())
         .expect("program with default method defns should compile");
@@ -668,6 +678,16 @@ fn test_compile_multi_sig_defn_end_to_end() {
             mangled_name: cranelisp_types::JitSymbol::from("f$Int"),
         },
     );
+    // W1 (KC-W0-6): the SigDispatch arm keyed-reads the Apply-span carrier — the
+    // selected mangled variant `user/f$Int` (materialised into the table by the
+    // multi-sig expansion below).
+    check.resolved_targets.insert(
+        call_span,
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("f$Int"),
+        },
+    );
 
     // Set up symbol table with Overloaded entry for multi-sig expansion.
     let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
@@ -775,6 +795,15 @@ fn test_compile_multi_sig_second_variant() {
         call_span,
         cranelisp_types::ResolvedCall::SigDispatch {
             mangled_name: cranelisp_types::JitSymbol::from("g$Int+Int"),
+        },
+    );
+    // W1 (KC-W0-6): SigDispatch keyed read of the Apply-span carrier — the
+    // selected mangled variant `user/g$Int+Int`.
+    check.resolved_targets.insert(
+        call_span,
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("g$Int+Int"),
         },
     );
 

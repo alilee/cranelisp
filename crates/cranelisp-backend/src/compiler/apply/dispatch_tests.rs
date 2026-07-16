@@ -195,9 +195,18 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
                 visibility: Visibility::Public,
             },
         );
+        // W1 (KC-W0-6): `caller`'s `(crash)` reads the callee's `resolved_target`.
+        // `crash` is an Import in `user`, so its TERMINAL storage key is the
+        // effect's home `platform.boom/crash` (what `storage_fq()` records) — the
+        // direct keyed read (`entry_at`) lands on the PlatformEffect Def there.
+        let mut caller_targets: HashMap<Span, FQSymbol> = HashMap::new();
+        caller_targets.insert(
+            Span::SYNTHETIC,
+            FQSymbol { module: plat.clone(), symbol: Symbol::from("crash") },
+        );
         st.insert(
             Symbol::from("caller"),
-            make_def_entry_slot(caller.clone(), 0),
+            make_def_entry_slot_with_targets(caller.clone(), 0, &caller_targets),
         );
         tables.insert(user.clone(), st);
     }
@@ -266,8 +275,18 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
         let mut st = SymbolTable::new(user.clone());
         let _ = st.allocate_got_slot();
         let _ = st.allocate_got_slot();
+        // W1 (KC-W0-6): `caller`'s `(helper)` reads the callee's `resolved_target`
+        // — the plain user fn's own home `user/helper`.
+        let mut caller_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+        caller_targets.insert(
+            Span::SYNTHETIC,
+            cranelisp_types::FQSymbol { module: user.clone(), symbol: Symbol::from("helper") },
+        );
         st.insert(helper.name.clone(), make_def_entry_slot(helper.clone(), 0));
-        st.insert(caller.name.clone(), make_def_entry_slot(caller.clone(), 1));
+        st.insert(
+            caller.name.clone(),
+            make_def_entry_slot_with_targets(caller.clone(), 1, &caller_targets),
+        );
         tables.insert(user.clone(), st);
     }
 

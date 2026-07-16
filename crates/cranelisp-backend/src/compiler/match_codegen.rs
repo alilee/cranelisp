@@ -729,7 +729,17 @@ fn test_compile_adt_data_constructor() {
         inferred_type: None,
     };
 
-    let check = empty_check();
+    // W1 (KC-W0-6): the S3/S4 ctor `Apply` now reads the callee Var's carrier.
+    // `option_type_tables` stores `Some` bare in `main`, so the storage FQ is
+    // `main/Some` — `ctor_meta_at` reads the Constructor Def there.
+    let mut check = empty_check();
+    check.resolved_targets.insert(
+        Span::new(1, 5),
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("main"),
+            symbol: Symbol::from("Some"),
+        },
+    );
     let tables = option_type_tables();
 
     let result = test_compile_and_run(&expr, &check, &tables);
@@ -811,7 +821,17 @@ fn test_compile_match_with_fields() {
         inferred_type: None,
     };
 
-    let check = empty_check();
+    // W1 (KC-W0-6): the scrutinee `(Some 99)` ctor `Apply` reads the callee Var
+    // carrier (`main/Some`, the bare storage key in `option_type_tables`). The
+    // match ARM ctor resolution stays on its legacy S19 fallback (W2/W3 kind).
+    let mut check = empty_check();
+    check.resolved_targets.insert(
+        Span::new(11, 15),
+        cranelisp_types::FQSymbol {
+            module: ModuleFullPath::from("main"),
+            symbol: Symbol::from("Some"),
+        },
+    );
     let tables = option_type_tables();
 
     let result = test_compile_and_run(&expr, &check, &tables);

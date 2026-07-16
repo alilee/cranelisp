@@ -366,6 +366,12 @@ where
 /// import chain), composed with the defining module into the FQ name the backend
 /// bakes. A non-PlatformEffect entry (user fn, primitive, trait method) returns
 /// `None` so its dispatch arm is left untouched — only platform effects stamp.
+///
+/// S110 W1: the apply-site caller (`compile_direct_call`'s S8 stamp arm) now
+/// reads the platform-effect discriminator off the ONE `entry_at` fetch; this
+/// resolver keeps only its `resolution/tests.rs` unit callers and is deleted
+/// wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_platform_effect_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -411,6 +417,12 @@ where
 /// intact (`poll-support.md §3.4.2`). The bake/peel itself stays keyed ONLY on
 /// `poll_shape: bool` (the one uniform path) — `scheduling_class` gates only the
 /// producer, never a second node discriminator.
+///
+/// S110 W1: the apply-site caller (`compile_direct_call`'s S6 poll arm) now reads
+/// the poll-shape discriminator + slot + params off the ONE `entry_at` fetch;
+/// this resolver keeps only its `resolution/tests.rs` unit callers and is deleted
+/// wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_poll_effect_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -460,6 +472,12 @@ where
 /// Returns the resolved ABI key (the defining entry's symbol-table key, which
 /// may differ from the local alias when an Import edge was followed), or `None`
 /// if the symbol is absent, is not a `Def`, or is not a `PrimitiveExtern`.
+///
+/// S110 W1: the apply-site caller (`compile_direct_call`'s S9 extern arm) now
+/// reads the `PrimitiveExtern` discriminator + ABI key off the ONE `entry_at`
+/// fetch (`fq.symbol` IS the ABI key); this resolver keeps only its
+/// `resolution/tests.rs` unit callers and is deleted wholesale in W3 (§3 S23).
+#[allow(dead_code)]
 pub(crate) fn resolve_extern_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,

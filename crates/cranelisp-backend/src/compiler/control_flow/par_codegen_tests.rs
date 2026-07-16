@@ -49,10 +49,15 @@ fn clif_of_body(body: Expr) -> String {
         cranelisp_types::SymbolTable,
     > = dashmap::DashMap::new();
     let module_path = cranelisp_types::ModuleFullPath::from("user");
-    symbol_tables.insert(
-        module_path.clone(),
-        cranelisp_types::SymbolTable::new(module_path.clone()),
-    );
+    let mut st = cranelisp_types::SymbolTable::new(module_path.clone());
+    // W1 (KC-W0-6): the probe's self-call reads the callee's `resolved_target`,
+    // so the probe must be resolvable by the keyed read (`entry_at`). A
+    // NotDetermined stub (no GOT slot) resolves to the `FuncId` tail —
+    // byte-identical to the pre-W1 direct call.
+    crate::test_support::insert_user_fn_stub(&mut st, "par_codegen_probe", 0);
+    symbol_tables.insert(module_path.clone(), st);
+    let resolved_targets =
+        crate::test_support::call_carriers(defn.body(), &module_path, &["par_codegen_probe"]);
     let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
     let compile_ctx = jit.build_compile_context(
         &func_ids,
@@ -61,7 +66,7 @@ fn clif_of_body(body: Expr) -> String {
         &module_aliases,
         module_path,
     );
-    jit.compile_defn(&defn, compile_ctx)
+    jit.compile_defn_with_targets(&defn, &resolved_targets, compile_ctx)
         .expect("compile")
         .clif_ir
 }
@@ -109,10 +114,19 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
         cranelisp_types::SymbolTable,
     > = dashmap::DashMap::new();
     let module_path = cranelisp_types::ModuleFullPath::from("user");
-    symbol_tables.insert(
-        module_path.clone(),
-        cranelisp_types::SymbolTable::new(module_path.clone()),
-    );
+    let mut st = cranelisp_types::SymbolTable::new(module_path.clone());
+    // W1 (KC-W0-6): every call target the probe body dispatches to must be
+    // resolvable by the keyed read — the probe itself plus each declared extra.
+    // NotDetermined stubs (no slot) resolve to the `FuncId` tail, byte-identical.
+    crate::test_support::insert_user_fn_stub(&mut st, "par_codegen_probe", 0);
+    for (name, arity) in extra {
+        crate::test_support::insert_user_fn_stub(&mut st, name, *arity);
+    }
+    symbol_tables.insert(module_path.clone(), st);
+    let mut known: Vec<&str> = extra.iter().map(|(n, _)| *n).collect();
+    known.push("par_codegen_probe");
+    let resolved_targets =
+        crate::test_support::call_carriers(probe.body(), &module_path, &known);
     let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
     let compile_ctx = jit.build_compile_context(
         &func_ids,
@@ -121,7 +135,9 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
         &module_aliases,
         module_path,
     );
-    jit.compile_defn(&probe, compile_ctx).expect("compile").clif_ir
+    jit.compile_defn_with_targets(&probe, &resolved_targets, compile_ctx)
+        .expect("compile")
+        .clif_ir
 }
 
 /// A String literal expression (a heap-typed `AlwaysHeap` value).

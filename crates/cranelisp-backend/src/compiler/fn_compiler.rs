@@ -669,6 +669,7 @@ where
                 args,
                 span,
                 resolved_call,
+                resolved_target,
                 ty,
                 ..
             } => {
@@ -688,6 +689,13 @@ where
                     args,
                     *span,
                     resolved_call.as_deref(),
+                    // S110 W1: the Apply-span dispatch carrier (`backend-keyed-
+                    // consumer.md` §1.1) — the STORAGE FQ typecheck's dispatch
+                    // selection resolved to (trait/sig-dispatch/auto-curry/operator
+                    // legs). The backend keys its ONE fetch on this instead of
+                    // re-scanning the symbol tables. `None` for a Var-callee direct
+                    // call (that carrier rides on the callee `Var` node).
+                    resolved_target.as_ref(),
                     Some(&apply_type),
                     stack,
                 )

@@ -161,6 +161,7 @@ fn test_compile_vec_len_inline() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -231,6 +232,7 @@ fn test_compile_vec_get_inline() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -299,6 +301,7 @@ fn test_compile_vec_get_first_element() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -368,6 +371,7 @@ fn test_compile_vec_get_last_element() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -458,6 +462,7 @@ fn test_compile_vec_set_copy_path() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -533,6 +538,7 @@ fn test_compile_vec_push_copy_path() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -601,6 +607,7 @@ fn test_compile_vec_literal_in_let() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -657,6 +664,7 @@ fn test_compile_vec_literal_with_computed_elements() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -774,6 +782,7 @@ fn test_compile_vec_get_verify_value() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -848,6 +857,7 @@ fn test_compile_vec_push_on_temp() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -924,6 +934,7 @@ fn test_compile_vec_set_on_temp() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1054,6 +1065,7 @@ fn vec_set_copy_path_preserves_original() {
     };
     let check = TestCheckResult {
         method_resolutions: res,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1103,6 +1115,7 @@ fn vec_set_preserves_other_elements() {
     let expr = vec_get(set_expr, 2, Span::new(2140, 2160), &mut res);
     let check = TestCheckResult {
         method_resolutions: res,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1171,6 +1184,7 @@ fn vec_lifecycle_is_rc_balanced() {
     };
     let check = TestCheckResult {
         method_resolutions: res,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1253,6 +1267,7 @@ fn test_compile_vec_empty_len() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1324,6 +1339,7 @@ fn test_compile_vec_push_empty_vec() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),
@@ -1372,6 +1388,7 @@ fn test_compile_vec_len_empty_vec() {
 
     let check = TestCheckResult {
         method_resolutions,
+        resolved_targets: HashMap::new(),
         constrained_fn_names: HashSet::new(),
         mono_defns: Vec::new(),
         expr_types: HashMap::new(),

@@ -285,6 +285,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// at a PRIMITIVE-shaped `Def` (`Primitive`/`PrimitiveExtern` — mirroring
     /// `resolve_primitive_jit_name`'s own kind gate); any other terminal falls
     /// through to the `primitives` default.
+    ///
+    /// Records `r.storage_fq()` (the terminal storage key surfaced by the walk),
+    /// not `r.fq` — same value today for the unrenamed prelude re-export chains
+    /// this arm accepts, flipped for structural uniformity with the Var-span
+    /// leg per the carrier value-source rule (FIXME 0620, §1.1.2).
     fn builtin_storage_fq(&self, state: &CheckState, name: &Symbol) -> FQSymbol {
         self.def_resolved(state, name.as_ref(), Span::default())
             .filter(|r| {
@@ -298,7 +303,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         )
                 )
             })
-            .map(|r| r.fq)
+            .map(|r| r.storage_fq())
             .unwrap_or_else(|| FQSymbol {
                 module: ModuleFullPath::from("primitives"),
                 symbol: name.clone(),

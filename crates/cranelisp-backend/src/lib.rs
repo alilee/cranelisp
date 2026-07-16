@@ -635,9 +635,18 @@ where
 /// itself lives in `cranelisp-types` beside `from_expr` so view construction has
 /// ONE home. The sidecars are empty here (the test helper lowers a bare
 /// template); byte-identical to the former in-crate body.
-pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
+pub(crate) fn lenient_mono_from_expr(
+    expr: &cranelisp_types::Expr,
+    resolved_targets: &std::collections::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>,
+) -> cranelisp_types::MonoExpr {
     use std::collections::HashMap;
-    cranelisp_types::MonoExpr::lenient_from_expr(expr, &HashMap::new(), &HashMap::new())
+    // W1 (KC-W0-6): the unit-test harness threads the dispatch carriers it
+    // computes directly from the tables it also builds — a lenient-built body
+    // now reaches W1's keyed reads (`entry_at`), so a `None` carrier would
+    // hard-miss. Live `compile_to_module` consumes the typecheck-populated
+    // `codegen_view` instead; this backend lenient path is test-harness-only
+    // (jit.rs §5, no live caller) and deletes in W3.
+    cranelisp_types::MonoExpr::lenient_from_expr(expr, &HashMap::new(), resolved_targets)
 }
 
 fn compile_to_module_impl<M, C, L>(

@@ -53,10 +53,17 @@ pub(crate) use rc_emission::{
     collect_var_ids_from_type, find_var_type_in_expr, signature_heap_category,
     substitute_type_inline,
 };
+// S110 W1 dropped the apply-site re-exports of `resolve_extern_target`,
+// `resolve_platform_effect_target`, and `resolve_poll_effect_target` — the call
+// seam now keys off `entry_at`, so those resolvers keep only their in-module
+// unit-test callers (deleted wholesale in W3, §3 S22/S23). The value-seam
+// resolvers (`resolve_got_target`, `resolve_callee_summary`,
+// `resolve_is_callable_target`, `resolve_vec_query_primitive`,
+// `resolve_func_arity`) still have live W2 call sites and stay re-exported.
 pub(crate) use resolution::{
     got_data_symbol_name, inner_fn_discriminator_for, resolve_callee_summary,
-    resolve_extern_target, resolve_func_arity, resolve_got_target, resolve_is_callable_target,
-    resolve_platform_effect_target, resolve_poll_effect_target, resolve_vec_query_primitive,
+    resolve_func_arity, resolve_got_target, resolve_is_callable_target,
+    resolve_vec_query_primitive,
 };
 
 /// Information about a single function to be traced by `(trace ...)`.

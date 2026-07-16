@@ -1419,6 +1419,55 @@ rejects violations on sight. **W1 re-deploy (pop `stash@{0}`, flip S3/S4 to
 keyed `ctor_meta_at`, populate KC-W0-6 fixtures) is GO once the /dev flip
 lands — no further producer prerequisites, W2 producer work also nil.**
 
+### /dev (W1 re-deploy) — LANDED (2026-07-16)
+
+Coordinated typecheck-recorder-flip + backend-W1 re-deploy, one change-set.
+
+**Step 1 — recorder flip (typecheck, value-only, no schema bump).**
+- `checker.rs::record_reference_target`: the `resolved_targets` insert now takes
+  `resolved.storage_fq()` (was `resolved.fq.clone()`) — records the TERMINAL
+  storage key, not the written alias (§1.1.2). `user_fn_refs`/`callees` UNCHANGED
+  on `.fq` (FIXME 0621). Carrier rustdoc updated to the two-identities model.
+- `program/callees.rs::builtin_storage_fq`: the `def_resolved` arm maps
+  `r.storage_fq()` (was `r.fq`) — same value today, flipped for uniformity.
+- 3 unit pins (`program/tests.rs`): member-aliased bare ctor carrier ==
+  `member_key(Maybe, Some)`; member-aliased bare accessor carrier ==
+  `member_key(Box, v)`; renamed-import `[lib [foo as bar]]` carrier == source
+  storage key `lib/foo`. Typecheck lib suite 693/693.
+
+**Step 2 — backend W1 re-deploy.**
+- `git stash pop stash@{0}` — clean (backend-only, disjoint from the typecheck
+  flip); the S1–S9 `apply.rs` flips + `entry_at` + locals-before-keyed-read
+  invariant landed intact.
+- **S3/S4 ctor `Apply` flipped** (`apply.rs::compile_var_apply`): the legacy
+  `lookup_constructor` chain-follow → keyed `ctor_meta_at` read off the callee
+  Var's carrier (now the canonical `member_key`). Callee carrier computed ONCE,
+  reused by the ctor branch + the S5/S7 direct-call arm. This removes the last
+  apply-site caller of `lookup_constructor`; the fn stays (live W2/W3 callers in
+  `literals.rs`/`fn_as_value.rs`/`match_codegen.rs` S11/S16/S19/S20) for the §3
+  W3 deletion — no `#[allow(dead_code)]` needed (not yet dead).
+- **KC-W0-6 fixture population (24 backend unit fixtures)**: the harness now
+  threads the dispatch carriers it computes from the tables it builds —
+  `TestCheckResult.resolved_targets` + `make_def_entry_slot_with_targets`/
+  `make_def_entry_with_targets` (compile_to_module fixtures: dispatch/extern/
+  match/module_assembly), `jit::compile_defn_with_targets` +
+  `lenient_mono_from_expr(expr, resolved_targets)` (CLIF-probe fixtures: poll/
+  par/launch), plus shared `call_carriers`/`insert_user_fn_stub` helpers (a
+  NotDetermined stub makes `entry_at` resolve to the byte-identical FuncId tail).
+  `extern_..._without_resolved_call_fails` assertion updated to the Rev-2
+  carrier-miss error (replaces the old "undefined function" surface).
+
+**Acceptance — ALL GREEN.** `golden_clif_w0b` 5/5 byte-identical (mechanism
+change, not codegen); backend unit 411/411; typecheck unit 693/693; the 5 named
+accessor/ctor e2e classes GREEN + `applied_annotation_bare_var_pins_through_ctor`
+GREEN; full suite **exactly 13 RED** — unchanged known-defect guards (3×
+generic_value §3.11, ownership_reuse, 2× spec_03 §3.11, 2× spec_05, 2× spec_07,
+2× vec_assoc UAF [W2 fix], stdlib_conformance = SG-1 `derive`/0613). ZERO
+W1-signature reds (no carrier-miss/entry-miss anywhere in the suite) → no
+W1-introduced regressions. No public-API/schema/cache change (backend-internal +
+value-only typecheck flip). `cargo check --workspace --tests` clean; no new
+clippy lints in touched files.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
