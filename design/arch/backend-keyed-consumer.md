@@ -1,17 +1,28 @@
 # Backend as a pure keyed-lookup consumer — the 0583 resolution-boundary migration
 
-**Status: WORKING (S110 Phase 3, `/arch`).** The binding cross-crate design for
-FIXME 0583 (S110 centrepiece, user directive S109 P5): typecheck emits
-fully-qualified SYMBOLS and fully-qualified TYPES on every mono-view reference;
-the backend performs ZERO name resolution and ZERO bare-type-name resolution —
-one keyed fetch, kind-discrimination on the fetched entry, hard `CodegenError`
-on miss. Deletes `resolve_driven` + the arbitrary-order `symbol_tables.iter()`
-global scan + the ten `resolve_*` entry points in
-`crates/cranelisp-backend/src/compiler/resolution.rs`. Realizes **Principle 24
-"Resolve once"** (`principles/24-resolve-once.md`, authored this phase,
-ratification at Phase-7 close) at the typecheck→backend seam; the S109 §10
-pattern-position cure (`dotted-ctor-canonical-keys.md` §10) is the worked
-per-kind template this doc generalises.
+**Status: LANDED (S110 Phase 5; centrepiece-close verified 2026-07-16, `/arch`).**
+The binding cross-crate design for FIXME 0583 (S110 centrepiece, user directive
+S109 P5), DELIVERED end-to-end: typecheck emits fully-qualified SYMBOLS and
+fully-qualified TYPES on every mono-view reference; the backend performs ZERO
+name resolution and ZERO bare-type-name resolution — one keyed fetch,
+kind-discrimination on the fetched entry, hard `CodegenError` on miss. W0
+producer (carriers + `from_expr`, `CACHE_SCHEMA_VERSION` 18→19, `41fab350`;
+W0.1b `144828d1`) → W1 call seam (`86038e27`) → W2 value seam + 0585 backstop
+(`369c226c`) → W3 deletion (`4c899dd9`+`be06f6cb`): `resolve_driven`,
+`resolve_chain`, the arbitrary-order `symbol_tables.iter()` scan, the ten
+`resolve_*` entry points, `lookup_constructor`, and `lenient_mono_from_expr`
+are DELETED (−993 LOC). **§3 grep gate verified at the centrepiece close
+(2026-07-16): zero resolver CODE in `crates/cranelisp-backend/src/`** (every
+remaining textual mention is deletion-narrative comment/rustdoc);
+`resolution.rs` retains exactly the two naming primitives
+(`got_data_symbol_name`, `inner_fn_discriminator_for`). Producer precision
+closed on all three sidecar axes (key values 0616; carrier values
+§1.1/§1.1.2/0620; map instance §1.1.3/0622). Realizes **Principle 24 "Resolve
+once"** (`principles/24-resolve-once.md`, authored S110 Phase 3, ratification
+at Phase-7 close) at the typecheck→backend seam; the S109 §10 pattern-position
+cure (`dotted-ctor-canonical-keys.md` §10) was the worked per-kind template
+this doc generalised. FIXMEs 0583/0584/0585 closed at the Phase-5
+centrepiece-close pass.
 
 Evidence base: Phase-2 architecture review (`sprints/SPRINT.md` §"Architecture
 review (Phase 2)") — `resolution.rs` read in full, all backend resolver call
@@ -19,9 +30,19 @@ sites enumerated (§3 below is the authoritative re-verified inventory), full
 type-axis survey (finding T: the type axis is already FQ-keyed except ctor
 construction/reference position, which folds into the symbol-axis waves).
 
-**Archive trigger:** W3 lands (resolver seam deleted; grep gate green). The
-carrier contract folds into `mono_expr.rs`/`check.rs` rustdoc + BC §2/§3 +
-`interfaces.md`; this doc moves to `design/arch/archive/`.
+**Archive trigger — MET for the contract (verified 2026-07-16):** W3 landed
+(resolver seam deleted; grep gate green) and the carrier contract is folded
+into all four permanent homes — `crates/cranelisp-types/src/{mono_expr,check}.rs`
+rustdoc, BC §2 (the producer obligation) + §3 invariant 10 (the consumer
+statement), and `interfaces.md` §"`resolved_targets` — the 0583 keyed-consumer
+carrier" (0618, `0cb5fbf7`). The physical move to `design/arch/archive/` is
+PARKED on the one §6 tail still sprint-tracked — the
+`src/bootstrap.rs::register_synth_adt` R-2 caller wiring (S110 src-chain) — so
+the active sprint's citations stay live; the next `/arch` archive triage
+executes the move. Residuals tracked at their own homes: FIXME 0621 (`callees`
+alias residual — S111 schema-bump window); stale present-tense resolver
+mentions in backend comments (cosmetic `/dev` sweep, named in the S110 Phase-5
+close report).
 
 ---
 

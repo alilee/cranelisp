@@ -294,6 +294,22 @@ nullary-as-value tag path etc.), which are in-scope-guaranteed by typecheck
 — scrutinee-directed names exist only in pattern position, so the global
 fallback is not reachable through them there.
 
+> **S110 W3 supersession (FIXME 0584 closed at the S110 Phase-5
+> centrepiece-close pass).** `lookup_constructor` no longer survives ANYWHERE:
+> the S110 W2 value seam flipped its value-position consumers onto keyed
+> carrier reads, W0.b made typecheck the sole mono-view producer (synthetic
+> bodies carry `resolved_ctor` populated DIRECTLY at synthesis — their
+> `Span::SYNTHETIC` nodes are structurally outside span-keyed transport — and
+> the lenient builder relocated to `cranelisp_types::MonoExpr::lenient_from_expr`
+> with the same two REQUIRED sidecar params), and W3 deleted
+> `lookup_constructor` + `resolve_driven` outright. The interim S109
+> lenient/synthetic `None`-arm fallback (the W1 deviation FIXME 0584 asked
+> `/arch` to ratify or replace) was retired with it — the STRICTER alternative
+> was delivered structurally, so this section's "`None` → hard `CodegenError`,
+> never a fallback" is now the uniform landed truth for every pattern arm
+> (`match_codegen.rs::compile_constructor_pattern`). See
+> `backend-keyed-consumer.md` §5 (the W3 residual ruling).
+
 ### 10.4 I-1 fold-in — sparkability ctor-exclusion set (same mirror class)
 
 `let_if.rs::collect_module_constructors` (:32–53) yields **storage keys**
