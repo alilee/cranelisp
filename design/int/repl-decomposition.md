@@ -59,6 +59,14 @@ backend, `index-worker-isolation.md`).
 
 ### 1.2 `repl/format.rs` — the introspection-display `_doc` producer family (prod ≈ 1,050)
 
+> **SUPERSEDED by §1.6.1 (FIXME 0627 ruling, S110 Phase 5).** As-built, this single file
+> landed at ~1,900 lines (production + travelling tests) — over the ~1,500 ceiling and not
+> resolvable by the §1.5/§1.6 layout valve. The §1.6.1 ruling splits it on the **value-vs-type
+> axis** into `repl/format.rs` (value/echo + def-entry dispatcher + layout/source/spans) and a
+> new `repl/format_type.rs` (the per-kind definition-display leaves + related-section builders).
+> Read §1.6.1 for the binding file boundary; the item table below is the pre-ruling single-file
+> allocation, retained for the audit trail.
+
 The `_doc` producers + `format_*` free functions + the `StyledDoc` span helpers — the
 coherent sibling of `src/display.rs`. This is the **tight** file; see §2 for its test
 apportionment and §1.5 for the layout-render pressure valve.
@@ -76,6 +84,15 @@ apportionment and §1.5 for the layout-render pressure valve.
 | Layout-render subfamily (pressure valve, §1.5): `format_symbol_layout` `:3693` (75), `append_layout_body` `:3768`, `append_name_category` `:3778`, `format_prelude_implicit_group` `:3797`; `const LAYOUT_ROW_CAP` `:3564`, `const LAYOUT_BREAK_THRESHOLD` `:3568` | |
 
 ### 1.3 `repl/commands.rs` — the `handle_*` battery (prod ≈ 1,290)
+
+> **RATIFIED at ~1,650 by §1.6.1 (FIXME 0627 ruling, S110 Phase 5).** As-built this file
+> landed at ~1,645 lines — ~145 over the ~1,500 *tilde* guideline. The ruling **keeps it
+> whole** and does NOT split it on the introspection-vs-action axis (candidate B, rejected):
+> the arg-resolution toolbox (`resolve_symbol_arg`/`resolve_entry_arg`/`get_introspection`,
+> §1.5) and the eval helpers (`typecheck_only`, `compile_pending_macros`) straddle that seam,
+> so a B-split fragments shared helpers or needs a third home (a Principle-7 hazard), and a
+> reader greps `handle_<name>` in ONE cohesive battery rather than guessing a query/mutate
+> boundary. See §1.6.1.
 
 Every slash-command handler and its command-private helpers **except** `handle_search`
 (→ search.rs). `handle_imports`/`handle_exports` fold in here (the FIXME names them).
@@ -139,6 +156,116 @@ over ~1,500 after the move, relocate the **layout-render subfamily** (`format_sy
 are `handle_list`/`handle_imports` (COMMANDS). This is a sanctioned second cut, not a design
 change; `/dev` takes it if and only if the measured line count needs it.
 
+### 1.6.1 Budget ruling — the §1.6 table was arithmetically infeasible (FIXME 0627, S110 Phase 5)
+
+The 0606 move LANDED behaviour-invariant (commit `3944a4bc`; golden REPL e2e byte-identical,
+baseline 7 RED, zero library `public-api.txt` movement). But the §1.6 budget table **under-counts
+the family total**: the source (`repl.rs` = 5,237 LOC) plus split overhead is ~5,320, while the
+per-file budgets sum to ~4,530. Two files therefore land over ~1,500 regardless of apportionment
+— `format.rs` at ~1,900 and `commands.rs` at ~1,645 — and the §1.5/§1.6 layout valve only shuffles
+~250 lines between the two heavy files (measured: valve-OFF format 1,900/commands 1,645; valve-ON
+format 1,653/commands 1,894), never bringing both under. The valve is retired as moot (see below).
+
+**The ruling is not mechanical line-count satisfaction.** The criterion's *intent* is cohesive,
+navigable, independently-reasoned units — not equal halves. Weighed against that intent:
+
+- **`format.rs` (~1,900) hides a real conceptual seam → SPLIT (candidate A).** The file mixes
+  two distinct producer families: (1) runtime-value/eval-result echo + the `format_def_entry`
+  per-kind dispatcher + symbol description/related-collection + source/s-expr/layout/span
+  primitives (the value sibling of `src/display.rs`), and (2) the per-kind **definition-display
+  leaves** — every `*_display`/`*_display_doc` builder for a *named definition* (type, trait,
+  builtin type, special form, macro, overloaded fn) plus the `; defn:`/`; impl:`/`; match:`
+  related-section builders they share. These are different inputs and different callers (the
+  type/trait leaves are entered directly from `/info`/`/type` in `commands.rs`; the value family
+  from the eval loop). A reader predicts this seam ("render a value/echo" vs "render a type/trait
+  definition"). Split is cohesion-honest, not line-count-driven.
+- **`commands.rs` (~1,645) is ONE cohesive responsibility → RATIFY, do NOT split (candidate B
+  rejected).** The introspection-vs-action axis is fuzzy: the arg-resolution toolbox
+  (`resolve_symbol_arg`/`resolve_entry_arg`/`get_introspection`, §1.5) and the eval helpers
+  (`typecheck_only`, `compile_pending_macros`, `expand_form_sexp`) straddle it, so a B-split
+  either duplicates them (Principle-7 mirror) or invents a third home; and the battery is *more*
+  navigable whole (grep `handle_<name>`) than under an unpredictable query/mutate boundary. At
+  ~145 over a ~1,500 *tilde*, the `handle_*` battery is ratified as cohesive.
+
+Candidate C (ratify ~1,900 for `format.rs`) is rejected for `format.rs` precisely because a real
+seam exists there; a partial-C (ratify the cohesive command battery) is adopted for `commands.rs`.
+
+**Corrected budget — the ~1,500 tilde is a guideline for the split-able formatter/search/residual
+files; the `handle_*` command battery is ratified up to ~1,700:**
+
+| File | as-built / target LOC | disposition |
+|---|---:|---|
+| `repl/mod.rs` (residual) | ~1,050 | under guideline |
+| `repl/search.rs` | ~730 | under guideline |
+| `repl/format.rs` (value/echo/dispatcher/layout/spans) | ~1,100 after A-split | under guideline |
+| `repl/format_type.rs` (definition-display leaves) **NEW** | ~830 after A-split | under guideline |
+| `repl/commands.rs` (`handle_*` battery) | ~1,650 | **RATIFIED ≤ ~1,700** |
+
+The §1.5/§1.6 **layout-render pressure valve is RETIRED** — post A-split `format.rs` sits ~1,100
+with comfortable margin, so relocating the layout subfamily to `commands.rs` is unnecessary (and
+would only push the ratified-heavy file higher). The layout subfamily stays in `format.rs` as
+value-layout, where its consumers' formatting concern is cohesive.
+
+#### The A-split boundary (binding — a mechanical, behaviour-invariant `/dev` re-cut)
+
+Lines below are current `src/repl/format.rs`. All moved items are already `pub(crate)`, so
+**no visibility widening is required**; the only new cross-file edge is `format.rs`
+(`format_def_entry_doc` dispatcher) → `format_type.rs` (per-kind leaves), a one-way edge
+mirroring the sanctioned `commands.rs` → `search.rs` edge (§1.5). `format_def_entry_doc` becomes
+a pure per-kind dispatcher that routes to the appropriate leaf.
+
+**`repl/format_type.rs` — the per-kind definition-display leaves.**
+`//!`: "Per-kind introspection-display producers — the `*_display`/`*_display_doc` family that
+renders a *named definition* (type, trait, builtin type, special form, macro, overloaded fn) for
+`/info`/`/sig`/`/doc`/`/type`, plus the `; defn:`/`; impl:`/`; match:` related-section builders
+they share. The type-level sibling of the value-echo renderers in `repl/format.rs`; consumes the
+shared resolution toolbox in `repl/mod.rs`."
+
+| Item (current `format.rs:line`) | kind |
+|---|---|
+| `format_type_display` `:953`, `format_type_display_doc` `:961` | `impl CompilerSession` block (new) |
+| `format_trait_display` `:1020`, `format_trait_display_doc` `:1033` | ″ |
+| `format_builtin_type_display` `:1076`, `format_builtin_type_display_doc` `:1081` | ″ |
+| `impls_for_type_in_view` `:1125`, `prelude_trait_head_is_public` `:1160` | ″ (leaf helpers) |
+| `format_special_form_display` `:197`, `format_special_form_display_doc` `:205` | free fn |
+| `format_macro_display` `:225`, `format_macro_display_doc` `:234`, `format_macro_clause_params` `:260` | free fn |
+| `format_overloaded_variants` `:82`, `format_overloaded_variants_doc` `:91` | free fn |
+| `format_related_section_doc` `:285`, `format_trait_related_sections` `:298`, `format_trait_related_sections_doc` `:310` | free fn (related-section builders; called ONLY by the type-family leaves) |
+
+**`repl/format.rs` (residual) — value/echo + def-entry dispatcher + layout/source/spans.**
+`//!`: "REPL value-echo and def-entry rendering — `format_eval_result*`, the `format_def_entry*`
+per-kind dispatcher (routing to the display leaves in `repl/format_type.rs`), symbol description +
+related-symbol collection, source/s-expr formatting, the name-layout/grouping helpers, and the
+`StyledDoc` span primitives shared across the family. The value sibling of `src/display.rs`."
+
+STAYS: span/doc primitives (`push_type_annotation` `:34`, `push_fq_name` `:39`, `push_metadata`
+`:45`, `push_warning_line` `:53`, `code_block_doc` `:61`, `classification_metadata` `:70`,
+`format_mem_snapshot` `:15`); eval-result (`format_eval_result` `:600`, `format_eval_result_doc`
+`:616`, `format_eval_result_body_doc` `:632`); def-entry dispatcher (`format_def_entry` `:747`,
+`format_def_entry_doc` `:759`, `resolve_entry_for_display` `:916`); description/related
+(`describe_symbol` `:526`, `collect_related` `:581`, `collect_related_for` `:121`); source/sexp
+(`format_sexp` `:473`, `append_docstring_comment` `:502`, `indent_source_block` `:328`); layout
+(`format_symbol_layout` `:358`, `append_layout_body` `:433`, `append_name_category` `:443`,
+`format_prelude_implicit_group` `:462`, `LAYOUT_ROW_CAP` `:336`, `LAYOUT_BREAK_THRESHOLD` `:340`).
+
+#### Test-module split for the A-cut
+
+Same discipline as §2 (tests travel with their subjects; a mixed module splits along the same
+seam):
+
+| Test mod (current `format.rs:line`) | goes to |
+|---|---|
+| `overloaded_display_tests` `:1279` | `repl/format_type.rs` |
+| `trait_related_section_tests` `:1388` | `repl/format_type.rs` |
+| `fq_arg_format_tests` `:1573` — **split along the same value/type seam** | type/trait/builtin/`impls_for_type_in_view` cells (`:1594`,`:1640`,`:1667`,`:1718`–`:1805`) → `repl/format_type.rs`; the value-echo cell `runtime_error_renders_bare_normative_format` `:1617` (asserts `format_eval_result`) → `repl/format.rs` |
+| `collect_related_tests` `:1171` | `repl/format.rs` |
+| `prelude_group_layout_tests` `:1468` | `repl/format.rs` |
+| `styling_colour_on_tests` `:1820` | `repl/format.rs` (its one `format_related_section_doc` call `:1856` resolves cross-file via the `pub(crate)` builder) |
+
+Acceptance for the re-cut is the §4 contract unchanged: golden REPL e2e byte-identical, baseline
+stays 7 RED, zero library `public-api.txt` movement, no `pub`-widening. This is a mechanical move,
+not a design change.
+
 ## 2. The test split (`:3886–5234`, ~1,470 lines, 11 test mods)
 
 Tests move with their subjects. The decisive problem is `fq_arg_tests` (`:4328–5010`, ~682
@@ -183,8 +310,11 @@ One stage (no in-place phase-split precursor):
 - **Golden REPL e2e green + unit tier green** — the conformance gate (a binary has no
   baseline; BC §6).
 - **Zero movement on any library crate's `public-api.txt`** — none is touched (src/-only).
-- **No file in the `repl/` family exceeds ~1,500 lines** (§1.6 budget, valve applied if
-  measured over).
+- **Family line budget per §1.6.1 (FIXME 0627 ruling):** the ~1,500 tilde is the guideline for
+  the formatter/search/residual files (`mod.rs`, `search.rs`, `format.rs`, `format_type.rs` — all
+  land under after the A-split); the cohesive `handle_*` command battery (`commands.rs`) is
+  **ratified up to ~1,700**. The §1.5/§1.6 layout valve is **retired** (moot post A-split). The
+  original "no file exceeds ~1,500" criterion is superseded by this row.
 - **`int.md` §3.3 + `src/CLAUDE.md` module map updated in the same change-set** (couples with
   FIXME 0607).
 
