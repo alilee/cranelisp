@@ -87,11 +87,13 @@ The two structural facts that dominate the tree today:
    `CompilerSession` construction/register/link/trampoline/watcher; `shared_state.rs`;
    `index_worker.rs` — the `/search` background indexer, `index-worker-isolation.md`;
    `nice_worker.rs`; `test_runner.rs`; `types.rs`; plus per-concern `*_tests.rs` submodules).
-   REPL eval split to `src/eval.rs`; the REPL command/display surface split to `src/repl.rs`.
-2. **`repl.rs` is the new god-file** (~5.2k LOC, ~185 fns, six mixed responsibilities) — the
-   S110 decomposition target (FIXME 0606; the cut is signed off in
-   `design/int/repl-decomposition.md`, mechanical move by `/dev`). It absorbed S108's
-   `/search` UI and S109's display unification without being re-cut.
+   REPL eval split to `src/eval.rs`; the REPL command/display surface split to `src/repl/`.
+2. **The former `repl.rs` god-file is decomposed** (S110, FIXMEs 0606 + 0627). The 5,237-LOC
+   `repl.rs` — six mixed responsibilities, absorbing S108's `/search` UI and S109's display
+   unification without being re-cut — is now the five-file `src/repl/` directory
+   (`mod`/`search`/`format`/`format_type`/`commands`), every file under the ~1,700 guideline.
+   The cut and the format.rs A-split are recorded in `design/int/repl-decomposition.md`; the
+   as-built allocation is §3.3.
 
 ### 3.1 Subsystem map (module homes)
 
@@ -104,7 +106,7 @@ The two structural facts that dominate the tree today:
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
 | Cluster-atomic typecheck | `cluster.rs` (`ProcessedCluster` + `process_cluster`/`insert_cluster`) |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
-| REPL command/display surface | `repl.rs` (slash dispatch + `handle_*` battery + `/search` UI + `_doc` formatters + prompt/banner/editor) — **decomposition target, §3.3** |
+| REPL command/display surface | `repl/` — the five-file decomposition (S110): `repl/mod.rs` (slash dispatch + prompt/banner/editor + input classification + the shared resolution/referer toolbox), `repl/search.rs` (`/search` UI), `repl/format.rs` (value/echo formatter family), `repl/format_type.rs` (per-kind definition-display leaves), `repl/commands.rs` (`handle_*` battery). See §3.3 + `src/CLAUDE.md` §"Session/REPL module map" |
 | Dev-session transaction | `redefine.rs` — the S101 dependent-recompilation machinery (`session-transaction.md`): `AbiSurface` summary-diff, `RedefKind`, on-demand `ReverseIndex`, reverse-topo recompile, `mark_broken`/trap-stubs, `TransactionReport` |
 | Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/CLAUDE.md` §"Prelude as a resolution FALLBACK") |
 | Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
@@ -127,28 +129,30 @@ FIXME 0109 (the S81 `session_v4.rs`/`worker.rs` decomposition) is **fully landed
 A/B/C plus the once-carried Wave D (`eval.rs` + `repl.rs` split out of `session_v4.rs`, and
 the further `session_v4/` submodule split). The `src/CLAUDE.md` §"Session/REPL module map" is
 the as-built allocation. The **god-file `repl.rs`** (5,237 LOC) was **decomposed S110** per the
-signed-off cut into `src/repl/`:
+signed-off cut into `src/repl/` — five files (FIXME 0606 the initial cut + FIXME 0627 the
+`format.rs` A-split into `format.rs` + `format_type.rs`, which brought every split file under
+the ~1,700 guideline):
 
 | Module | Responsibility | LOC (as-built) |
 |---|---|---|
 | `repl/mod.rs` (residual) | Slash dispatch (`dispatch_command`) + prompt/banner/line-editor + input classification + the shared resolution/referer toolbox (the bottom layer); re-exports the shared externals as `pub(crate) use`; hosts the shared `#[cfg(test)] mod test_support` | ~1,050 |
 | `repl/search.rs` | The `/search` UI subsystem — `handle_search`, `render_search_row*`, settle/scheme/referer helpers (the UI half of `session_v4/index_worker.rs`) | ~730 |
-| `repl/format.rs` | The `_doc` producer formatter family — `format_def_entry_doc`, `format_eval_result*`, `format_type_display`/`format_trait_display`, `describe_symbol`, the span helpers + the layout-render subfamily (valve NOT taken — §1.6) | ~1,900 |
+| `repl/format.rs` | The **value/echo** half of the formatter family — `describe_symbol`, `format_eval_result*`, the `format_def_entry*` per-kind dispatcher, `format_sexp`/span primitives, the name-layout subfamily; `format_def_entry_doc` routes to the `format_type.rs` leaves (a one-way `format.rs` → `format_type.rs` edge) | ~1,090 |
+| `repl/format_type.rs` | The **per-kind definition-display leaves** — `format_type_display`/`format_trait_display`/`format_builtin_type_display`/`format_special_form_display`/`format_macro_display`/`format_overloaded_variants` + the `; defn:`/`; impl:`/`; match:` related-section builders they share | ~830 |
 | `repl/commands.rs` | The `handle_*` slash-command battery (folds in `handle_imports`/`handle_exports`) | ~1,650 |
 
-The move was **behaviour-invariant** (golden REPL e2e byte-identical; baseline unchanged at
-7 RED; zero movement on any library crate's `public-api.txt`). The precise function→file
+The move was **behaviour-invariant** (golden REPL e2e byte-identical; baseline unchanged;
+zero movement on any library crate's `public-api.txt`). The precise function→file
 boundaries, shared-toolbox placement, and test split (including the mandatory three-way
 `fq_arg_tests` split) are in **`design/int/repl-decomposition.md`** (the 0580 `program.rs`
-template: cut first, mechanical move by `/dev` last).
+template: cut first, mechanical move by `/dev` last; §1.6.1 records the A-split).
 
-> **Budget residual (S110 `/dev`, FIXME 0627).** The signed-off cut's §1.6 line budget is
-> optimistic: it sums to ~4,530 lines but the source (production + tests + split overhead) is
-> ~5,320, so `format.rs` (~1,900) and `commands.rs` (~1,650) both exceed the ~1,500 target and
-> the pre-authorised layout valve does not resolve it (it merely relocates ~250 lines between
-> the two heavy files — measured: valve ON → format 1,653 / commands 1,894). A finer cut
-> (e.g. `format.rs` → value-display vs type/trait-display) is a `/design` decision, filed as
-> FIXME 0627.
+> **Budget resolved (FIXME 0627, LANDED).** The initial four-file cut left `format.rs`
+> (~1,900) and `commands.rs` (~1,650) over the ~1,500 target, and the pre-authorised layout
+> valve merely relocated ~250 lines between the two heavy files. The resolving cut — filed as
+> FIXME 0627 and landed — splits `format.rs` along the value/echo (`format.rs`) vs per-kind
+> definition-display (`format_type.rs`) seam; `commands.rs` is ratified ≤ ~1,700. All five
+> files are now under the guideline (`repl-decomposition.md` §1.6.1).
 
 ---
 
@@ -670,7 +674,7 @@ Post-S64 the observability surface has four sinks, all int-owned:
 
 | Sink | Activator | What it observes | Implementation |
 |---|---|---|---|
-| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1` (or REPL trace mode) | Worker lifecycle, scheduler dispatch, notify_*, wait_for_* | `src/observability.rs` (renamed `src/scheduler_trace/` post-cleanup) |
+| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1` (or REPL trace mode) | Worker lifecycle, scheduler dispatch, notify_*, wait_for_* | `src/observability.rs` (+ `observability/tests.rs`) — the stable home; the S81-era "renamed `src/scheduler_trace/`" plan never happened and is retired |
 | IO trace | `CRANELISP_IO_TRACE=1` (or REPL trace mode) | IO trampoline transitions, Par fork-join, IVar spark/force | `src/io_trace/` (post-FIXME 0103; relocated from `cranelisp-runtime/src/io_trace.rs`) |
 | GOT trace | `CRANELISP_GOT_TRACE=1` (or REPL trace mode) | GOT-slot population events: JitWrite, LinkerWrite, Redefinition | `src/got_trace/` (post-FIXME 0099; new) |
 | Introspection store | REPL mode OR `CRANELISP_CODEGEN_TRACE` | Per-symbol metadata: source, sexp, clif_ir, disasm, code_size, compile_duration | `SharedState.introspection` |
@@ -731,7 +735,7 @@ The S64 Decisions (40, 41, 42) and the FIXMEs that close them (0098, 0099, 0100,
 | `display.rs` location | Lives in `cranelisp-backend/src/display.rs` (831 LOC) | Lives in `src/display.rs` (or sub-module of REPL session); BC §6 alignment | FIXME 0108 |
 | `code.rs` location | Lives in `src/code.rs` (397 LOC) | Lives in `cranelisp-backend/src/code.rs`; int re-exports | Decision 41 (no specific FIXME; bundled with 0098) |
 | Backend per-symbol JIT cardinality | `compile_to_module` returns a tuple; int unpacks at `worker.rs:2860–3018` | `compile_to_module` returns `Result<(), CompilationError>`; backend writes `Code::Jit` directly via `SymbolTable::write_code` | Decision 41 (bundled with 0098) |
-| god-file decomposition | `session_v4.rs` (5,417 LOC), `worker.rs` (5,041 LOC) — audit F1 + F2 | Decomposed per §3.3 module map | Audit recommendations 1, 2 — open `/dev` work; no individual FIXME yet |
+| god-file decomposition | **LANDED (S110).** `session_v4.rs` is a thin facade over `session_v4/`; `worker.rs`/`process_form.rs` carry `*/tests.rs` + helper submodules; `repl.rs` → the five-file `src/repl/` (§3.3) | Decomposed per the §3.1/§3.3 module map | FIXME 0109 (session_v4/worker) + 0606/0627 (repl) — all resolved |
 | Legacy `session.rs` | 543 LOC of v3 session code lingers | Deleted; v4 is the only pipeline | Audit F6 — open `/dev` work |
 | `lib.rs` narrowing | 18 public modules exported | Narrows to facade-shape exports (`CompilerSession`, worker loops, scheduler types, etc.) | Audit F5 — open `/dev` work |
 

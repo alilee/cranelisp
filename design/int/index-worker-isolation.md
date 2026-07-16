@@ -14,6 +14,14 @@ record is `tests/plan/s109-attribution-index-feed-race.md`.
 > false-green). §4 names the prime suspect the sweep should confirm first; the contract
 > holds regardless of which channel the sweep implicates.
 
+> **SCOPE RULING (S110 Phase 5, FIXME 0626).** The **in-memory** half of this contract
+> (§3.1/§3.2 — private discard substrate for symbol tables, aliases, prelude-fallback) is the
+> **landed, adopted cure** and remains the live design intent. The **cache-channel severance
+> (§3.3)** is ruled **WON'T-DO** (§25.5 kept) — the 0604 defect is proven foreground and does
+> not flow through the index cache channel, and the cache-hit is a genuine optimization with no
+> proven harm (full rationale in the §3.3 ruling box). Read §2's "no cache artifact" clause and
+> §5's guard item 2 as **scoped to the parked cache-channel proposal, not enforced end-state**.
+
 ---
 
 ## 1. Actors and the function between them (Principle 21)
@@ -117,7 +125,48 @@ macro-carrying modules precisely because the index result is *incomplete* for a 
 persistent-artifact analogue of the mutate-live-then-undo coupling, and it is the channel the
 S91 in-memory isolation left open.
 
-**Contract resolution (isolation over optimization — the S93 doctrine).** Sever the
+> **RULING — §3.3 severance is WON'T-DO; §25.5 is KEPT (S110 Phase 5, FIXME 0626, `/design`
+> (int)).** The 0604 `/dev` deployment implemented then **reverted** the severance below; the
+> ruling ratifies the revert. Two facts decide it:
+>
+> 1. **§3.3 does not fix 0604.** The 0604 deterministic recipe (`--run --no-cache`) drives the
+>    index feed **0×** — `arm_importable_index()` is REPL-only (`main.rs:342`) and
+>    `index_one_module` fires 39× under REPL but never under `--run` (instrumentation, FIXME
+>    0626). The residual phantom writer re-scopes to the **foreground** concurrent-compile path
+>    (carried to S111; re-attribution owed to `/qa`). Severing the cache channel therefore
+>    cannot change the recipe's outcome — the entire raison d'être of this contract (a durable
+>    cure for 0604) is refuted for the cache face.
+> 2. **The dangerous coupling is already closed.** The S61→S93 lineage concern is a
+>    *shared-mutable-state* race; that is the in-memory half (§3.1/§3.2), **landed**. The cache
+>    channel is a *persistent-artifact read* — a materially safer shape, content-addressed by
+>    source hash and gated by `is_cache_valid`. The one known divergence (an incomplete index
+>    `.meta` for a macro-carrying module) is already carved out at `:950–969`.
+>
+> Against that: severing retires **§25.5, a genuine optimization** (warm-project startup stays
+> mostly `.meta`-reads; a found-then-imported symbol skips a re-typecheck), reddens **three
+> committed GREEN pins** in `tests/search.rs`
+> (`search_branch_c_stale_meta_typechecks_writes_meta`,
+> `search_burndown_arms_at_repl_startup_neg_not_on_first_search`,
+> `search_index_to_import_is_meta_cache_hit`), and imposes a re-typecheck on every
+> actually-imported module — real cost, **zero proven benefit** (per the evidence-gated-carry
+> discipline: retire an optimization only with proof it is harmful; the 0604 proof is refuted).
+> So **§25.5 stays live**; `agent.md §25` (which already describes §25.5 as the live cache-hit)
+> is unchanged; this doc's INDEX-ISOLATION invariant (§2) scopes to the **in-memory** substrate
+> as its landed end-state.
+>
+> **Parked as a movable boundary (revisit on evidence).** The cache-channel coupling the text
+> below analyses is real *in principle* — the 0569 macro carve-out is a special-case, not a
+> closed-by-construction property, and the S93 doctrine prefers the latter. It is parked, not
+> dismissed: **if a trace sweep ever exhibits a non-macro module whose index-written branch-(c)
+> `.meta` diverges from what the foreground Phase-1 writer would produce** (i.e. the carve-out
+> proves insufficient), re-open this section and re-weigh the severance against that concrete
+> evidence. Absent such an observation the optimization is carried. The original severance
+> analysis is retained below for that future re-weighing.
+>
+> ---
+>
+> **(Superseded severance proposal — retained for the parked re-weighing above.)**
+> Sever the
 §25.5 index→import cache-hit. The index feed's product is the in-memory
 `importable_indices` rows and nothing else: on branch (c) it records rows and writes **no**
 `.meta`, **no** `record_source_hash`, **no** `record_compiled`; branch (b) may *read* a
@@ -125,11 +174,10 @@ foreground-written `.meta` (that is the foreground's own artifact, byte-authorit
 records no manifest side-effects of its own. A later real `/import` then re-typechecks
 through the ordinary foreground path — the cost is one re-typecheck of a module the user
 actually imports, paid once, against the removal of a whole class of "background produced an
-artifact the foreground trusted." R13's persistent-artifact face becomes true by
+artifact the foreground trusted." R13's persistent-artifact face would become true by
 construction: **the foreground never consumes anything the background produced.** (The
-narrow performance regression is the acceptable-and-bounded side of the no-shared-substrate
-trade; §25.5 is retired in the design of record — `int.md` + `agent.md §25` cross-reference
-this contract.)
+narrow performance regression would be the acceptable-and-bounded side of the
+no-shared-substrate trade — but per the ruling above it is NOT taken this sprint.)
 
 ## 4. Prime suspect for the trace-sweep (confirm before patching)
 
@@ -160,16 +208,19 @@ for the *absence* of foreground-substrate writes on every index branch:
    `private_tables` / `private_aliases` / `private_prelude_fallback` / discard `staging` —
    never `shared.symbol_tables`, `shared.module_aliases`, or `shared.prelude_fallback`. The
    only permitted contact with a live map is the **read** that seeds the snapshot clone.
-2. **No `shared.cache` write on any index branch.** Zero
-   `shared.cache.record_source_hash` / `record_compiled` / `write_meta` reachable from
-   `index_one_module`'s branch (b)/(c). (Branch (b) may `load_meta`/read; it records
-   nothing.)
+2. **(PARKED — not enforced; FIXME 0626 ruling.)** ~~No `shared.cache` write on any index
+   branch.~~ This guard belonged to the §3.3 severance, ruled **WON'T-DO** — §25.5 is kept, so
+   branch (b)/(c) `record_source_hash` / `record_compiled` / `write_index_meta` writes are the
+   sanctioned as-built (the index→import cache-hit optimization). A `/review` pass must **not**
+   flag these as a Blocker. Re-instate this guard only if the parked cache-channel coupling is
+   ever re-opened on evidence (§3.3 ruling box).
 3. **The feed's sole write target is `shared.importable_indices`** (`record_triples` /
    `record_entries` / `mark_skipped`) and the read-only `feed_loaded_module` projection of
    already-terminal live tables.
 
-Any hit in (1) or (2) is a `/review` Blocker — a re-opened coupling, regardless of whether a
-current interleaving exhibits the phantom.
+Any hit in **(1)** is a `/review` Blocker — a re-opened in-memory coupling, regardless of
+whether a current interleaving exhibits the phantom. (Guard (2) is PARKED per the FIXME 0626
+ruling — see above; index-branch `shared.cache` writes are sanctioned as-built.)
 
 ## 6. Contingency check (per Phase-2 Rev on 0604) — no `/arch` FIXME
 
@@ -185,8 +236,9 @@ new type. No new `cranelisp-types` staging primitive is required; no `/arch` FIX
 
 ## 7. Acceptance (mirrors FIXME 0604 §Acceptance)
 
-1. INDEX-ISOLATION holds — the §5 grep is clean; §3.1 docstrings rewritten to the isolated
-   model; §3.2 fallback snapshot in place; §3.3 cache channel severed.
+1. INDEX-ISOLATION (in-memory scope) holds — the §5 grep item (1)/(3) is clean; §3.1
+   docstrings rewritten to the isolated model; §3.2 fallback snapshot in place. (§3.3 cache
+   channel severance is WON'T-DO per the FIXME 0626 ruling — not an acceptance item.)
 2. **Fail-on-revert guard lands WITH the fix** (`/dev` + `/testing`): the ≥25-iteration sweep
    of the deterministic recipe against the full real stdlib, plus a unit test at the write
    seam per METHOD §2.2. Behavioural verification (not symptom-absence under a perturbing
@@ -203,6 +255,6 @@ new type. No new `cranelisp-types` staging primitive is required; no `/arch` FIX
 - `design/int/heisenbug-race-closure.md` (S61) → `signature-body-prepass.md` (S93) — the
   isolation-over-undo lineage this contract instantiates for the index feed.
 - `design/int/agent.md §25` — the `/search` importable-index subsystem (R13–R18); §25.5 (the
-  index→import cache-hit) is retired by §3.3 here.
+  index→import cache-hit) is **KEPT** (the §3.3 severance is ruled WON'T-DO, FIXME 0626).
 - `src/session_v4/index_worker.rs` — the seam; `src/imports.rs`, `src/process_form/` — the
   installer/prelude writers it drives.
