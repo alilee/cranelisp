@@ -2607,6 +2607,40 @@ asymmetry (bare-param return vs let-bound param use) is a variant-matrix cell
 **Next skills:** `/sprint` — close the typecheck chain; carry R1 (+M1) as an
 S111 candidate with the named repro; `/qa` — R1 + M2 matrix cells.
 
+### /dev (0606) — `repl.rs` god-file decomposition (2026-07-16, LANDED behaviour-invariant)
+
+Mechanical, behaviour-invariant move of `src/repl.rs` (5,237 LOC) into `src/repl/` per the
+signed-off cut (`design/int/repl-decomposition.md`):
+
+- `repl/mod.rs` (~1,050) — dispatch + prompt/banner/line-editor + input classification + the
+  shared bottom-layer toolbox (§1.5 resolution glue + referer scan), the shared externals as
+  `pub(crate) use` re-exports, and a shared `#[cfg(test)] mod test_support` (Principle 7 —
+  dedups ~275 lines of fq test helpers the three-way split would otherwise mirror).
+- `repl/format.rs` (~1,900) — the `_doc` producer formatter family (§1.2) + layout subfamily.
+- `repl/search.rs` (~730) — the `/search` UI subsystem (§1.1).
+- `repl/commands.rs` (~1,650) — the `handle_*` battery (§1.3).
+
+The mandatory `fq_arg_tests` three-way split (§2) is done: FORMAT cells → `fq_arg_format_tests`
+(format.rs), COMMANDS cells → `fq_arg_commands_tests` (commands.rs), SEARCH cell →
+`fq_arg_search_tests` (search.rs); the two `lookup_with_prelude_fallback` §8.8.1 cells → a
+`prelude_fallback_tests` mod beside their subject in mod.rs; `styling_colour_on_tests` also
+split (the two search-row cells → `styling_search_row_tests` in search.rs).
+
+**Behaviour-invariant, verified:** golden REPL e2e byte-identical, `golden_clif_w0b` 5/5,
+baseline unchanged at **7 RED** (no new failures, no flips — 2,494 passed / 7 failed / 1
+skipped, identical to pre-move); zero movement on any library crate's `public-api.txt`
+(src/-only); `cargo check --tests` + clippy clean (no new lints). `int.md §3.3` +
+`src/CLAUDE.md` module maps updated same change-set (rides 0607's currency pass).
+
+**Budget residual → FIXME 0627 (`target: /design`).** The §1.6 budget is infeasible: it sums
+to ~4,530 lines but the source+overhead is ~5,320, so `format.rs`/`commands.rs` exceed ~1,500
+regardless, and the pre-authorised layout valve only relocates ~250 lines between the two
+heavy files (valve ON → format 1,653 / commands 1,894). Landed **valve OFF** (§1.2 default).
+A finer cut is a `/design` call — filed 0627.
+
+**Next skills:** `/review` (int) — review the change-set against the cut; `/design` (int) —
+action 0627 (finer cut vs higher budget); `/sprint` — 0606 deleted, budget carried by 0627.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

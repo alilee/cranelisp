@@ -121,25 +121,34 @@ The two structural facts that dominate the tree today:
 | Pipeline helpers | `pipeline.rs` (`resolve_module_file`, shared worker/eval helpers) |
 | File watcher | `watch.rs` |
 
-### 3.3 REPL decomposition target (FIXME 0606, S110) — the current cut
+### 3.3 REPL decomposition (FIXME 0606, S110) — LANDED
 
 FIXME 0109 (the S81 `session_v4.rs`/`worker.rs` decomposition) is **fully landed** — Waves
 A/B/C plus the once-carried Wave D (`eval.rs` + `repl.rs` split out of `session_v4.rs`, and
 the further `session_v4/` submodule split). The `src/CLAUDE.md` §"Session/REPL module map" is
-the as-built allocation. The **current** decomposition target is the new god-file `repl.rs`:
+the as-built allocation. The **god-file `repl.rs`** (5,237 LOC) was **decomposed S110** per the
+signed-off cut into `src/repl/`:
 
-| Module | Responsibility (target) |
-|---|---|
-| `repl/search.rs` | The `/search` UI subsystem — `handle_search`, `render_search_row*`, settle/scheme/referer helpers (the UI half of `session_v4/index_worker.rs`) |
-| `repl/format.rs` | The `_doc` producer formatter family — `format_def_entry_doc`, `format_eval_result*`, `format_type_display`/`format_trait_display`, `describe_symbol` |
-| `repl/commands.rs` | The `handle_*` slash-command battery (folds in `handle_imports`/`handle_exports`) |
-| `repl.rs` (residual) | Slash dispatch (`dispatch_command`) + prompt/banner/line-editor + the shared resolution/referer toolbox (the bottom layer) |
+| Module | Responsibility | LOC (as-built) |
+|---|---|---|
+| `repl/mod.rs` (residual) | Slash dispatch (`dispatch_command`) + prompt/banner/line-editor + input classification + the shared resolution/referer toolbox (the bottom layer); re-exports the shared externals as `pub(crate) use`; hosts the shared `#[cfg(test)] mod test_support` | ~1,050 |
+| `repl/search.rs` | The `/search` UI subsystem — `handle_search`, `render_search_row*`, settle/scheme/referer helpers (the UI half of `session_v4/index_worker.rs`) | ~730 |
+| `repl/format.rs` | The `_doc` producer formatter family — `format_def_entry_doc`, `format_eval_result*`, `format_type_display`/`format_trait_display`, `describe_symbol`, the span helpers + the layout-render subfamily (valve NOT taken — §1.6) | ~1,900 |
+| `repl/commands.rs` | The `handle_*` slash-command battery (folds in `handle_imports`/`handle_exports`) | ~1,650 |
 
-The precise function→file boundaries, the shared-toolbox placement, the test split, and the
-behaviour-invariant / zero-baseline-diff acceptance contract are signed off in
-**`design/int/repl-decomposition.md`** (the 0580 `program.rs` template: cut first, mechanical
-move by `/dev` last). This int.md map and the `src/CLAUDE.md` map update in the same
-change-set as the move (couples with FIXME 0607).
+The move was **behaviour-invariant** (golden REPL e2e byte-identical; baseline unchanged at
+7 RED; zero movement on any library crate's `public-api.txt`). The precise function→file
+boundaries, shared-toolbox placement, and test split (including the mandatory three-way
+`fq_arg_tests` split) are in **`design/int/repl-decomposition.md`** (the 0580 `program.rs`
+template: cut first, mechanical move by `/dev` last).
+
+> **Budget residual (S110 `/dev`, FIXME 0627).** The signed-off cut's §1.6 line budget is
+> optimistic: it sums to ~4,530 lines but the source (production + tests + split overhead) is
+> ~5,320, so `format.rs` (~1,900) and `commands.rs` (~1,650) both exceed the ~1,500 target and
+> the pre-authorised layout valve does not resolve it (it merely relocates ~250 lines between
+> the two heavy files — measured: valve ON → format 1,653 / commands 1,894). A finer cut
+> (e.g. `format.rs` → value-display vs type/trait-display) is a `/design` decision, filed as
+> FIXME 0627.
 
 ---
 
