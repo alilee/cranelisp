@@ -1,6 +1,6 @@
 # Sprint 110: Backend pure keyed-lookup consumer — the resolution-boundary centrepiece
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE)
+**Status**: PHASE 7 CLOSE (outcome authored — awaiting user close approval; NOT yet archived)
 
 **Goal**: Land the user-directed S110 **centrepiece (0583)** — make the backend a
 **pure keyed-lookup consumer**: typecheck emits fully-qualified SYMBOLS *and*
@@ -16,6 +16,37 @@ violation (0583 finding). Read-only, dispatched in the Phase 6/7 window — **id
 post-W3** so it assesses the end-state and its "bounded-context responsibility boundary"
 lens verifies the grep-zero (`resolve_*` gone). → `audits/cranelisp-backend-s110.md`;
 disposed S111 Phase 1.
+
+## Phase 7 — Outcome (DRAFT 2026-07-16, awaiting user close approval)
+
+**Baseline: 7 RED, every one a recorded carry** (no genuine regression). Full suite 4,590 passed / 7 failed / 1 skipped; CLIF + REPL goldens byte-identical throughout.
+
+### Delivered
+
+- **CENTREPIECE (0583) — backend is now a pure keyed-lookup consumer.** Typecheck emits FQ symbols + FQ types on every mono-view reference via span-keyed carriers (`resolved_target` / `resolved_ctor` / `impl_module`); the backend does ZERO name/type resolution. W3 deleted `resolve_driven` + `resolve_chain` + the `symbol_tables.iter()` global scan + ten `resolve_*` entry points + `lookup_constructor` (**−993 LOC**). `/audit` independently verified **grep-zero** (13 resolver names survive only as past-tense deletion comments; zero live defs/calls) and strong keyed-consumer coherence (every seam hard-fails loudly, no soft-fallback hybrids). Producer precision closed across all four axes (0616 key-values, 0620 carrier-value/`storage_fq()`, 0622 map-instance, 0619 self-recursion carve-out). New **Principle 24 "Resolve once"** embodies it (authored/consumed; ratification is this close's act — see Findings). Contracts folded into rustdoc + BC §2/§3 + interfaces.md; `backend-keyed-consumer.md` LANDED. R-2 ADT-entry builder wired both callers (typecheck + `bootstrap.rs`), collapsing the hand-built synth-ADT duplication.
+- **Typecheck resolution chain converged.** 0590 (four TypeExpr resolvers → one `TypeExprCtx`), R16/R17 error-quality lift (§3.11 dispatch-outcome-grounded ambiguity messages — replaces opaque backend leaks), C-4 (multi-arity `main` mode-uniform exit), and the finalize.rs `AmbiguityScanPhase` duty-split (B1 wrong-reject + B2 wrong-accept both cured).
+- **Direct vec-assoc UAF fixed** (W2, the direct `(vec-set v i x)`-return shape; behaviorally verified, mode-uniform). Sibling shapes carried (below).
+- **src-audit hygiene drain (R-1/R-4/R-5/R-6), all behaviour-invariant:** repl god-file 5,237 LOC → 5 cohesive files (worst 1,645, ratified); six over-budget functions decomposed + four param-cap context structs; S87 residue swept (dead accessors, `allow(dead_code)` population, `extra_jit_symbols` vestige, production unwrap→`unreachable!`) + the phantom shim deleted (`/qa`-ruled DEAD); repo/comment hygiene.
+- **Spec:** §3.5.5 monomorphic-`let` polymorphism-boundary sidenote (normative + movable, hedge retired, capability parked — 0612).
+- **Design currency:** `design/int/` (five-file repl map, `agent.md §2.2` form-count rule), `interfaces.md` carrier narrative, return-poly §5 ratified-as-(A), 0626 §25.5 severance ruled WON'T-DO (evidence-gated).
+- **Phase-6 user-facing (scoped-to-deltas, user-ruled):** `/repl` — all deltas PASS, return-poly showcase added to `05-traits.demo`, regression green (13 demos + 27 archive guards). `/examples` — deltas confirmed mode-uniform, `36-multi-arity.cl` added (a learning-sequence gap the C-4 fix enabled) + its e2e row pinned. `/docs` — `user/` already consistent, no manufactured edits. `/audit` — end-state clean, 8 S111 recommendations. `/port`+`/stdlib` regression-only (green suite + goldens establish it).
+
+### Deferred (with rationale)
+
+- **vec-assoc COW siblings** (let-wrapped + match-arm × REPL/`--link` = the 4 RED guards) → S111: `/arch` ruled the 3-layer ownership root (`ResultMode::MayAliasOf` + truthful COW facts + prelude-fallback-aware envs, schema 19→20); one coordinated change-set with the committed sibling repros as the trigger (§3.7; matrix = 0623).
+- **0621 callees-alias** → S111 (rides the vec-assoc schema-20 bump; evidence-gated — the session-transaction reverse index that would bite is not yet live).
+- **0604 index-race** → S111 (`/qa` re-attribution — proven foreground, not the index feed).
+- **0613 quasiquote-not-desugared** → S111 (**needs a user normative confirmation**: is quote/quasiquote legal wherever an expression is legal — the strong default — or macro-clause-only? `derive` is the only corpus consumer). 0614 (`/stdlib` derive), 0615 (`/testing` agent-lane) ride with it.
+- **0590 R1/I2** (0349 3rd instance — pre-existing safe-direction wrong-reject) → S111.
+- **New Phase-6 gap FIXMEs (S111 Phase-1 input):** 0628 (HKT-on-primitive bare-convar leaks codegen, `/design` tc), 0630 (spec §5.1.2 bare-`:Vec` example uncompilable, `/spec`), 0631 (return-poly `:Type` remedy → errors catalogue, `/docs`).
+
+### Findings
+
+- **Principle 24 ratification is this close's act** — authored Phase 3, consumed by BC/interfaces/overview, verified by `/audit`'s grep-zero. Ratify at close (an `/arch` status-flip in `principles/24-resolve-once.md`).
+- **AUDIT CALIBRATION — process lapse:** `/audit` found the **backend-s107 assessment was never disposed** (its §4 trail empty), so four of its recommendations hit their 4th consecutive audit. **S111 Phase 1 MUST dispose BOTH `backend-s107` and `backend-s110`.** The typecheck-s108 and src-s109 assessments WERE disposed correctly — s107 is the sole lapse, on the protocol's inaugural application.
+- **Escalation review:** zero model-tier escalations; the sprint's difficulty was absorbed by iteration + `/review` at default tier. `/review` caught every hard spot (W0 ×2 Blockers, 0620, narrow vec-assoc, 0622, B1/B2) — the review discipline, not model escalation, was the mechanism. The default allocation held; frontmatter-vs-§II.3 audit CLEAN (14/14).
+- **Phase-6 coordination wrinkle (caught + fixed in-sprint):** `/examples` 6b added a file that broke the examples e2e guard (owns `examples/`, not `tests/`); I dispatched `/testing` to pin the row immediately rather than defer — the baseline never shipped RED. A standing note that user-proxy file-set additions need the paired `tests/` guard row in the same logical step.
+- **Producer-completeness as a recurring class:** the centrepiece's four producer gaps (0616/0620/0622 + 0619) were all the SAME shape — a span-keyed carrier has three correctness axes (key-value, carrier-value, map-instance) + the local-shadow carve-out; `/arch`'s exhaustive §1.1.3 3×9 matrix closed it. The lesson: a new cross-crate carrier needs its axis×path matrix enumerated up front.
 
 ## Scope (user-approved 2026-07-15 — breadth: BROAD)
 
