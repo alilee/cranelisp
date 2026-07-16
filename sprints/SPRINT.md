@@ -2019,6 +2019,57 @@ resolution context is a new `TypeExprCtx` construction — greppable for `/revie
 **Next skills:** `/review` (narrow typecheck) — change-set review. `/testing` —
 action FIXME 0625 (TX-1 `Self`→`self`) so it flips GREEN.
 
+### /testing (vec-assoc siblings + 0625) — LANDED (2026-07-16)
+
+Two small test-authoring tasks off the W2 review + 0590 landing.
+
+**Task 1 — vec-assoc sibling-UAF repros (the S111 carry TRIGGER).** Committed the
+two R-W2-1 sibling shapes failing-not-ignored in
+`tests/vec_assoc_param_mutate_return_uaf.rs`, mirroring the VA-1/VA-2 direct-shape
+convention (REPL full-value face + `--link` deterministic-abort face per shape →
+**4 test fns**; `--run` omitted — its exit is truncated mod 256, non-deterministic):
+
+- **Let-wrapped** `(defn f [v i x] (let [r (vec-set v i x)] r))`:
+  `vec_set_let_wrapped_param_returned_and_consumed_repl_yields_correct_value`
+  (REPL, MUST be 99) + `vec_set_let_wrapped_param_returned_link_does_not_corrupt_heap`
+  (`--link`, MUST exit 99).
+- **Match-arm** `(defn m [v i x] (match i [_ (vec-set v i x)]))`:
+  `vec_set_match_arm_param_returned_and_consumed_repl_yields_correct_value` +
+  `vec_set_match_arm_param_returned_link_does_not_corrupt_heap`.
+
+**RED-for-right-reason verified at HEAD** (manual repro + suite): REPL prints a full
+garbage i64 (e.g. `3498111177686754982`, `-6689746335646098616`); `--link`
+deterministically aborts `corrupted double-linked list` exit 134 — the exact
+VA-1/VA-2 signature the W2 review reported. Each carries
+`// spec: spec/12-runtime.md §12.1` + `// defect: class=rc-miscount
+locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev`
+(the S110-refined attribution: the `Fresh`-on-absence result default, per
+`ownership-inference.md` §3.7). Header block cites §3.7 + R-W2-1 + the FIXME-0623
+matrix gap; per the failing-test rule these carry no numbered FIXME (the tests are
+the record + trigger). The existing GREEN direct-shape tests and
+`vec_cow_value_use_leak.rs` (VA-4) were left untouched.
+
+**Task 2 — FIXME 0625 (TX-1 ill-formed).** Changed the TX-1 method return type
+`Self` → lowercase `self` (one token) in
+`tests/spec_07_traits.rs::trait_method_sig_bare_user_type_resolves` + prose. Spec §7
+line 57: capital `Self` is an ordinary named type that fails resolution; lowercase
+`self` is the self keyword. TX-1 now flips **GREEN** with no compiler change (0590
+already landed the bare-user-type resolution). Deleted
+`design/arch/fixmes/0625-*.md` (resolved).
+
+**Suite result (`cargo nextest run --no-fail-fast`): 4576 pass / 13 fail / 1 skip**
+(~95s). RED set = 4 new vec-assoc siblings (above; trace to 0623/§3.7) + 9
+pre-existing known-defect guards in untouched files (generic_value_use_mono ×3
+VP-3/4/5, ownership_reuse chaining_toggle_off, spec_03_types ×2, spec_05_definitions
+×2, stdlib_conformance SG-1). TX-1 is no longer RED. **No genuine regressions** — the
+9 carry-overs all trace to open defects and live in files this task did not touch.
+
+Count note: the dispatch predicted net 10 → 11 (2 siblings as 2 guards); actual is
+10 → 13 because each sibling carries BOTH the REPL and `--link` face per the VA-1/VA-2
+convention (2 fns/shape), and the dispatch itself specified both faces per sibling.
+The pre-TX-1 baseline was 10 (the /dev W-TC entry's "10 fail"); TX-1 → GREEN nets it
+to 9, +4 siblings = 13.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

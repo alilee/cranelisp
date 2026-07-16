@@ -1210,8 +1210,11 @@ fn arg_directed_dispatch_result_in_value_position_not_flagged() {
 // type named in a trait-method signature MUST resolve to that type (bare ≡
 // qualified-in-scope, §8.5), exactly as a qualified reference would. A local
 // `(deftype MyType Mk)` referenced as the parameter type of a trait method
-// `(m [:MyType x] Self)` MUST resolve; the impl registers and `(m Mk)`
-// dispatches, returning the `Self` value `Mk`.
+// `(m [:MyType x] self)` MUST resolve; the impl registers and `(m Mk)`
+// dispatches, returning the `self` value `Mk`. (The return type is the lowercase
+// self keyword — spec §7 line 57: capital `Self` is an ordinary named type that
+// fails resolution, so the earlier `Self` spelling asserted the wrong thing;
+// FIXME 0625.)
 //
 // RED today (0590 mirror-1): `resolve_trait_type_expr` accepts only intrinsic
 // scalars or qualified-only Named leaves, so the bare user type `MyType` errors
@@ -1221,7 +1224,7 @@ fn arg_directed_dispatch_result_in_value_position_not_flagged() {
 fn trait_method_sig_bare_user_type_resolves() {
     let out = repl_prims(
         "(deftype MyType Mk)\n\
-         (deftrait Tt (m [:MyType x] Self))\n\
+         (deftrait Tt (m [:MyType x] self))\n\
          (impl Tt MyType (defn m [x] x))\n\
          (m Mk)\n",
     );
@@ -1235,7 +1238,7 @@ fn trait_method_sig_bare_user_type_resolves() {
     assert!(
         c.contains("Mk"),
         "with the bare user type resolved, `(m Mk)` MUST dispatch and return the \
-         `Self` value `Mk` (TX-1); got:\n{c}"
+         `self` value `Mk` (TX-1); got:\n{c}"
     );
 }
 
