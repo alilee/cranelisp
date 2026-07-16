@@ -97,8 +97,9 @@ where
                     };
                     // `Pattern::Constructor.name` is a syntactic-stage
                     // `SymbolRef` (S70). Its `Display` yields `module/name`
-                    // (qualified) or bare `name` — exactly the lookup string
-                    // `lookup_constructor` parses.
+                    // (qualified) or bare `name`; the ctor's storage identity
+                    // now rides the keyed carrier `arm.resolved_ctor`, not a
+                    // string parsed by the S110-W3-deleted `lookup_constructor`.
                     let ctor_name = Symbol::from(name.to_string());
                     self.compile_constructor_pattern(
                         &ctor_name,

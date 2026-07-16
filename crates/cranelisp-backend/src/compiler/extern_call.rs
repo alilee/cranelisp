@@ -77,8 +77,10 @@ mod tests {
 // repl_defmacro_rest_splice. When compile_apply receives an Apply node
 // with resolved_call: Some(BuiltinFn { name: "sconcat" }), per Decision
 // 0048 §"Structural invariant — backend dep-ban" it MUST take the
-// standard GOT-indirect dispatch path (`compile_direct_call` →
-// `resolve_got_target` → load slot from `__cranelisp_got_primitives`).
+// standard GOT-indirect dispatch path (`compile_direct_call` reads the
+// keyed entry via `entry_at` → `callable_got_slot()` → load slot from
+// `__cranelisp_got_primitives`; the S110-W1-deleted `resolve_got_target`
+// scan no longer runs).
 // Pre-Decision-0048 the path was direct extern via `compile_extern_call`;
 // that path is now reserved for non-module backend-emitted-call targets
 // (intrinsics — `vec-set-copy`, `runtime/alloc`, etc.). Primitives reach
@@ -131,10 +133,11 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
         display: None,
     };
 
-    // Seed a primitives module with `sconcat` and a GOT slot. Backend's
-    // `resolve_got_target` consults this via its global-fallback walk
-    // when the caller's module (`user`) has no local binding for the
-    // unqualified name `sconcat`. Per Decision 0048's backend dep-ban,
+    // Seed a primitives module with `sconcat` and a GOT slot. Backend
+    // reaches this entry by a direct keyed fetch (`entry_at`) on the
+    // primitive's fully-qualified name — the S110-W1-deleted
+    // `resolve_got_target` global-fallback walk over the caller's module
+    // (`user`) no longer runs. Per Decision 0048's backend dep-ban,
     // we cannot reference `cranelisp_primitives::marshal::sconcat`
     // directly; we provide a local 2-arg stub matching the signature
     // and wire that fn ptr into the GOT slot. The test asserts

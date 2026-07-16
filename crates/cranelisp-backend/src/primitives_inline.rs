@@ -3,8 +3,10 @@
 //! Per Decision 43 + `design/arch/facades/backend.md` §"Non-goals / forbidden
 //! patterns": this file holds ONLY the name-keyed inline-Cranelift-IR emission
 //! table for the Ring 0 primitives. It is **not** a dispatch path — the
-//! dispatch path is the standard `compile_direct_call` -> `resolve_got_target`
-//! -> GOT-indirect call that every user function uses. `try_emit_inline_primitive`
+//! dispatch path is the standard `compile_direct_call` keyed entry fetch
+//! (`entry_at` → `callable_got_slot()`) -> GOT-indirect call that every user
+//! function uses (the S110-W1-deleted `resolve_got_target` scan no longer runs).
+//! `try_emit_inline_primitive`
 //! is consulted **before** that fallback as an opportunistic optimisation: if
 //! the call site's symbol matches the inline table, emit inline CLIF; if not,
 //! return `None` and let the caller fall through to the standard path.

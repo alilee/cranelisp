@@ -272,9 +272,11 @@ pub fn process_cache_packet(
         // Object-mode full-module compile: cross-module references are emitted
         // GOT-indirect and resolved by the linker at load (not via alias-prefix
         // resolution at codegen), so an empty alias table is the correct,
-        // behaviour-preserving input here — `resolve_got_target` then takes its
-        // prior child/absolute qualified-name path. (S75 W2 D41 rotation added
-        // the `module_aliases` param to `compile_to_module`.)
+        // behaviour-preserving input here — the keyed entry fetch (`entry_at`)
+        // reads the callee by its fully-qualified name with no alias
+        // substitution (the S110-W1-deleted `resolve_got_target` qualified-name
+        // path no longer runs). (S75 W2 D41 rotation added the `module_aliases`
+        // param to `compile_to_module`.)
         let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         // Object-mode cache rebuild is a batch path (introspection off) — the
         // CLIF text is dropped unread, so skip rendering it (FIXME 0325).

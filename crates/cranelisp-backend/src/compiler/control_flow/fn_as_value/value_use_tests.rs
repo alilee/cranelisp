@@ -65,8 +65,9 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
         span: Span::new(0, 12),
     };
     // make_def_entry_slot stamps kind = UserFn; override to Constructor so
-    // `lookup_constructor` / `data_constructor_info` recognise it AND
-    // `resolve_got_target` finds the got slot (slot 0).
+    // the keyed ctor read (`ctor_meta_at`) recognises it AND the keyed
+    // callable read (`entry_at` → `callable_got_slot()`) finds the got slot
+    // (slot 0).
     let base_entry = make_def_entry_slot(ctor_defn.clone(), 0);
     // The slot now rides on the callable variant; carry it onto the
     // Constructor we re-stamp (slot 0).
