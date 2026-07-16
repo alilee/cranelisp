@@ -235,6 +235,95 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
 
+    /// Scoped re-generalize + reslot restricted to entries CURRENTLY in the
+    /// `Polymorphic` state (S110 C-4). This is [`Self::regeneralize_defn_schemes`]
+    /// with a `Polymorphic`-only gate: it recomputes each still-`Polymorphic`
+    /// defn's scheme from its `defn_type_vars` source vars through the final
+    /// substitution and, when that scheme is now fully concrete, reslots the entry
+    /// to `Concrete{slot}` (the SAME structural gate — slot ⟺ concrete — as the
+    /// two full regeneralize passes).
+    ///
+    /// **Why a scoped pass, not a third full `regeneralize_defn_schemes`.** The
+    /// spurious-poly caller this fixes (`main` calling an overloaded/multi-arity
+    /// fn, whose return var is only pinned by `resolve_pending_overloads` AFTER the
+    /// FIXME-0349 re-generalize) needs one more generalize once the overload drain
+    /// settles its return var. But a full re-generalize UNCONDITIONALLY overwrites
+    /// EVERY `defn_type_vars` entry's stored scheme (`*s = scheme`) — including the
+    /// `Concrete` instances `register_test_fn_mono_roots` minted, whose
+    /// `defn_type_vars` signature is still the pre-mint poly `(Fn [] (Option a))`.
+    /// That would demote a mono-root's concrete scheme back to poly (the finalize
+    /// ordering hazard; `test_fn_registered_as_mono_root_gets_concrete_instance`).
+    /// Gating on the current `Polymorphic` state leaves every `Concrete` entry —
+    /// mono-roots and ordinary concrete defns alike — untouched, and only re-settles
+    /// the spuriously-poly callers. A genuinely polymorphic defn
+    /// (`(defn empty [] [])`) recomputes to a still-non-concrete scheme and stays
+    /// `Polymorphic`, unchanged.
+    pub(super) fn regeneralize_only_polymorphic(
+        &self,
+        state: &mut CheckState,
+        accumulator: &ModuleCheckAccumulator,
+    ) {
+        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
+            // Gate: ONLY re-settle entries currently registered `Polymorphic`.
+            // A `Concrete` entry (mono-root or ordinary concrete defn) is skipped
+            // so its stored scheme is never overwritten.
+            let is_polymorphic = matches!(
+                self.current_symbol_table(state).view().lookup(name),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            );
+            if !is_polymorphic {
+                continue;
+            }
+            let fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
+            );
+            let scheme = self.generalize(state, &fn_type);
+            // A scheme that acquired constraints is left to the constrained-fn
+            // path — never reslotted `Concrete` here (mirrors the reslot gate in
+            // `regeneralize_defn_schemes`).
+            if !scheme.constraints.is_empty() {
+                continue;
+            }
+            // Reslot ⟺ concrete (the S84 Wave 1b TOTAL slot gate): a
+            // `Polymorphic` entry whose scheme collapsed to a concrete type (the
+            // overloaded-call caller pinned by `resolve_pending_overloads`) becomes
+            // `Concrete{slot}`, reusing its own callable slot if any; a scheme that
+            // is still generic stays `Polymorphic`.
+            let mut st = self.current_symbol_table_mut(state);
+            let demoted_slot = if scheme.ty.is_concrete() {
+                Some(existing_callable_slot(&st, name.as_ref())
+                    .unwrap_or_else(|| st.allocate_got_slot()))
+            } else {
+                None
+            };
+            if let Some(ModuleEntry::Def { scheme: s, kind, ast, .. }) =
+                st.symbols.get_mut(name)
+            {
+                *s = scheme.clone();
+                if let Some(got_slot) = demoted_slot {
+                    **kind = DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
+                    };
+                } else if let Some(variant) = ast.clone() {
+                    // Still non-concrete: keep it slot-less `Polymorphic`, carrying
+                    // the refreshed scheme for later monomorphisation (idempotent).
+                    **kind = DefKind::UserFn {
+                        fn_state: UserFnState::Polymorphic(Box::new(ParametricFn {
+                            variant,
+                            scheme: scheme.clone(),
+                        })),
+                    };
+                }
+            }
+        }
+    }
+
+
     /// Re-settle the stored schemes of already-determined **`Polymorphic`**
     /// cluster members from their `defn_type_vars` source vars through the
     /// current global substitution — scheme-only, no re-slotting (FIXME 0488
@@ -903,6 +992,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Drain any remaining entries (e.g., from mono defn generation).
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
+
+        // S110 C-4 — re-settle any caller whose stored scheme was left spuriously
+        // `Polymorphic` because the call in its body was an overloaded/multi-arity
+        // dispatch DEFERRED past the FIXME-0349 re-generalize above. `(defn main []
+        // (Pure (h 7)))` calling `(defn h ([:Int x] x) …)` defers `(h 7)` at
+        // `infer.rs` (the `state.overloads` guard mints a fresh return var and
+        // pushes a `pending_overload_resolution`); only `resolve_pending_overloads`
+        // (just above) unifies that var with the selected variant's concrete `Int`
+        // return. That runs AFTER the re-generalize that fixed `main`'s scheme, so
+        // `main` was generalized while its return var was still free → quantified →
+        // slot-less `Polymorphic`, which the backend correctly declines to codegen
+        // (the "entry module has no `main` function" `--run`/`--link` misdirect; the
+        // REPL face is the §3.11 ambiguity on `main$`).
+        //
+        // This SCOPED pass re-runs the idempotent generalize+reslot ONLY for entries
+        // currently in the `Polymorphic` state (its `regeneralize_only_polymorphic`
+        // gate SKIPS `Concrete` entries), so it collapses such a `main` to its true
+        // `(Fn [] (IO Int))` `Concrete{slot}` WITHOUT touching the concrete schemes
+        // minted by `register_test_fn_mono_roots` above — a BLANKET third
+        // `regeneralize_defn_schemes` would overwrite a mono-root's minted concrete
+        // scheme back to its poly `defn_type_vars` signature (the finalize ordering
+        // hazard the mono-root comment guards; `test_fn_registered_as_mono_root_
+        // gets_concrete_instance`). It runs AFTER `find_ambiguous_top_level_form`
+        // (above), so the §5.1.2 clause-independence gate — which relies on a
+        // self-recursive multi-clause defn's own param vars staying UNPINNED (a
+        // self-call would otherwise acquire a sibling clause's concrete param type)
+        // — has already errored before any overload resolution runs. Genuinely
+        // polymorphic defns (`(defn empty [] [])`, scheme stays `(Fn [] (Vec a))`)
+        // are non-concrete after re-generalize and stay `Polymorphic`.
+        self.regeneralize_only_polymorphic(state, accumulator);
 
         // S91 Wave-7 (FIXME 0432 Face A): a multi-sig variant whose body
         // contains an in-body self-call has a return type that is only pinned

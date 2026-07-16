@@ -2255,6 +2255,69 @@ the latter deserves a clearer diagnostic than "entry module has no `main` functi
 but improving it would NOT flip the test (which asserts exit 7) and is orthogonal to
 the fix.
 
+### /dev (C-4 typecheck fix) — LANDED (2026-07-16, `cranelisp-typecheck`)
+
+Re-attributed C-4 fixed at the diagnosed locus: `program/finalize.rs::
+finalize_check_result_inner` pass ordering. **The fix + the trap, resolved.**
+
+**Root confirmed as diagnosed.** `(defn main [] (Pure (h 7)))` calling overloaded
+`(defn h ([:Int x] x) ([:Int x :Int y] x))` defers `(h 7)` at `infer.rs` (the
+`state.overloads` guard mints a fresh return var, pushes a
+`pending_overload_resolution`). `resolve_pending_overloads` (`register.rs`) is what
+unifies that var with the variant's concrete `Int` return — but it runs at the
+Pass-5 seam, AFTER both `regeneralize_defn_schemes` passes. So `main` was generalized
+while its return var was free → quantified → slot-less `Polymorphic` `(Fn [] (IO a))`
+→ backend correctly declines codegen → the "no `main`" misdirect.
+
+**Why the naive fix fails (the pass-order dependency the int note under-specified).**
+The obvious move — run `resolve_pending_overloads` BEFORE the second re-generalize —
+REGRESSES `multi_clause_defn_self_call_is_ambiguous_not_panic`. Traced with
+instrumentation: `find_ambiguous_top_level_form` (the §5.1.2 clause-independence
+gate) runs at line ~909 and is a GATE that early-returns `Err` BEFORE
+`resolve_pending_overloads` at ~928. For a self-recursive multi-clause `sum-to`, the
+1-arg clause's self-call `(sum-to n 0)` matches the sibling `sum-to$Int+Int` mangled
+variant; resolving it EARLY unifies the clause's own unpinned param `n := Int`
+(spurious cross-clause type acquisition, forbidden by §5.1.2), which erases the
+ambiguity `find_ambiguous` must report. So the overload drain MUST stay after
+`find_ambiguous`. That rules out moving it before the re-generalize.
+
+**The fix (scoped reslot — the note's second candidate).** Left
+`resolve_pending_overloads` at its Pass-5 position (gate order preserved). Added
+`regeneralize_only_polymorphic` (new `pub(super)` method) called immediately after
+the overload/auto-curry drain. It is `regeneralize_defn_schemes` with a
+**`Polymorphic`-only gate**: it re-generalizes + reslots ONLY entries currently in
+the `Polymorphic` state, collapsing a now-concrete spurious-poly caller (`main`) to
+`(Fn [] (IO Int))` `Concrete{slot}`. **The trap avoided:** a blanket third
+`regeneralize_defn_schemes` UNCONDITIONALLY overwrites every `defn_type_vars` entry's
+stored scheme (`*s = scheme`) — including the `Concrete` instances
+`register_test_fn_mono_roots` minted (whose `defn_type_vars` signature is still the
+pre-mint poly `(Fn [] (Option a))`), demoting them (breaks
+`test_fn_registered_as_mono_root_gets_concrete_instance`). The `Polymorphic`-only
+gate skips every `Concrete` entry (mono-roots and ordinary concrete defns alike), so
+no demotion.
+
+**Verification.**
+- `multi_arity_call_from_main_batch_no_main_neg` → GREEN, **exit 7**, mode-uniform:
+  `--run` exit 7, `--link`-then-run exit 7, REPL `main : (Fn [] (primitives/IO
+  primitives/Int))` concrete + `(main)` → `:primitives/Int 7` (the §3.11 `main$`
+  ambiguity is gone).
+- `test_fn_registered_as_mono_root_gets_concrete_instance` stays GREEN;
+  `multi_clause_defn_self_call_is_ambiguous_not_panic` stays GREEN (the two hazards).
+- Unit guard added at the seam:
+  `program::tests::overloaded_call_caller_generalizes_over_resolved_return_not_deferred_var`
+  (fail-on-revert verified — caller reverts to `Polymorphic (Fn [] Var)`).
+- Typecheck unit suite 703/703 GREEN. Full suite: baseline **8 → 7** (C-4 flipped;
+  remaining 7 = 4 vec-assoc siblings + ownership_reuse + deftype_ctor_trailing + SG-1
+  `derive`). `golden_clif_w0b` GREEN (CLIF byte-identity — no codegen-shape change).
+- No public-API/schema/cache impact (`regeneralize_only_polymorphic` is `pub(super)`;
+  no `CACHE_SCHEMA_VERSION` touch). `cargo check`/`--tests` zero-warning;
+  pre-existing crate-wide `result_large_err` clippy noise only, none new.
+
+Handoff to `/testing`: the committed `// defect:` line on the repro is unchanged
+(tests/ ownership) — it may now be retagged `class=wrong-reject
+locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner
+owner=/dev`, dropping the `mode-divergence`/`lifecycle.rs` attribution.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

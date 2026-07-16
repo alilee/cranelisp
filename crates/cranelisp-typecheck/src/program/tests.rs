@@ -7391,6 +7391,118 @@
         }
     }
 
+    // spec: spec/05-definitions.md §5.1.2 — a caller whose body calls an
+    //       overloaded/multi-arity fn must generalize over the SETTLED return
+    //       type of that call, NOT a still-deferred fresh var. `(h 7)` targets an
+    //       overloaded base, so `infer.rs` DEFERS resolution (a fresh return var
+    //       pushed onto `pending_overload_resolutions`); it is
+    //       `resolve_pending_overloads` that unifies that var with the selected
+    //       variant's concrete `Int` return — but that drain runs AFTER the
+    //       FIXME-0349 `regeneralize_defn_schemes` that fixes caller schemes, so
+    //       the caller is generalized while its return var is still free. This
+    //       test pins the finalize SCOPED-RESLOT fix (S110 C-4): the
+    //       `regeneralize_only_polymorphic` pass, run after the overload drain,
+    //       re-settles a still-`Polymorphic` caller whose scheme is now concrete
+    //       to `(Fn [] Int)` `Concrete{slot}`. If that scoped pass is removed,
+    //       `caller` stays slot-less `Polymorphic` (the e2e "entry module has no
+    //       `main` function" misdirect,
+    //       `spec_05_definitions::multi_arity_call_from_main_batch_no_main_neg`).
+    // defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
+    #[test]
+    fn overloaded_call_caller_generalizes_over_resolved_return_not_deferred_var() {
+        let mut tc = tc_with_prims();
+        let int_ann = || {
+            Some(TypeExpr::Named(cranelisp_types::TypeRef::new(
+                None,
+                TypeName::from("Int"),
+            )))
+        };
+        // (defn h ([:Int x] x) ([:Int x :Int y] x)) — an overloaded multi-arity fn.
+        let h = TopLevel::Defn(make_multi_defn(
+            "h",
+            vec![
+                DefnVariant {
+                    params: vec![(Symbol::from("x"), int_ann())],
+                    body: Expr::var(Symbol::from("x"), span(10, 11)),
+                    span: span(5, 12),
+                },
+                DefnVariant {
+                    params: vec![
+                        (Symbol::from("x"), int_ann()),
+                        (Symbol::from("y"), int_ann()),
+                    ],
+                    body: Expr::var(Symbol::from("x"), span(20, 21)),
+                    span: span(15, 22),
+                },
+            ],
+            span(0, 23),
+        ));
+        // (defn caller [] (h 7)) — a nullary caller whose ONLY body form is the
+        // deferred overloaded call. Its return type is knowable only after
+        // `resolve_pending_overloads` pins `(h 7)`'s fresh var to `Int`.
+        let caller = TopLevel::Defn(make_defn(
+            "caller",
+            vec![],
+            vec![],
+            Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("h"), span(31, 32))),
+                args: vec![Expr::IntLit {
+                    value: 7,
+                    span: span(33, 34),
+                    inferred_type: None,
+                }],
+                span: span(30, 35),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(25, 36),
+        ));
+        tc.check(&[h, caller], &test_ctx(), cranelisp_types::ModuleStrategy::Additive)
+            .unwrap();
+        let table = tc.symbol_table();
+        let entry = table.get("caller").expect("caller registered");
+        // The caller must be `Concrete{slot}` — NOT a spuriously-`Polymorphic`
+        // scheme with the deferred return var quantified.
+        match entry {
+            ModuleEntry::Def { scheme, kind, .. } => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "caller of an overloaded fn must be `Concrete{{slot}}` (its \
+                     deferred return var is pinned by `resolve_pending_overloads`, \
+                     then the scoped `regeneralize_only_polymorphic` reslots it \
+                     concrete) — got {kind:?}",
+                );
+                match &scheme.ty {
+                    Type::Fn(params, ret) => {
+                        assert!(params.is_empty(), "caller is nullary");
+                        assert!(
+                            matches!(ret.as_ref(), Type::Int),
+                            "caller returns the variant's concrete `Int`, not a \
+                             quantified var — got {:?}",
+                            ret,
+                        );
+                    }
+                    other => panic!("caller scheme not a Fn: {other:?}"),
+                }
+                assert!(
+                    scheme.type_vars.is_empty(),
+                    "caller's concrete scheme quantifies NO vars — the deferred \
+                     overload return var must be settled, not generalized; got \
+                     type_vars {:?}",
+                    scheme.type_vars,
+                );
+            }
+            other => panic!("caller entry not a Def: {other:?}"),
+        }
+        entry
+            .callable_got_slot()
+            .expect("a Concrete caller carries a callable slot");
+    }
+
     // spec: spec/03-types.md §3.11.1 — a CODEGEN-REACHING unpinned polymorphic
     //       value is an ambiguity error. A `let`-bound `None` whose type stays
     //       `(Option a)` (the `match` scrutinises only the tag) must be
