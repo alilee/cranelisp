@@ -1861,6 +1861,86 @@ typecheck fix; stash auto-dropped on success). The deletion (net **-993 LOC**,
 ZERO name resolution; the 0583 backend half is complete and the four-axis
 producer space (key / value-source / storage-key / map-provenance) is closed.
 
+### /arch (vec-assoc ownership + 0611 ratify) — RULED (2026-07-16)
+
+Two design prerequisites ruled; binding records committed. **No code landed, no
+build run** (a `/dev` typecheck wave may be concurrent).
+
+**1. The vec-assoc ownership-summary class (R-W2-1) — RULED; recommend CARRY to
+S111.** Binding record: `design/arch/ownership-inference.md` **§3.7**. The root
+cause is THREE coupled layers, one deeper than the review's framing:
+(i) `ResultMode` has no representation for the COW truth (fresh-OR-alias-of-
+param-0, decided at runtime) — the Principle-20 gap that FORCED a false
+declaration; (ii) the declared fact table (`ownership_facts.rs:93–109`) declares
+`vec-set`/`vec-push` `result: Fresh` — false on the rc==1 in-place arm; (iii)
+the declared-leaf facts are **unreachable from prelude-fallback modules**
+(`ClusterEnv::summary_of` → the fallback-less `resolve_terminal_entry_and_home`,
+`checker.rs:1861/1632`) — so `transfer.rs:590` defaults to the same false
+`Fresh`, and, wider than the filed defect, the ENTIRE §3.1(a) declared-fact
+precision (Borrowed `str-eq`/`vec-len`, `vec-get` projection) is silently dead
+in production modules. Ruling = **candidate (a) with a mandatory reachability
+leg; candidate (b) REJECTED**:
+- `ResultMode::MayAliasOf(usize)` joins `cranelisp-types` (`CACHE_SCHEMA_VERSION`
+  **19→20** + types `public-api.txt` + `interfaces.md` cascade, all in the
+  implementing change-set); `vec-set`/`vec-push` declare `MayAliasOf(0)`; the
+  ownership envs gain the one prelude hop so declared facts are REACHABLE; the
+  transfer walk joins `MayAliasOf(k)` with arg k's origin (never collapses to
+  Fresh); `origin_to_result_mode` publishes `MayParam` as `MayAliasOf` (hard
+  `AliasOf`/`ProjectionOf` reserved for provable unconditional claims). Backend
+  `return_is_fresh_by_summary` untouched — its binary `== Fresh` read keeps
+  protect for any new variant (safe by construction).
+- The `:590` `unwrap_or(Fresh)` **stays** — ruled co-sound with the ⊤-`Owned`
+  param default under the Decision-24 consuming convention (the call-site
+  transfer inc protects alias returns); the premise fails only for a callee
+  whose EMISSION borrows a param and may return it — exactly the inline COW
+  pair, which must carry declared+reachable facts. Flipping the default =
+  broad protect re-emission/CLIF churn for zero soundness gain.
+- **The W2 `return_cow_source` recognizer is NOT deleted — RE-SCOPED**: its
+  safety role is subsumed by the corrected summary; it stays as the
+  leak-exactness optimization for the direct shape (the summary-driven protect
+  over-incs the copy arm by one — retain-side residual, pinned in §3.7). Its
+  rustdoc corrects per R-W2-2 in the fixing change-set; the walk-emitted
+  per-site-fact generalization (S111+) deletes it.
+- **Golden impact**: emission-affecting by design; the 5 `golden_clif_w0b`
+  classes likely hold (lenient entries are outside the ownership universe) but
+  the `clif_baseline`/`ownership_fences` corpus may drift — re-baseline SCOPED
+  + attributed per MANIFEST.md in the fixing change-set (S102 §6.2 discipline).
+- **Fix-vs-carry: CARRY to S111** as ONE coordinated types+primitives+typecheck
+  change-set (backend rustdoc-only). It is a types-ABI + schema-bump change that
+  activates dormant increment-I precision corpus-wide — its own wave with fence
+  re-verification, not a rider on S110's schema-19 tail. **`/testing` action
+  (S110, now):** commit the two sibling repros failing-not-ignored (let-wrapped
+  + match-arm COW-return, REPL + `--link` faces) — the durable record and the
+  S111 trigger (no FIXME per the failing-test rule). The B3.2 rustdoc falsity
+  (`fn_compiler.rs` "sound for *any* body shape") corrects in the fixing
+  change-set. **`/qa`**: FIXME **0623** — body-shape × branch × face matrix +
+  the copy-arm leak fence + the declared-fact reachability fence.
+
+**2. FIXME 0611 — carrier (A) RATIFIED as recommended; 0611 DELETED.** Binding
+record: `design/arch/bounded-contexts.md` §2 (the "unresolved-return-poly-
+dispatch diagnostic" paragraph). `CheckResult.unresolved_dispatch:
+Vec<UnresolvedDispatchSite>` (`{ span, method, gap: DispatchGap }`), **all
+typecheck-local** — no `cranelisp-types` home, no schema bump (empty for every
+valid program), cost = one typecheck `public-api.txt` field regen. The backend
+defence-in-depth consumer is DECLINED (backend is grep-zero-resolver; the W2
+0585 backstop already gives the honest backend-side error without dispatch
+knowledge). (B) rejected (schema bump for an always-empty error map); (C)
+rejected (int re-derivation, Principle 24 + the `(add2 3 4)` false-positive
+re-import). **Pin for the W-RD `/dev` (typecheck+int) wave:** typecheck
+computes the set at finalize (dispatch-outcome-grounded, §3 of
+`return-poly-dispatch-signal.md`); int consults it at exactly
+`src/exe.rs::validate_main` + the REPL `__expr` eval path, emitting the ONE
+§3.11 wording; the wave ALSO carries the **0585 die-leg** — the §3.11
+finalization gate (`find_ambiguous_value_position`) must fire for a top-level
+polymorphic VALUE so VP-3/4/5 die check-side with `"ambiguous"` (same
+`finalize.rs` seam — one wave, two legs). FIXME **0624** (target `/design`
+typecheck) records the §5 status flip — resolved WITHIN the W-RD wave's design
+touch, not a wave-gate blocker.
+
+**Next skills:** `/sprint` — dispatch W-RD (unblocked: 0611 resolved) +
+`/testing` (sibling repros) this sprint; schedule the §3.7 S111 change-set.
+`/qa` — action 0623 into the plan.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
@@ -2002,6 +2082,7 @@ the end-state and its boundary lens verifies the grep-zero (`/arch` §7).
 | W3 | /dev | delete resolver + grep gate | (shim §II.3) | (shim) | — **BLOCKED** (`f6f88152` note+FIXME): staged deletion green in isolation but cross-module mono `pattern_ctors` hard-miss → FIXME 0622 (/arch); W3 backend STASHED |
 | W3 rule | /arch | 0622 + exhaustive producer sweep | (shim §II.3) | (shim) | — `4d7aee66`: **4th axis found+closed** = MAP-INSTANCE (read enclosing vs per-instance map); §1.1.3 3×9 matrix; fix = "read the right map" (3 edits); +1 sibling (test-fn roots). **Producer space CLOSED** |
 | W3 rd | /dev | W3 re-deploy (0622 fix + deletion) | (shim §II.3) | (shim) | — `4c899dd9`+`be06f6cb`: read-the-right-map + stash pop; **grep-zero (−993 LOC), golden 5/5, 11-RED restored**. **0583 BACKEND HALF COMPLETE** |
+| W2/W-RD rule | /arch | vec-assoc ownership class + 0611 carrier | (shim §II.3) | (shim) | — spine §3.7: 3-layer root cause (ResultMode gap + false COW `Fresh` + facts unreachable via prelude); `MayAliasOf` + reachability ruled, schema 19→20, **CARRY S111** (siblings = the trigger); recognizer re-scoped not deleted; 0611 RATIFIED-(A) typecheck-local + deleted; W-RD unblocked; FIXMEs 0623 (/qa) + 0624 (/design tc) |
 
 ## Notes
 

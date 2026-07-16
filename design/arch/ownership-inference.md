@@ -567,6 +567,136 @@ escape→stack fact, it **cannot** stay within the backend/intrinsics boundary �
 typecheck→backend contract and crosses the crate edge by construction. `/arch` authors the variant at
 the implementing sprint; it is **not** landed speculatively in S105 (Phase-2 anti-speculation, §3.3).
 
+### 3.7 The COW result-mode ruling — `MayAliasOf`, declared-fact reachability, and the `Fresh`-on-absence premise (S110 `/arch`, 2026-07-16; RULED, lands S111)
+
+> **Trigger:** the S110 W2 review finding R-W2-1 (`sprints/SPRINT.md` §"/review (W2)") — the
+> vec-assoc UAF class (`(vec-set v i x)` returned from a fn whose scope-exit decs `v`;
+> deterministic REPL garbage / `--link` SIGABRT) survives the W2 direct-body fix on the
+> let-wrapped and match-arm sibling shapes. Both siblings go GREEN under
+> `CRANELISP_NO_OWNERSHIP` — the kill path is the B3.2 return-protect elision consuming a
+> **false `result == Fresh`** claim in the enclosing fn's summary.
+
+**Root cause — three coupled layers (all verified in source, 2026-07-16):**
+
+1. **Vocabulary gap (Principles 12/20).** `ResultMode` (`cranelisp-types/src/ownership.rs`) is
+   `{Fresh, ProjectionOf(i), AliasOf(i)}`. The COW truth — *the result is EITHER a fresh
+   materialization (copy arm) OR param 0's own reference (rc==1 in-place arm), decided at
+   runtime* — has **no representation**. The Origin level already models may-alias
+   (`Origin::MayParam`, FIXME 0520), but `origin_to_result_mode` (`transfer.rs:247–250`)
+   collapses `MayParam` to hard `AliasOf`, and the declared-leaf table had no point to declare
+   the COW shape truthfully — so it declared `Fresh`. A legal state with no representation
+   forced a false declaration: the exact Principle-20 failure mode.
+2. **False declared facts.** `ownership_facts.rs:93–109` declares `vec-set`/`vec-push`
+   `result: Fresh` ("COW copy is a genuine materialization" — true only for the copy arm).
+3. **Declared facts are UNREACHABLE from prelude-fallback modules.** The ownership envs'
+   fact lookups (`ClusterEnv::{summary_of, terminal_kind}` in `ownership/fixpoint.rs:72–93`,
+   the `UniqClusterEnv` twins at `:388–415`, confinement's read at `confinement.rs:162`)
+   resolve via `resolve_terminal_entry_and_home` → `probe_module_entry_owned`
+   (`checker.rs:1861/1632`) — a raw current-module probe + `Import` chain-follow with **no
+   prelude fallback**. In any module that reaches primitives via the implicit prelude
+   (essentially all user code), the probe misses: `summary_of → None` → the
+   `transfer.rs:590` `unwrap_or(ResultMode::Fresh)` default (or, when classification falls to
+   `Decision24`, the `:620` `Origin::Fresh`). Same false `Fresh` either way — and, wider than
+   the filed defect, the **entire §3.1(a) declared-fact precision** (the `Borrowed` only-read
+   facts on `str-eq`/`vec-len`/…, `vec-get`'s `ProjectionOf`) is silently dead in
+   prelude-fallback modules: params degrade to ⊤ `Owned` (conservative-safe, precision lost),
+   results degrade to `Fresh` (the one **anti-conservative** direction, this defect).
+
+**The ruling — candidate (a), precise and narrow, with a mandatory reachability leg.
+Candidate (b) — flipping the `:590` default — is REJECTED.**
+
+- **(a1) Vocabulary: `ResultMode::MayAliasOf(usize)`** joins the enum — "the result is either
+  a fresh value or param *i*'s reference, decided dynamically; the consumer must never elide
+  protection on it, and must never assume it IS the param". ABI-bearing like its siblings
+  (compared by `abi_eq`). Serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION`
+  19→20** + types `public-api.txt` regen + `interfaces.md` §"Ownership-inference carriers" +
+  the §3.3 sketch, all in the implementing change-set (baseline-diff discipline).
+  Consumer semantics:
+  - transfer walk (`transfer.rs:591` match): `MayAliasOf(k)` ⇒ the join of `Fresh` with
+    `arg_origins[k]` — a param-reaching arg yields `Origin::MayParam` (never collapses to
+    `Fresh`, the 0520 rule); a `Fresh` arg yields `Fresh`.
+  - `origin_to_result_mode`: a `MayParam{projection:false}` body origin publishes
+    **`MayAliasOf(idx)`**, no longer a hard `AliasOf` (the same honesty defect one level up —
+    `AliasOf`/`ProjectionOf` are reserved for provable unconditional claims like
+    `string-identity` / a bare accessor). Binding constraint on the S111 `/design` pass: **no
+    may-origin may publish a mode whose consumer can elide an inc/protect** (the unsound
+    direction); retain-side imprecision is acceptable.
+  - backend `return_is_fresh_by_summary` is **untouched** — its binary `== Fresh` read means
+    any new variant keeps `protect_return_value`, sound by construction (Principle 18: the
+    default direction of an unknown variant is the safe one).
+- **(a2) Truthful declarations:** `vec-set`/`vec-push` → `result: MayAliasOf(0)`
+  (`ownership_facts.rs` + its rustdoc §9.3 line + `ownership_facts/tests.rs` pins).
+  `vec-get`'s `ProjectionOf(0)` and `string-identity`'s `AliasOf(0)` stand — genuinely
+  unconditional.
+- **(a3) Reachability (without this leg, a2 is dead code):** the ownership envs' fact
+  lookups gain the **one prelude hop on current-module miss** (same terms as
+  `ResolutionScope::resolve`'s fallback — read-only, public-head-filtered, no §8.6.4
+  interaction; route through the existing scope-resolve machinery or one shared read-only
+  helper, never a hand-rolled per-env copy — Principle 7). Unit pin: `summary_of` finds
+  `vec-set`'s declared facts from a prelude-fallback module. Note the side effect honestly:
+  this **activates the designed increment-I precision** (Borrowed narrowing, projection
+  results) in production modules where it was silently inert — CLIF changes beyond the COW
+  class are expected and intended.
+- **The `:590` `Fresh` default STAYS — ruled sound, premise now explicit.** The
+  `Fresh`-on-absence result default is **co-sound with the ⊤-`Owned` param default** because
+  the two describe one convention: a summary-less callee is compiled at the Decision-24
+  consuming point, where the caller emits transfer incs on heap args — so even an
+  alias-returning callee returns a reference the call site already paid for, and scope
+  cleanup cannot free it. The premise fails ONLY for a callee whose **emission deviates from
+  the consuming convention** — borrows a param and may return it — which is exactly the
+  inline COW pair (`vec_codegen`'s `SourceOwnership::Borrowed`), and those MUST carry
+  declared, **reachable** facts (the primitives completeness test covers declaration; (a3)
+  closes reachability). This soundness argument lands as rustdoc at `transfer.rs:590` and as
+  the structural contract in `cranelisp-primitives/CLAUDE.md`'s declared-facts section:
+  *"a primitive whose emission deviates from the consuming convention MUST carry declared
+  facts, and the ownership envs MUST be able to reach them."* Flipping the default instead
+  (candidate (b)) would mark nearly every summary whose body tail-calls anything
+  summary-less as non-`Fresh`: broad protect re-emission, large CLIF churn and golden
+  re-baselining of unrelated classes, forfeiting most of the B3.2 win — for zero soundness
+  gain once the one genuine convention-deviator declares truthful reachable facts.
+- **The W2 backend recognizer (`return_cow_source_in_scope`) is RE-SCOPED, not deleted.**
+  Post-fix its **safety role is subsumed** (the `MayAliasOf` summary keeps protect on every
+  body shape); it remains as the **leak-exactness optimization** for the direct-body shape —
+  the `skip_var` + copy-branch-`Owned` pair achieves exact both-arm accounting, where the
+  summary-driven protect conservatively over-incs the copy arm by one (retain-side polarity,
+  the pre-B3.2 point). Its rustdoc corrects in the fixing change-set per review finding
+  R-W2-2 (name the real invariant — the `is_last_use`-confined flip + one-release balance —
+  not the claimed single-use scan) and states the re-scope explicitly. The S111+
+  generalization target: replace the syntactic recognizer with a **walk-emitted per-site
+  fact** ("this COW site's result flows to return through binding *b*" — the `SiteFacts`
+  carrier precedent), which extends exact accounting to all shapes and deletes the
+  recognizer THEN. Known conservative residual until that lands: a shared-source COW in
+  return position through a non-direct shape leaks one count on the copy arm — retain-side,
+  never a UAF.
+- **The B3.2 rustdoc corrections ride the fixing change-set** (`fn_compiler.rs:124–131`,
+  `:411–434`, `:1696–1722`): "`result == Fresh` is therefore now sound for *any* body shape"
+  is FALSE as stated — the elision is sound iff the summary chain's **leaf facts are
+  truthful and reachable**; 0520 cured the join-collapse class, and this ruling cures the
+  false-declaration + unreachable-declaration classes; the rustdoc must state the premise,
+  not claim unconditional soundness.
+
+**Golden/byte-identity disposition.** The fix is emission-affecting **by design** (protect
+re-emission on COW-return chains; (a3)'s precision activation). The 5 `golden_clif_w0b`
+lenient-class goldens likely hold (tiny bodies, lenient entries excluded from the ownership
+universe) but are NOT guaranteed; the `clif_baseline`/`ownership_fences` corpus may drift.
+Discipline: run the gates in the fixing change-set; every drifted frame must be attributed
+to one of the two named mechanisms and re-baselined **scoped + attributed** per MANIFEST.md
+(the S102 §6.2 ruling — extension ≠ re-baseline). Schema 19→20 invalidates caches wholesale
+regardless.
+
+**Scope ruling: CARRY to S111 as ONE designed, pinned, coordinated change-set**
+(types + primitives + typecheck; backend rustdoc-only). Grounds: it is a `cranelisp-types`
+ABI-vocabulary + cache-schema change that re-opens the increment-I seam (precision
+activation needs the fence/golden re-verification as its own wave, not a rider on S110's
+Phase-5 tail), and S110's remaining waves are pinned to the schema-19 window. **The trigger
+discipline is satisfied without a FIXME**: `/testing` commits the two sibling repros
+failing-not-ignored in S110 (let-wrapped + match-arm COW-return, REPL + `--link` faces) —
+the durable record and the S111 trigger, per the failing-test rule. This is NOT Phase-H
+ownership-increment machinery — it is increment-I fact-correctness, one change-set,
+S111-sized. The `/qa` body-shape variant-matrix gap (direct/let/if/match × {in-place,
+shared} × faces, plus the return-position copy-arm leak fence and a declared-fact
+reachability fence) is filed as FIXME 0623.
+
 ---
 
 ## §4. Pipeline sequencing (part 3)
