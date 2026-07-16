@@ -7,11 +7,12 @@ title: Resolve once
 
 > Authored S110 Phase 3 (motivating context: FIXME 0583, the backend name
 > resolver — the "two resolvers, one name" mirror class that recurred 3× in
-> S109; user directive S109 P5). **Strengthened S110 Phase 7 pre-ratification**
-> (user direction): the no-scan invariant is stated compiler-wide, resolution
+> S109; user directive S109 P5). **Strengthened S110 Phase 7** (user
+> direction): the no-scan invariant is stated compiler-wide, resolution
 > itself is characterized as a keyed-lookup chain, and the enumeration +
-> `/search` carve-outs are made explicit. **Ratification at S110 Phase-7
-> close** per the close-only register rule (the P21/P23 precedent).
+> `/search` carve-outs are made explicit. **RATIFIED at S110 Phase-7 close
+> (user-approved 2026-07-16)** with the strengthened wording, per the
+> close-only register rule (the P21/P23 precedent).
 
 **Statement.** A semantic identity — a name, a type, a member, a dispatch
 target — is derived at exactly ONE pipeline stage and crosses every stage
