@@ -1731,6 +1731,58 @@ clean W2 11-RED baseline (unchanged; W3 landed nothing).
 FIXME 0622. The backend end-state (zero live `resolve_*`) is implemented and
 staged in `stash@{0}`, pending the producer fix.
 
+### /arch (0622 ruling + exhaustive producer sweep) (2026-07-16)
+
+**FIXME 0622 RULED + deleted** — `design/arch/backend-keyed-consumer.md`
+**§1.1.3** is the binding record. Headline findings:
+
+1. **The gap class is CHECK-RUN provenance, broader than filed.** The mono view
+   at `monomorphise.rs:519` reads the ENCLOSING run's `pattern_ctors` while the
+   body was annotated by the per-instance recheck. That misses cross-module
+   (the filed repro) AND cross-check-run same-module (REPL-incremental:
+   template defined in input 1, first concrete call in input 2) — the latter
+   kills the FIXME's union candidate outright (the defining run's map no
+   longer exists at mint time).
+2. **The transport mechanism already exists — no new machinery.**
+   `recheck_body_for_mono` re-checks the full body with the fresh per-instance
+   map live and `current_module` switched to `home`; `check_constructor_pattern`
+   → `instantiate_ctor` re-records every ctor-pattern span into the
+   per-instance map, defining-module-correct, and the auto-curry drain runs
+   inside the swap window. The per-instance map is already complete for all
+   three carriers; P7 just reads two different maps.
+3. **One sibling cell found by the exhaustive sweep:**
+   `register_test_fn_mono_roots` (`register.rs:931`) — same structure (view
+   from enclosing maps, body from per-root recheck); correct-by-reach same-run,
+   gapped on the cross-run retry edge.
+4. **Why this is the LAST producer axis:** a span-keyed sidecar has exactly
+   three axes — key values (closed 0616), carrier values (closed §1.1/§1.1.2),
+   map instance (closed §1.1.3). The §1.1.3 matrix dispositions every cell of
+   3 carriers (grep-closed: `resolved_target`×2 + `resolved_ctor`) × 9
+   view-construction paths (grep-closed `from_expr`/`lenient_from_expr`
+   callers).
+
+**`/dev` action (typecheck-narrow, ONE change-set, pinned §1.1.3):**
+`finalize_mono_codegen_view` takes the per-instance `resolutions` and builds
+the view from ITS two sidecars (delete the `:516–518` false-assumption
+comment; state the pairing rule); `register_test_fn_mono_roots` builds from
+its per-root recheck maps; `sweep_post_pass_outputs` extends all THREE
+`MethodResolutions` fields (drops `pattern_ctors` today — harmless but
+partial). NO `cranelisp-types` edit, NO public-API movement, **NO
+`CACHE_SCHEMA_VERSION` bump** (value-only conformance repair inside the
+schema-19 window, 0472/0620 precedent; `BUILD_ID` covers dev-cache skew).
+Unit pins failing-first per §1.1.3 item 4: cross-module mono ctor-pattern
+carrier (RED on main), cross-run same-module twin (RED on main), same-run
+regression pin. **The unit pins ARE the failing-not-ignored defect record —
+do NOT also schedule a `/testing` e2e repro** (an e2e cannot fail on main
+while the S19 fallback stands; the ~53 stdlib REDs on the stash are the W3
+re-deploy's wave-level acceptance).
+
+**W3 re-deploy verdict: after the `/dev` change-set lands with its pins, the
+producer is COMPLETE across all carriers × construction paths — W3 pops
+`stash@{0}` (do not touch it until then), deletes S19/S20 + the resolver
+family, and runs the §3 grep gate with NO further producer prerequisites.
+This is the last producer touch of the 0583 initiative.**
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is

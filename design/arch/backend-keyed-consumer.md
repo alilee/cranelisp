@@ -364,7 +364,7 @@ writers are `record_reference_target` (checker.rs), the dotted leg
 | 7 | Product ctor, bare (Var) | same | type-name key (dual facet — no alias edge) | same | correct |
 | 8 | Hand-seeded internal ctor (`Bind` — bare storage key) | same (internal-reject gates precede) | bare name | bare name (no alias) | correct |
 | 9 | Dotted `Type.member` (ctor or accessor, Var) | `dotted_member_identity` (infer.rs:347 leg) | `member_key` probe key | same — "exactly what the probe hits" | correct (verified checker.rs:1592) |
-| 10 | Pattern ctors (sidecar; bare, dotted, qualified) | `instantiate_ctor` canonical-then-bare probe | whichever probe key HIT | same by construction | correct (S109 §10) |
+| 10 | Pattern ctors (sidecar; bare, dotted, qualified) | `instantiate_ctor` canonical-then-bare probe | whichever probe key HIT | same by construction | correct VALUE (S109 §10) — but the mono view-build seam read the WRONG MAP INSTANCE (0622); ruled §1.1.3 |
 | 11 | Self-recursion carve-out (Var) | `record_reference_target` env-shadow arm | `{current_module, defn name}` | defn registers under its bare name | correct |
 | 12 | Platform effect / extern / slot-carried primitive (Var; plain Apply keys off the callee Var) | `record_reference_target` | written name (unrenamed chains) / renamed → row 3 | same | correct (renames covered by fix) |
 | 13 | Primitive/operator BuiltinFn (Apply) | `record_dispatch_target` → `builtin_storage_fq` | jit name via `def_resolved`, `primitives` fallback | same (prelude re-export chain preserves the jit name) | correct (flip to `storage_fq()` for uniformity — same value) |
@@ -409,6 +409,157 @@ and, once the S101 session-transaction reverse index goes live, silent
 affected-set starvation. Aligning `callees` onto `storage_fq()` is a
 `.meta.json` MEANING change (schema bump) — **FIXME 0621** (`target:
 /sprint`) schedules it at the next schema-bump window.
+
+### 1.1.3 Map-provenance: the check-run pairing rule + the exhaustive carrier × construction-path matrix (S110 W3.1 `/arch` ruling — FIXME 0622)
+
+**The defect (0622, fourth producer gap of the initiative).** A generic
+ctor-pattern body defined in module A and monomorphised by a call from module B
+yields a mono instance whose `MonoMatchArm.resolved_ctor` is `None`: the mono
+view is built at `finalize_mono_codegen_view` (monomorphise.rs:519) with the
+ENCLOSING run's `state.method_resolutions.pattern_ctors` — restored by
+`recheck_body_for_mono` before the seam — while the template body's pattern
+spans were recorded in A's separate check run. The `:516–518` comment's
+assumption ("the original template check's entries serve every instance") is
+true only when the template's check and the mono mint share ONE
+`MethodResolutions` instance.
+
+**The class is broader than filed: it is CHECK-RUN provenance, not
+cross-module.** The same miss occurs SAME-module whenever the template's form
+check and the mono mint are in different check runs — the REPL-incremental
+case (template defined in input 1, first concrete call in input 2), where the
+run-1 map was dropped at run end. The FIXME's candidate 1 (union the caller's
+map with "the defining module's check-run sidecar") is therefore
+unimplementable for the cross-run twin — that sidecar no longer exists at mint
+time — and would additionally import the caller map's foreign-file spans
+(`Span` is a bare byte range with no file id; a cross-file union invites
+numeric span aliasing).
+
+**Why the axis kept regenerating gaps — a span-keyed sidecar has exactly three
+axes, and the prior sweeps closed two.** (1) *Key values* (which spans get
+recorded) — closed by the 0616 recorder-coverage sweep; (2) *carrier values*
+(which FQSymbol is recorded) — closed by §1.1's three-source rule + §1.1.2's
+`storage_fq()` flip; (3) *map instance* (WHICH `MethodResolutions` the
+view-build reads) — never swept until now. `MethodResolutions` has exactly
+three provenances in the codebase: the **live run map** (accumulates across a
+module check run), the **per-instance swap** (`recheck_body_for_mono`'s
+take/restore), and the **accumulator** (per-form whole-map clones +
+`sweep_post_pass_outputs`). 0622 is a provenance mismatch: a body annotated by
+a per-instance recheck, viewed through the live run map.
+
+**RULING — the check-run pairing rule (binding on every view-build site):**
+*a codegen view is built from the SAME `MethodResolutions` instance that the
+body-check run which annotated that body populated — never from a map
+restored from, accumulated for, or belonging to a different check run.* The
+mechanism already exists: `recheck_body_for_mono` re-checks the full body with
+the fresh per-instance map live and `current_module` switched to `home`, so
+`check_constructor_pattern` → `instantiate_ctor` re-records EVERY ctor-pattern
+span into the per-instance map, resolved in the defining module's context
+(and `resolve_auto_curry` drains inside the swap window, so curry transports
+land there too). **The per-instance map is already complete for all three
+carriers; the defect is only that P7 reads two different maps.** The fix is
+strictly smaller than either filed candidate: no transport machinery, no
+union — pass the per-instance map's `pattern_ctors` alongside its
+`resolved_targets`.
+
+**The pinned `/dev` (typecheck) change-set — one narrow deployment, no
+`cranelisp-types` edit, no schema bump:**
+
+1. `traits/monomorphise.rs::finalize_mono_codegen_view` — take the
+   per-instance `resolutions: &MethodResolutions` (replacing the bare
+   `resolved_targets` param); build the view as
+   `MonoExpr::from_expr(body, &resolutions.pattern_ctors,
+   &resolutions.resolved_targets)`. Delete the `:516–518` false-assumption
+   comment; state the pairing rule in its place. Caller at P7 passes
+   `&resolutions`.
+2. `program/register.rs::register_test_fn_mono_roots` (`:931`) — the SIBLING
+   cell this sweep surfaced: the test-root view is built from the enclosing
+   live maps while its body is annotated from the per-root recheck's
+   `resolutions`. Correct-by-reach today only because the mint is normally
+   same-run as the template's form check; the retry edge (a root left
+   `Polymorphic` by a failed recheck, re-attempted in a later run) reads a map
+   without the body's spans. Same fix: build from the per-root `resolutions`
+   maps (both).
+3. `program/finalize.rs::sweep_post_pass_outputs` — hygiene: the sweep
+   extends `resolved_calls` + `resolved_targets` but silently DROPS
+   `taken.pattern_ctors`. Harmless today (no post-pass records pattern ctors
+   into the enclosing map — the rechecks swap), but a partial sweep of a
+   3-field struct is how the next starvation hides. Extend all three
+   (behaviour-invariant).
+4. Unit pins (failing-first): (i) a cross-module mono of a ctor-pattern
+   template carries `resolved_ctor = Some(<canonical member_key>)` on its
+   view's arm — the 0622 shape, RED on main; (ii) the cross-run same-module
+   twin (template checked under one `CheckState`, mono minted under a fresh
+   one over the same tables) — RED on main; (iii) same-run same-module mono
+   view unchanged (regression pin). These unit pins ARE the
+   failing-not-ignored defect record (an e2e cannot fail on main — the S19
+   fallback masks it until W3 pops; the ~53 stdlib REDs on the stash are
+   W3's wave-level acceptance).
+
+**Cache verdict: NO `CACHE_SCHEMA_VERSION` bump** (schema-19 window, the
+0472/0620 precedent). Only persisted `codegen_view` VALUES change
+(`resolved_ctor` `None` → the correct storage key on mono-instance arms); the
+field's documented meaning is unchanged; stale caches remain valid on main
+(S19 fallback still present) and any pre-fix cache is invalidated by
+`BUILD_ID` staleness across the compiler rebuild before W3 re-deploys.
+
+**The exhaustive matrix — every carrier × every view-construction path.**
+Carrier census (grep-closed over `mono_expr.rs`): exactly THREE —
+`MonoExpr::Var.resolved_target` (C-V), `MonoExpr::Apply.resolved_target`
+(C-A), `MonoMatchArm.resolved_ctor` (C-P). `resolved_call` is supplementary
+dispatch metadata (Phase-2 pin), not a keyed carrier; `mode_summary` rides
+the entry, not the view. Backend keyed-read census (context.rs): `entry_at` +
+its projections (`ctor_meta_at`, `is_callable_target_at`, `arity_at`,
+`callee_summary_at`, `is_inline_primitive_at`, `got_entry_at`,
+`is_slotless_template_at`) — all key off the three carriers. Construction-path
+census (grep-closed over `from_expr`/`lenient_from_expr` callers in
+typecheck; backend `test_support.rs` is unit-fixture-only per KC-W0-6; the
+ownership-fixpoint call at `fixpoint.rs:168` is a strictness probe, not a
+view producer):
+
+| # | View-construction path | Map instance read | C-V | C-A | C-P | Verdict |
+|---|---|---|---|---|---|---|
+| 1 | Per-form strict, single-sig (`body.rs:348`) | live run map | ✓ | ✓ | ✓ | correct — body checked and viewed in the same run; live map accumulates across the run |
+| 2 | Per-form strict, multi-sig mangled variants (`register.rs:393`) | live run map | ✓ | ✓ | ✓ | correct — variant bodies checked per-form earlier in the SAME run |
+| 3 | Shared strict-first/lenient-fallback builder (`support.rs:241/243`: `__expr` disp-3, macro-clause, generic/best-effort templates) | caller's live maps | ✓ | ✓ | ✓ | correct — same-run; lenient walk populates carriers identically to strict (`mono_expr.rs:552–608`) |
+| 4 | Finalize view-rebuild (`finalize.rs:910`) | accumulator (per-form whole-map clones + post-pass sweep) | ✓ | ✓ (fn-value rewrite + curry legs swept in, W0.1b) | ✓ today; fix 3 makes it structural | correct — accumulator ⊇ live map at last form; no post-pass mints pattern ctors (rechecks swap) |
+| 5 | Impl / default / HKT trait-method writeback (`impl_check.rs:645`) | live run map (no swap; D1 home switch active during the method check) | ✓ | ✓ (`impl_module` per §1.1.1) | ✓ | correct — the method body's records land in the live map in the same run |
+| 6 | **Mono instance** (`monomorphise.rs:519`) — same-run, cross-module, AND cross-run | resolved_targets: per-instance ✓; pattern_ctors: **enclosing** ✗ | ✓ (recheck `infer_var` + P4/P5 dispatch legs + in-swap curry drain) | ✓ | **✗ THE 0622 CELL** | **fix 1** — read the per-instance map for both |
+| 7 | **Test-fn mono roots** (`register.rs:931`) | **enclosing** for both, body annotated from per-root recheck | (✗) | (✗) | (✗) | **fix 2** — correct-by-reach same-run; the cross-run retry edge is the gap; uniformity flip closes it |
+| 8 | Synthetic ctor bodies (`adt.rs:207` + bootstrap seeds) | empty sidecars | n/a | n/a | n/a | correct by construction — `ConstrADT` bodies carry no references, no arms |
+| 9 | Synthetic accessors (`adt.rs:606`) | direct one-entry map at synthesis | n/a | n/a | ✓ | correct by construction (W0.b) — product-only (sum fields have no accessor, `adt.rs:236`), key = the product dual-facet type-name storage key |
+
+Writers that ride the above paths' maps (not builders): the auto-curry drain
+writes to whichever map is live at its drain site (per-form: path 1; in-swap:
+path 6) ✓; the fn-value rewrite writes to the live map + sweep + path-4
+rebuild ✓ (W0.1b); the mono inner-leg writers (monomorphise.rs:399/843/988)
+write to the per-instance map explicitly ✓.
+
+**Recorded latent hazard (NOT a W3 blocker):** `Span` is a bare byte range
+with no file identity, so one run's shared maps can hold spans from more than
+one file (default trait-method bodies carry the trait file's spans into the
+impl-writer's run; macro-expanded bodies may carry macro-definition-file
+spans). A numerically-equal span pair across files can cross-attribute a
+carrier — always `Some(wrong)`, never `None`, so it cannot trip W3's
+hard-miss on a valid program; it is a pre-existing (since S109 §10),
+probabilistically narrow wrong-value class. Structural cure if evidence ever
+surfaces: per-body map scoping (the path-6 discipline generalised) or a
+source id in `Span`. Evidence-gated; not scheduled.
+
+**W3 gating verdict (the initiative's producer close).** With fixes 1–3 + the
+pins landed, every cell of the 3-carrier × 9-path matrix is
+correct-by-same-run-map, correct-by-per-instance-map, or
+correct-by-construction — **no construction path can produce a `None` carrier
+for a valid program on any kind the W1/W2/W3 keyed reads consume. The
+producer is COMPLETE across carriers × paths; the W3 re-deploy (pop
+`stash@{0}`, delete S19/S20 + the resolver family, grep gate) proceeds with
+NO further producer prerequisites.** This is the structural close of the
+whole 0583 producer-gap sequence: 0616 closed the key axis, §1.1/§1.1.2
+closed the value axis, this ruling closes the map-instance axis — and a
+span-keyed sidecar has no fourth axis. Both mono-view builders now consume
+the map handed back by their own recheck, and any NEW view-build site must
+name its two maps explicitly (required `from_expr` params, Principle 18)
+under the pairing rule, so a recurrence requires violating a stated rule at a
+chokepoint `/review` checks, not overlooking an unenumerated cell.
 
 ### 1.2 The no-soft-fallback REJECT criterion (Rev-2 — binding on every wave)
 
@@ -617,8 +768,11 @@ here** (§7). Same verification obligations as W1 + the `/qa` value-position ×
 
 - Fold S20 onto `ctor_meta_at(arm.resolved_ctor)` (the arm carries the
   identity; re-resolving the name was always redundant under the carrier).
-- Delete S19's `None`-arm fallback (dead since W0.b — a `None` on ANY ctor arm
-  is now keying drift, hard error; the §10.3 fold-in note is superseded).
+- Delete S19's `None`-arm fallback (a `None` on ANY ctor arm is then keying
+  drift, hard error; the §10.3 fold-in note is superseded). *(0622 correction:
+  "dead since W0.b" over-claimed — W0.b covered the SYNTHETIC class only; the
+  mono-view seam still produced `None` arms via the wrong map instance until
+  the §1.1.3 pairing fix. S19's deletion is gated on that fix landing.)*
 - Delete `lenient_mono_from_expr` + the `lib.rs:909` arm (dead since W0.b) and
   the unit-test-only `jit.rs::compile_defn` lenient build (migrate the harness
   onto typecheck-built/`from_expr`-built views, or demote `compile_defn` to
@@ -824,6 +978,14 @@ pinned `/dev` (typecheck) change-set: `record_reference_target`'s
 `builtin_storage_fq`'s `def_resolved` arm likewise; `user_fn_refs` stays on
 `.fq` (FIXME 0621); unit pins per §1.1.2. No schema bump (value-only,
 schema-19 window).
+
+**W3.1 addendum (0622 ruling, §1.1.3):** typecheck-only, zero types diff —
+`finalize_mono_codegen_view` reads the per-instance `resolutions` for BOTH
+sidecars; `register_test_fn_mono_roots` likewise (its per-root recheck maps);
+`sweep_post_pass_outputs` sweeps all three `MethodResolutions` fields; unit
+pins per §1.1.3 item 4. No schema bump (value-only, schema-19 window;
+`BUILD_ID` covers dev-cache skew). W3 re-deploys from `stash@{0}` after it
+lands.
 
 ---
 
