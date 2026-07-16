@@ -8,6 +8,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod format;
+pub(crate) mod format_type;
 pub(crate) mod search;
 
 
@@ -33,6 +34,7 @@ pub(crate) use crate::worker::ModuleCompiler;
 
 
 use format::*;
+use format_type::*;
 
 // ---------------------------------------------------------------------------
 // Slash command types + top-level display free functions (relocated)
