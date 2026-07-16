@@ -2185,6 +2185,76 @@ failure is the quasiquote/0605 issue, NOT num.bits (num.bits compiles clean in t
 37-module gate here). **Baseline unchanged (8 RED); release gate clean
 (check/clippy zero warnings in the touched file).**
 
+### /dev (C-4) — RE-ATTRIBUTED to typecheck (2026-07-16, NO int fix landed)
+
+Dispatched to `src/`-int on the S109 hypothesis (int overload-batch path,
+`lifecycle.rs::lookup_main_code_ptr` mis-key/mis-register). **Isolation refutes
+that hypothesis — the root is in `cranelisp-typecheck`, not int.** The /qa §H
+disposition's pre-planned re-attribution arm (SPRINT.md line 628-631, "explicit
+re-attribution arm if the seam lands in typecheck") is now TRIGGERED.
+
+**Isolated root (present-but-not-compiled, upstream of int).** With the C-4
+repro (`(defn h ([:Int x] x) ([:Int x :Int y] x))` + `(defn main [] (Pure (h 7)))`,
+PrimitivesOnly), int-side instrumentation of `lookup_main_code_ptr` shows `main`
+IS present as a `ModuleEntry::Def`, but `code=None`, `got_slot=None`, and
+`kind = UserFn { fn_state: Polymorphic }` with scheme `Fn([], IO Var(5))`,
+`type_vars: [5]`. The single-arity control gives `main` = `Concrete { got_slot: 1 }`,
+`code=Some`. So int is behaving CORRECTLY: `derive_codegen_batch` rightly declines
+to codegen a `Polymorphic` `main`, and `lookup_main_code_ptr` rightly reports no
+callable code. The "entry module has no `main` function" text is a downstream
+SYMPTOM of a spuriously-polymorphic `main`, not a mis-key/mis-register in int.
+
+**Why `main` is spuriously polymorphic (typecheck pass ordering).** `main`'s body
+call `(h 7)` targets an OVERLOADED base, so `infer.rs:588-603` DEFERS resolution —
+pushes a `pending_overload_resolution` with a FRESH return var and returns that var
+as `(h 7)`'s type. In `finalize.rs::finalize_check_result_inner` the caller schemes
+are generalized at `regeneralize_defn_schemes` (line 815 AND line 862), but
+`resolve_pending_overloads` — which unifies that fresh return var with the selected
+variant's `Int` return (`register.rs:509`) — does not run until line 904, AFTER both
+generalizations. So `main` is generalized while `(h 7)`'s return is still free →
+quantified `Var(5)` → `Polymorphic`. This is the exact pattern the FIXME-0349
+comment (finalize.rs:855) already documents for `pass4_monomorphise`'s caller-var
+pinning, applied to overload-resolution pinning instead of mono pinning.
+
+**Mode-uniform, NOT a mode-divergence.** The S109 `// defect: class=mode-divergence`
+label is imprecise. In the REPL the SAME `main` displays polymorphic
+`:(Fn [] (primitives/IO a))` and `(main)` raises the §3.11 ambiguity error
+("...polymorphic value monomorphised in `user/main$`..."). Both modes exhibit the
+identical spurious polymorphism; only the SURFACE differs (REPL: §3.11 ambiguity
+gate on `main$`; `--run`: the "no main" misdirect). The real axis is
+"overloaded-call-from-a-defn-body vs overloaded-call-as-top-level-expr" — and under
+`--run`/`--link` `main` is always a defn body. This is the R16-family
+result-var-monomorphisation seam the typecheck CLAUDE.md flags as a "coordinated
+seam not yet landed".
+
+**Confirmed fix locus + the trap (for the typecheck owner).** A re-generalize after
+`resolve_pending_overloads` (finalize.rs:904) flips the repro to the correct exit 7
+(verified locally, then reverted — NO change landed). BUT the naive
+`self.regeneralize_defn_schemes(state, accumulator)` at line 905 regresses
+`program::tests::test_fn_registered_as_mono_root_gets_concrete_instance` — a third
+regeneralize demotes the test-fn mono-root's minted concrete scheme back to poly,
+exactly the ordering hazard the finalize.rs:868 comment warns about
+(`register_test_fn_mono_roots` must run AFTER both regeneralizes). So the fix must
+be more surgical than a blind third pass (candidates: resolve pending overloads
+BEFORE the second regeneralize + re-run mono-root registration after; or a targeted
+re-generalize scoped to callers of overloaded fns). This is typecheck-internal
+pass-ordering work requiring the crate owner — an int patch would be a Principle-8
+compensation for a typecheck defect.
+
+**Disposition.** No int source change landed; working tree clean. Baseline stays
+**8 RED** (C-4 does NOT flip this deployment). The committed guard
+`multi_arity_call_from_main_batch_no_main_neg` remains the record — RED, un-ignored.
+Handoff to `/sprint` → `/qa`: re-scope C-4 to a `cranelisp-typecheck` /dev
+deployment; `/testing` should update the `// defect:` line to
+`class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner`
+(generalize-before-overload-resolution ordering) `owner=/dev`, dropping the
+`mode-divergence`/`lifecycle.rs` attribution, once the typecheck fix lands.
+Separately (lower priority, genuinely int-side usability): `lookup_main_code_ptr`
+conflates "no `main` Def" with "`main` Def exists but uninstantiable/uncompiled" —
+the latter deserves a clearer diagnostic than "entry module has no `main` function",
+but improving it would NOT flip the test (which asserts exit 7) and is orthogonal to
+the fix.
+
 ## Waves (Phase 4)
 
 **Constraint (binding).** Worktree isolation is broken → **source-touching work is
