@@ -123,12 +123,17 @@ where
     ///
     /// Borrow-elision consumer (B3.2, `design/backend/ownership-codegen.md`
     /// §3.3): `protect_return_value` skips its protective inc when this summary
-    /// is **present** with `result == ResultMode::Fresh` — a Fresh result is
-    /// provably not aliased to any scope binding (the analysis widens any
-    /// returned/escaping param away from Fresh before emitting the summary),
-    /// so scope cleanup cannot free it and no protection is owed. Gated on
-    /// PRESENCE — absent ⇒ Decision-24 (protect), so `CRANELISP_NO_OWNERSHIP`
-    /// (which suppresses all summaries) is byte-identical to pre-B3.2.
+    /// is **present** with `result == ResultMode::Fresh`. `Fresh` is sound to
+    /// elide on iff the summary chain's **leaf facts are truthful AND
+    /// reachable** — three classes had to close: 0520 cured the join-collapse
+    /// (a partial param-return reports not-`Fresh`), and S111 §3.7 cured the
+    /// false-declaration (`vec-set`/`vec-push` now `MayAliasOf(0)`, not `Fresh`)
+    /// and the unreachable-declaration (the ownership envs resolve leaf facts
+    /// prelude-fallback-aware) classes. `MayAliasOf`/`AliasOf`/`ProjectionOf`
+    /// all read not-`Fresh` ⇒ protect KEPT (Principle 18: the safe direction for
+    /// any non-`Fresh` variant). Gated on PRESENCE — absent ⇒ Decision-24
+    /// (protect), so `CRANELISP_NO_OWNERSHIP` (which suppresses all summaries) is
+    /// byte-identical to pre-B3.2.
     pub(crate) current_mode_summary: Option<cranelisp_types::ModeSummary>,
 
     /// Set while compiling an `if`/`match` that is itself a **direct tail-call
@@ -414,21 +419,28 @@ where
     /// so `protect_return_value`'s inc is dead weight and is elided (curing the
     /// G2 / item-26 over-inc leak).
     ///
-    /// One condition, sufficient for soundness post-FIXME-0520:
+    /// One condition, sound iff the summary's leaf facts are truthful+reachable:
     ///
     /// - **A summary is PRESENT with `result == Fresh`.** Absent ⇒ Decision-24
     ///   (protect verbatim), so a `CRANELISP_NO_OWNERSHIP` build (no summaries)
     ///   is byte-identical to pre-B3.2.
     ///
     /// The Apply-body restriction the partial slice (`d7b6a0f`) carried is
-    /// **dropped** here: FIXME 0520 cured the typecheck-side result-mode collapse
+    /// **dropped** here, sound now that THREE `Fresh`-falsity classes are closed:
+    /// (1) FIXME 0520 cured the typecheck-side result-mode join-collapse
     /// (`join_origin` no longer widens a partial control-flow param-return toward
     /// the dangerous `Fresh` — a `(if (eq i n) v (build …))` base-case-returns-`v`
-    /// body now reports `AliasOf(0)`, not `Fresh`). `result == Fresh` is therefore
-    /// now sound for *any* body shape: it means no reachable return path carries a
-    /// param, so the returned value is genuinely fresh and scope cleanup can never
-    /// free it. Verified: `04_vec_cow_loop`'s `build` (result `AliasOf(0)`) keeps
-    /// its protect and runs correct under the unrestricted gate.
+    /// body now reports not-`Fresh`); (2) S111 §3.7 cured the FALSE-declaration
+    /// class (`vec-set`/`vec-push` declare `MayAliasOf(0)`, not `Fresh`); (3)
+    /// S111 §3.7(a3) cured the UNREACHABLE-declaration class (the ownership envs
+    /// now resolve leaf facts through the prelude fallback, so a user module's
+    /// `(vec-set …)` actually sees the COW facts instead of defaulting to
+    /// `Fresh`). With all three closed, `result == Fresh` means no reachable
+    /// return path carries a param through a truthful+reachable summary chain, so
+    /// the returned value is genuinely fresh and scope cleanup can never free it
+    /// — NOT an unconditional property of the enum value alone. A
+    /// `MayAliasOf`/`AliasOf`/`ProjectionOf` result KEEPS the protect. Verified:
+    /// `04_vec_cow_loop`'s `build` keeps its protect and runs correct.
     pub(crate) fn return_is_fresh_by_summary(&self, body: &MonoExpr) -> bool {
         return_is_fresh_by_summary(body, self.current_mode_summary.as_ref())
     }
@@ -1696,15 +1708,19 @@ mod b34_stack_eligibility_tests {
 /// function's return-protect inc (`protect_return_value`) may be elided because
 /// its ownership summary proves the return value is a fresh (non-aliased) value.
 ///
-/// Sound-consumer contract (post-FIXME-0520, see
+/// Sound-consumer contract (post-FIXME-0520 + S111 §3.7, see
 /// [`FnCompiler::return_is_fresh_by_summary`] for the full rationale):
 /// `summary` is `Some` with `result == ResultMode::Fresh`. `None` ⇒ Decision-24
 /// (protect verbatim) — the byte-identical-`CRANELISP_NO_OWNERSHIP` guarantee.
 ///
-/// `Fresh` is sound for **any** body shape now that `join_origin` no longer
-/// collapses a partial control-flow param-return to `Fresh` (a body that returns
-/// a param on any reachable path reports `AliasOf`/`ProjectionOf`, never
-/// `Fresh`). A `ProjectionOf`/`AliasOf` result KEEPS the protect: the callee
+/// `Fresh` is sound to elide on iff the summary chain's leaf facts are
+/// truthful+reachable: 0520 cured the join-collapse and S111 §3.7 cured the
+/// false-declaration (`vec-set`/`vec-push` → `MayAliasOf(0)`) + unreachable-
+/// declaration (prelude-fallback-aware envs) classes. A body that returns a
+/// param on any reachable path reports `MayAliasOf`/`AliasOf`/`ProjectionOf`,
+/// never `Fresh`. A `MayAliasOf`/`ProjectionOf`/`AliasOf` result KEEPS the
+/// protect (the binary `== Fresh` read is safe-direction for every non-`Fresh`
+/// variant, Principle 18): the callee
 /// materializes the returned projection with an owned reference (its `vec-get`
 /// inc, an accessor call, or `protect_return_value` under cleanup targets), so a
 /// direct caller consumes it as an ordinary owned temporary — the §3.3 in-frame

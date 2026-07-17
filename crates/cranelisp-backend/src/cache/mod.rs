@@ -88,9 +88,8 @@ pub mod linker;
 //   - `cranelisp_backend::cache::manifest::{CacheManifest, CachedModuleRef,
 //      CacheInvalidReason, check_manifest, hash_source, read_manifest,
 //      write_manifest, binary_fingerprint}`
-//   - `cranelisp_backend::cache::serialize::{CacheMetadata, CacheStale,
-//      serialise_meta, deserialise_meta, write_meta, load_meta,
-//      read_cached_metadata, write_cached_metadata}`
+//   - `cranelisp_backend::cache::serialize::{CacheStale,
+//      serialise_meta, deserialise_meta, write_meta, load_meta}`
 //   - `cranelisp_backend::cache::object::{CacheWritePacket,
 //      ObjectCompileInput, IntrinsicTable, IntrinsicEntry, FnSlotInfo,
 //      build_cache_packet, process_cache_packet, got_data_symbol_name,
@@ -325,7 +324,20 @@ pub mod linker;
 /// schema-18 `.o` wholesale. All three additions are `#[serde(default)]`, but
 /// the fresh-build value on a table-reference node is `Some`, NOT the default
 /// `None` (the exempt-default class does not apply). Value-only invalidation.
-pub const CACHE_SCHEMA_VERSION: u32 = 19;
+///
+/// **S111 CS-5 bump 19 → 20 (vec-assoc COW ownership root —
+/// `design/arch/ownership-inference.md` §3.7).** `ResultMode` gains the
+/// `MayAliasOf(usize)` variant (the COW result point), serde-visible on every
+/// persisted `ModeSummary`, so a stale schema-19 cache could carry a summary
+/// whose result was falsely serialised `Fresh` where the truthful declaration
+/// is now `MayAliasOf(0)` (`vec-set`/`vec-push`). The **0621 `callees` rider**
+/// shares this one bump window: `Def.callees` edges now record the terminal
+/// `storage_fq()` (not the written alias `fq`), a persisted-`.meta.json`
+/// meaning change that MUST flip the schema in the same change-set (a cache
+/// written between two separate bumps would carry schema-20 with alias
+/// `callees`). Both are content-meaning changes ⇒ the bump invalidates every
+/// schema-19 `.o` wholesale.
+pub const CACHE_SCHEMA_VERSION: u32 = 20;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
@@ -410,13 +422,13 @@ fn module_dir_and_stem(module_path: &cranelisp_types::ModuleFullPath) -> (String
 /// via the Linker is deferred to a future sprint.
 #[derive(Debug, Clone)]
 pub struct CachedModule {
-    /// The deserialized module metadata (symbol table, structure, codegen state).
+    /// The deserialized module symbol table (structure + codegen state).
     ///
-    /// **Note (Sprint 58 §14.4)**: this field still typed as `CacheMetadata`
-    /// for back-compat during Wave 2b. New callers should consume
-    /// `cached.symbol_table()` directly and ignore the envelope. The envelope
-    /// dissolves when the `/int` worker migrates to the `load_meta` API.
-    pub metadata: serialize::CacheMetadata,
+    /// **S111 CS-5 (FIXME 0634)**: the deprecated `CacheMetadata` envelope is
+    /// gone — `load_meta` deserialises the `SymbolTable` directly (the on-disk
+    /// format has been SymbolTable-direct since Sprint 58 Wave 2b; the envelope
+    /// was an in-memory back-compat wrapper only). Consume this field directly.
+    pub symbol_table: cranelisp_types::SymbolTable,
     /// Path to the `.meta.json` file (for diagnostics).
     pub meta_path: std::path::PathBuf,
     /// Path to the `.o` file (may not exist yet in metadata-only mode).
@@ -428,7 +440,7 @@ pub struct CachedModule {
 impl CachedModule {
     /// Get the restored symbol table.
     pub fn symbol_table(&self) -> &cranelisp_types::SymbolTable {
-        &self.metadata.symbol_table
+        &self.symbol_table
     }
 
     /// Extract the set of module paths this cached module imports from.
@@ -441,7 +453,7 @@ impl CachedModule {
     /// since they are always available without cache loading.
     pub fn imported_modules(&self) -> std::collections::HashSet<cranelisp_types::ModuleFullPath> {
         let mut modules = std::collections::HashSet::new();
-        for (_name, entry) in self.metadata.symbol_table.all_symbols() {
+        for (_name, entry) in self.symbol_table.all_symbols() {
             if let cranelisp_types::ModuleEntry::Import { source, .. } = entry {
                 let mod_path = &source.module;
                 // Skip synthetic compiler modules.
@@ -496,17 +508,8 @@ pub fn try_load_cached_module(
             .map(|m| m.len() > 0)
             .unwrap_or(false);
 
-    // Wrap the symbol table back into the deprecated `CacheMetadata` envelope
-    // for back-compat with the `CachedModule { metadata }` field shape. Once
-    // `/int` migrates `try_cache_hit_load` to consume `SymbolTable` directly,
-    // this wrapper goes away with `CacheMetadata` itself.
-    let metadata = serialize::CacheMetadata {
-        symbol_table,
-        dependencies: Vec::new(),
-    };
-
     Ok(Some(CachedModule {
-        metadata,
+        symbol_table,
         meta_path,
         object_path,
         has_object,
@@ -546,7 +549,7 @@ pub fn load_cached_object(
         }
     })?;
 
-    let module_name = cached.metadata.symbol_table.path.as_ref().to_string();
+    let module_name = cached.symbol_table.path.as_ref().to_string();
     linker.load_object(&module_name, &obj_bytes)?;
 
     // Collect function addresses from the linker's defined_symbols.

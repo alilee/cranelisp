@@ -101,32 +101,39 @@ pub enum Mode {
 /// is a caller/callee agreement (spine §3.3, the 0467 folding rationale).
 /// `Fresh` is the `Default` — the Decision-24 as-built convention.
 ///
-/// **PINNED S111 Phase 3 — `MayAliasOf(usize)` joins this enum in the S111
-/// Phase-5 schema-20 ownership wave (NOT before):** "the result EITHER is a
-/// fresh value OR reaches into param *i* — the param itself or a view rooted
-/// in it — decided at runtime" — the COW pair (`vec-set`/`vec-push`: copy arm
-/// vs rc==1 in-place arm) and the conditional projection. The consumer must
-/// never elide protection on it and must never assume it reaches the param;
-/// `AliasOf`/`ProjectionOf` remain reserved for provable UNCONDITIONAL
-/// claims (both `MayParam` producer arms — `projection: false|true` —
-/// publish `MayAliasOf`; S111 Phase-3 ruling). The variant is serde-visible on persisted summaries, so
-/// `CACHE_SCHEMA_VERSION` 19→20 rides the same change-set (with the 0621
-/// `callees`→`storage_fq()` rider inside the one bump window). Ruling +
-/// consumer semantics: `design/arch/ownership-inference.md` §3.7/§3.7.1;
-/// exact diff + consumer census: `design/arch/interfaces.md`
-/// §"Ownership-inference carriers". This enum deliberately carries no
-/// `#[non_exhaustive]` — see the module docs §Exhaustiveness discipline.
+/// **`MayAliasOf(usize)` — the COW point (S111 Phase 5, schema-20 ownership
+/// wave):** "the result EITHER is a fresh value OR reaches into param *i* — the
+/// param itself or a view rooted in it — decided at runtime" — the COW pair
+/// (`vec-set`/`vec-push`: copy arm vs rc==1 in-place arm) and the conditional
+/// projection. The consumer must never elide protection on it and must never
+/// assume it reaches the param; `AliasOf`/`ProjectionOf` remain reserved for
+/// provable UNCONDITIONAL claims (both `MayParam` producer arms —
+/// `projection: false|true` — publish `MayAliasOf`; S111 Phase-3 ruling). The
+/// variant is serde-visible on persisted summaries, so `CACHE_SCHEMA_VERSION`
+/// 19→20 rode the landing change-set (with the 0621 `callees`→`storage_fq()`
+/// rider inside the one bump window). Ruling + consumer semantics:
+/// `design/arch/ownership-inference.md` §3.7/§3.7.1; exact diff + consumer
+/// census: `design/arch/interfaces.md` §"Ownership-inference carriers". This
+/// enum deliberately carries no `#[non_exhaustive]` — see the module docs
+/// §Exhaustiveness discipline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ResultMode {
     /// The result is a fresh caller-owned value (Decision-24 as-built).
     #[default]
     Fresh,
     /// The result is a borrowed view rooted in param *i* (e.g. an accessor's
-    /// projection) — rc-free against the root's lifetime.
+    /// projection) — rc-free against the root's lifetime. UNCONDITIONAL.
     ProjectionOf(usize),
     /// The result IS param *i*, returned unchanged (the extern audit's
-    /// `string-identity` case).
+    /// `string-identity` case). UNCONDITIONAL.
     AliasOf(usize),
+    /// The result EITHER is a fresh value OR reaches into param *i* — the
+    /// param itself or a view rooted in it — decided at runtime (the COW pair:
+    /// copy arm vs rc==1 in-place arm; a conditional projection). The consumer
+    /// must never elide protection on it, and must never assume it reaches the
+    /// param. `AliasOf`/`ProjectionOf` are reserved for provable UNCONDITIONAL
+    /// claims. (§3.7/§3.7.1; S111.)
+    MayAliasOf(usize),
 }
 
 /// Where an `Owned` parameter's reference goes inside the callee — the

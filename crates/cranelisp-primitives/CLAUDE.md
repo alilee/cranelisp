@@ -94,6 +94,19 @@ unclassified heap leaf. Completeness contract (no heap-param primitive may defau
 guarded by `tests.rs::every_heap_param_primitive_carries_a_declared_summary`. This is a
 declaration-site table, NOT a typecheck-side privileged-by-name table (Principle 19).
 
+**Declared-facts soundness contract (§3.7, S111).** A primitive whose EMISSION deviates
+from the consuming convention — it **borrows a param and may return it** (the inline COW
+pair `vec-set`/`vec-push`, `vec_codegen`'s `SourceOwnership::Borrowed`) — MUST carry a
+**truthful, reachable** declared result: `ResultMode::MayAliasOf(i)`, never `Fresh`. A false
+`Fresh` lets the backend's return-protect elision free a value the caller still owns (the
+vec-assoc UAF class). "Reachable" is the a3 leg: the typecheck ownership envs resolve these
+facts **prelude-fallback-aware**, so a user module reaching `vec-set` via the implicit
+prelude actually sees `MayAliasOf(0)` (a raw current-module probe missed it, silently
+reinstating the false `Fresh`). Whole-table invariant: only these two COW rows deviate — an
+only-read leaf (`str-eq`/`vec-len`/…) borrows its heap arg but returns a fresh SCALAR, so its
+`Fresh` is truthful. Adding any new borrow-and-may-return primitive obliges a `MayAliasOf`
+declaration + its `ownership_facts/tests.rs` pin.
+
 ## The inline vec trio has NO GOT slot (S102, FIXME 0476, Principle 20)
 
 `vec-get`/`vec-set`/`vec-push` carry `PrimitiveBody::Inline` and allocate **no slot** — the

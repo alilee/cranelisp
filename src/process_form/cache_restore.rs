@@ -139,7 +139,7 @@ fn cache_validity_check(
     //    schemes and register it WITHOUT scheduling an `.o` load. A non-empty
     //    codegen batch with a missing `.o` is still a genuine cache miss
     //    (recompile).
-    let has_codegen_targets = cached.metadata.symbol_table.defined_symbols().next().is_some();
+    let has_codegen_targets = cached.symbol_table.defined_symbols().next().is_some();
     if !cached.has_object && has_codegen_targets {
         return None;
     }
@@ -167,7 +167,7 @@ struct CachedSpecs {
 fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> CachedSpecs {
     use std::collections::HashSet as StdHashSet;
 
-    let symbols: StdHashSet<Symbol> = cached.metadata.symbol_table
+    let symbols: StdHashSet<Symbol> = cached.symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
             ModuleEntry::Def { .. } => Some(name.clone()),
@@ -177,7 +177,7 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // Collect names of functions with GOT slots for trait impl restoration.
     // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
     // 0356/0357) — a Def with a callable slot is a got-slotted function.
-    let mangled_names: Vec<String> = cached.metadata.symbol_table
+    let mangled_names: Vec<String> = cached.symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
             ModuleEntry::Def { .. } if entry.callable_got_slot().is_some() => {
@@ -196,14 +196,14 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // (Decision 26 — re-derive on cache-hit load via the same
     // `load_and_register_platform` path used by fresh build).
     let platforms: Vec<PlatformSpec> =
-        cached.metadata.symbol_table.platforms.clone();
+        cached.symbol_table.platforms.clone();
 
     // Sprint 58 Wave 2c / Decision 37 — capture user-authored imports BEFORE
     // moving the symbol table, so we can recurse and ensure every
     // transitive dep's symbol table (and `__cranelisp_got_{M}` data symbol)
     // is installed before this dep's codegen worker tries to load its `.o`.
     let imports: Vec<ImportSpec> =
-        cached.metadata.symbol_table.imports.clone();
+        cached.symbol_table.imports.clone();
 
     // S84 Phase 4B / FIXME 0387 — a re-export edge (`(export [mod [names]])`) is
     // ALSO a transitive dependency: the re-exported target module must be
@@ -215,7 +215,6 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
     // (`undefined variable: str`). Capture the exports as `ImportSpec`-shaped
     // specs (drop the missing `alias`) so the same transitive walk handles them.
     let reexport_deps: Vec<ImportSpec> = cached
-        .metadata
         .symbol_table
         .exports
         .iter()
@@ -250,7 +249,7 @@ fn install_cached_table(
     cached: cranelisp_backend::cache::CachedModule,
 ) {
     let concrete_table =
-        cached.metadata.symbol_table.into_concrete::<crate::code::Code, ()>();
+        cached.symbol_table.into_concrete::<crate::code::Code, ()>();
     cranelisp_typecheck::advance_next_id_past_table(ctx.next_type_id, &concrete_table);
     cranelisp_types::install_module(
         ctx.symbol_tables,

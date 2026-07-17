@@ -28,8 +28,16 @@
 //! - **`string-identity`** is the one alias leaf: the arg flows out unchanged,
 //!   so [`ResultMode::AliasOf`]`(0)` (why `AliasOf` is in the vocabulary at all).
 //! - **the inline `vec` family** (`vec-get`/`vec-set`/`vec-push`) carries the
-//!   projection vocabulary (§9.3): `vec-get` reads/projects → `ProjectionOf(0)`;
-//!   `vec-set`/`vec-push` COW-copy → `Fresh`, value param `IntoResult`.
+//!   projection/COW vocabulary (§9.3): `vec-get` reads/projects →
+//!   `ProjectionOf(0)`; `vec-set`/`vec-push` are COW → [`ResultMode::MayAliasOf`]`(0)`
+//!   (the result is EITHER a fresh copy OR param 0's own vec, decided at
+//!   runtime — NOT `Fresh`; a false `Fresh` was the vec-assoc UAF root, §3.7),
+//!   value param `IntoResult`. These two are the ONLY convention-deviating
+//!   emission in the table (they borrow-and-may-return their source vec through
+//!   `vec_codegen`'s `SourceOwnership::Borrowed` inline path); the only-read
+//!   scalar-returning leaves (`str-eq`/`vec-len`/…) borrow their heap arg yet
+//!   return a genuinely fresh SCALAR, so `Fresh` there is truthful, not a
+//!   deviation — see the declared-facts contract in `CLAUDE.md`.
 //!
 //! # The Decision-24 conservative default (⊤-on-absence)
 //!
@@ -91,20 +99,25 @@ pub(crate) fn declared_mode_summary(name: &str, ty: &Type) -> Option<ModeSummary
             ));
         }
         "vec-set" => {
-            // [(Vec a), Int, a] — COW copy is a genuine materialization; the
-            // value param flows into the fresh result.
+            // [(Vec a), Int, a] — COW: the result is EITHER a fresh copy (rc>1
+            // arm) OR param 0's own vec returned in place (rc==1 arm), decided
+            // at runtime ⇒ `MayAliasOf(0)`, NOT `Fresh` (the §3.7 truthful
+            // declaration — a false `Fresh` here let the return-protect elision
+            // free a vec the caller still owns, the vec-assoc UAF class). The
+            // value param still flows into the (fresh or in-place) result.
             return Some(summary(
                 vec![Mode::Owned, Mode::Copy, Mode::Owned],
                 vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult],
-                ResultMode::Fresh,
+                ResultMode::MayAliasOf(0),
             ));
         }
         "vec-push" => {
-            // [(Vec a), a] — value param flows into the fresh result.
+            // [(Vec a), a] — COW: `MayAliasOf(0)` (copy arm vs rc==1 in-place
+            // arm), value param flows into the result. See `vec-set` (§3.7).
             return Some(summary(
                 vec![Mode::Owned, Mode::Owned],
                 vec![ParamFlow::Consumed, ParamFlow::IntoResult],
-                ResultMode::Fresh,
+                ResultMode::MayAliasOf(0),
             ));
         }
         _ => {}

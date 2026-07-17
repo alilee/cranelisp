@@ -74,7 +74,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
             return Some(TerminalKind::UserFnConcrete);
         }
         let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         kind_of_entry(&entry)
     }
 
@@ -86,7 +86,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TransferEnv
             ));
         }
         let (entry, home) =
-            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         entry
             .mode_summary()
             .map(|s| (FQSymbol { module: home, symbol: name.clone() }, s.clone()))
@@ -390,7 +390,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
             return Some(TerminalKind::UserFnConcrete);
         }
         let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         kind_of_entry(&entry)
     }
 
@@ -399,7 +399,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
             return Some(s.clone());
         }
         let (entry, _home) =
-            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+            self.env.resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())?;
         entry.mode_summary().cloned()
     }
 
@@ -410,7 +410,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniq
             return *v;
         }
         self.env
-            .resolve_terminal_entry_and_home(&self.current_module, name.as_ref())
+            .resolve_terminal_entry_and_home_scoped(&self.current_module, name.as_ref())
             .and_then(|(entry, _)| entry.mode_summary().map(|s| s.result_unique))
             .unwrap_or(false)
     }

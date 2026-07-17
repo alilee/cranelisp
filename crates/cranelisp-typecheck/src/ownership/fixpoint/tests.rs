@@ -126,8 +126,10 @@ fn tail_recursion_base_returns_param_is_alias_not_fresh() {
     // the partial-if join collapsed build's result to `Fresh` DESPITE the
     // base-case param return — an ABI-half soundness narrowing (a consumer
     // trusting Fresh frees the returned param → the observed SIGABRT). Truth:
-    // may-alias param 0 ⇒ AliasOf(0). `grow` is a boundary leaf (⊤: Owned/Fresh),
-    // so the recursive arg is fresh — exactly the vec-push COW shape.
+    // may-alias param 0 ⇒ MayAliasOf(0) (S111 §3.7/§15.3 — a may-origin publishes
+    // MayAliasOf, keeping protect; AliasOf is reserved for unconditional claims).
+    // `grow` is a boundary leaf (⊤: Owned/Fresh), so the recursive arg is fresh —
+    // exactly the vec-push COW shape.
     let cond = MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool };
     let recursive = call("build", vec![call("grow", vec![var("v")]), var("i"), var("n")]);
     let body = MonoExpr::If {
@@ -142,11 +144,61 @@ fn tail_recursion_base_returns_param_is_alias_not_fresh() {
     let build = &c.summaries[&Symbol::from("build")];
     assert_eq!(
         build.result,
-        cranelisp_types::ResultMode::AliasOf(0),
-        "build returns param v in the base case ⇒ AliasOf(0), never Fresh"
+        cranelisp_types::ResultMode::MayAliasOf(0),
+        "build returns param v in the base case ⇒ MayAliasOf(0), never Fresh"
     );
     // v is returned (IntoResult) ⇒ Owned; the ABI param half was already correct.
     assert_eq!(mode(&c, "build", 0), Mode::Owned, "the returned param v is Owned");
+}
+
+// =================== Reachability (the a3 leg, S111 §15.2) ===================
+
+// spec: design/typecheck/ownership-inference.md §15.2 (spine §3.7(a3)) — the
+// ownership envs must reach a declared leaf's facts through the implicit prelude
+// fallback. A `vec-set`-shaped `MayAliasOf(0)` primitive PUBLIC in the `prelude`
+// module must be found by the scoped resolver from a prelude-fallback `user`
+// module — else a2's truthful declaration is dead code and results default to
+// the false `Fresh` (the vec-assoc UAF root). The raw fallback-less resolver
+// missed exactly this hop.
+#[test]
+fn declared_facts_reachable_through_prelude_fallback() {
+    let tf = TestFixture::new();
+    let prelude = ModuleFullPath::from("prelude");
+    let user = ModuleFullPath::from("user");
+    let scheme = cranelisp_types::Scheme {
+        type_vars: vec![],
+        constraints: Default::default(),
+        ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+    };
+    let make = |vis| {
+        let mut e = ModuleEntry::<()>::def(scheme.clone(), DefKind::primitive(0)).visibility(vis).build();
+        e.set_mode_summary(Some(ModeSummary {
+            result: cranelisp_types::ResultMode::MayAliasOf(0),
+            ..Default::default()
+        }));
+        e
+    };
+    let mut pt = cranelisp_types::SymbolTable::<()>::new(prelude.clone());
+    pt.insert(Symbol::from("cow-op"), make(cranelisp_types::Visibility::Public));
+    // A PRIVATE prelude entry — the I-1 filter must NOT leak it.
+    pt.insert(Symbol::from("cow-op-private"), make(cranelisp_types::Visibility::Private));
+    tf.modules.insert(prelude.clone(), pt);
+    tf.prelude_fallback.insert(user.clone(), true);
+
+    // Positive: the PUBLIC declared fact is reachable via the prelude hop.
+    let found = tf.env().resolve_terminal_entry_and_home_scoped(&user, "cow-op");
+    let (entry, home) = found.expect("public prelude declared fact must be reachable via fallback");
+    assert_eq!(home, prelude);
+    assert_eq!(
+        entry.mode_summary().map(|s| s.result),
+        Some(cranelisp_types::ResultMode::MayAliasOf(0)),
+        "the resolved entry carries the declared MayAliasOf(0) fact"
+    );
+    // Negative: a PRIVATE prelude binding is NOT resolved (I-1 filter honoured).
+    assert!(
+        tf.env().resolve_terminal_entry_and_home_scoped(&user, "cow-op-private").is_none(),
+        "a private prelude entry must not leak through the fallback (I-1)"
+    );
 }
 
 // =================== Ordering / determinism ===================

@@ -21,13 +21,11 @@
 //!   - `load_meta(path) -> Result<SymbolTable, CacheStale>`
 //!
 //! The legacy `CacheMetadata` envelope and its companion functions
-//! (`read_cached_metadata`, `write_cached_metadata`) are retained as
-//! `#[deprecated]` shims that delegate to the new API so remaining call sites
-//! can migrate at their own pace; they are removed when those files migrate.
+//! (`read_cached_metadata`, `write_cached_metadata`) were REMOVED at S111 CS-5
+//! (FIXME 0634) — the on-disk format has been SymbolTable-direct since Sprint 58
+//! Wave 2b; the envelope lingered only as an in-memory `CachedModule` wrapper.
 
 use std::path::Path;
-
-use serde::{Deserialize, Serialize};
 
 use cranelisp_types::{
     ErrorLocation, CranelispError, GOT_TABLE_SIZE, ModuleFullPath, Span, SymbolTable,
@@ -350,81 +348,13 @@ pub fn load_meta(meta_path: &Path) -> Result<SymbolTable, CacheStale> {
 }
 
 // ---------------------------------------------------------------------------
-// Deprecated shims — present so that pre-Phase-5 callers in `/int`-owned
-// (`src/session_v4.rs`) and `/qa`-owned (`tests/cache.rs`) files continue to
-// compile during the Wave 2b parallel migration. Remove when those callers
-// have all migrated to the authoritative API above.
+// The deprecated `CacheMetadata` envelope + its `read_cached_metadata` /
+// `write_cached_metadata` shims were REMOVED at S111 CS-5 (FIXME 0634). The
+// on-disk `.meta.json` has been a SymbolTable-direct serialisation since
+// Sprint 58 Wave 2b (`serialise_meta` / `deserialise_meta` / `write_meta` /
+// `load_meta`); the envelope was only an in-memory back-compat wrapper on
+// `CachedModule`, now dissolved.
 // ---------------------------------------------------------------------------
-
-/// Combined metadata for a cached module.
-///
-/// **SUPERSEDED (Sprint 58 §14.4)**: this envelope is replaced by direct
-/// serialisation of `SymbolTable` (the schema_version lives on the table
-/// itself per Decision 34). The `dependencies` field is no longer used by
-/// the cache loader — it walked `ModuleEntry::Import` source paths anyway.
-/// Use `serialise_meta` / `deserialise_meta` / `write_meta` / `load_meta`
-/// instead. This shim exists so `/int`'s session_v4.rs cache-write call site
-/// and `/qa`'s tests/cache.rs continue to compile during the Sprint 58
-/// Wave 2b parallel migration.
-///
-/// No `#[deprecated]` attribute is applied because doing so would surface
-/// warnings inside `/int`-owned files that this crate is forbidden to edit
-/// during the Wave 2b parallel handoff. The doc-only marker here is the
-/// migration signal; the type is removed when `/int` deletes its last
-/// reference and `/qa` rewrites `tests/cache.rs`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheMetadata {
-    pub symbol_table: SymbolTable,
-    /// Module paths this module directly imports from (excluding primitives/macros).
-    /// **No longer consulted** by the cache loader — kept for source compatibility.
-    #[serde(default)]
-    pub dependencies: Vec<String>,
-}
-
-/// Read cached module metadata from disk.
-///
-/// **SUPERSEDED (Sprint 58 §14.4)**: use `load_meta` which returns a
-/// `SymbolTable` directly with structured `CacheStale` failure modes.
-/// Doc-only deprecation per the same rationale on `CacheMetadata`.
-pub fn read_cached_metadata(meta_path: &Path) -> Result<CacheMetadata, CranelispError> {
-    let content = std::fs::read_to_string(meta_path).map_err(|e| {
-        CranelispError::CodegenError {
-            message: format!("failed to read cache metadata {}: {e}", meta_path.display()),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
-    serde_json::from_str(&content).map_err(|e| CranelispError::CodegenError {
-        message: format!(
-            "failed to deserialize cache metadata {}: {e}",
-            meta_path.display()
-        ),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    })
-}
-
-/// Write cached module metadata to disk atomically.
-///
-/// **SUPERSEDED (Sprint 58 §14.4)**: use `write_meta` which serialises the
-/// `SymbolTable` directly and stamps `schema_version`. Doc-only deprecation
-/// per the same rationale on `CacheMetadata`.
-pub fn write_cached_metadata(
-    meta_path: &Path,
-    metadata: &CacheMetadata,
-) -> Result<(), CranelispError> {
-    let json = serde_json::to_string_pretty(metadata).map_err(|e| {
-        CranelispError::CodegenError {
-            message: format!("failed to serialize cache metadata: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
-    super::atomic_write(meta_path, json.as_bytes()).map_err(|e| {
-        CranelispError::CodegenError {
-            message: format!("failed to write cache metadata {}: {e}", meta_path.display()),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
-    })?;
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Tests

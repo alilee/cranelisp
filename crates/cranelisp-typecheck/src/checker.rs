@@ -1392,9 +1392,13 @@ where
     ///   in W0/W0.1 (behaviour-invariant); W1 keys the backend's ONE fetch on
     ///   it.
     /// - **`user_fn_refs`** — the `Def.callees` edge feed (FIXME 0470, S101).
-    ///   Records `resolved.fq` (NOT `storage_fq()`) — `callees` is a persisted
-    ///   `.meta.json` value pinned this schema window; its own alias residual
-    ///   is FIXME 0621. Kept only when the terminal is a `DefKind::UserFn`
+    ///   Records `resolved.storage_fq()` — the TERMINAL STORAGE key the walk
+    ///   surfaced, NOT the written alias `resolved.fq` (FIXME 0621, S111 CS-5:
+    ///   for a renamed import `[(foo bar)]` or a bare accessor, `fq` composes
+    ///   the written spelling `{m, bar}`/`{m, v}` while `storage_fq()` carries
+    ///   the terminal key `{m, foo}`/`{m, Box.v}` the reverse index must key on;
+    ///   a persisted-`.meta.json` meaning change riding the schema-19→20 bump).
+    ///   Kept only when the terminal is a `DefKind::UserFn`
     ///   `Def` (a `UserFn`-filtered PROJECTION of the single resolution).
     ///   `BuiltinFn` is always available (no codegen dependency); non-`UserFn`
     ///   redefinition falls back to module-grain reload
@@ -1465,7 +1469,7 @@ where
             if let ModuleEntry::Def { kind, .. } = &resolved.entry
                 && matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
             {
-                state.user_fn_refs.insert(span, resolved.fq);
+                state.user_fn_refs.insert(span, resolved.storage_fq());
             }
         }
     }
@@ -1893,6 +1897,45 @@ where
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
         let entry = self.probe_module_entry_owned(module_path, name)?;
         self.chain_follow_to_home(entry, module_path.clone(), 0)
+    }
+
+    /// The **prelude-fallback-aware** `(terminal entry, home)` resolver the
+    /// ownership envs use (S111 §15.2, spine §3.7(a3) — the a3 reachability
+    /// leg). Unlike the raw [`Self::resolve_terminal_entry_and_home`] (a
+    /// fallback-less `probe_module_entry_owned` + `Import`-chain follow), this
+    /// delegates to the single scope resolve ([`Self::scope_resolve_in`]), so
+    /// the implicit-prelude **fallback** + `Import`-chain follow + the I-1
+    /// public-head filter + the qualified-never-retries guard are ALL intrinsic
+    /// to `ResolutionScope::resolve` (decided once at scope construction from
+    /// the [`PreludeFallback`](crate::checker::TypeCheckEnv) bit) — the helper
+    /// hand-rolls nothing (Principle 7; the CLAUDE.md "never re-thread
+    /// `prelude_fallback_target` at a new call site" rule).
+    ///
+    /// **Why this exists (the vec-assoc COW UAF cure).** The ownership fact
+    /// lookups formerly used the raw fallback-less resolver, so in any module
+    /// reaching a primitive via the implicit prelude (essentially all user
+    /// code) the probe MISSED — the entire §3.1(a) declared-fact precision was
+    /// silently dead, and results defaulted to the anti-conservative `Fresh`
+    /// (the false-`Fresh` half of the §3.7 root). Routing all five
+    /// `ownership/fixpoint.rs` probes through this ONE helper makes `vec-set`'s
+    /// `MayAliasOf(0)` reachable from a prelude-fallback module. Home = the
+    /// terminal storage module ([`Resolved::storage_fq`](cranelisp_types::Resolved::storage_fq)`.module`),
+    /// keeping identity discipline uniform with the 0620/0621 flip. A resolve
+    /// error (not-found, private-prelude-filtered, qualified-unknown) maps to
+    /// `None` — the same graceful miss the raw helper returns.
+    ///
+    /// Staging-aware: [`Self::scope_resolve_in`] selects the cluster staging
+    /// view when `staging.module == module_path`, matching the ownership pass's
+    /// finalize-time staging visibility.
+    pub(crate) fn resolve_terminal_entry_and_home_scoped(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        self.scope_resolve_in(module_path, name, Span::SYNTHETIC).ok().map(|resolved| {
+            let home = resolved.storage_fq().module;
+            (resolved.entry, home)
+        })
     }
 
     /// Recursive helper for [`Self::resolve_terminal_entry_and_home`].

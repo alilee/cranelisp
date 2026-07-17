@@ -125,6 +125,30 @@ fn abi_eq_opt_treats_none_as_conservative() {
     assert!(ModeSummary::abi_eq_opt(Some(&borrowed), Some(&borrowed)));
 }
 
+// --- MayAliasOf (S111 §3.7) — the COW result point ---
+
+// spec: design/arch/ownership-inference.md §3.7 — MayAliasOf is a distinct
+// serde-visible variant; it is NON-conservative (protect kept) and never
+// ABI-equal to Fresh.
+#[test]
+fn may_alias_of_is_non_conservative_and_serde_stable() {
+    let cow = ModeSummary { result: ResultMode::MayAliasOf(0), ..Default::default() };
+    // The binary `== Fresh` escape reads (is_abi_conservative here,
+    // return_is_fresh_by_summary in backend) are safe-direction: MayAliasOf is
+    // NOT Fresh ⇒ classified non-conservative ⇒ protect kept.
+    assert!(!cow.is_abi_conservative(), "MayAliasOf(0) result is not the Fresh conservative point");
+    // Serde round-trip preserves the variant + payload.
+    let json = serde_json::to_string(&cow).unwrap();
+    let back: ModeSummary = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.result, ResultMode::MayAliasOf(0));
+    // ABI-distinct from Fresh (an R3 ABI-changing redefinition) and from the
+    // unconditional AliasOf/ProjectionOf at the same index.
+    let fresh = ModeSummary::default();
+    assert!(!cow.abi_eq(&fresh));
+    let alias = ModeSummary { result: ResultMode::AliasOf(0), ..Default::default() };
+    assert!(!cow.abi_eq(&alias));
+}
+
 // --- The toggle is a read-once bool (polarity consistency) ---
 
 #[test]

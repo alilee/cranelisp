@@ -334,12 +334,8 @@ fn test_imported_modules_extracts_deps() {
         },
     );
 
-    let metadata = serialize::CacheMetadata {
-        symbol_table: table,
-        dependencies: Vec::new(),
-    };
     let cached = CachedModule {
-        metadata,
+        symbol_table: table,
         meta_path: dir.path().join("test.meta.json"),
         object_path: dir.path().join("test.o"),
         has_object: false,

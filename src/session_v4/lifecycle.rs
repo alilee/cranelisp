@@ -638,7 +638,7 @@ impl CompilerSession {
             return Ok(None);
         }
         Ok(Some(
-            cached.metadata.symbol_table.into_concrete::<Code, ()>(),
+            cached.symbol_table.into_concrete::<Code, ()>(),
         ))
     }
 
@@ -1900,7 +1900,6 @@ impl CompilerSession {
             return;
         };
         let mut table = cached
-            .metadata
             .symbol_table
             .into_concrete::<Code, ()>();
         // The synthetic `__expr` wrapper is a per-turn artifact, not a user

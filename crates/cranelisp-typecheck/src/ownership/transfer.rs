@@ -244,9 +244,17 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 Some(idx) => ResultMode::ProjectionOf(idx),
                 None => ResultMode::Fresh,
             },
-            Origin::MayParam { rep, projection } => match self.param_root(rep) {
-                Some(idx) if *projection => ResultMode::ProjectionOf(idx),
-                Some(idx) => ResultMode::AliasOf(idx),
+            // Both may-arms publish `MayAliasOf` (S111 §15.3, spine §3.7(a1)):
+            // a may-origin is a CONDITIONAL claim (a `Fresh` path exists), and
+            // `AliasOf`/`ProjectionOf` are reserved for provably UNCONDITIONAL
+            // claims. Publishing `AliasOf`/`ProjectionOf` here would let a
+            // consumer assume the result IS/views the param and elide a
+            // protect/dec on the fresh arm — the unsound direction. Retain-side
+            // imprecision (the may-projection loses its provenance fact) is
+            // acceptable; the flagship bare-accessor stays `Origin::Projection`
+            // (the unconditional row above), so no S99-target read-path shrinks.
+            Origin::MayParam { rep, .. } => match self.param_root(rep) {
+                Some(idx) => ResultMode::MayAliasOf(idx),
                 None => ResultMode::Fresh,
             },
             Origin::Fresh => ResultMode::Fresh,
@@ -606,6 +614,16 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     }
                     // The result IS arg k — carry its origin through verbatim.
                     ResultMode::AliasOf(k) => arg_origins.get(k).cloned().unwrap_or(Origin::Fresh),
+                    // COW result (S111 §15.4, spine §3.7(a1)): the result is
+                    // EITHER fresh OR arg k's reference, decided at runtime. Join
+                    // `Fresh` with the arg's origin — a param-reaching arg yields
+                    // `MayParam` (never collapses to `Fresh`, the 0520 rule keeps
+                    // protect); a fresh/non-param arg yields `Fresh`. Reuses the
+                    // exact 0520 may-alias composition, no new join logic.
+                    ResultMode::MayAliasOf(k) => {
+                        let arg = arg_origins.get(k).cloned().unwrap_or(Origin::Fresh);
+                        self.join_origin(Origin::Fresh, arg)
+                    }
                     ResultMode::Fresh => Origin::Fresh,
                 };
                 // The Apply node is itself an allocation/result site.

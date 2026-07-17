@@ -154,8 +154,11 @@ fn vec_get_is_projection_of_root() {
     );
 }
 
+// spec: design/arch/ownership-inference.md §3.7 — vec-set/vec-push are COW:
+// the result is EITHER a fresh copy OR param 0's own vec, decided at runtime ⇒
+// `MayAliasOf(0)`, NOT `Fresh` (the false `Fresh` was the vec-assoc UAF root).
 #[test]
-fn vec_set_copies_and_stores_value_into_result() {
+fn vec_set_is_may_alias_of_source_vec() {
     let s = declared_mode_summary(
         "vec-set",
         &fn_ty(vec![vec_a(), Type::Int, Type::Var(0)], vec_a()),
@@ -166,22 +169,56 @@ fn vec_set_copies_and_stores_value_into_result() {
         summary(
             vec![Mode::Owned, Mode::Copy, Mode::Owned],
             vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult],
-            ResultMode::Fresh,
+            ResultMode::MayAliasOf(0),
         )
     );
 }
 
 #[test]
-fn vec_push_stores_value_into_result() {
+fn vec_push_is_may_alias_of_source_vec() {
     let s = declared_mode_summary("vec-push", &fn_ty(vec![vec_a(), Type::Var(0)], vec_a())).unwrap();
     assert_eq!(
         s,
         summary(
             vec![Mode::Owned, Mode::Owned],
             vec![ParamFlow::Consumed, ParamFlow::IntoResult],
-            ResultMode::Fresh,
+            ResultMode::MayAliasOf(0),
         )
     );
+}
+
+// spec: design/arch/ownership-inference.md §3.7.1 axis 3 — whole-table sweep:
+// the ONLY convention-deviating (borrow-and-may-return-the-borrow) primitives
+// are the two COW ops, and they are the ONLY `MayAliasOf` producers. A
+// Borrowed-param only-read leaf returns a fresh SCALAR, so its `Fresh` is
+// truthful, not a deviation.
+#[test]
+fn only_cow_vec_ops_declare_may_alias_of() {
+    // The two COW ops declare MayAliasOf(0).
+    for (name, ty) in [
+        ("vec-set", fn_ty(vec![vec_a(), Type::Int, Type::Var(0)], vec_a())),
+        ("vec-push", fn_ty(vec![vec_a(), Type::Var(0)], vec_a())),
+    ] {
+        let s = declared_mode_summary(name, &ty).unwrap();
+        assert_eq!(s.result, ResultMode::MayAliasOf(0), "{name} must be MayAliasOf(0)");
+    }
+    // Borrowed-param only-read leaves keep a truthful `Fresh` scalar result —
+    // they do NOT return their borrowed heap arg.
+    for (name, ty) in [
+        ("str-len", fn_ty(vec![Type::String], Type::Int)),
+        ("str-eq", fn_ty(vec![Type::String, Type::String], Type::Bool)),
+        ("vec-len", fn_ty(vec![vec_a()], Type::Int)),
+        ("starts-with?", fn_ty(vec![Type::String, Type::String], Type::Bool)),
+    ] {
+        let s = declared_mode_summary(name, &ty).unwrap();
+        assert!(s.param_mode(0) == Mode::Borrowed, "{name} param 0 should be Borrowed");
+        assert_eq!(s.result, ResultMode::Fresh, "{name} returns a fresh scalar ⇒ Fresh");
+    }
+    // The one unconditional alias/projection leaves stay unconditional.
+    let sid = declared_mode_summary("string-identity", &fn_ty(vec![Type::String], Type::String)).unwrap();
+    assert_eq!(sid.result, ResultMode::AliasOf(0));
+    let vget = declared_mode_summary("vec-get", &fn_ty(vec![vec_a(), Type::Int], Type::Var(0))).unwrap();
+    assert_eq!(vget.result, ResultMode::ProjectionOf(0));
 }
 
 #[test]

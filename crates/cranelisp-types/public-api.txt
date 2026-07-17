@@ -682,6 +682,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResourceRole
 pub enum cranelisp_types::ResultMode
 pub cranelisp_types::ResultMode::AliasOf(usize)
 pub cranelisp_types::ResultMode::Fresh
+pub cranelisp_types::ResultMode::MayAliasOf(usize)
 pub cranelisp_types::ResultMode::ProjectionOf(usize)
 impl core::marker::Freeze for cranelisp_types::ResultMode
 impl core::marker::Send for cranelisp_types::ResultMode

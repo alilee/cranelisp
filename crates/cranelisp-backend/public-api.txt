@@ -180,7 +180,7 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
-pub fn cranelisp_backend::cache::object::build_cache_packet(&std::path::Path, &cranelisp_types::newtype::ModuleFullPath, &str, bool, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, &cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::object::build_cache_packet(&std::path::Path, &cranelisp_types::newtype::ModuleFullPath, &str, bool, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, &cranelisp_types::module::SymbolTable, cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::object::build_isa(bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::object::process_cache_packet(&cranelisp_backend::cache::object::CacheWritePacket, &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable>) -> core::result::Result<cranelisp_backend::cache::object::ProcessedPacket, cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::cache::serialize
@@ -219,27 +219,15 @@ impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheStale
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheStale
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheStale
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheStale
-pub struct cranelisp_backend::cache::serialize::CacheMetadata
-pub cranelisp_backend::cache::serialize::CacheMetadata::dependencies: alloc::vec::Vec<alloc::string::String>
-pub cranelisp_backend::cache::serialize::CacheMetadata::symbol_table: cranelisp_types::module::SymbolTable
-impl core::marker::Freeze for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Send for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Sync for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
 pub fn cranelisp_backend::cache::serialize::deserialise_meta(&[u8], u32, &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
 pub fn cranelisp_backend::cache::serialize::load_meta(&std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
-pub fn cranelisp_backend::cache::serialize::read_cached_metadata(&std::path::Path) -> core::result::Result<cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::serialize::serialise_meta<C, L>(&cranelisp_types::module::SymbolTable<C, L>, u32) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore + core::clone::Clone, L: cranelisp_types::module::LinkerStore + core::clone::Clone
-pub fn cranelisp_backend::cache::serialize::write_cached_metadata(&std::path::Path, &cranelisp_backend::cache::serialize::CacheMetadata) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::serialize::write_meta<C, L>(&std::path::Path, &cranelisp_types::module::SymbolTable<C, L>, u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub struct cranelisp_backend::cache::CachedModule
 pub cranelisp_backend::cache::CachedModule::has_object: bool
 pub cranelisp_backend::cache::CachedModule::meta_path: std::path::PathBuf
-pub cranelisp_backend::cache::CachedModule::metadata: cranelisp_backend::cache::serialize::CacheMetadata
 pub cranelisp_backend::cache::CachedModule::object_path: std::path::PathBuf
+pub cranelisp_backend::cache::CachedModule::symbol_table: cranelisp_types::module::SymbolTable
 impl cranelisp_backend::cache::CachedModule
 pub fn cranelisp_backend::cache::CachedModule::imported_modules(&self) -> std::collections::hash::set::HashSet<cranelisp_types::newtype::ModuleFullPath>
 pub fn cranelisp_backend::cache::CachedModule::symbol_table(&self) -> &cranelisp_types::module::SymbolTable

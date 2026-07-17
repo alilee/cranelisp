@@ -8392,6 +8392,43 @@
         );
     }
 
+    // spec: design/typecheck/ownership-inference.md §15.5 (FIXME 0621) — a
+    //   RENAMED import `[lib [foo as bar]]` records the callees edge under the
+    //   SOURCE storage key `lib/foo` (`resolved.storage_fq()`), NOT the written
+    //   alias `lib/bar` (`resolved.fq`, composed from the alias spelling — no
+    //   such entry exists). Same storage-key discipline the `resolved_targets`
+    //   carrier already uses; both feeds now agree by the schema-20 flip.
+    #[test]
+    fn callees_records_renamed_import_by_storage_key() {
+        let mut tc = tc_with_prims();
+        // `foo` (0-arg user fn) lives in module `lib`.
+        tc.set_current_module(ModuleFullPath::from("lib"));
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn foo [] 0)");
+        // Back in `test`: import `foo` RENAMED to `bar`, then call `(bar)`.
+        tc.set_current_module(ModuleFullPath::from("test"));
+        tc.symbol_table_mut().insert(
+            Symbol::from("bar"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("lib"),
+                    symbol: Symbol::from("foo"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        check_src(&mut tc, "(defn use-bar [] (bar))");
+        let edges = callees_of(&tc, "test", "use-bar");
+        assert!(
+            edges.contains(&fq_sym("lib", "foo")),
+            "renamed-import call must record the SOURCE storage key lib/foo; got {edges:?}",
+        );
+        assert!(
+            !edges.contains(&fq_sym("lib", "bar")) && !edges.contains(&fq_sym("test", "bar")),
+            "the callees edge must NOT be the written alias `bar`; got {edges:?}",
+        );
+    }
+
     // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 2(a) — a SHADOWED
     //   name (fn param, let binding) records NO edge to the same-named
     //   module-level fn.

@@ -30,10 +30,7 @@ fn test_intrinsic_table_default() {
 fn test_build_cache_packet() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("test.module");
-    let metadata = CacheMetadata {
-        symbol_table: SymbolTable::new(mp.clone()),
-        dependencies: Vec::new(),
-    };
+    let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
         defns: vec![],
@@ -52,7 +49,7 @@ fn test_build_cache_packet() {
         "abc123",
         false,
         HashMap::new(),
-        &metadata,
+        &symbol_table,
         input,
     )
     .unwrap();
@@ -69,10 +66,7 @@ fn test_build_cache_packet() {
 fn test_process_cache_packet() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("user");
-    let metadata = CacheMetadata {
-        symbol_table: SymbolTable::new(mp.clone()),
-        dependencies: Vec::new(),
-    };
+    let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
         defns: vec![],
@@ -91,7 +85,7 @@ fn test_process_cache_packet() {
         "hash123",
         false,
         HashMap::new(),
-        &metadata,
+        &symbol_table,
         input,
     )
     .unwrap();
@@ -314,10 +308,7 @@ fn test_process_cache_packet_writes_object_file() {
 
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("user");
-    let metadata = CacheMetadata {
-        symbol_table: SymbolTable::new(mp.clone()),
-        dependencies: Vec::new(),
-    };
+    let symbol_table = SymbolTable::new(mp.clone());
 
     let defn = Defn {
         name: Symbol::from("main"),
@@ -358,7 +349,7 @@ fn test_process_cache_packet_writes_object_file() {
         "hash456",
         false,
         HashMap::new(),
-        &metadata,
+        &symbol_table,
         input,
     )
     .unwrap();
@@ -384,10 +375,7 @@ fn test_process_cache_packet_writes_object_file() {
 fn test_process_cache_packet_no_object_for_empty_defns() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("types_only");
-    let metadata = CacheMetadata {
-        symbol_table: SymbolTable::new(mp.clone()),
-        dependencies: Vec::new(),
-    };
+    let symbol_table = SymbolTable::new(mp.clone());
     let input = ObjectCompileInput {
         module_path: mp.clone(),
         defns: vec![],  // No functions
@@ -406,7 +394,7 @@ fn test_process_cache_packet_no_object_for_empty_defns() {
         "empty",
         false,
         HashMap::new(),
-        &metadata,
+        &symbol_table,
         input,
     )
     .unwrap();

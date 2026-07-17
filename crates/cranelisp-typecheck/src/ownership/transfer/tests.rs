@@ -590,11 +590,13 @@ fn partial_if_one_arm_param_other_fresh_is_alias_not_fresh() {
     // spec: §4.2/§13.6(c) (FIXME 0520) — THE bug. `(if c p (other))` returns
     // param p in the then-arm, a fresh value in the else-arm. Pre-cure this
     // collapsed to `Fresh` (UNSOUND: p may be returned yet the consumer elides
-    // its protect). Truth: may-alias param 0 ⇒ AliasOf(0), not Fresh.
+    // its protect). Truth: may-alias param 0 ⇒ MayAliasOf(0), not Fresh (S111
+    // §3.7/§15.3 — a may-origin publishes MayAliasOf; AliasOf is reserved for
+    // provable UNCONDITIONAL claims).
     let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let body = if_(var("p"), call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "partial param-return must be AliasOf(0), not Fresh");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "partial param-return must be MayAliasOf(0), not Fresh");
 }
 
 #[test]
@@ -606,7 +608,7 @@ fn nested_partial_if_param_reaches_is_alias_not_fresh() {
     let inner = if_(var("p"), call("other", vec![]));
     let body = if_(inner, call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "param reaching through nested if must be AliasOf(0)");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "param reaching through nested if must be MayAliasOf(0)");
 }
 
 #[test]
@@ -622,7 +624,7 @@ fn let_bound_alias_returned_partially_is_alias_not_fresh() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "let-aliased partial param-return must be AliasOf(0)");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "let-aliased partial param-return must be MayAliasOf(0)");
 }
 
 #[test]
@@ -657,32 +659,35 @@ fn partial_match_some_arms_param_others_fresh_is_alias_not_fresh() {
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "match with one param-returning arm must be AliasOf(0)");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "match with one param-returning arm must be MayAliasOf(0)");
 }
 
 #[test]
 fn partial_if_projection_arm_is_projection_not_fresh() {
     // spec: §4.2 (FIXME 0520, projection sibling) —
     // `(if c (gcells p) (other))`. One arm is a borrowed VIEW of param p
-    // (ProjectionOf), the other fresh ⇒ may-projection ⇒ ProjectionOf(0), not
-    // Fresh (a Fresh here would dec the borrowed field as a temp → double-free).
+    // (ProjectionOf), the other fresh ⇒ may-projection. Per S111 §15.3 BOTH
+    // may-arms (projection:false AND projection:true) publish MayAliasOf — a
+    // conditional claim, keeping protect, never the unconditional ProjectionOf
+    // (a Fresh here would dec the borrowed field as a temp → double-free).
     let env = accessor_env().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let body = if_(call("gcells", vec![var("p")]), call("other", vec![]));
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::ProjectionOf(0), "partial projection-return must be ProjectionOf(0)");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "partial projection-return is a conditional claim ⇒ MayAliasOf(0)");
 }
 
 #[test]
 fn multi_distinct_param_return_is_not_fresh() {
     // spec: §4.2 (FIXME 0520, multi-param sibling) — `(if c v w)` may return
     // EITHER param. The existing lattice cannot name "may alias 0 or 1"; the
-    // sound conservative choice is the lowest reaching index (AliasOf(0)) — any
-    // not-`Fresh` value keeps the consumer's protect (binary read). Strictly more
-    // sound than the pre-cure `Fresh` (which elided protect on a returned param).
+    // sound conservative choice is a may-alias on the lowest reaching index
+    // (MayAliasOf(0)) — any not-`Fresh` value keeps the consumer's protect
+    // (binary read). Strictly more sound than the pre-cure `Fresh` (which elided
+    // protect on a returned param).
     let body = if_(var("v"), var("w"));
     let r = run(&[strparam("v"), strparam("w")], body, TestEnv::default());
     assert_ne!(r.summary.result, ResultMode::Fresh, "multi-distinct-param return must not be Fresh");
-    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "conservative representative is the lowest reaching index");
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0), "conservative representative is the lowest reaching index");
 }
 
 // ---- regression pins: the definite cases must stay precise (no OVER-widen) ----
@@ -729,6 +734,44 @@ fn apply_alias_of_fresh_arg_stays_fresh_no_over_widen() {
         .summary("other", sm(vec![], ResultMode::Fresh, vec![]));
     let r = run(&[strparam("p")], call("idv", vec![call("other", vec![])]), env);
     assert_eq!(r.summary.result, ResultMode::Fresh, "AliasOf of a fresh arg stays Fresh (no over-widen)");
+}
+
+// spec: design/arch/ownership-inference.md §3.7/§15.4 — the MayAliasOf CONSUMER
+// arm (the compiler-forced exhaustive match). `(defn f [v x] (vec-set v 0 x))`
+// where vec-set is summarised MayAliasOf(0): the result is EITHER fresh OR
+// param 0's vec, decided at runtime. Composing through the Apply must keep the
+// result NOT-Fresh (join Fresh with the param-reaching arg's origin ⇒ MayParam
+// ⇒ MayAliasOf(0)) — so an enclosing fn returning it keeps its protect (the
+// vec-assoc COW-return-through-an-Apply-body soundness cure).
+#[test]
+fn apply_may_alias_of_param_arg_is_may_alias_not_fresh() {
+    let env = TestEnv::default().summary(
+        "vec-set",
+        sm(vec![Mode::Owned, Mode::Copy, Mode::Owned], ResultMode::MayAliasOf(0),
+           vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult]),
+    );
+    let body = call("vec-set", vec![var("v"), var("i"), var("x")]);
+    let r = run(&[strparam("v"), intparam("i"), strparam("x")], body, env);
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "MayAliasOf result of a param-reaching arg composes to MayAliasOf(0), never Fresh"
+    );
+}
+
+// spec: §3.7/§15.4 — the MayAliasOf consumer arm with a FRESH arg. `(vec-set
+// (fresh) 0 x)`: param 0 is a fresh temporary, so the result cannot reach any
+// of THIS body's params ⇒ genuinely Fresh (join Fresh with a Fresh arg ⇒ Fresh).
+// The may-alias never over-widens a fresh source.
+#[test]
+fn apply_may_alias_of_fresh_arg_stays_fresh() {
+    let env = TestEnv::default()
+        .summary("vec-set", sm(vec![Mode::Owned, Mode::Copy, Mode::Owned], ResultMode::MayAliasOf(0),
+            vec![ParamFlow::Consumed, ParamFlow::Consumed, ParamFlow::IntoResult]))
+        .summary("fresh", sm(vec![], ResultMode::Fresh, vec![]));
+    let body = call("vec-set", vec![call("fresh", vec![]), var("i"), var("x")]);
+    let r = run(&[intparam("i"), strparam("x")], body, env);
+    assert_eq!(r.summary.result, ResultMode::Fresh, "MayAliasOf of a fresh source stays Fresh (no over-widen)");
 }
 
 // =================== Lexical-scope discipline (F4) ===================

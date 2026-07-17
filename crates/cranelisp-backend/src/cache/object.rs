@@ -34,7 +34,6 @@ use cranelisp_types::{ErrorLocation,
     Scheme, Span, Symbol, SymbolTable, Type,
 };
 
-use super::serialize::CacheMetadata;
 
 /// All inputs needed to compile a module to an ObjectModule.
 /// Grouped to replace the sketch's 21 positional parameters (HIGH-3).
@@ -178,30 +177,23 @@ pub fn build_isa(
 /// Pure function: captures all needed data as owned values.
 /// Called on the main thread; the resulting packet can be sent to a background writer.
 ///
-/// **Sprint 58 §14.4**: callers should serialise the `SymbolTable` directly
-/// via `serialise_meta(&table, CACHE_SCHEMA_VERSION)` and pass the resulting
-/// bytes to a future `build_cache_packet` overload that does not require the
-/// envelope. The current `metadata: &CacheMetadata` parameter is preserved
-/// during the Wave 2b parallel migration; it is wrapped onto an
-/// already-deprecated type.
+/// **S111 CS-5 (FIXME 0634)**: takes the `SymbolTable` directly and serialises
+/// it via `serialise_meta(table, CACHE_SCHEMA_VERSION)` — the SymbolTable-direct
+/// on-disk format `load_meta` reads. The deprecated `CacheMetadata` envelope is
+/// gone.
 pub fn build_cache_packet(
     cache_dir: &Path,
     module_path: &ModuleFullPath,
     source_hash: &str,
     is_stdlib: bool,
     dependency_hashes: HashMap<String, String>,
-    metadata: &CacheMetadata,
+    symbol_table: &SymbolTable,
     object_compile_input: ObjectCompileInput,
 ) -> Result<CacheWritePacket, CranelispError> {
     let (meta_path, object_path) = super::module_cache_path(cache_dir, module_path);
 
     let meta_json_bytes =
-        serde_json::to_string_pretty(metadata)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to serialize module metadata: {e}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })?
-            .into_bytes();
+        super::serialize::serialise_meta(symbol_table, super::CACHE_SCHEMA_VERSION)?;
 
     Ok(CacheWritePacket {
         cache_dir: cache_dir.to_path_buf(),

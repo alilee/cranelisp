@@ -292,26 +292,9 @@ fn load_meta_corrupt_bytes_returns_cache_stale_deserialise() {
     assert_eq!(err.reason(), "deserialise");
 }
 
-// -- Deprecated shim coverage (kept compiling for /int + /qa migration window) --
-
-#[test]
-fn deprecated_metadata_round_trip_still_works() {
-    let dir = tempfile::tempdir().unwrap();
-    let meta_path = dir.path().join("legacy.meta.json");
-    let original = CacheMetadata {
-        symbol_table: SymbolTable::new(ModuleFullPath::from("legacy")),
-        dependencies: Vec::new(),
-    };
-    write_cached_metadata(&meta_path, &original).unwrap();
-    let loaded = read_cached_metadata(&meta_path).unwrap();
-    assert_eq!(loaded.symbol_table.path, ModuleFullPath::from("legacy"));
-}
-
-#[test]
-fn deprecated_read_nonexistent_returns_error() {
-    let result = read_cached_metadata(Path::new("/nonexistent/path/test.meta.json"));
-    assert!(result.is_err());
-}
+// (The deprecated `CacheMetadata` round-trip / read-nonexistent tests were
+// removed with the envelope + its shims at S111 CS-5, FIXME 0634 — the
+// authoritative `write_meta`/`load_meta` round-trip is covered above.)
 
 // -- Sprint 60 Workstream C: compile-time build-id gate --
 
