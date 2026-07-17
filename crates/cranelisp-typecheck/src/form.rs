@@ -439,13 +439,18 @@ where
 /// target module) is the precise cross-module cause, so we lift to `Gap`;
 /// otherwise the original `TypeError` stands.
 fn lift_error(e: cranelisp_types::CranelispError, state: &CheckState) -> CheckError {
-    // Gap-promotion is scoped to the NOT-FOUND resolution class — a `TypeError`
-    // raised by the per-form dispatcher. CS-2 (GOT exhaustion) widened the error
-    // class flowing through here to include `CodegenError`; a hard-miss codegen
-    // error that merely COINCIDES with a still-pending cross-module resolution gap
-    // must surface as its own diagnosed self, never be masked into `CheckError::Gap`
-    // (the gap carrier is the retry signal — a GOT exhaustion is terminal, not a
-    // "dependency not ready yet"). Only a `TypeError` may lift to `Gap`.
+    // Gap-promotion is gated on the `TypeError` VARIANT — any `TypeError`
+    // coinciding with a pending gap lifts (the gate is the variant, not a
+    // finer not-found discriminator; in practice `state.pending_gap` is only
+    // ever set on the not-found resolution path, so the class this reaches is
+    // the not-found one, but nothing here inspects the message to confirm it).
+    // CS-2 (GOT exhaustion) widened the error class flowing through here to
+    // include `CodegenError`; a hard-miss codegen error that merely COINCIDES
+    // with a still-pending cross-module resolution gap must surface as its own
+    // diagnosed self, never be masked into `CheckError::Gap` (the gap carrier is
+    // the retry signal — a GOT exhaustion is terminal, not a "dependency not
+    // ready yet"). So only the `TypeError` variant — never a `CodegenError` or
+    // any other variant — may lift to `Gap`.
     if matches!(e, cranelisp_types::CranelispError::TypeError { .. })
         && let Some(gap) = state.pending_gap.clone()
     {

@@ -9080,3 +9080,93 @@
             scheme.ty,
         );
     }
+
+    // spec: spec/05-definitions.md §5.1.2 (OA-1 / I-A, CS-4.1, METHOD §2.2) — pin
+    // the resolved-overload benign-var exemption at the `finalize` seam.
+    // `collect_pending_overload_result_vars` is the pre-drain analogue of the
+    // ValueScan `SigDispatch` exemption: a pending multi-sig/overload call whose
+    // UNIQUE variant has a CONCRETE return contributes that call's return var as
+    // benign — the drain (`resolve_pending_overloads`) will pin it concrete, so a
+    // `(let [r (h 7)] r)` binding inside a multi-arity clause is not spuriously
+    // flagged. This is the finalize-seam coverage that was ABSENT when CS-4 landed
+    // OA-1/AP-1 — the gap that let the B-1 wrong-accept slip (I-A). It also guards
+    // the ONE shared `select_unique_overload_variant` predicate (I-B) from the
+    // exemption side.
+    //
+    // POSITIVE: a unique concrete-return match exempts the call's return var.
+    #[test]
+    fn collect_pending_overload_result_vars_exempts_unique_concrete_return() {
+        let mut tc = tc_with_prims();
+        // Overload `h` with one Int-arg variant returning a CONCRETE Int.
+        tc.state.resolved_overloads.insert(
+            Symbol::from("h"),
+            vec![(vec![Type::Int], Type::Int, Symbol::from("h$Int"))],
+        );
+        // A pending `(h 7)` whose return sits in fresh var 100.
+        tc.state.pending_overload_resolutions.push((
+            span(0, 0),
+            Symbol::from("h"),
+            vec![Type::Int],
+            Type::Var(100),
+        ));
+
+        let env = tc.env();
+        let benign = env.collect_pending_overload_result_vars(&tc.state);
+        assert!(
+            benign.contains(&100),
+            "a unique concrete-return overload match exempts its return var: {benign:?}"
+        );
+    }
+
+    // NEGATIVE: neither a genuine ambiguity (multiple matching variants — the
+    // drain resolves to NEITHER) nor a unique-but-NON-concrete return exempts the
+    // var. This is the guard that keeps a sibling-forced / genuinely-free var
+    // FLAGGED (the §5.1.2 ambiguity the author must pin) — the discrimination the
+    // memory-unsafe B-1 term erased.
+    #[test]
+    fn collect_pending_overload_result_vars_does_not_exempt_ambiguous_or_nonconcrete() {
+        // (a) Genuine ambiguity — two variants match the Int arg, so no unique
+        // winner and no benign var.
+        let mut tc = tc_with_prims();
+        tc.state.resolved_overloads.insert(
+            Symbol::from("h"),
+            vec![
+                (vec![Type::Int], Type::Int, Symbol::from("h$a")),
+                (vec![Type::Int], Type::Bool, Symbol::from("h$b")),
+            ],
+        );
+        tc.state.pending_overload_resolutions.push((
+            span(0, 0),
+            Symbol::from("h"),
+            vec![Type::Int],
+            Type::Var(100),
+        ));
+        {
+            let env = tc.env();
+            let benign = env.collect_pending_overload_result_vars(&tc.state);
+            assert!(
+                !benign.contains(&100),
+                "an ambiguous overload (two matching variants) exempts nothing: {benign:?}"
+            );
+        }
+
+        // (b) Unique match but a NON-concrete (still-`Var`) return — the drain
+        // would not concretize it, so it is NOT benign.
+        let mut tc = tc_with_prims();
+        tc.state.resolved_overloads.insert(
+            Symbol::from("g"),
+            vec![(vec![Type::Int], Type::Var(7), Symbol::from("g$poly"))],
+        );
+        tc.state.pending_overload_resolutions.push((
+            span(0, 0),
+            Symbol::from("g"),
+            vec![Type::Int],
+            Type::Var(100),
+        ));
+        let env = tc.env();
+        let benign = env.collect_pending_overload_result_vars(&tc.state);
+        assert!(
+            !benign.contains(&100),
+            "a unique match with a non-concrete return is NOT benign: {benign:?}"
+        );
+    }

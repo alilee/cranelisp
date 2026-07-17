@@ -489,4 +489,45 @@ pub(super) fn types_compatible(a: &Type, b: &Type) -> bool {
 }
 
 
+/// The outcome of matching an overloaded call's concrete args against the
+/// registered variants of its base name.
+pub(super) enum OverloadSelection<'v> {
+    /// Exactly one variant's params are compatible with the args.
+    Unique(&'v (Vec<Type>, Type, Symbol)),
+    /// No variant matches the arity + arg types.
+    NoMatch,
+    /// More than one variant matches (the count is carried for the diagnostic).
+    Ambiguous(usize),
+}
+
+/// Select the overload variant whose parameter types are ALL `types_compatible`
+/// with `concrete_args` (arity filter + per-arg compatibility zip + unique
+/// match). This is the ONE overload-selection predicate (Principle 7),
+/// consumed by BOTH `resolve_pending_overloads` (the drain — unifies the
+/// `Unique` winner, errors on `NoMatch`/`Ambiguous`) and
+/// `collect_pending_overload_result_vars` (the pre-drain read-only benign-var
+/// scan — only the `Unique` case contributes). Before CS-4.1 each consumer
+/// hand-copied the predicate — the P7 mirror `/review` flagged (I-B).
+pub(super) fn select_unique_overload_variant<'v>(
+    variants: &'v [(Vec<Type>, Type, Symbol)],
+    concrete_args: &[Type],
+) -> OverloadSelection<'v> {
+    let matches: Vec<&(Vec<Type>, Type, Symbol)> = variants
+        .iter()
+        .filter(|(param_types, _ret, _mangled)| {
+            param_types.len() == concrete_args.len()
+                && param_types
+                    .iter()
+                    .zip(concrete_args.iter())
+                    .all(|(p, a)| types_compatible(p, a))
+        })
+        .collect();
+    match matches.as_slice() {
+        [only] => OverloadSelection::Unique(only),
+        [] => OverloadSelection::NoMatch,
+        many => OverloadSelection::Ambiguous(many.len()),
+    }
+}
+
+
 

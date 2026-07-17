@@ -486,57 +486,47 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 })?
                 .clone();
 
-            // Find exact arity + type matches
-            let mut exact_matches: Vec<&(Vec<Type>, Type, Symbol)> = Vec::new();
-
-            for variant in &variants {
-                let (param_types, _ret_ty, _mangled) = variant;
-                if param_types.len() == concrete_args.len() {
-                    let compatible = param_types
-                        .iter()
-                        .zip(concrete_args.iter())
-                        .all(|(p, a)| types_compatible(p, a));
-                    if compatible {
-                        exact_matches.push(variant);
+            // Find the unique arity + type match via the ONE shared overload-
+            // selection predicate (Principle 7, I-B) — the same predicate the
+            // pre-drain benign-var scan (`collect_pending_overload_result_vars`)
+            // uses.
+            match select_unique_overload_variant(&variants, &concrete_args) {
+                OverloadSelection::Unique((param_types, ret_ty, mangled_name)) => {
+                    // Unify to bind type variables
+                    for (p, a) in param_types.iter().zip(concrete_args.iter()) {
+                        self.unify(state, p, a, *span)?;
                     }
+                    self.unify(state, ret_type_var, ret_ty, *span)?;
+                    let resolution = ResolvedCall::SigDispatch {
+                        mangled_name: JitSymbol::from(mangled_name.as_ref()),
+                    };
+                    // S110 0583 leg 1: sig-dispatch carrier at the Apply span.
+                    self.record_dispatch_target(state, *span, &resolution);
+                    state.method_resolutions.resolved_calls.insert(*span, resolution);
                 }
-            }
-
-            if exact_matches.len() == 1 {
-                let (param_types, ret_ty, mangled_name) = exact_matches[0];
-                // Unify to bind type variables
-                for (p, a) in param_types.iter().zip(concrete_args.iter()) {
-                    self.unify(state, p, a, *span)?;
+                OverloadSelection::Ambiguous(count) => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "ambiguous call to '{}' — {} matching signatures",
+                            base_name, count
+                        ),
+                        location: ErrorLocation::from_span(*span),
+                    });
                 }
-                self.unify(state, ret_type_var, ret_ty, *span)?;
-                let resolution = ResolvedCall::SigDispatch {
-                    mangled_name: JitSymbol::from(mangled_name.as_ref()),
-                };
-                // S110 0583 leg 1: sig-dispatch carrier at the Apply span.
-                self.record_dispatch_target(state, *span, &resolution);
-                state.method_resolutions.resolved_calls.insert(*span, resolution);
-            } else if exact_matches.len() > 1 {
-                return Err(CranelispError::TypeError {
-                    message: format!(
-                        "ambiguous call to '{}' — {} matching signatures",
-                        base_name,
-                        exact_matches.len()
-                    ),
-                    location: ErrorLocation::from_span(*span),
-                });
-            } else {
-                return Err(CranelispError::TypeError {
-                    message: format!(
-                        "no matching signature for '{}' with arg types ({})",
-                        base_name,
-                        concrete_args
-                            .iter()
-                            .map(|t| format!("{t}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    location: ErrorLocation::from_span(*span),
-                });
+                OverloadSelection::NoMatch => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "no matching signature for '{}' with arg types ({})",
+                            base_name,
+                            concrete_args
+                                .iter()
+                                .map(|t| format!("{t}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        location: ErrorLocation::from_span(*span),
+                    });
+                }
             }
         }
 

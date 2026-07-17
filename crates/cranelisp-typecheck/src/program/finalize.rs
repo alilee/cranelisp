@@ -517,50 +517,55 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if is_multi_arity {
                 // §5.1.2 clause independence: each arity clause is type-checked
-                // INDEPENDENTLY, so its legitimately-polymorphic vars are that
-                // clause's own AUTHOR-WRITTEN type vars — the `:a` free vars the
-                // author declared in that clause's param/body annotations,
-                // threaded per-clause via `defn_var_scopes["{name}__v{i}"]` — NOT
-                // the clause's whole inferred function-type free vars (which would
-                // also admit an UNANNOTATED free param). An ANNOTATED free-var
-                // param (`([:a x] :a x)`, AP-1) is thus accepted exactly as its
-                // single-arity `defn` twin (FV-6); an UNANNOTATED param that merely
-                // infers free at a non-result value position (`q`'s let-bound `x`,
-                // `sum-to`'s free-arg self-call) stays the §5.1.2 ambiguity the
-                // author must pin. The benign pending-overload return vars
-                // additionally exempt a resolved-overload call whose return the
-                // drain will concretize (OA-1). (This leg computes allowed_vars
-                // PER CLAUSE — there is no single defn-wide function type for a
-                // multi-arity defn, so there is no defn-level polymorphic skip.)
+                // INDEPENDENTLY, and carries NO type information into or out of its
+                // siblings. A clause's params therefore have NO legitimately-
+                // polymorphic vars of their own — a param whose type stays free
+                // after checking that clause's own body is the §5.1.2 ambiguity the
+                // author MUST pin with an annotation, and the sibling clauses'
+                // annotations never rescue it. So `allowed_vars` for the per-clause
+                // scan carries NO clause-param vars: multi-arity clause params are
+                // NON-polymorphic.
+                //
+                // The one exemption is OA-1: the benign pending-overload return
+                // vars — a resolved multi-sig/overload call (`(h 7)`) whose return
+                // var is only a fresh placeholder pre-drain and the drain will pin
+                // concrete (`collect_pending_overload_result_vars`). Those are not
+                // free-at-root, so `(let [r (h 7)] r)` binding of a concrete-arg
+                // overload call is not spuriously flagged (OA-1a/b).
+                //
+                // CS-4.1 B-1 revert removed the CS-4 `∪ (written ∩ result-free)`
+                // term (it exempted a written `:a` param that flows to the clause
+                // result, but such a param can ALSO be pinned by a delegating
+                // self-call to a sibling clause's concrete type — the drain then
+                // acquires the sibling's concrete types (spec §5.1.2 forbids this
+                // back-flow) and publishes an `:Int`-declared body over a `String`
+                // pointer). Whether a multi-arity clause param may be legitimately
+                // polymorphic is an UNRULED normative question (I-C, §5.1.2 says
+                // NO); default to the written spec.
+                //
+                // B-1 has a SECOND leak vector through OA-1 itself (NOT covered by
+                // the AP-1-term revert): when a clause's body ascribes a resolved
+                // self-call result to a written param var (`([:a p :a rot] :a (rp2
+                // p rot 0))`), the `:a` ascription UNIFIES the overload call's
+                // return var with the param var `a`, so `benign_overload_vars`
+                // resolves to `a` and would exempt the PARAM — re-opening the exact
+                // memory-unsafe wrong-accept (`(rp2 "x" "y")` returns an Int over a
+                // String arg forced into the `:Int` sibling clause). Enforce
+                // "clause params are non-polymorphic" STRUCTURALLY: subtract each
+                // clause's own param-type free vars from the benign set, so an
+                // OA-1 exemption can never reach a clause param regardless of how a
+                // self-call aliased it. (Subtracting only PARAM vars, never the
+                // result vars, keeps OA-1b's returned fresh let-var `r` exempt —
+                // its param types are concrete `:Int`, contributing no free var.)
                 for (i, variant) in defn.variants.iter().enumerate() {
                     let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                    let mut allowed_vars: std::collections::HashSet<u32> =
-                        benign_overload_vars.clone();
-                    // A written type var (`:a`) at a param position is legitimately
-                    // polymorphic for THIS clause only if it FLOWS TO THE RESULT —
-                    // i.e. the clause is genuinely generic over `a` (`([:a x] :a x)`
-                    // → `(Fn [a] a)`, AP-1, the §3.9 twin of single-arity FV-6). A
-                    // written `:a` param that appears ONLY in the params — its value
-                    // forced by a deferred self-call to a sibling clause's concrete
-                    // type (`rp`'s `([:a p :a rot] (rp p rot 0))`, whose result is
-                    // the self-call return, NOT `a`) — does NOT reach the result and
-                    // stays the §5.1.2 ambiguity the author must pin
-                    // (`multi_arity_unpinned_free_var_variant_ambiguous_..._neg`).
-                    // So intersect the clause's written-var ids with its result-type
-                    // free vars.
-                    if let (Some(scope), Some((_pt, ret_ty))) = (
-                        accumulator.defn_var_scopes.get(&internal_name),
-                        accumulator.defn_type_vars.get(&internal_name),
-                    ) {
-                        let result_vars =
-                            cranelisp_types::free_vars(&self.apply_subst(state, ret_ty));
-                        for id in scope.values() {
-                            for v in cranelisp_types::free_vars(
-                                &self.apply_subst(state, &Type::Var(*id)),
-                            ) {
-                                if result_vars.contains(&v) {
-                                    allowed_vars.insert(v);
-                                }
+                    let mut allowed_vars = benign_overload_vars.clone();
+                    if let Some((param_types, _ret)) =
+                        accumulator.defn_type_vars.get(&internal_name)
+                    {
+                        for pt in param_types {
+                            for v in cranelisp_types::free_vars(&self.apply_subst(state, pt)) {
+                                allowed_vars.remove(&v);
                             }
                         }
                     }
@@ -658,7 +663,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// WITHOUT unifying, so a self-call's params are never acquired. A genuinely
     /// unresolved overload (no unique concrete-return match — `sum-to`'s
     /// free-arg self-call) contributes nothing, so its free arg stays flagged.
-    fn collect_pending_overload_result_vars(
+    pub(super) fn collect_pending_overload_result_vars(
         &self,
         state: &CheckState,
     ) -> std::collections::HashSet<u32> {
@@ -669,17 +674,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let Some(variants) = state.resolved_overloads.get(base_name) else {
                 continue;
             };
-            let matches: Vec<&(Vec<Type>, Type, Symbol)> = variants
-                .iter()
-                .filter(|(param_types, _ret, _mangled)| {
-                    param_types.len() == concrete_args.len()
-                        && param_types
-                            .iter()
-                            .zip(concrete_args.iter())
-                            .all(|(p, a)| types_compatible(p, a))
-                })
-                .collect();
-            if let [only] = matches.as_slice() {
+            // The SAME overload-selection predicate the drain uses (Principle 7,
+            // I-B): only a UNIQUE concrete-return match contributes a benign var.
+            if let OverloadSelection::Unique(only) =
+                select_unique_overload_variant(variants, &concrete_args)
+            {
                 let resolved_ret = self.apply_subst(state, &only.1);
                 if resolved_ret.is_concrete() {
                     out.extend(cranelisp_types::free_vars(
