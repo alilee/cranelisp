@@ -198,3 +198,54 @@ fn vec_set_static_site_shared_source_neg_does_not_leak() {
         2 * ITERS
     );
 }
+
+// =============================================================================
+// S111 §A.3 — Fence 2: return-position copy-arm residual magnitude.
+//
+// The COW-return UAF class (rc==1 in-place COW returned through a NON-direct
+// body shape) is cured in §3.7 by declaring the primitive `MayAliasOf(0)` and
+// applying a return protect — a CONSERVATIVE retain: exactly ONE extra count
+// per call, never more (`ownership-inference.md` §3.7). This fence pins the
+// residual at EXACTLY that magnitude so a widening (imbalance > K) fails loud.
+//
+// Three-phase flip (the fence's whole point):
+//   • HEAD (pre-fix): the shape UAFs — the returned alias is freed at scope
+//     exit, so the alloc/free COUNTS stay BALANCED (imbalance 0; the UAF is
+//     TEMPORAL, not a count imbalance). `0 != ITERS` ⇒ RED.
+//   • §3.7 fix lands: the return protect retains one count per call ⇒
+//     imbalance == ITERS ⇒ GREEN.
+//   • per-site-fact EXACTNESS generalization lands (imbalance → 0): `/testing`
+//     updates this assertion to `== 0` and the `return_cow_source` recognizer
+//     deletes (its named deletion trigger). Until then, `== ITERS` re-goes RED
+//     at that flip by design.
+// An accidental WIDENING (imbalance > ITERS) fails immediately — the job.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting;
+// §12.3.1 — heap free. RC-trace, serial. RED at HEAD (imbalance 0 != ITERS).
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
+#[test]
+fn vec_set_shared_source_nondirect_return_copy_residual_exactly_one_per_call() {
+    // rc==1 non-direct (let-wrapped) return in a K-loop: a fresh `[1 2 3]` is
+    // COW-set in `f` and its result consumed; the source is NOT re-read, so the
+    // in-place arm runs and the false-`Fresh` summary frees the returned alias.
+    let out = rc_stats_session(&format!(
+        "(defn f [v i x] (let [r (vec-set v i x)] r))\n\
+         (defn spin [:Int n :Int acc] \
+           (if (eq-i64 n 0) acc \
+             (let [v [1 2 3]] \
+               (spin (sub-i64 n 1) (add-i64 acc (vec-get (f v 0 9) 0))))))\n\
+         (spin {ITERS} 0)\n"
+    ));
+    let imb = alloc_imbalance(&out.stderr);
+    assert_eq!(
+        imb, ITERS,
+        "return-position copy-arm residual MUST be EXACTLY one count per call \
+         (== ITERS={ITERS}) after the §3.7 return-protect lands; got {imb}. \
+         At HEAD imbalance is 0 (the shape UAFs — temporal, not a count \
+         imbalance) so this is RED; it flips GREEN at the schema-20 fix and \
+         deliberately re-flips when the per-site-fact exactness generalization \
+         drives the residual to 0 (update the expected to 0 at that flip). An \
+         imbalance > {ITERS} is an accidental widening — the fence's alarm."
+    );
+}

@@ -49,7 +49,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::Cranelisp;
+use helpers::e2e::{Cranelisp, PreludeVariant};
 
 /// Run a free-standing program in `--run` mode (no prelude file; the program
 /// self-imports) and return the capture.
@@ -849,5 +849,113 @@ fn clif_golden_single_module_smoke() {
         "toggle-off CLIF of corpus entry 06_tco_loop diverged from the \
          golden (L-B1 zero-diff gate; scoped re-baseline required if this \
          change-set is emission-affecting — MANIFEST.md §Capture contract)"
+    );
+}
+
+// =============================================================================
+// S111 §A.4 — Fence 3: declared-fact reachability TWINS (the a3 leg).
+//
+// The gap `ownership-inference.md` §3.7 names: `ClusterEnv` resolves callees
+// via the fallback-LESS `resolve_terminal_entry_and_home`, so a declared leaf
+// fact (`vec-len` param → `Borrowed`) is reachable through an EXPLICIT-import
+// chain but SILENTLY DEAD for prelude-fallback modules. The twin fixture (one
+// invariant — "the vec's rc_inc is iteration-INDEPENDENT because the param is
+// borrowed" — two provenances, SAME assertion): the explicit-import leg is the
+// GREEN control that VERIFIES facts are reachable at all (the escalation gate:
+// if it were RED the gap would be wider than §3.7 states); the prelude-fallback
+// leg is RED until the a3 fix (prelude-fallback-aware ownership envs), landing
+// with the schema-20 change-set (CS-5).
+//
+// Measured at HEAD (2026-07-17): explicit rc_inc = 1 at N∈{50,1000} (O(1));
+// prelude-fallback rc_inc = 51 → 1001 (O(K)). The signal is the per-call inc,
+// NOT alloc/dealloc balance — a borrowed param skips the inc; an Owned (the
+// conservative default when the fact is unreachable) incs the vec every call.
+// =============================================================================
+
+/// Parse `rc_inc=N` from the `[RC_STATS]` exit line (stderr).
+fn rc_inc_count(stderr: &str) -> i64 {
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("[RC_STATS]"))
+        .unwrap_or_else(|| panic!("no [RC_STATS] line on stderr: {stderr}"));
+    line.split_whitespace()
+        .find_map(|tok| tok.strip_prefix("rc_inc="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("no rc_inc= field in RC_STATS line: {line}"))
+}
+
+/// Run a `{N}`-templated program under `--run` with the PrimitivesOnly prelude
+/// (so non-`vec-len` primitives + `Pure` resolve) and RC_STATS on, returning
+/// the vec's rc_inc count.
+fn vlen_loop_rc_inc(user: &str, n: i64) -> i64 {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .env("CRANELISP_RC_STATS", "1")
+        .user(&user.replace("{N}", &n.to_string()))
+        .output();
+    rc_inc_count(&out.stderr)
+}
+
+// The vec `[1 2 3]` is bound once and passed as a borrowed param to a fn that
+// only READS it (`vec-len`) across a K-iteration loop. A borrowed `vec-len`
+// param ⇒ no per-call inc on the vec ⇒ rc_inc iteration-independent.
+const F3_EXPLICIT: &str = "(import [primitives [vec-len]])\n\
+    (defn use-vlen [v] (vec-len v))\n\
+    (defn spin [:Int n :Int acc v]\n\
+    \x20 (if (eq-i64 n 0) acc\n\
+    \x20   (spin (sub-i64 n 1) (add-i64 acc (use-vlen v)) v)))\n\
+    (defn main [] (Pure (spin {N} 0 [1 2 3])))\n";
+
+// IDENTICAL program with NO explicit `vec-len` import: `vec-len` is reached
+// through the implicit prelude fallback (spec/08-modules.md §8.6.4).
+const F3_PRELUDE_FALLBACK: &str = "(defn use-vlen [v] (vec-len v))\n\
+    (defn spin [:Int n :Int acc v]\n\
+    \x20 (if (eq-i64 n 0) acc\n\
+    \x20   (spin (sub-i64 n 1) (add-i64 acc (use-vlen v)) v)))\n\
+    (defn main [] (Pure (spin {N} 0 [1 2 3])))\n";
+
+// CW-F3a — explicit-import control (the declared-fact-reachability PROBE). The
+// borrowed `vec-len` fact IS reachable through the explicit-import chain today,
+// so the vec's rc_inc is iteration-independent. GREEN at HEAD; if this ever
+// goes RED the reachability gap is wider than §3.7 states — escalate to /arch
+// BEFORE the ownership wave.
+// spec: design/arch/ownership-inference.md §3.7 — declared-fact reachability
+// (a3 leg); the explicit-chain provenance (spec/08-modules.md §8.6.4).
+#[test]
+fn borrowed_declared_primitive_explicit_import_no_percall_rc() {
+    let small = vlen_loop_rc_inc(F3_EXPLICIT, 50);
+    let large = vlen_loop_rc_inc(F3_EXPLICIT, 1000);
+    assert!(
+        (large - small).abs() <= 2,
+        "explicit-import `vec-len` borrowed fact MUST be reachable — the vec's \
+         rc_inc must be iteration-INDEPENDENT (O(1)); got N=50 → {small}, \
+         N=1000 → {large}. If this is RED the declared-fact reachability gap is \
+         WIDER than ownership-inference.md §3.7 states (explicit chain does not \
+         reach facts either) — ESCALATE to /arch before the ownership wave."
+    );
+}
+
+// CW-F3b — prelude-fallback sibling. The IDENTICAL borrowed-`vec-len` program,
+// vec-len reached via the implicit prelude fallback, does NOT reach the
+// declared fact (`ClusterEnv` resolves via the fallback-less terminal lookup),
+// so `vec-len` defaults to the conservative Owned and incs the vec every call.
+// RED at HEAD (rc_inc 51 → 1001); flips GREEN at the a3 prelude-fallback-aware
+// ownership envs (schema-20 change-set, CS-5). This is the fence that would
+// have caught "declared facts silently dead in production".
+// spec: design/arch/ownership-inference.md §3.7 — declared-fact reachability
+// (a3 leg); the prelude-fallback provenance (spec/08-modules.md §8.6.4).
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs (ClusterEnv resolve_terminal_entry_and_home has no prelude fallback) found=S110 owner=/dev
+#[test]
+fn borrowed_declared_primitive_prelude_fallback_no_percall_rc() {
+    let small = vlen_loop_rc_inc(F3_PRELUDE_FALLBACK, 50);
+    let large = vlen_loop_rc_inc(F3_PRELUDE_FALLBACK, 1000);
+    assert!(
+        (large - small).abs() <= 2,
+        "prelude-fallback `vec-len` borrowed fact MUST be reachable — the vec's \
+         rc_inc must be iteration-INDEPENDENT (O(1)); got N=50 → {small}, \
+         N=1000 → {large} (scales with N ⇒ the declared fact is unreachable via \
+         the prelude fallback, the exact §3.7 a3 gap). Flips GREEN when the \
+         ownership envs become prelude-fallback-aware (schema-20 change-set)."
     );
 }

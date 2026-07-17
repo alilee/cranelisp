@@ -2137,3 +2137,115 @@ fn unpinned_vec_in_main_calling_overload_rejected_run_neg() {
         ctrl.status.code()
     );
 }
+
+// =============================================================================
+// S111 §G.2 — 0590 R1: the 0349-class 3rd-instance wrong-reject.
+//
+// A resolved-overload call (`(h 7)`) let-bound inside a MULTI-ARITY clause is
+// verdicted PRE-drain (the C-4 constraint), where the deferred-overload return
+// var is still fresh, producing a spurious "ambiguous type" at the `(h 7)`
+// span. `h` is a concrete defined multi-arity fn, so `(h 7)` resolves to a
+// concrete arity — `r` is `Int`, NOT polymorphic — and MUST compile. Distinct
+// from the INTENDED §5.1.2 rejection of an unconstrained-param let-binding
+// (OA-3 q). Mode-uniform. Flips at CS-4 (typecheck adjacent carries).
+// spec: spec/03-types.md §3.11 — resolved-overload return typing.
+// =============================================================================
+
+// OA-1a — let-bound-DROPPED: `(let [r (h 7)] a)` returns `a`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S110 owner=/dev
+#[test]
+fn multi_clause_body_let_bound_resolved_overload_dropped_compiles() {
+    run_through_all_modes(
+        "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+         (defn g ([:Int a] (let [r (h 7)] a)) ([:Int a :Int b] a))\n\
+         (defn main [] (Pure (g 3)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(3);
+}
+
+// OA-1b — let-bound-RETURNED: `(let [r (h 7)] r)` returns `r` (= `(h 7)` = 7).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S110 owner=/dev
+#[test]
+fn multi_clause_body_let_bound_resolved_overload_returned_compiles() {
+    run_through_all_modes(
+        "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
+         (defn g ([:Int a] (let [r (h 7)] r)) ([:Int a :Int b] a))\n\
+         (defn main [] (Pure (g 3)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(7);
+}
+
+// OA-3 — M2 asymmetry pins (GREEN, documenting INTENDED §5.1.2 behaviour).
+// `p` — unconstrained multi-arity, direct bodies — is ACCEPTED (no fresh
+// let-bound poly value to pin).
+// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
+#[test]
+fn multi_clause_unconstrained_direct_bodies_accepted() {
+    repl_prims("(defn p ([x] x) ([x y] x))\n(p 5)\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// OA-3 — `q` — an unconstrained param let-bound in a 1-arg clause IS rejected
+// with the purpose-built per-clause message (the §5.1.2 intended reject; the
+// inverse boundary of OA-1, where the bound value IS resolved).
+// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
+#[test]
+fn multi_clause_unconstrained_let_bound_param_rejected_per_clause() {
+    repl_prims("(defn q ([x] (let [v x] v)) ([x y] x))\n")
+        .assert_stdout_contains_all(&["1-arg arity clause of", "q"]);
+}
+
+// =============================================================================
+// S111 §G.4 — 0591: the §L annotation-position parse-gap map (AP-1..AP-4).
+//
+// `:Type` binds the immediately-following form in ALL positions
+// (§§1.4.5/2.3.8/4.9 — user-settled). The SAME body shape `[:a x] :a x` parses
+// in single-arity `defn` (GREEN, FV-6) but dies at parse in a multi-arity
+// clause, in `fn`, in a match-arm body, and in an `if` branch — the four
+// builders never adopted the annotation-pairing primitive. /qa ruled these
+// §2.3.8/§3.9 VIOLATIONS (wrong-reject), not carve-outs. RED at HEAD (parse
+// error, never `unknown type 'a'`); each position, once parsing, exercises the
+// `Expr::Annotate` → `infer_annotate` seam for free (the `:a` free-var cell is
+// the proof). Rides CS-3 (frontend). `// defect: class=wrong-reject
+// locus=crates/cranelisp-frontend/src/ast_builder.rs (four builders never
+// adopted the annotation-pairing primitive) found=S109 owner=/dev`.
+// spec: spec/03-types.md §3.9 (+ §2.3.8).
+// =============================================================================
+
+// AP-1 — multi-arity defn clause (params + body ascription); the `:a` free-var
+// cell is this same fixture. Both arities callable.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs found=S109 owner=/dev
+#[test]
+fn ap1_multi_arity_clause_body_annotation_parses_and_checks() {
+    repl_prims(
+        "(defn g ([:a x] :a x) ([:a x :Int n] x))\n\
+         (g 5)\n\
+         (g 5 6)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+}
+
+// AP-2 — `fn` params + body ascription; concrete twin pins the same seam at a
+// closed type.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs found=S109 owner=/dev
+#[test]
+fn ap2_fn_param_and_body_annotation_parses_and_checks() {
+    repl_prims("((fn [:a x] :a x) 7)\n((fn [:Int x] :Int x) 7)\n")
+        .assert_stdout_contains(":primitives/Int 7");
+}
+
+// AP-3 — match-arm BODY ascription.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs found=S109 owner=/dev
+#[test]
+fn ap3_match_arm_body_annotation_parses_and_checks() {
+    repl_prims("(match 5 [n :Int n])\n").assert_stdout_contains(":primitives/Int 5");
+}
+
+// AP-4 — `if` branch ascription.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs found=S109 owner=/dev
+#[test]
+fn ap4_if_branch_annotation_parses_and_checks() {
+    repl_prims("(if true :Int 1 2)\n").assert_stdout_contains(":primitives/Int 1");
+}

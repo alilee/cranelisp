@@ -790,3 +790,250 @@ fn cross_module_macro_cannot_use_private_helper_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// S111 §C — Quasiquote/quote "legal wherever an expression is legal" (0613).
+//
+// spec/09-macros.md §9.4 (esp. §9.4.4 — the user-settled ruling): quote (`'`),
+// quasiquote (`` ` ``), unquote (`~`), unquote-splicing (`~@`) are reader
+// sugar that desugars to `macros`-module constructor calls; the result is an
+// ordinary `Sexp`-typed expression, legal in ANY position — not just defmacro
+// clause bodies. At HEAD the desugar runs only inside defmacro bodies, so quote
+// in a `defn`/`defn-`/top-level position dies at `build_form` with
+// "unexpected quote/quasiquote form — should have been expanded" (RED). The fix
+// folds the desugar into `build_form`/`build_forms` (CS-3), with int's macro
+// expander gaining a quote SHIELD in the same wave (§C interaction rows).
+//
+// A `Sexp` value renders `:macros/Sexp (Sexp.SexpXxx …)`; datum survival is
+// asserted on that render (`Sexp.SexpSym "m"` etc.). `run_prims` gives the
+// `--run` face (the defect is mode-uniform — a frontend desugar).
+// =============================================================================
+
+fn run_prims(src: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(src)
+        .output()
+}
+
+// QQ-1 — quasiquote+unquote in a `defn` body. `~x` splices the Sexp argument
+// into an `(if …)` template; the fn returns the constructed Sexp.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn quasiquote_in_defn_body_desugars() {
+    repl_prims(
+        "(defn helper [x] `(if ~x 1 0))\n\
+         (helper (macros/SexpInt 5))\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpSym \"if\"")
+    .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-2 — quote in a `defn` body. `'(1 2)` is a Sexp literal.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn quote_in_defn_body_desugars() {
+    repl_prims("(defn f [] '(1 2))\n(f)\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpInt 1")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-3 — unquote-splicing in a `defn-` (private) body, exercised via a public
+// caller. `~@xs` splices a `(SList Sexp)` into a `(begin …)` template.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn unquote_splicing_in_private_defn_body_desugars() {
+    repl_prims(
+        "(defn- g [xs] `(begin ~@xs))\n\
+         (defn call-g [] (g (macros/SCons (macros/SexpInt 7) macros/SNil)))\n\
+         (call-g)\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpSym \"begin\"")
+    .assert_stdout_contains("Sexp.SexpInt 7")
+    .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-4a — quote at top level (REPL).
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn quote_at_top_level_desugars() {
+    repl_prims("'(1 2)\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpInt 1")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-4b — quasiquote+unquote at top level (REPL).
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn quasiquote_unquote_at_top_level_desugars() {
+    repl_prims("`(a ~(macros/SexpInt 7))\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpSym \"a\"")
+        .assert_stdout_contains("Sexp.SexpInt 7")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-4c — unquote-splicing at top level (REPL).
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn unquote_splicing_at_top_level_desugars() {
+    repl_prims("`(a ~@(macros/SCons (macros/SexpInt 1) (macros/SCons (macros/SexpInt 2) macros/SNil)))\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpInt 1")
+        .assert_stdout_contains("Sexp.SexpInt 2")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-4 (--run face) — the desugar is mode-uniform; a quote in a `defn` body
+// must compile under `--run` too. At HEAD the desugar dies at `build_form`
+// (parse error → nonzero exit), so `assert_ok` FAILS (RED); flips GREEN when
+// the fold lands. (`f`'s body is desugared at build regardless of being called.)
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn quote_desugars_in_run_mode() {
+    run_prims("(defn f [] '(1 2))\n(defn main [] (Pure 0))\n").assert_ok();
+}
+
+// QQ-5 — GREEN control: quasiquote in a defmacro clause body keeps working
+// (the fold is a fixpoint; `macro_clause.rs`'s desugar caller becomes
+// idempotent). Must-hold across the wave.
+// spec: spec/09-macros.md §9.4
+#[test]
+fn quasiquote_in_defmacro_body_still_expands() {
+    repl_prims(
+        "(defmacro my-when [c body] `(if ~c ~body 0))\n\
+         (my-when true 42)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// -----------------------------------------------------------------------------
+// §C interaction rows (arch §3) — the fold-WITHOUT-shield negatives. Fixture:
+// a registered macro `m` whose expansion (999) is observably distinct from the
+// literal 2-element datum `(m x)`. If the fold lands without int's quote
+// shield, a macro-call-shaped list inside quoted DATA is expanded before the
+// desugar sees it → the quoted literal is silently corrupted to `999`.
+// -----------------------------------------------------------------------------
+
+// QQ-I1 — `(m x)` under quote in a defn body: MUST NOT expand. The datum
+// survives as the 2-element Sexp list with head symbol `m`; `999` must NOT
+// appear. RED at HEAD (parse error, no Sexp); GREEN when fold+shield land;
+// RED (999 present) if fold lands WITHOUT the shield — the corruption alarm.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_under_quote_in_defn_body_not_expanded() {
+    repl_prims(
+        "(defmacro m [x] 999)\n\
+         (defn f [] '(m x))\n\
+         (f)\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpSym \"m\"")
+    .assert_stdout_does_not_contain("999")
+    .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I1b — same, at top level.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_under_quote_at_top_level_not_expanded() {
+    repl_prims("(defmacro m [x] 999)\n'(m x)\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpSym \"m\"")
+        .assert_stdout_does_not_contain("999")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I2 — `(m x)` under quasiquote OUTSIDE any unquote: MUST NOT expand (the
+// datum is preserved). Both contexts folded into one fixture (defn body + top
+// level share the same shield path).
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_under_quasiquote_outside_unquote_not_expanded() {
+    repl_prims("(defmacro m [x] 999)\n`(m x)\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpSym \"m\"")
+        .assert_stdout_does_not_contain("999")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I3 — a macro under unquote MUST expand (ordinary expression position).
+// NOTE: unquote requires a `Sexp` result (§9.4.2), so the fixture macro yields
+// a `Sexp` (`macros/SexpInt 999`) rather than a bare Int — the plan's intent
+// (macro-under-unquote expands) with a well-formed body. The expanded `999`
+// element appears in the result.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_under_unquote_expands() {
+    repl_prims(
+        "(defmacro me [x] (macros/SexpInt 999))\n\
+         `(a ~(me 1))\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpInt 999")
+    .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I4 — a macro under unquote-splicing MUST expand and splice. The fixture
+// macro yields a `(SList Sexp)` (7, 8) that is spliced into the list.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_under_unquote_splicing_expands_and_splices() {
+    repl_prims(
+        "(defmacro m2 [x] (macros/SCons (macros/SexpInt 7) (macros/SCons (macros/SexpInt 8) macros/SNil)))\n\
+         `(a ~@(m2 1))\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpInt 7")
+    .assert_stdout_contains("Sexp.SexpInt 8")
+    .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I5 — nested quasiquote depth: a macro-call-shaped list inside a NESTED
+// quasiquote must stay shielded (the shield tracks nesting depth). If depth is
+// not tracked, `m` expands to 999. RED at HEAD (parse error → no Sexp); GREEN
+// with fold+depth-tracking shield; RED (999) if the shield ignores depth.
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_call_inside_nested_quasiquote_not_expanded() {
+    repl_prims("(defmacro m [x] 999)\n`(a `(m x))\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_does_not_contain("999")
+        .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// QQ-I6 — macro ARGUMENTS stay raw (the arch ruling: desugar-at-build runs
+// AFTER expansion dispatch, so a macro receives the `(quote …)` sexp the user
+// wrote). An identity macro returns its arg unchanged; the quoted datum
+// round-trips to the Sexp `(1 2)`. RED at HEAD (quote dies at build_form).
+// spec: spec/09-macros.md §9.4
+// defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
+#[test]
+fn macro_argument_stays_raw_quote_datum() {
+    repl_prims(
+        "(defmacro raw [x] x)\n\
+         (raw '(1 2))\n",
+    )
+    .assert_stdout_contains(":macros/Sexp")
+    .assert_stdout_contains("Sexp.SexpInt 1")
+    .assert_stdout_contains("Sexp.SexpInt 2")
+    .assert_stdout_does_not_contain("should have been expanded");
+}

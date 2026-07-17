@@ -59,7 +59,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 const ASSOC_PARAM_RETURN: &str = "(defn assoc [v i x] (vec-set v i x))\n";
 
@@ -251,4 +251,179 @@ fn vec_set_match_arm_param_returned_link_does_not_corrupt_heap() {
         ))
         .output()
         .assert_exit(99);
+}
+
+// =============================================================================
+// S111 §A.2 — the body-shape × branch × face MATRIX (new cells CW-5..CW-11).
+//
+// The COW-in-return-position invariant must hold UNIFORMLY across the
+// body-shape family (`ownership-inference.md` §3.7; the standing
+// coverage-by-definition-variants category). The direct-body cell is fixed
+// (S110) and the let/match cells RED above; these pin the remaining
+// load-bearing cells (if-branch, chained, vec-push op-uniformity) + the
+// GREEN safe controls (chained, lambda-captured) + the copy-branch negatives
+// (shared source: correct value AND source preserved). All flip at the ONE
+// schema-20 §3.7 change-set (CS-5). `// spec: spec/12-runtime.md §12.1`.
+// =============================================================================
+
+// CW-5 — if-branch × rc==1 × all modes. FINDING (verified against HEAD
+// 2026-07-17, S111 Phase-5): the if-branch shape is ALREADY GREEN — the S110
+// `return_cow_source_in_scope` recognizer covers a COW op in an if-branch
+// return position (unlike let/match, which it misses — CW-1..4/CW-7/CW-10).
+// So this is a GREEN CONTROL documenting the recognizer's coverage boundary
+// (if-branch: yes; let/match/chained: no); it must STAY green through the §3.7
+// change-set (CS-5), which subsumes all shapes uniformly.
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+#[test]
+fn vec_set_if_branch_param_returned_yields_correct_value() {
+    run_through_all_modes(
+        "(defn f [v i x] (if (lt-i64 i 0) v (vec-set v i x)))\n\
+         (defn main [] (Pure (vec-get (f [1 2 3] 1 99) 1)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(99);
+}
+
+// CW-6 — chained COW × rc==1 × all modes. FINDING (verified against HEAD
+// 2026-07-17, S111 Phase-5): CONTRARY to the plan's "probed SAFE at W2", the
+// chained shape is RED — the inner `(vec-push v 4)` mutates the param `v` in
+// place and returns an alias that the outer `(vec-push … 5)` consumes; the S110
+// recognizer only matches a return whose DIRECT source is a param, not a nested
+// COW, so `g`'s false-`Fresh` summary elides the return protect → UAF (observed
+// garbage 14/104 under `--run`; `corrupted double-linked list` under `--link`).
+// `[1 2 3]` push 4 push 5 = `[1 2 3 4 5]`; index 4 = 5. RED at HEAD; flips GREEN
+// at the §3.7 MayAliasOf change-set (CS-5), which covers all shapes uniformly.
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
+#[test]
+fn vec_push_chained_cow_returns_correct_vec() {
+    run_through_all_modes(
+        "(defn g [v] (vec-push (vec-push v 4) 5))\n\
+         (defn main [] (Pure (vec-get (g [1 2 3]) 4)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(5);
+}
+
+// CW-7 — vec-push × let-wrapped × REPL + `--link` (op-uniformity twin of
+// CW-1/CW-2). The SECOND truthful-COW primitive (`vec-push`) must not grow its
+// own codepath: the let-wrapped-return shape UAFs identically to `vec-set`
+// because the same false-`Fresh` summary elides the return protect. `[1 2 3]`
+// push 99 → index 3 = 99.
+const LET_WRAPPED_PUSH_RETURN: &str = "(defn fp [v x] (let [r (vec-push v x)] r))\n";
+
+// NOTE (S111 Phase-5): the REPL face of the vec-push let-wrapped UAF is
+// OMITTED deliberately. Unlike `vec-set` (CW-1/CW-3, whose REPL garbage
+// manifests reliably in the harness), the `vec-push` grow-branch allocates a
+// fresh backing, so the freed slot is NOT reliably reused before the caller's
+// `vec-get` reads it — the REPL read returns intact `99` (a timing-dependent
+// FALSE GREEN, forbidden per `tests/CLAUDE.md` §"Forbidden dispositions").
+// The deterministic guard is the `--link` face below (glibc heap-integrity
+// abort). Op-uniformity with `vec-set` is thereby proven without a flaky test.
+
+// spec: spec/12-runtime.md §12.1 — the vec-push let-wrapped shape under `--link`.
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
+#[test]
+fn vec_push_let_wrapped_param_returned_link_does_not_corrupt_heap() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(&format!(
+            "{LET_WRAPPED_PUSH_RETURN}(defn main [] (Pure (vec-get (fp [1 2 3] 99) 3)))\n"
+        ))
+        .output()
+        .assert_exit(99);
+}
+
+// CW-8 — shared-source (rc>1) × let-wrapped × REPL (copy-branch negative).
+// The source `v` is read AFTER the COW, so rc>1 at the check → the copy branch
+// runs → COW value semantics MUST hold: the result reads the WRITTEN element
+// (r[0]=9) AND the source still reads its ORIGINAL element (v[0]=1) → 9+1=10.
+// This is the "wrong thing absent" negative — a fix that over-shares the copy
+// (source mutated) shows v[0]=9 → 18, or a UAF shows garbage. GREEN today;
+// must stay GREEN through the §3.7 fix.
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+#[test]
+fn vec_set_let_wrapped_shared_source_copies_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn use1 [v] (let [r (vec-set v 0 9)] (add-i64 (vec-get r 0) (vec-get v 0))))\n\
+             (use1 [1 2 3])\n",
+        )
+        .output();
+    let n = last_int_value(&out.stdout);
+    assert_eq!(
+        n, 10,
+        "shared-source let-wrapped COW MUST copy: result element 9 + source \
+         ORIGINAL element 1 = 10; got {n} (18 ⇒ source wrongly mutated; garbage \
+         ⇒ UAF). stdout=\n{}",
+        out.stdout
+    );
+}
+
+// CW-9 — shared-source (rc>1) × match-arm × REPL (copy-branch negative; twin
+// of CW-8 across the match-arm body shape).
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+#[test]
+fn vec_set_match_arm_shared_source_copies_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn use1m [v] (add-i64 (vec-get (match 0 [_ (vec-set v 0 9)]) 0) (vec-get v 0)))\n\
+             (use1m [1 2 3])\n",
+        )
+        .output();
+    let n = last_int_value(&out.stdout);
+    assert_eq!(
+        n, 10,
+        "shared-source match-arm COW MUST copy: result 9 + source ORIGINAL 1 = \
+         10; got {n}. stdout=\n{}",
+        out.stdout
+    );
+}
+
+// CW-10 — the `--run` (+ cached) face of the RED let-wrapped shape. The
+// committed CW-1/CW-2 pair covers only REPL + `--link`; the §A.2 matrix names
+// three faces. `run_through_all_modes` adds `--run` fresh/cached and the REPL
+// cached path. RED at HEAD (the `--link` legs SIGABRT → observed None); flips
+// GREEN at the §3.7 change-set.
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
+#[test]
+fn vec_set_let_wrapped_param_returned_all_modes_yield_correct_value() {
+    run_through_all_modes(
+        "(defn f [v i x] (let [r (vec-set v i x)] r))\n\
+         (defn main [] (Pure (vec-get (f [1 2 3] 1 99) 1)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(99);
+}
+
+// CW-11 — lambda-captured source (GREEN control; probed SAFE at the W2
+// review). The returned closure CAPTURES `v` (the capture holds a reference),
+// so at the `vec-set` the source is rc>1 → the copy branch runs → no premature
+// free. `((mk [1 2 3]) 1 99)` writes index 1 → 99. Must stay GREEN through the
+// fix (a widening that treats the captured source as uniquely-owned would
+// re-open the free).
+// spec: spec/12-runtime.md §12.1 — value representation & reference counting.
+#[test]
+fn vec_set_lambda_captured_source_safe() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn mk [v] (fn [i x] (vec-set v i x)))\n\
+             (vec-get ((mk [1 2 3]) 1 99) 1)\n",
+        )
+        .output();
+    let n = last_int_value(&out.stdout);
+    assert_eq!(
+        n, 99,
+        "lambda-captured source COW is SAFE (captured ⇒ rc>1 ⇒ copy branch): \
+         MUST yield 99; got {n}. stdout=\n{}",
+        out.stdout
+    );
 }
