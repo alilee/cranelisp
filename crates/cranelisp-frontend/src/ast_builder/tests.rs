@@ -483,6 +483,184 @@
         );
     }
 
+    // -- Quasiquote/quote fold into build_forms/build_form (0613, S111) --
+
+    // spec: 09-macros.md §9.4.4 — quasiquote is legal wherever an expression is
+    // legal. A quasiquote in a plain `defn` body desugars at the `build_form`
+    // fold (no longer dies at the backstop); the body becomes a `macros/`-ctor
+    // application, not the raw `(quasiquote …)` head.
+    #[test]
+    fn build_form_folds_quasiquote_in_defn_body() {
+        let sexps = crate::reader::parse("(defn helper [x] `(if ~x 1 0))").unwrap();
+        let entries = build_form(&sexps[0]).expect("quasiquote in a defn body must fold, not error");
+        assert!(
+            entries.iter().any(|e| matches!(e, ParsedEntry::Def { .. })),
+            "the defn builds to a Def after the fold"
+        );
+    }
+
+    // spec: 09-macros.md §9.4.4 — the same at the build_forms slice boundary,
+    // through the top-level dispatch.
+    #[test]
+    fn build_forms_folds_quote_in_defn_body() {
+        let sexps = crate::reader::parse("(defn f [] '(1 2))").unwrap();
+        let forms = build_forms(&sexps).expect("quote in a defn body must fold at build_forms");
+        assert!(matches!(forms[0], TopLevel::Defn(_)));
+    }
+
+    // spec: 09-macros.md §9.4.4 — a bare top-level quote expression folds to a
+    // `macros/`-constructor application (an ordinary expr of type Sexp), never
+    // the backstop error.
+    #[test]
+    fn build_forms_folds_top_level_quote_expr() {
+        let sexps = crate::reader::parse("'(1 2)").unwrap();
+        let forms = build_forms(&sexps).expect("top-level quote folds to a Sexp-ctor expr");
+        assert_eq!(forms.len(), 1);
+        assert!(
+            matches!(forms[0], TopLevel::Expr(Expr::Apply { .. })),
+            "the quote desugars to a `macros/SexpList` application, got {:?}",
+            forms[0]
+        );
+    }
+
+    // spec: 09-macros.md §9.4.4 / quasiquote-fold.md §1.1 — desugar-then-pair is
+    // order-safe: a leading `:Type` still binds the FOLLOWING (now desugared)
+    // quote form into ONE Annotate (the annotation atom passes through the fold
+    // untouched, and the quote maps to a single slice element).
+    #[test]
+    fn build_forms_annotation_binds_following_desugared_quote() {
+        let sexps = crate::reader::parse(":macros/Sexp '(1 2)").unwrap();
+        let forms = build_forms(&sexps).unwrap();
+        assert_eq!(forms.len(), 1, "`:Sexp '(1 2)` is ONE annotated form");
+        assert!(
+            matches!(forms[0], TopLevel::Expr(Expr::Annotate { .. })),
+            "the annotation binds the desugared quote, got {:?}",
+            forms[0]
+        );
+    }
+
+    // spec: 09-macros.md §9.4.4 / quasiquote-fold.md §2 — the fold is an
+    // idempotent fixpoint: a second `expand_quasiquotes` pass is a structural
+    // no-op, so a caller that already desugared (macro_clause.rs) re-desugars
+    // harmlessly. Pin the fixpoint at the boundary the fold relies on.
+    #[test]
+    fn expand_quasiquotes_is_idempotent_fixpoint() {
+        for src in ["'quote", "`(m ~x)", "`(a `(b ~(m 1)))", "'(1 2)"] {
+            let sexps = crate::reader::parse(src).unwrap();
+            let once = crate::quasiquote::expand_quasiquotes(&sexps[0]).unwrap();
+            let twice = crate::quasiquote::expand_quasiquotes(&once).unwrap();
+            assert_eq!(
+                once.format_flat(),
+                twice.format_flat(),
+                "one pass must reach the fixpoint for `{src}`"
+            );
+        }
+    }
+
+    // spec: 09-macros.md §9.4.4 / quasiquote-fold.md §3 — the backstop stays:
+    // `build_expr` does NOT fold (it is the internal recursion primitive), so a
+    // raw `(quote …)` fed directly to it still hits the "should have been
+    // expanded" rejection.
+    #[test]
+    fn build_expr_keeps_backstop_for_raw_quote() {
+        let err = parse_and_build_expr("(quote (1 2))").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("should have been expanded"),
+            "build_expr keeps the backstop, got {err:?}"
+        );
+    }
+
+    // -- 0591 annotation-position parse gaps (AP-1..4) --
+
+    // spec: 03-types.md §3.9 / §2.3.8 (AP-1) — a multi-arity `defn` CLAUSE body
+    // may carry a `:Type body` ascription, exactly as the single-arity body does
+    // (FV-6). Previously died at parse ("defn variant requires params and body").
+    #[test]
+    fn build_form_multi_arity_clause_body_annotation() {
+        let sexps =
+            crate::reader::parse("(defn g ([:a x] :a x) ([:a x :Int n] x))").unwrap();
+        let entries = build_form(&sexps[0]).expect("clause body ascription must parse (AP-1)");
+        match entries.into_iter().find(|e| matches!(e, ParsedEntry::Def { .. })) {
+            Some(ParsedEntry::Def { variants, .. }) => {
+                assert_eq!(variants.len(), 2, "both clauses build");
+                assert!(
+                    matches!(variants[0].body, Expr::Annotate { .. }),
+                    "first clause body is the `:a x` ascription, got {:?}",
+                    variants[0].body
+                );
+            }
+            other => panic!("expected a Def with two variants, got {other:?}"),
+        }
+    }
+
+    // spec: 03-types.md §3.9 / §2.3.8 (AP-2) — a `fn` body may carry a
+    // `:Type body` ascription. Previously died at parse (arity != 3).
+    #[test]
+    fn build_fn_body_annotation() {
+        match parse_and_build_expr("(fn [:a x] :a x)").unwrap() {
+            Expr::Lambda { body, params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert!(
+                    matches!(*body, Expr::Annotate { .. }),
+                    "the fn body is the `:a x` ascription, got {body:?}"
+                );
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    // spec: 03-types.md §3.9 / §2.3.8 (AP-3) — a match-arm BODY may carry a
+    // `:Type body` ascription (the arm bracket then has an odd element count,
+    // which the consume-based loop handles). Previously died at the parity gate.
+    #[test]
+    fn build_match_arm_body_annotation() {
+        match parse_and_build_expr("(match 5 [n :Int n])").unwrap() {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(arms[0].body, Expr::Annotate { .. }),
+                    "the arm body is the `:Int n` ascription, got {:?}",
+                    arms[0].body
+                );
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    // spec: 03-types.md §3.9 / §2.3.8 (AP-4) — an `if` branch may carry a
+    // `:Type form` ascription. Previously died at parse (arity != 4).
+    #[test]
+    fn build_if_branch_annotation() {
+        match parse_and_build_expr("(if true :Int 1 2)").unwrap() {
+            Expr::If { then_branch, else_branch, .. } => {
+                assert!(
+                    matches!(*then_branch, Expr::Annotate { .. }),
+                    "the then-branch is the `:Int 1` ascription, got {then_branch:?}"
+                );
+                assert!(
+                    matches!(*else_branch, Expr::IntLit { value: 2, .. }),
+                    "the else-branch is the bare `2`, got {else_branch:?}"
+                );
+            }
+            other => panic!("expected If, got {other:?}"),
+        }
+    }
+
+    // spec: 04-expressions.md §4.4 (AP-4 fence) — a plain `(if c t e)` with no
+    // annotations is unchanged, and a truncated `if` still errors.
+    #[test]
+    fn build_if_plain_unchanged_and_arity_guarded() {
+        assert!(matches!(
+            parse_and_build_expr("(if true 1 2)").unwrap(),
+            Expr::If { .. }
+        ));
+        let err = parse_and_build_expr("(if true 1)").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("condition, then, and else"),
+            "a truncated if still errors, got {err:?}"
+        );
+    }
+
     // -- Match expression --
 
     // spec: 02-grammar §2.3.7 — match expression with constructor patterns
@@ -530,11 +708,15 @@
         }
     }
 
-    // spec: 02-grammar §2.3.7 — match arms must be even number of elements
+    // spec: 02-grammar §2.3.7 — an odd match-arm count is rejected. Post-0591
+    // (AP-3) the fixed even-count parity check is gone (an arm body may be a
+    // two-token `:Type body` ascription, so `pattern body` is not always a
+    // 2-token pair); the consume-based `build_match_arms` loop reports the
+    // unpaired final pattern (`Green` here) as "match arm missing body".
     #[test]
     fn test_build_match_odd_arms_rejected() {
         let err = parse_and_build_expr("(match x [Red 1 Green])").unwrap_err();
-        assert!(err.message().contains("even number"));
+        assert!(err.message().contains("missing body"));
     }
 
     // spec: 02-grammar §2.5.1 — constructor pattern with field bindings

@@ -722,6 +722,103 @@ pub(crate) fn expand_sexp_recursive(
     expand_scoped(sexp, resolver, depth, origin_span, &HashSet::new())
 }
 
+/// The reader-quote head the [`expand_scoped`] shield recognizes at the top of a
+/// non-empty list arm (`design/int/quote-shield.md` §3).
+enum QuoteHead {
+    /// `(quote X)` — fully verbatim, no descent (Rule Q).
+    Quote,
+    /// `(quasiquote T)` — descend only into live unquotes, tracking depth (Rule QQ).
+    Quasiquote,
+}
+
+/// The quasiquote template walker (Rule QQ, `design/int/quote-shield.md` §4).
+///
+/// Holds every node of a `quasiquote` template verbatim EXCEPT the body of a
+/// **live** `unquote`/`unquote-splicing` (one at the matching nesting depth),
+/// which is an ordinary expression position handed back to [`expand_scoped`] for
+/// normal macro expansion (§9.4.2). `qq_depth` mirrors the frontend
+/// `expand_qq_template`/`expand_qq_list` depth math EXACTLY (`quasiquote.rs`):
+/// the body is walked at `qq_depth = 0`; `unquote`/`unquote-splicing` are live at
+/// depth 0; a nested `(quasiquote …)` increments the depth; an `(unquote …)`/
+/// `(unquote-splicing …)` under a nested quasiquote decrements it. Keeping shield
+/// and fold byte-identical on which unquotes are live is the durable coupling
+/// (§5). The reader-quote family is recognized STRUCTURALLY (bare-symbol head +
+/// `len() == 2`), consulting neither `shadows` nor the resolver.
+///
+/// `depth` (the macro expansion-limit counter) is threaded untouched into the
+/// `expand_scoped` re-entry so the depth guard still fires for macros inside a
+/// live unquote — it is distinct from `qq_depth` (§4 note).
+#[allow(clippy::too_many_arguments)]
+fn shield_qq(
+    node: Sexp,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+    qq_depth: usize,
+) -> Result<Sexp, CranelispError> {
+    match node {
+        Sexp::List(children, span) if !children.is_empty() => {
+            if children.len() == 2 {
+                // unquote / unquote-splicing share ONE arm — the shield never
+                // errors on `~@` at qq_depth 0 (that is the fold's diagnostic);
+                // it expands the body and hands the tree on (§4 note).
+                let head_kind = match &children[0] {
+                    Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => {
+                        Some(false)
+                    }
+                    Sexp::Symbol(h, _) if h == "quasiquote" => Some(true),
+                    _ => None,
+                };
+                match head_kind {
+                    // unquote / unquote-splicing.
+                    Some(false) => {
+                        let mut children = children;
+                        let body = children.pop().expect("len == 2: unquote body");
+                        let head_sym = children.pop().expect("len == 2: unquote head");
+                        let inner = if qq_depth == 0 {
+                            // LIVE unquote — ordinary expression position: expand.
+                            expand_scoped(body, resolver, depth, origin_span, shadows)?
+                        } else {
+                            // Nested: decrement, stay shielded.
+                            shield_qq(body, resolver, depth, origin_span, shadows, qq_depth - 1)?
+                        };
+                        return Ok(Sexp::List(vec![head_sym, inner], span));
+                    }
+                    // Nested quasiquote — increment depth, stay shielded.
+                    Some(true) => {
+                        let mut children = children;
+                        let body = children.pop().expect("len == 2: quasiquote body");
+                        let head_sym = children.pop().expect("len == 2: quasiquote head");
+                        let inner =
+                            shield_qq(body, resolver, depth, origin_span, shadows, qq_depth + 1)?;
+                        return Ok(Sexp::List(vec![head_sym, inner], span));
+                    }
+                    None => {}
+                }
+            }
+            // Ordinary list under quasiquote (INCLUDING a nested `(quote …)`, §5.1
+            // — do NOT short-circuit quote here): recurse structurally at the SAME
+            // depth so inner live unquotes are still found.
+            let mapped: Vec<Sexp> = children
+                .into_iter()
+                .map(|c| shield_qq(c, resolver, depth, origin_span, shadows, qq_depth))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Sexp::List(mapped, span))
+        }
+        Sexp::Bracket(children, span) => {
+            // Brackets can't head an unquote but CAN contain live unquotes (`[~x]`).
+            let mapped: Vec<Sexp> = children
+                .into_iter()
+                .map(|c| shield_qq(c, resolver, depth, origin_span, shadows, qq_depth))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Sexp::Bracket(mapped, span))
+        }
+        // Atoms, the empty list, and comments are held verbatim.
+        other => Ok(other),
+    }
+}
+
 /// The scope-aware expansion core.
 ///
 /// `shadows` is the set of names lexically bound by an enclosing `let` / `fn` /
@@ -750,6 +847,38 @@ fn expand_scoped(
 
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
+            // 0. SHIELD (reader-quote family) — hold quoted DATA out of Pass-1
+            //    macro expansion, so a macro-call-shaped list living inside quoted
+            //    data reaches `build_form` intact and is desugared by the frontend
+            //    fold (never macro-expanded first). Matched STRUCTURALLY — bare
+            //    `quote`/`quasiquote` head + `len() == 2`, the SAME test the fold
+            //    uses (`quasiquote.rs::is_quote`/`is_quasiquote`); the shield
+            //    consults neither `shadows` nor the resolver, keeping the two in
+            //    lockstep (`design/int/quote-shield.md` §§2–5). Placed FIRST: a
+            //    reader-quote head is handled by the shield and nothing else.
+            if children.len() == 2 {
+                let quote_kind = match &children[0] {
+                    Sexp::Symbol(h, _) if h == "quote" => Some(QuoteHead::Quote),
+                    Sexp::Symbol(h, _) if h == "quasiquote" => Some(QuoteHead::Quasiquote),
+                    _ => None,
+                };
+                match quote_kind {
+                    // Rule Q — quoted data is pure structural quotation; never
+                    // expanded, no descent (mirrors `expand_quote_template`).
+                    Some(QuoteHead::Quote) => return Ok(Sexp::List(children, span)),
+                    // Rule QQ — the body is walked at qq_depth 0; only the body of
+                    // a LIVE unquote/unquote-splicing is re-entered for expansion.
+                    Some(QuoteHead::Quasiquote) => {
+                        let mut children = children;
+                        let body = children.pop().expect("len == 2: quasiquote body");
+                        let head_sym = children.pop().expect("len == 2: quasiquote head");
+                        let inner =
+                            shield_qq(body, resolver, depth, origin_span, shadows, 0)?;
+                        return Ok(Sexp::List(vec![head_sym, inner], span));
+                    }
+                    None => {}
+                }
+            }
             // 1. Binding special forms establish a lexical scope (§8.6.3). Handle
             //    them BEFORE macro-head recognition so binder positions are held
             //    verbatim and body reads of a bound name resolve to the local.
@@ -1355,6 +1484,108 @@ mod tests {
             result.is_err(),
             "recognition of the free g led to invocation (fails without clause code)"
         );
+    }
+
+    // --- §9.4 quote shield (S111, design/int/quote-shield.md) ---
+
+    // spec: spec/09-macros.md §9.4.4 — Rule Q: a `(quote …)` form is pure data
+    // held FULLY verbatim, with NO descent. A macro-call-shaped list inside the
+    // quoted datum must NOT be recognized (the corruption `'(m x)` would suffer
+    // without the shield); the form round-trips unchanged and the walk never
+    // even ASKS about the quoted `m`.
+    #[test]
+    fn quote_form_held_verbatim_shields_inner_macro() {
+        let mut resolver = shadow_stub("m");
+        let form = cranelisp_frontend::parse("(quote (m x))").unwrap().remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("quoted data must not be expanded");
+        assert_eq!(expanded.format_flat(), form.format_flat(), "quote round-trips verbatim");
+        assert!(
+            !resolver.asked.contains(&"m".to_string()),
+            "a macro under quote must not be recognized: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // spec: spec/09-macros.md §9.4.4 — Rule QQ, template data: a macro-call-shaped
+    // list under `quasiquote` OUTSIDE any unquote is template data, held verbatim
+    // — `m` is not recognized.
+    #[test]
+    fn quasiquote_template_data_shields_macro() {
+        let mut resolver = shadow_stub("m");
+        let form = cranelisp_frontend::parse("(quasiquote (m x))").unwrap().remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("quasiquote template data must not be expanded");
+        assert_eq!(expanded.format_flat(), form.format_flat(), "template data round-trips");
+        assert!(
+            !resolver.asked.contains(&"m".to_string()),
+            "a macro in template data must not be recognized: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // spec: spec/09-macros.md §9.4.2 — Rule QQ, LIVE unquote: the body of an
+    // `unquote` at the matching depth is an ordinary expression position, re-
+    // entered through `expand_scoped`. The walk DOES recognize the macro `m`
+    // there (and here fails at invocation without clause code — proving the
+    // shield descended, not that it over-shielded).
+    #[test]
+    fn quasiquote_live_unquote_expands_macro() {
+        let mut resolver = shadow_stub("m");
+        let form = cranelisp_frontend::parse("(quasiquote (a (unquote (m))))")
+            .unwrap()
+            .remove(0);
+        let result = expand_sexp_recursive(form, &mut resolver, 0, None);
+        assert!(
+            resolver.asked.contains(&"m".to_string()),
+            "a macro under a LIVE unquote must be recognized: asked={:?}",
+            resolver.asked
+        );
+        assert!(
+            result.is_err(),
+            "recognition led to invocation (fails without clause code) — the shield descended"
+        );
+    }
+
+    // spec: spec/09-macros.md §9.4.4 (depth guard) — the shield tracks nesting
+    // depth exactly: an `unquote` inside a NESTED quasiquote belongs to the inner
+    // template (qq_depth 1 for the outer), so it stays shielded at outer
+    // processing — the macro `m` is NOT recognized.
+    #[test]
+    fn nested_quasiquote_depth_shields_inner_unquote() {
+        let mut resolver = shadow_stub("m");
+        let form =
+            cranelisp_frontend::parse("(quasiquote (a (quasiquote (b (unquote (m x))))))")
+                .unwrap()
+                .remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("an inner-quasiquote unquote stays shielded at the outer level");
+        assert_eq!(expanded.format_flat(), form.format_flat(), "nested template round-trips");
+        assert!(
+            !resolver.asked.contains(&"m".to_string()),
+            "a depth-1 unquote must not expand at the outer level: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // spec: spec/09-macros.md §9.4.4 — a `(quote …)` encountered WHILE shielding a
+    // quasiquote is an ORDINARY list (§5.1): shield_qq keeps walking its children
+    // at the same depth, so a live unquote inside it is still found (`` `(quote ~(m)) ``
+    // — the `~(m)` is live). The macro IS recognized (proving no quote
+    // short-circuit inside shield_qq).
+    #[test]
+    fn quote_under_active_quasiquote_is_ordinary_list() {
+        let mut resolver = shadow_stub("m");
+        let form = cranelisp_frontend::parse("(quasiquote (quote (unquote (m))))")
+            .unwrap()
+            .remove(0);
+        let result = expand_sexp_recursive(form, &mut resolver, 0, None);
+        assert!(
+            resolver.asked.contains(&"m".to_string()),
+            "a live unquote inside a quoted list under quasiquote must be found: asked={:?}",
+            resolver.asked
+        );
+        assert!(result.is_err(), "recognition led to invocation (fails without clause code)");
     }
 
     // spec: macro-availability-model.md §0.7 — recognition is the types primitive

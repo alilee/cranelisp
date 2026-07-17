@@ -178,6 +178,22 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 /// See `design/frontend/wave-3a-build-form.md` §2.3 for the detailed
 /// design.
 pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
+    // Desugar the reader-quote family (`quote`/`quasiquote`/`unquote`/
+    // `unquote-splicing`) as the FIRST step, before head-shape dispatch, so
+    // quote/quasiquote are legal wherever an expression is legal (spec §9.4.4;
+    // `design/frontend/quasiquote-fold.md` §1). Idempotent fixpoint (§2): one
+    // pass leaves no quote head, so a caller that already desugared (the
+    // `macro_clause.rs` synthesis path) re-desugars harmlessly.
+    let desugared = crate::quasiquote::expand_quasiquotes(sexp)?;
+    build_form_inner(&desugared)
+}
+
+/// The per-form dispatch core. Assumes its input is already
+/// quasiquote-desugared (the public [`build_form`] folds first; [`build_forms`]
+/// desugars its whole slice up front and calls this directly). A surviving
+/// `quote`/`quasiquote`/`unquote`/`unquote-splicing` head reaching the AST
+/// builder via this core is caught by the [`build_list_expr`] backstop (§3).
+fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
     let (children, span) = match sexp {
         Sexp::List(c, s) if !c.is_empty() => (c.as_slice(), *s),
         Sexp::Comment(_, span) => {
@@ -285,6 +301,18 @@ pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
 /// pairing lives ENTIRELY in the frontend — the single owning seam (BC §1
 /// invariant 9; Principle 7).
 pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
+    // Desugar the reader-quote family over the whole slice ONCE, up front —
+    // before `:Type` pairing and per-form dispatch (spec §9.4.4;
+    // `design/frontend/quasiquote-fold.md` §1.1). `expand_quasiquotes`
+    // preserves structure (each slice element maps to exactly one element, and
+    // a leading `:Type` annotation atom is untouched), so desugar-then-pair is
+    // order-safe (BC §1 invariant 9). Dispatch below runs on the desugared vec
+    // and calls `build_form_inner` (already desugared — no redundant re-walk).
+    let desugared: Vec<Sexp> = sexps
+        .iter()
+        .map(crate::quasiquote::expand_quasiquotes)
+        .collect::<Result<Vec<_>, _>>()?;
+    let sexps = &desugared[..];
     let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
     let mut i = 0;
     while i < sexps.len() {
@@ -308,7 +336,7 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
         }
 
         if is_top_level_form_sexp(sexp) {
-            for entry in build_form(sexp)? {
+            for entry in build_form_inner(sexp)? {
                 if let Some(tl) = parsed_entry_to_top_level(entry) {
                     out.push(tl);
                 }
@@ -478,11 +506,19 @@ fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
 
 fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     let (children, span) = expect_list(sexp)?;
-    if children.len() != 2 {
+    if children.len() < 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
     let params = build_annotated_params(&children[0])?;
-    let body = build_expr(&children[1])?;
+    // The clause body may carry a `:Type body` ascription (BC §1 invariant 9;
+    // spec §2.3.8 — `:Type` binds the immediately-following form in ALL
+    // positions, so a multi-arity clause body parses like the single-arity
+    // body, FV-6). Route it through the annotation-pairing primitive rather
+    // than a raw `build_expr` (0591 AP-1).
+    let (body, consumed) = build_one_expr_at(children, 1)?;
+    if 1 + consumed != children.len() {
+        return Err(parse_err("defn variant requires params and body", span));
+    }
     Ok(DefnVariant {
         params,
         body,
@@ -1324,16 +1360,31 @@ fn build_if(
     children: &[Sexp],
     span: Span,
 ) -> Result<Expr, CranelispError> {
-    // (if cond then else)
-    if children.len() != 4 {
-        return Err(parse_err(
-            "if requires condition, then, and else branches",
-            span,
-        ));
+    // (if cond then else) — each of the three operands may carry a `:Type form`
+    // ascription (spec §2.3.8 — `:Type` binds the immediately-following form in
+    // ALL positions, an `if` branch included). Consume each through the
+    // annotation-pairing primitive (0591 AP-4) rather than a positional
+    // `children[n]` that a leading annotation would offset.
+    let arity_err = || parse_err("if requires condition, then, and else branches", span);
+    let mut pos = 1;
+    if pos >= children.len() {
+        return Err(arity_err());
     }
-    let cond = build_expr(&children[1])?;
-    let then_branch = build_expr(&children[2])?;
-    let else_branch = build_expr(&children[3])?;
+    let (cond, c) = build_one_expr_at(children, pos)?;
+    pos += c;
+    if pos >= children.len() {
+        return Err(arity_err());
+    }
+    let (then_branch, c) = build_one_expr_at(children, pos)?;
+    pos += c;
+    if pos >= children.len() {
+        return Err(arity_err());
+    }
+    let (else_branch, c) = build_one_expr_at(children, pos)?;
+    pos += c;
+    if pos != children.len() {
+        return Err(arity_err());
+    }
     Ok(Expr::If {
         cond: Box::new(cond),
         then_branch: Box::new(then_branch),
@@ -1365,7 +1416,7 @@ fn build_fn(
             span,
         ));
     }
-    if children.len() != 3 {
+    if children.len() < 3 {
         return Err(parse_err(
             "fn is single-arity: it takes one [params] bracket and a body \
              (use defn for multiple arities, spec §4.5)",
@@ -1373,7 +1424,17 @@ fn build_fn(
         ));
     }
     let params = build_annotated_params(&children[1])?;
-    let body = build_expr(&children[2])?;
+    // The body may carry a `:Type body` ascription (spec §2.3.8 — `:Type` binds
+    // the immediately-following form in ALL positions; the `fn` body is not
+    // special). Route it through the annotation-pairing primitive (0591 AP-2).
+    let (body, consumed) = build_one_expr_at(children, 2)?;
+    if 2 + consumed != children.len() {
+        return Err(parse_err(
+            "fn is single-arity: it takes one [params] bracket and a body \
+             (use defn for multiple arities, spec §4.5)",
+            span,
+        ));
+    }
     Ok(Expr::Lambda {
         params,
         body: Box::new(body),
@@ -1410,13 +1471,11 @@ fn build_match(
     if arms_pos + 1 != children.len() {
         return Err(parse_err("match requires scrutinee and arms", span));
     }
-    let (bracket_items, bracket_span) = expect_bracket(&children[arms_pos])?;
-    if bracket_items.len() % 2 != 0 {
-        return Err(parse_err(
-            "match arms must have an even number of elements (pattern body pairs)",
-            bracket_span,
-        ));
-    }
+    let (bracket_items, _bracket_span) = expect_bracket(&children[arms_pos])?;
+    // No fixed parity check: an arm BODY may carry a `:Type body` ascription
+    // (spec §2.3.8), so `pattern body` is not always a 2-token pair. The
+    // consume-based `build_match_arms` loop reports an unpaired final pattern as
+    // "match arm missing body" (0591 AP-3).
     let arms = build_match_arms(bracket_items)?;
     Ok(Expr::Match {
         scrutinee: Box::new(scrutinee),
@@ -1439,9 +1498,13 @@ fn build_match_arms(
         if i >= items.len() {
             return Err(parse_err("match arm missing body", pat_span));
         }
-        let body = build_expr(&items[i])?;
-        let arm_span = Span::new(pat_span.start, items[i].span().end);
-        i += 1;
+        // The arm body may carry a `:Type body` ascription (spec §2.3.8) — one
+        // or two tokens. Route it through the annotation-pairing primitive so
+        // the body groups into ONE `Expr::Annotate` (0591 AP-3).
+        let (body, consumed) = build_one_expr_at(items, i)?;
+        let body_end = items[i + consumed - 1].span().end;
+        let arm_span = Span::new(pat_span.start, body_end);
+        i += consumed;
         arms.push(MatchArm {
             pattern,
             body,

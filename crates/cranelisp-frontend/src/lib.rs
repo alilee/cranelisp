@@ -45,10 +45,16 @@
 //! pub fn parse_type_expr(source: &str) -> Result<TypeExpr, CranelispError>;
 //! ```
 //!
-//! Quasiquote desugaring runs before `build_form`; macro expansion is
-//! performed by int/typecheck before the expanded forms reach
-//! `build_form`. Unexpanded macro calls reaching the AST builder become
-//! silent generic applications and fail later with confusing diagnostics.
+//! Quasiquote/quote desugaring is folded into `build_forms`/`build_form` as
+//! their first step — the whole reader-quote family (`quote`/`quasiquote`/
+//! `unquote`/`unquote-splicing`) is a fixpoint after one pass, so no caller
+//! can bypass it and re-desugaring is a no-op. This makes quote/quasiquote
+//! legal wherever an expression is legal (spec §9.4.4). Macro expansion is
+//! performed by int/typecheck before the expanded forms reach the fold (so
+//! macros receive raw `(quote …)`/`(quasiquote …)` argument sexps), and int's
+//! Pass-1 quote shield holds quoted data out of expansion. Any surviving
+//! reader-quote head reaching the AST builder is caught by the `build_list_expr`
+//! backstop — its arrival means a new form-entry chokepoint bypassed the fold.
 //!
 //! ## Why the shape
 //!
