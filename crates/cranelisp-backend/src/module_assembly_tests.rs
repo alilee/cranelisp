@@ -41,12 +41,10 @@ fn test_compile_program_no_defns() {
     tables.insert(ModuleFullPath::from("user"), SymbolTable::new(ModuleFullPath::from("user")));
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let result = compile_to_module(
         ModuleFullPath::from("user"),
         &names,
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     );
@@ -359,21 +357,20 @@ fn test_mono_defn_self_recursive_tco() {
     let mut enriched_defn = countdown_defn.clone();
     enrich_defn_from_side_maps(&mut enriched_defn, &check.method_resolutions, &check.expr_types);
 
-    // Compile with direct calls (no GOT).
+    // Compile with direct calls (no GOT), through the PRODUCTION per-body seam
+    // (S111 R4 §1.3). The recursion is a TAIL self-call (TCO), so it never
+    // reaches the keyed direct-call seam — empty carriers suffice.
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    jit.declare_intrinsics().unwrap();
-    let func_ids = jit.declare_functions(&[&enriched_defn]).unwrap();
-
-    let arities: HashMap<Symbol, usize> =
-        vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
-
     let tables = empty_tables();
-    let aliases = empty_aliases();
-    let ctx = jit.build_compile_context(
-        &func_ids, &arities,
-        &tables, &aliases, ModuleFullPath::from("test"),
+    let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    crate::test_support::compile_defns_in_module(
+        &[&enriched_defn],
+        &[],
+        &no_targets,
+        &tables,
+        ModuleFullPath::from("test"),
+        jit.jit_module(),
     );
-    jit.compile_defn(&enriched_defn, ctx).unwrap();
     let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
 
     // Call with 1_000_000 — without TCO this would stack overflow.
@@ -413,12 +410,10 @@ fn test_module_prefix_applied() {
         tables.insert(mod_a.clone(), st);
     }
     let mut jit_a = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let _artifacts_a = compile_to_module(
         mod_a.clone(),
         std::slice::from_ref(&val_a.name),
         &tables,
-        &aliases,
         jit_a.jit_module(),
         true,
     ).expect("module A should compile");
@@ -453,7 +448,6 @@ fn test_module_prefix_applied() {
         mod_b.clone(),
         std::slice::from_ref(&val_b.name),
         &tables,
-        &aliases,
         jit_b.jit_module(),
         true,
     ).expect("module B should compile without collision");
@@ -497,12 +491,10 @@ fn compile_to_module_writes_got_slot_after_finalize() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let _artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     ).expect("JIT compile should succeed");
@@ -567,12 +559,10 @@ fn compile_to_module_object_mode_no_got_write() {
         ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
     let mut obj_module = ObjectModule::new(obj_builder);
 
-    let aliases = empty_aliases();
     let _artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj_module,
         true,
     ).expect("object compile should succeed");
@@ -887,12 +877,10 @@ fn sprint56_compile_to_module_direct_call_writes_got_and_artifacts() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     )
@@ -967,12 +955,10 @@ fn sprint56_compile_to_module_ast_none_errors() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let result = compile_to_module(
         module,
         std::slice::from_ref(&name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     );
@@ -1072,12 +1058,10 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&variant_name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     )
@@ -1219,12 +1203,10 @@ fn decision_36_function_naming_is_bare_for_every_module() {
         let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        let aliases = empty_aliases();
         let _artifacts = compile_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
-            &aliases,
             jit.jit_module(),
             true,
         )
@@ -1259,12 +1241,10 @@ fn decision_36_function_linkage_is_local_uniformly() {
         let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        let aliases = empty_aliases();
         let _result = compile_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
-            &aliases,
             jit.jit_module(),
             true,
         )
@@ -1297,12 +1277,10 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut obj = make_object_module();
-    let aliases = empty_aliases();
     let _result = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj,
         true,
     )
@@ -1391,12 +1369,10 @@ fn decision_23_got_data_symbol_jit_path_is_noop() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let _result = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     )
@@ -1478,12 +1454,10 @@ fn decision_23_got_data_size_matches_slot_count() {
     tables.insert(module.clone(), st);
 
     let mut obj = make_object_module();
-    let aliases = empty_aliases();
     let _result = compile_to_module(
         module.clone(),
         &[d1.name.clone(), d2.name.clone()],
         &tables,
-        &aliases,
         &mut obj,
         true,
     )
@@ -1648,12 +1622,10 @@ fn decision_36_no_cross_module_function_imports() {
     tables.insert(user_path.clone(), user_st);
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let result = compile_to_module(
         user_path.clone(),
         &[Symbol::from("caller")],
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     )
@@ -1700,12 +1672,10 @@ fn decision_23_got_data_symbol_not_in_bss() {
     let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
     let mut obj = make_object_module();
-    let aliases = empty_aliases();
     let _result = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj,
         true,
     )

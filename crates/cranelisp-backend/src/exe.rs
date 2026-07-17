@@ -68,11 +68,16 @@ pub struct PlatformLayoutCheck {
 /// `start`-`.o` assist is link-orchestration the `--link` driver owns (BC
 /// invariant 7 — "the `--link` `_main` alias is int's job, not backend's").
 /// The body stays in backend as an internal helper; it is not a boundary.
-/// int's call sites (`exe.rs:20` re-export + `session_v4.rs:3991`) re-wire S77.
-// `allow(dead_code)`: the only non-test caller is int (currently red post-W2/W3;
-// re-wires S77). In-crate unit tests below exercise it. The allow clears the
-// lib-target dead_code warning the W3 narrow surfaced without deleting the body
-// (deletion is a W4 streamline decision).
+/// **Dead in production, exercised only by `exe/tests.rs` (S111 R4 §1.2 —
+/// accurate marker replacing the 16-sprint-stale "currently red post-W2/W3;
+/// re-wires S77" claim).** The production `--link` startup-object emission was
+/// RELOCATED to int at S76 §4.4 (BC §3 invariant 7 — int owns the `_main`/`start`
+/// alias) and int keeps its own live copy (`src/exe.rs::generate_startup_object`,
+/// called from `session_v4/lifecycle.rs`). The `#[allow(dead_code)]` is honest:
+/// this backend copy has no production caller. Whether to DELETE the orphaned
+/// backend copy + its tests outright, vs keep it as a test-validated reference,
+/// is a `/design` call — the audit-drain-s111.md §1.2 "production-live" premise
+/// is factually wrong (flagged in the S111 CS-1 report).
 #[allow(dead_code)]
 pub(crate) fn generate_startup_object(
     platform_manifest_names: &[String],
@@ -117,6 +122,7 @@ pub(crate) fn generate_startup_object(
 /// from the intrinsics archive like every other startup intrinsic. (Documented
 /// here per the FIXME 0287 seam note; the intrinsic body is a separate
 /// intrinsics-crate change, flagged in the report.)
+// Dead in production — see `generate_startup_object` (S111 R4 §1.2).
 #[allow(dead_code)]
 pub(crate) fn generate_startup_object_checked(
     platform_manifest_names: &[String],
@@ -392,7 +398,8 @@ pub(crate) fn generate_startup_object_checked(
 /// Define a NUL-terminated read-only data symbol holding `value`, returning its
 /// `DataId`. Used by the layout-hash gate to bake the compiler-computed expected
 /// hash + the platform name as `.rodata` the startup stub passes to
-/// `cranelisp_check_layout_hash`.
+/// `cranelisp_check_layout_hash`. Reached only from
+/// `generate_startup_object_checked` (dead in production) — S111 R4 §1.2.
 #[allow(dead_code)]
 fn define_cstr_data(
     obj_module: &mut ObjectModule,

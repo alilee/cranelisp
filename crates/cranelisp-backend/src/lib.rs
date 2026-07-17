@@ -148,10 +148,8 @@ pub use cranelift::codegen::isa::TargetIsa;
 // Re-export Cranelift module types for callers of compile_to_module.
 pub use cranelift_module;
 pub use cranelift_object;
-pub mod codegen_types;
 pub mod exe;
 pub mod compiler;
-pub mod got;
 pub mod got_observer;
 pub mod heap;
 pub mod jit;
@@ -604,7 +602,6 @@ pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    module_aliases: &cranelisp_types::ModuleAliases,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, CompilationError>
@@ -623,7 +620,6 @@ where
         module_path,
         names,
         symbol_tables,
-        module_aliases,
         module,
         capture_clif,
     )
@@ -634,7 +630,6 @@ fn compile_to_module_impl<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    module_aliases: &cranelisp_types::ModuleAliases,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, CranelispError>
@@ -647,6 +642,98 @@ where
     // Derive internal dependencies.
     let intrinsic_ids = declare_intrinsics_generic(module)?;
 
+    // Step 1 (§3.1): look up each named entry, retrieve its `MonoExpr` body +
+    // ownership summary. The three lockstep vectors + the hard `codegen_view`-
+    // None producer-gap error live in `collect_compile_targets`.
+    let (defns, bodies, summaries) =
+        collect_compile_targets::<C, L>(&module_path, names, symbol_tables)?;
+
+    // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
+    // poll-shape operand-injection pass is DELETED. Under the ctx-vtable handle model
+    // the platform poll-fn computes its token from the handle it holds and calls
+    // `ctx.acquire` itself — there is no leading `(token, capacity)` pair to prepend,
+    // so `compile_poll_effect` takes a poll leaf's natural args as `arg_vals[0..]`.
+
+    if defns.is_empty() {
+        return Err(CranelispError::CodegenError {
+            message: "no function definitions to compile".into(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    // Step 2 (§3.1): declare all functions in the module (Pass 1). Seed with the
+    // intrinsic FuncIds, then the bare-name `Linkage::Local` module fns.
+    let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
+    declare_module_functions(module, &defns, &mut func_ids)?;
+
+    // No cross-module function declarations: under all-GOT calling
+    // (Decision 31) cross-module calls are GOT-indirect against
+    // `__cranelisp_got_{other_M}`, never direct. Compile-time arity for
+    // those calls is read off the callee's keyed-fetched entry
+    // (`CompileContext::arity_at`; S110 W3 replaced the deleted
+    // `resolve_func_arity`) — see compiler/control_flow.rs auto-curry path.
+    let func_arities: HashMap<Symbol, usize> = defns
+        .iter()
+        .map(|d| (d.name.clone(), d.params().len()))
+        .collect();
+
+    // Step 3 (§3.1): compile each function body (Pass 2), aggregating the
+    // introspection byproducts (`clif_ir`, `code_size`).
+    let (clif_ir_agg, code_size_agg) = compile_module_bodies::<M, C, L>(
+        module,
+        &module_path,
+        symbol_tables,
+        &defns,
+        &bodies,
+        &summaries,
+        &func_ids,
+        &func_arities,
+        &intrinsic_ids,
+        capture_clif,
+    )?;
+
+    // Step 4a (§3.1): emit the per-module `__cranelisp_got_{M}` data symbol.
+    emit_module_got_data::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids)?;
+
+    // Step 4: Finalize definitions.
+    // For JITModule: patches relocations, makes code pages executable.
+    // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
+    module.finalize_for_code_read()?;
+
+    // Step 5 (§3.1): per-symbol finalized-ptr → GOT-slot direct-write + GotEvent.
+    write_finalized_got_slots::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids);
+
+    Ok(CompilationArtifacts {
+        clif_ir: clif_ir_agg,
+        code_size: code_size_agg,
+        compile_duration: compile_start.elapsed(),
+    })
+}
+
+/// Step 1 (S111 R5 §3.1): look up each named entry, reconstruct its single-variant
+/// `Defn`, and read its `MonoExpr` body + ownership summary from the
+/// typecheck-populated `codegen_view`. Returns the three lockstep vectors. Owns
+/// the symbol-table lookup loop AND the hard `codegen_view: None` producer-gap
+/// error (§5 W0.b — no silent lenient rebuild). Pure extraction — byte-identical.
+// The return is the three lockstep vectors the design (§3.1) specifies verbatim;
+// a named struct would be over-engineering for a single internal Step-1 helper.
+#[allow(clippy::type_complexity)]
+fn collect_compile_targets<C, L>(
+    module_path: &ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Result<
+    (
+        Vec<Defn>,
+        Vec<cranelisp_types::MonoExpr>,
+        Vec<Option<cranelisp_types::ModeSummary>>,
+    ),
+    CranelispError,
+>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // Step 1: Look up each named entry and retrieve its AST body (§4 symbol-
     // table lookup loop; replaces the former `program: &Program` scan).
     // Wave 0 invariant: each entry in `names` carries `ast: Some(_)`. If not,
@@ -667,7 +754,7 @@ where
     let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
         Vec::with_capacity(names.len());
     {
-        let table = symbol_tables.get(&module_path).ok_or_else(|| {
+        let table = symbol_tables.get(module_path).ok_or_else(|| {
             CranelispError::CodegenError {
                 message: format!(
                     "compile_to_module: no symbol table for module '{module_path}'"
@@ -754,7 +841,7 @@ where
             // bypass was retired from the live path at W0.b, and the backend
             // lenient rebuild (`lenient_mono_from_expr`) was DELETED outright at
             // W3 (only `cranelisp_types::MonoExpr::lenient_from_expr` survives,
-            // called by the `#[cfg(test)]`-only `jit::compile_defn` helper): a
+            // called by the `#[cfg(test)]`-only probe helper): a
             // codegen-reached entry with NO typecheck-populated `codegen_view` is
             // a producer gap and a HARD error, never a silent lenient rebuild
             // (Rev-2: no soft fallback).
@@ -779,32 +866,26 @@ where
             summaries.push(mode_summary);
         }
     }
+    Ok((defns, bodies, summaries))
+}
 
-    // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
-    // poll-shape operand-injection pass is DELETED. Under the ctx-vtable handle model
-    // the platform poll-fn computes its token from the handle it holds and calls
-    // `ctx.acquire` itself — there is no leading `(token, capacity)` pair to prepend,
-    // so `compile_poll_effect` takes a poll leaf's natural args as `arg_vals[0..]`.
-
-    if defns.is_empty() {
-        return Err(CranelispError::CodegenError {
-            message: "no function definitions to compile".into(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    }
-
-    // Step 2: Declare all functions in the module (Pass 1).
-    // Start with intrinsic FuncIds.
-    let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
-
-    // Per `/arch` Decision 36: every user-defined function is declared with
-    // its bare symbol-table name and `Linkage::Local`, uniformly across all
-    // modules. The pre-Sprint-58 user/main vs FQ-Export discriminator is a
-    // defect (see Decision 36 rationale + design/backend/compile-to-module.md
-    // §7). Function symbols are intra-`.o`-only because all calls go through
-    // `__cranelisp_got_{M}` (Decision 31 redefinition correctness mandates
-    // GOT-indirect even for intra-module calls).
-    for defn in &defns {
+/// Step 2 (S111 R5 §3.1): declare every module function with its bare
+/// symbol-table name and `Linkage::Local`, mutating `func_ids` (already seeded
+/// with the intrinsic FuncIds). Pure extraction — byte-identical.
+///
+/// Per `/arch` Decision 36: every user-defined function is declared with
+/// its bare symbol-table name and `Linkage::Local`, uniformly across all
+/// modules. The pre-Sprint-58 user/main vs FQ-Export discriminator is a
+/// defect (see Decision 36 rationale + design/backend/compile-to-module.md
+/// §7). Function symbols are intra-`.o`-only because all calls go through
+/// `__cranelisp_got_{M}` (Decision 31 redefinition correctness mandates
+/// GOT-indirect even for intra-module calls).
+fn declare_module_functions<M: Module>(
+    module: &mut M,
+    defns: &[Defn],
+    func_ids: &mut HashMap<Symbol, FuncId>,
+) -> Result<(), CranelispError> {
+    for defn in defns {
         let mut sig = module.make_signature();
         for _ in defn.params() {
             sig.params.push(AbiParam::new(types::I64));
@@ -819,18 +900,31 @@ where
             })?;
         func_ids.insert(defn.name.clone(), func_id);
     }
+    Ok(())
+}
 
-    // No cross-module function declarations: under all-GOT calling
-    // (Decision 31) cross-module calls are GOT-indirect against
-    // `__cranelisp_got_{other_M}`, never direct. Compile-time arity for
-    // those calls is read off the callee's keyed-fetched entry
-    // (`CompileContext::arity_at`; S110 W3 replaced the deleted
-    // `resolve_func_arity`) — see compiler/control_flow.rs auto-curry path.
-    let func_arities: HashMap<Symbol, usize> = defns
-        .iter()
-        .map(|d| (d.name.clone(), d.params().len()))
-        .collect();
-
+/// Step 3 (S111 R5 §3.1): compile each function body (Pass 2), building the
+/// per-body `CompileContext` and aggregating `(clif_ir, code_size)`. Owns the
+/// once-per-invocation `CRANELISP_CODEGEN_DUMP` env read. Pure extraction —
+/// byte-identical (env value is process-stable, phase order unchanged).
+#[allow(clippy::too_many_arguments)]
+fn compile_module_bodies<M, C, L>(
+    module: &mut M,
+    module_path: &ModuleFullPath,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    defns: &[Defn],
+    bodies: &[cranelisp_types::MonoExpr],
+    summaries: &[Option<cranelisp_types::ModeSummary>],
+    func_ids: &HashMap<Symbol, FuncId>,
+    func_arities: &HashMap<Symbol, usize>,
+    intrinsic_ids: &crate::jit::IntrinsicFuncIds,
+    capture_clif: bool,
+) -> Result<(String, usize), CranelispError>
+where
+    M: Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // Step 3: Compile each function body (Pass 2).
     // All defns are compiled uniformly — mangled multi-sig variants and mono
     // specialisations are ordinary entries in `names` after Wave 0.
@@ -850,10 +944,9 @@ where
 
     for ((defn, body), mode_summary) in defns.iter().zip(bodies.iter()).zip(summaries.iter()) {
         let compile_ctx = CompileContext {
-            func_ids: &func_ids,
-            func_arities: &func_arities,
+            func_ids,
+            func_arities,
             symbol_tables,
-            module_aliases,
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap_or_else(|| {
@@ -883,7 +976,7 @@ where
             mode_summary.clone(),
             module,
             &mut func_ctx,
-            &func_ids,
+            func_ids,
             compile_ctx,
             render_clif,
         )?;
@@ -906,74 +999,91 @@ where
         code_size_agg += art.code_size as usize;
         // `art.disasm` deliberately dropped — on-demand via `produce_disasm`.
     }
+    Ok((clif_ir_agg, code_size_agg))
+}
 
-    // Step 4a (`/arch` Decision 23 Bug B fix): emit the per-module GOT data
-    // symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
-    // `Linkage::Export` data symbol with relocation initializers against
-    // each defined function's local symbol; for JITModule this is a no-op
-    // because the JIT-mode definition lives outside `compile_to_module`.
-    // See `define_module_got_data` impls and §5.4 of compile-to-module.md.
-    {
-        let table = symbol_tables.get(&module_path).ok_or_else(|| {
+/// Step 4a (S111 R5 §3.1 / `/arch` Decision 23 Bug B fix): emit the per-module
+/// GOT data symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
+/// `Linkage::Export` data symbol with relocation initializers against
+/// each defined function's local symbol; for JITModule this is a no-op
+/// because the JIT-mode definition lives outside `compile_to_module`.
+/// See `define_module_got_data` impls and §5.4 of compile-to-module.md.
+/// Pure extraction — same lock scope + drop point, byte-identical.
+fn emit_module_got_data<M, C, L>(
+    module: &mut M,
+    module_path: &ModuleFullPath,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    defns: &[Defn],
+    func_ids: &HashMap<Symbol, FuncId>,
+) -> Result<(), CranelispError>
+where
+    M: Module + CodeFinalizer,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let table = symbol_tables.get(module_path).ok_or_else(|| {
+        CranelispError::CodegenError {
+            message: format!(
+                "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }
+    })?;
+    let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
+    for defn in defns {
+        let entry = table.get(defn.name.as_ref()).ok_or_else(|| {
             CranelispError::CodegenError {
                 message: format!(
-                    "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
+                    "compile_to_module: symbol '{}' missing from module '{module_path}' at GOT-data emission",
+                    defn.name
                 ),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
+                location: ErrorLocation::from_span(defn.span),
             }
         })?;
-        let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
-        for defn in &defns {
-            let entry = table.get(defn.name.as_ref()).ok_or_else(|| {
-                CranelispError::CodegenError {
-                    message: format!(
-                        "compile_to_module: symbol '{}' missing from module '{module_path}' at GOT-data emission",
-                        defn.name
-                    ),
-                    location: ErrorLocation::from_span(defn.span),
-                }
-            })?;
-            // The GOT slot now rides on the callable `DefKind` variant
-            // (S83 Option-A reshape); read it through the SSOT accessor.
-            let Some(slot) = entry.callable_got_slot() else {
-                continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
-            };
-            let Some(&func_id) = func_ids.get(&defn.name) else {
-                continue; // Defensive: can't happen — we declared it above
-            };
-            slot_funcs.push((slot, func_id));
-        }
-        let slot_count = table.next_got_slot;
-        // Drop the read guard before potentially mutating other tables.
-        drop(table);
-
-        let got_name = crate::compiler::got_data_symbol_name(&module_path);
-        module.define_module_got_data(&got_name, slot_count, &slot_funcs)?;
+        // The GOT slot now rides on the callable `DefKind` variant
+        // (S83 Option-A reshape); read it through the SSOT accessor.
+        let Some(slot) = entry.callable_got_slot() else {
+            continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
+        };
+        let Some(&func_id) = func_ids.get(&defn.name) else {
+            continue; // Defensive: can't happen — we declared it above
+        };
+        slot_funcs.push((slot, func_id));
     }
+    let slot_count = table.next_got_slot;
+    // Drop the read guard before potentially mutating other tables.
+    drop(table);
 
-    // Step 4: Finalize definitions.
-    // For JITModule: patches relocations, makes code pages executable.
-    // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
-    module.finalize_for_code_read()?;
+    let got_name = crate::compiler::got_data_symbol_name(module_path);
+    module.define_module_got_data(&got_name, slot_count, &slot_funcs)
+}
 
-    // Step 5 (D41 #2 — per-symbol GOT slot direct-write): for each compiled
-    // symbol, read its finalised code pointer and write it directly into the
-    // entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)`. The
-    // GOT is the single source of truth for callable addresses (Decision 35
-    // post-rollback; facade §"Code"). Backend owns this write per the S70
-    // Phase B amendment to Decision 41 — `compile_to_module` no longer
-    // returns per-symbol `code_ptrs` for the caller to store.
-    //
-    // The lifecycle-owner write (D41 #1 — `Code::Jit(Arc<Jit>)` via
-    // `write_code`) stays in the integration layer for now: backend receives
-    // a generic `&mut M: Module` and does not own the `Arc<Jit>` (the caller
-    // wraps the JITModule in `Arc<Jit>` only after `compile_to_module`
-    // returns). int reads the GOT slot ptr backend wrote here + its own
-    // `Arc<Jit>` to construct `Code::Jit`. (S77 re-wire.)
-    //
-    // Object mode: `try_get_finalized_function` returns `None` (no runtime
-    // pointer before `finish()`), so the loop short-circuits without storing.
-    for defn in &defns {
+/// Step 5 (S111 R5 §3.1 / D41 #2 — per-symbol GOT slot direct-write): for each
+/// compiled symbol, read its finalised code pointer and write it directly into
+/// the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (the ONE
+/// production slab write — the CS-2 GOT-backstop anchor), then emit the
+/// `JitWrite` GotEvent. The GOT is the single source of truth for callable
+/// addresses (Decision 35 post-rollback). Object mode:
+/// `try_get_finalized_function` returns `None` (no runtime pointer before
+/// `finish()`), so the loop short-circuits without storing. Pure extraction —
+/// byte-identical.
+///
+/// The lifecycle-owner write (D41 #1 — `Code::Jit(Arc<Jit>)` via `write_code`)
+/// stays in the integration layer for now: backend receives a generic `&mut M:
+/// Module` and does not own the `Arc<Jit>`. int reads the GOT slot ptr backend
+/// wrote here + its own `Arc<Jit>` to construct `Code::Jit`. (S77 re-wire.)
+fn write_finalized_got_slots<M, C, L>(
+    module: &M,
+    module_path: &ModuleFullPath,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    defns: &[Defn],
+    func_ids: &HashMap<Symbol, FuncId>,
+) where
+    M: Module + CodeFinalizer,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    for defn in defns {
         let Some(&func_id) = func_ids.get(&defn.name) else {
             continue;
         };
@@ -984,13 +1094,13 @@ where
         };
 
         // Resolve the entry's GOT slot and write the finalised ptr.
-        let slot_opt = symbol_tables.get(&module_path).and_then(|table| {
+        let slot_opt = symbol_tables.get(module_path).and_then(|table| {
             table
                 .get(defn.name.as_ref())
                 .and_then(|entry| entry.callable_got_slot())
         });
         if let Some(slot) = slot_opt {
-            if let Some(table) = symbol_tables.get(&module_path) {
+            if let Some(table) = symbol_tables.get(module_path) {
                 table.got.store_slot(slot, ptr);
             }
 
@@ -1012,18 +1122,12 @@ where
                         // raw pointer to its address for diagnostic
                         // identification only. The observer must NOT
                         // dereference.
-                        jit_addr: (&*module) as *const M as *const () as usize,
+                        jit_addr: (module) as *const M as *const () as usize,
                     },
                 },
             );
         }
     }
-
-    Ok(CompilationArtifacts {
-        clif_ir: clif_ir_agg,
-        code_size: code_size_agg,
-        compile_duration: compile_start.elapsed(),
-    })
 }
 
 // =========================================================================
@@ -1572,3 +1676,8 @@ pub(crate) mod test_support;
 // Relocated crate-root module-assembly + GOT-emission tests (FIXME 0495 step 1).
 #[cfg(test)]
 mod module_assembly_tests;
+
+// GOT slab-stability invariant tests, rehomed from the deleted `got.rs` shim
+// (S111 R4 §1.2).
+#[cfg(test)]
+mod got_slab_tests;

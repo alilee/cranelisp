@@ -1645,14 +1645,12 @@ mod b34_stack_eligibility_tests {
         let module_path = ModuleFullPath::from("user");
         let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
         let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
-        let aliases = cranelisp_types::ModuleAliases::default();
         let func_ids: Map<Symbol, cranelift_module::FuncId> = Map::new();
         let func_arities: Map<Symbol, usize> = Map::new();
         let ctx = crate::compiler::CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables: &tables,
-            module_aliases: &aliases,
             current_module: module_path,
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap(),

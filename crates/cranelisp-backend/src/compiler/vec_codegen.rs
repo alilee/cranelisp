@@ -862,8 +862,13 @@ where
             return Ok(None);
         }
 
-        // Build the drop glue function.
-        let glue_name = format!("runtime/drop_glue_{}", fqtn.name);
+        // Build the drop glue function. Naming is composed by the ONE naming fn
+        // (S111 R6 §4.1, `resolution::adt_drop_glue_name`) — never an inline
+        // `format!` (the A.4 caveat: the identity test calls the production fn).
+        // The ADT builder keeps its own envelope (a multi-ctor tag-branch body,
+        // structurally richer than the closure/curry flat capture-dec loop —
+        // §4.3 fallback: only the naming home is shared for this builder).
+        let glue_name = crate::compiler::adt_drop_glue_name(&fqtn);
 
         // Check if this drop glue was already built (e.g., by a previous module).
         if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =

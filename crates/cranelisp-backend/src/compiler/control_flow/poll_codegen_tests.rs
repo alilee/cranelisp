@@ -88,8 +88,10 @@ fn async_read_call(args: Vec<Expr>) -> Expr {
 /// the `user` table as a platform effect of the given `poll_shape` + `params`
 /// (the FULL leaf signature under v9 — every param is a leaf arg).
 fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
+    // S111 R4 §1.3: the probe rides the PRODUCTION per-body seam
+    // (`test_support::probe_defn_clif` → `compile_defn_in_module`), not the
+    // deleted `Jit::compile_defn` front door.
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     let name = Symbol::from("poll_codegen_probe");
     let defn = Defn {
@@ -104,21 +106,11 @@ fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
         span: Span::SYNTHETIC,
     };
 
-    let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
     let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
     let module_path = ModuleFullPath::from("user");
     let mut st = SymbolTable::new(module_path.clone());
     st.insert(Symbol::from("async-read"), poll_effect_entry(poll_shape, params));
     symbol_tables.insert(module_path.clone(), st);
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
-        &symbol_tables,
-        &module_aliases,
-        module_path,
-    );
     // W1 (KC-W0-6): the `(async-read …)` callee Var reads its `resolved_target`
     // at the poll/platform dispatch. The body's callee Var carries `Span::SYNTHETIC`
     // and is the sole reference node here, so keying the carrier at SYNTHETIC →
@@ -131,9 +123,14 @@ fn clif_of_body(poll_shape: bool, params: Vec<Type>, body: Expr) -> String {
             symbol: Symbol::from("async-read"),
         },
     );
-    jit.compile_defn_with_targets(&defn, &resolved_targets, compile_ctx)
-        .expect("compile")
-        .clif_ir
+    crate::test_support::probe_defn_clif(
+        &defn,
+        &[],
+        &resolved_targets,
+        &symbol_tables,
+        module_path,
+        jit.jit_module(),
+    )
 }
 
 /// Blocking-arm probe: `(async-read <arg>)` with `poll_shape:false`.

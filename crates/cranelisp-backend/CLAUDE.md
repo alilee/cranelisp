@@ -45,12 +45,16 @@ bare i64 tags (`HeapAdt` rustdoc, `NULLARY_TAG_THRESHOLD`); a reader expecting a
 header on every ctor value will misread this as a missing allocation. RC lives at
 `HeapHeader::RC_OFFSET`; `emit_rc_inc/dec` emit `atomic_rmw(Add/Sub, ptr+RC_OFFSET)`.
 
-## GOT slab — fixed 1024 slots, UNCHECKED allocation (S101 item d, got.rs)
+## GOT slab — fixed 1024 slots, UNCHECKED allocation (S101 item d, got_slab_tests.rs)
 
 `GotTable` is a FIXED `GOT_TABLE_SIZE`(=1024)-slot `Box<[AtomicPtr<u8>; 1024]>`
 allocated once and NEVER reallocated; `base_ptr()` is structurally stable for the
 session (finalized machine code bakes the base via `__cranelisp_got_{M}`
-resolution, so movement would dangle it — verified by `got.rs::slab_growth_tests`).
+resolution, so movement would dangle it — verified by `got_slab_tests.rs`, the
+backend-side slab-invariant home rehomed from the deleted `got.rs` re-export
+shim, S111 R4 §1.2). `GotTable`/`GOT_TABLE_SIZE`/`NULLARY_TAG_THRESHOLD` are
+imported from `cranelisp-types` directly (the `got.rs`/`codegen_types.rs`
+convenience-re-export shims were deleted S111 R4 §1.2).
 "Growth" is only the monotone `SymbolTable::next_got_slot` index. **GOTCHA:
 `allocate_got_slot` is UNCHECKED** (`+= 1`, no bound test); `store_slot`/`load_slot`
 only `debug_assert!(slot < 1024)` — in release, slot 1024 is OOB (UB). The hard
@@ -112,13 +116,16 @@ pub-to-boundary item under `compiler::`; everything else is `pub(crate)`.
   miss (Principle 24 "Resolve once"; Rev-2 no-soft-fallback). The `resolve_*`
   resolver family (`resolve_driven` + the arbitrary-order `symbol_tables.iter()`
   global scan + the ten `resolve_*` entry points + `lookup_constructor`) is
-  DELETED; `resolution.rs` now holds ONLY the two symbol-naming primitives
-  (`got_data_symbol_name` / `inner_fn_discriminator_for` — fixed name schemes, no
-  scan/precedence walk). Grep gate: zero `resolve_driven`/`resolve_*_target` in
-  `compiler/`.
+  DELETED; `resolution.rs` now holds ONLY fixed name-composition schemes (no
+  scan/precedence walk): the two symbol-naming primitives (`got_data_symbol_name`
+  / `inner_fn_discriminator_for`) plus the three drop-glue naming fns
+  (`closure_drop_glue_name` / `curry_drop_glue_name` / `adt_drop_glue_name` — the
+  S111 R6 §4.1 ONE naming-identity home, called by the production glue builders +
+  the consolidated `resolution::tests` identity battery, never re-composed inline).
+  Grep gate: zero `resolve_driven`/`resolve_*_target` in `compiler/`.
 - `compiler/control_flow/` — `let_if`, `par_bind`, `lambda`, `fn_as_value`,
   `free_vars`, `sparkability`, `capture_rc`, `select`, `launch`, `utilization`.
-- `heap.rs`, `jit.rs`, `got.rs`/`got_observer.rs`, `schema.rs`, `exe.rs`,
+- `heap.rs`, `jit.rs`, `got_observer.rs`, `schema.rs`, `exe.rs`,
   `code.rs`, `primitives_inline.rs`, `cache/{manifest,serialize,object,linker,mod}.rs`.
 
 **`#[cfg(test)]` modules are per-submodule siblings** (S101 coverage-audit reorg:
@@ -129,6 +136,24 @@ serves the METHOD §2.2 submodule×scenario-class accounting). Convention:
 `_tests.rs` siblings for a specific behaviour (e.g.
 `compiler/apply/moded_arg_rc_tests.rs`, `compiler/vec_codegen/reuse_proof_tests.rs`,
 `compiler/control_flow/{par,poll,select}_codegen_tests.rs`). Crate-root exceptions:
-`module_assembly_tests.rs`, `clif_dump_tests.rs`. When adding a codegen behaviour,
-add its test sibling next to the submodule — don't grow a crate-root file.
-`test_support.rs` provides the shared AST-fragment compile harness.
+`module_assembly_tests.rs`, `clif_dump_tests.rs`, `got_slab_tests.rs`. When
+adding a codegen behaviour, add its test sibling next to the submodule — don't
+grow a crate-root file. `test_support.rs` provides the shared AST-fragment
+compile harness.
+
+**The CLIF-probe / execution test seam is the PRODUCTION per-body function**
+(`test_support::probe_defn_clif` for a single defn's CLIF text;
+`compile_defns_in_module` for the multi-defn / execution-tier no-finalize
+variant). Both ride `compile_defn_in_module` — the EXACT Step-3 call
+`compile_to_module_impl` makes. **The `Jit::compile_defn`/`compile_defn_with_targets`/
+`build_compile_context`/`CompileArtifacts` test front door was DELETED (S111 R4
+§1.3)** — do NOT re-introduce a parallel context-assembly; a new probe seeds its
+aux entries into the `symbol_tables` it also builds and calls the helper. The
+`compile_to_module_impl` body is 5 phase helpers (S111 R5 §3.1:
+`collect_compile_targets` / `declare_module_functions` / `compile_module_bodies` /
+`emit_module_got_data` / `write_finalized_got_slots`); `compile_resolved_call`
+(`apply.rs`) is one method per `ResolvedCall` variant (S111 R5 §2). Drop-glue for
+the two span-keyed mirrors (closure + auto-curry) shares ONE envelope
+(`emit_capture_dec_glue`, `lambda.rs`) owning idempotency + declare/build/define;
+the ADT builder keeps its own multi-ctor-body envelope but shares the naming fn
+(S111 R6 §4.3 fallback).

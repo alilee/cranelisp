@@ -474,7 +474,6 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
     let module = ModuleFullPath::from("user");
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
     let iid = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
-    let aliases = cranelisp_types::ModuleAliases::default();
     let func_ids: std::collections::HashMap<Symbol, cranelift_module::FuncId> =
         std::collections::HashMap::new();
     let func_arities: std::collections::HashMap<Symbol, usize> = std::collections::HashMap::new();
@@ -482,7 +481,6 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
-        module_aliases: &aliases,
         current_module: module.clone(),
         alloc_func_id: iid.alloc,
         dealloc_func_id: iid.dealloc.unwrap(),
@@ -529,7 +527,6 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
 
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
     let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
-    let module_aliases = cranelisp_types::ModuleAliases::default();
     let func_ids: std::collections::HashMap<Symbol, cranelift_module::FuncId> =
         std::collections::HashMap::new();
     let func_arities: std::collections::HashMap<Symbol, usize> =
@@ -539,7 +536,6 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
-        module_aliases: &module_aliases,
         current_module: module_path.clone(),
         alloc_func_id: intrinsic_ids.alloc,
         dealloc_func_id: intrinsic_ids.dealloc.unwrap(),

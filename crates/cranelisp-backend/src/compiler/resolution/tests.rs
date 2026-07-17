@@ -48,50 +48,94 @@ fn inner_fn_discriminator_uniquifies_per_mono_instance() {
     assert_eq!(inner_fn_discriminator_for(None), "");
 }
 
-// spec: design/arch/fixmes/0350 — the span-derived closure DROP-GLUE name
-//   (`runtime/closure_drop_glue_<start>_<end>`) MUST be uniquified per
-//   monomorphic instance the SAME way the lambda body name is (0347), else
-//   N mono copies of one lambda span emit N drop-glue defs with the
-//   identical name → linker `Duplicate definition of identifier`.
+// ── drop-glue naming identity (S111 R6 §4.4 — the ONE consolidated test) ──
+//
+// Calls the PRODUCTION naming functions (`closure_drop_glue_name` /
+// `curry_drop_glue_name` / `adt_drop_glue_name`), NOT an inline `format!`
+// re-composition (the A.4 caveat: a `format!` drift in the production fn must
+// FAIL this test, so it must exercise the real fn). Pins the two invariants the
+// FIXME 0350 (closure) / ledger-25 (curry) defect class needs:
+//   (1) distinct monos ⇒ distinct glue (different `inner_fn_discriminator` ⇒
+//       different name, so the 2nd mono's `define_function` does not collide);
+//   (2) one create-gate's two arms ⇒ one glue (same disc+span ⇒ the SAME name,
+//       so the `emit_capture_dec_glue` `get_name` idempotency skip dedups them).
+
+// spec: design/arch/fixmes/0350 (closure) + spec/12-runtime.md §12.3.1 — a
+// closure and its capture drop glue are one object with one identity.
 #[test]
-fn closure_drop_glue_name_uniquifies_per_mono_instance() {
-    use cranelisp_types::Symbol;
-    // Two monomorphic instances of one source fn — the same shape that
-    // collided on the lambda body name in 0347.
+fn drop_glue_naming_identity_span_keyed_mirrors() {
+    use cranelisp_types::{Span, Symbol};
+    // Two mono instances of one source fn — the shape that collided on the
+    // lambda body name in 0347 and the drop-glue name in 0350 / ledger-25.
     let a = inner_fn_discriminator_for(Some(&Symbol::from("apply$Int+Vec")));
     let b = inner_fn_discriminator_for(Some(&Symbol::from("apply$Float+Vec")));
+    assert_ne!(a, b, "distinct monos must yield distinct discriminators");
+    let span = Span::new(2004, 2022);
 
-    // The composed drop-glue names (the 0350 collision surface) differ.
-    let span = (2004usize, 2022usize);
-    let glue_a =
-        format!("runtime/closure_drop_glue_{a}{}_{}", span.0, span.1);
-    let glue_b =
-        format!("runtime/closure_drop_glue_{b}{}_{}", span.0, span.1);
+    // (1) distinct monos ⇒ distinct glue, for BOTH span-keyed kinds.
     assert_ne!(
-        glue_a, glue_b,
-        "two mono copies of one lambda span must emit distinct drop-glue \
-         symbols (else the 2nd define_function collides)"
+        closure_drop_glue_name(&a, span),
+        closure_drop_glue_name(&b, span),
+        "closure: two mono copies at one span must emit distinct drop-glue symbols"
+    );
+    assert_ne!(
+        curry_drop_glue_name(&a, span),
+        curry_drop_glue_name(&b, span),
+        "curry: two mono copies at one span (differing capture categories) must \
+         emit distinct glue names — a collision mis-drops captures"
     );
 
-    // The drop-glue name MUST share the lambda body's discriminator scheme
-    // so the (body, drop-glue) pair stay paired per mono instance.
-    let body_a = format!("__lambda_{a}{}_{}__", span.0, span.1);
-    let body_b = format!("__lambda_{b}{}_{}__", span.0, span.1);
+    // The drop-glue name shares the lambda body's discriminator scheme so the
+    // (body, drop-glue) pair stay paired per mono instance.
     assert!(
-        glue_a.contains(&a) && body_a.contains(&a),
-        "body+drop-glue of instance A must carry the same discriminator"
+        closure_drop_glue_name(&a, span).contains(&a),
+        "closure glue must carry the discriminator (wrapper-identity keying)"
     );
     assert!(
-        glue_b.contains(&b) && body_b.contains(&b),
-        "body+drop-glue of instance B must carry the same discriminator"
+        curry_drop_glue_name(&b, span).contains(&b),
+        "curry glue must carry the discriminator (wrapper-identity keying)"
     );
 
-    // No enclosing fn: empty prefix, span alone disambiguates — the
-    // pre-0350 behaviour for top-level / nested-lambda scopes is preserved.
+    // (2) one create-gate's two arms (same disc+span) ⇒ one glue name — the
+    // idempotency the `get_name` skip dedups on.
+    assert_eq!(
+        closure_drop_glue_name(&a, span),
+        closure_drop_glue_name(&a, span),
+        "same mono+span must produce one stable closure glue name (idempotency)"
+    );
+    assert_eq!(
+        curry_drop_glue_name(&a, span),
+        curry_drop_glue_name(&a, span),
+        "same mono+span must produce one stable curry glue name (idempotency)"
+    );
+
+    // No enclosing fn: empty prefix, span alone disambiguates — the pre-0350
+    // behaviour for top-level / nested-lambda scopes is preserved.
     let none = inner_fn_discriminator_for(None);
     assert_eq!(none, "");
     assert_eq!(
-        format!("runtime/closure_drop_glue_{none}{}_{}", span.0, span.1),
+        closure_drop_glue_name(&none, span),
         "runtime/closure_drop_glue_2004_2022"
     );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — the ADT drop glue is per-TYPE (fqtn-keyed,
+// no span/disc), so distinct types get distinct glue and the same type is
+// stable (the `get_name` per-module re-emit dedup).
+#[test]
+fn adt_drop_glue_naming_identity_is_fqtn_keyed() {
+    use cranelisp_types::{FQTypeName, ModuleFullPath, TypeName};
+    let box_t = FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box"));
+    let pair_t = FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Pair"));
+    assert_ne!(
+        adt_drop_glue_name(&box_t),
+        adt_drop_glue_name(&pair_t),
+        "distinct ADTs must get distinct drop-glue names"
+    );
+    assert_eq!(
+        adt_drop_glue_name(&box_t),
+        adt_drop_glue_name(&box_t),
+        "one ADT must produce one stable drop-glue name (per-module re-emit dedup)"
+    );
+    assert_eq!(adt_drop_glue_name(&box_t), "runtime/drop_glue_Box");
 }

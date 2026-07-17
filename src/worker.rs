@@ -1181,7 +1181,6 @@ pub fn inline_jit_codegen_for_names(
     //    name (D41 #2) and finalises definitions via the `CodeFinalizer`
     //    trait. It returns batch-level `CompilationArtifacts` (clif_ir,
     //    code_size, compile_duration) for introspection.
-    let module_aliases = module_aliases_for(tc_modules);
     // FIXME 0325: capture the CLIF-IR text only when introspection is live.
     // The presence of the introspection map IS the mode discriminator (REPL /
     // trace → Some; `--run`/`--link` batch → None — pipeline-v4 §1, Decision
@@ -1192,7 +1191,6 @@ pub fn inline_jit_codegen_for_names(
         module.clone(),
         names,
         tc_modules,
-        &module_aliases,
         jit.jit_module(),
         capture_clif,
     )?;
@@ -1379,19 +1377,6 @@ fn read_got_addr(
     let st = tc_modules.get(module)?;
     let ptr = st.got.load_slot(slot);
     if ptr.is_null() { None } else { Some(ptr) }
-}
-
-/// Assemble a `ModuleAliases` snapshot for `compile_to_module`. The aliases
-/// are session-scoped; the worker reads them from any module's table is not
-/// where they live — they are passed through `SharedState`. The codegen path
-/// does not consult aliases for in-module name lowering (GOT-indirect calls
-/// use the per-module GOT directly), so an empty alias map is the correct
-/// argument for the per-symbol JIT batch (cross-module references resolve via
-/// `__cranelisp_got_{M}` data symbols, not alias substitution).
-fn module_aliases_for(
-    _tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-) -> cranelisp_types::ModuleAliases {
-    dashmap::DashMap::new()
 }
 
 /// Follow Import/Reexport chains to find a symbol's GOT slot.

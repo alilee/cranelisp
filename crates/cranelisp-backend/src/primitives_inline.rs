@@ -425,13 +425,14 @@ mod tests {
     //! is the whole point of the mod-64 edge cases.
 
     use super::*;
-    use crate::jit::build_isa;
+    use crate::cache::object::build_isa;
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Linkage;
 
     /// Build a fresh, empty JITModule for a one-off test function.
     fn fresh_module() -> JITModule {
-        let isa = build_isa().expect("host ISA");
+        // `is_pic=false` is the JIT-mode ISA (absolute addresses).
+        let isa = build_isa(false).expect("host ISA");
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         JITModule::new(builder)
     }

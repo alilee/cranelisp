@@ -19,7 +19,7 @@
 //! scan, no precedence walk, no import-chain follow — each is a fixed
 //! compile-time string-composition scheme.
 
-use cranelisp_types::{ModuleFullPath, Symbol};
+use cranelisp_types::{FQTypeName, ModuleFullPath, Span, Symbol};
 
 /// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
@@ -73,6 +73,46 @@ pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> St
         }
         None => String::new(),
     }
+}
+
+// =========================================================================
+// Drop-glue linker-name composition (S111 R6 §4.1 — the ONE naming-identity
+// home). Three named functions, one per glue kind — naming is a FUNCTION, never
+// an inline `format!` (the A.4 caveat: the identity test must call the
+// PRODUCTION naming fn, not re-compose the format). Two are span+disc-keyed (the
+// closure/curry span×mono collision class — FIXME 0350 / ledger item 25); the
+// ADT is fqtn-keyed (no span/disc, so that collision class does not apply).
+// =========================================================================
+
+/// Linker name for a **lambda-closure** capture drop glue (S111 R6). Keyed by
+/// `disc` (`FnCompiler::inner_fn_discriminator()` — the mono instance +
+/// create-gate arm) and `span`, IDENTICALLY to the lambda body name so the
+/// body+drop-glue symbol pair stay paired per mono instance. Span alone
+/// under-keys: N mono instances of one lambda span emit their own drop-glue copy
+/// (different capture layout), so span-only would collide (`Duplicate definition
+/// of identifier: runtime/closure_drop_glue_…`) — the FIXME 0350 class.
+pub(crate) fn closure_drop_glue_name(disc: &str, span: Span) -> String {
+    format!("runtime/closure_drop_glue_{}{}_{}", disc, span.start, span.end)
+}
+
+/// Linker name for an **auto-curry** closure's capture drop glue (S111 R6).
+/// Keyed by `disc` + `span`, IDENTICALLY to its sibling wrapper name
+/// `__curry_{target}_{disc}{span}__` (F2, P7/P8: wrapper + drop glue must share
+/// one identity). Span alone under-keys: two monomorphizations of one span with
+/// different capture `HeapCategory`s produce distinct wrappers but would collide
+/// on a span-only glue name, silently mis-dropping captures (ledger item 25).
+/// Folding `disc` makes glue identity track wrapper identity.
+pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
+    format!("runtime/curry_drop_glue_{}{}_{}", disc, span.start, span.end)
+}
+
+/// Linker name for an **ADT** field drop glue (S111 R6). Keyed by the type's
+/// bare name only — an ADT drop glue is per-TYPE (its multi-ctor tag-branch body
+/// dec's every heap field), so the span×mono collision class the closure/curry
+/// mirrors face does not apply; the `get_name` idempotency skip dedups the
+/// per-module re-emit.
+pub(crate) fn adt_drop_glue_name(fqtn: &FQTypeName) -> String {
+    format!("runtime/drop_glue_{}", fqtn.name)
 }
 
 #[cfg(test)]

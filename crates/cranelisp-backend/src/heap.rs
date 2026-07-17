@@ -37,7 +37,7 @@ use cranelisp_types::{
     ConcreteType, FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
 };
 
-use crate::codegen_types::NULLARY_TAG_THRESHOLD;
+use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
 // ---------------------------------------------------------------------------
 // Heap layout structs — backend-owned

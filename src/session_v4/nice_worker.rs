@@ -315,7 +315,6 @@ fn emit_object(
         module.clone(),
         names,
         &shared.symbol_tables,
-        &shared.module_aliases,
         &mut obj_module,
         // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write
         // side) — never consumed by introspection, so skip CLIF rendering.

@@ -566,7 +566,6 @@ mod tests {
 
         let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
         let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
-        let module_aliases = cranelisp_types::ModuleAliases::default();
         let func_ids: HashMap<Symbol, cranelift_module::FuncId> = HashMap::new();
         let func_arities: HashMap<Symbol, usize> = HashMap::new();
 
@@ -574,7 +573,6 @@ mod tests {
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables: &tables,
-            module_aliases: &module_aliases,
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap(),

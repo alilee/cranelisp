@@ -1,12 +1,9 @@
 use super::*;
 use cranelisp_types::DefnVariant;
 
-// spec: 12-runtime §12.1 — ISA construction for host platform
-#[test]
-fn test_build_isa() {
-    let isa = build_isa();
-    assert!(isa.is_ok(), "ISA construction should succeed on host");
-}
+// (ISA construction is covered by `cache/object/tests.rs::test_build_isa_{pic,
+// non_pic}` — the single ISA construction point after S111 R4 §1.1 deleted the
+// duplicate `jit::build_isa`.)
 
 // spec: 12-runtime §12.1 — JIT engine creation
 #[test]
@@ -141,7 +138,6 @@ fn compile_call_drop_roundtrip() {
     use std::sync::atomic::Ordering;
 
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     // Zero-arg fn returning the literal 42.
     let name = Symbol::from("trivial_fortytwo");
@@ -161,8 +157,6 @@ fn compile_call_drop_roundtrip() {
         span: Span::SYNTHETIC,
     };
 
-    let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
     let symbol_tables: dashmap::DashMap<
         cranelisp_types::ModuleFullPath,
         cranelisp_types::SymbolTable,
@@ -172,16 +166,16 @@ fn compile_call_drop_roundtrip() {
         module_path.clone(),
         cranelisp_types::SymbolTable::new(module_path.clone()),
     );
-
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
+    // S111 R4 §1.3: compile through the production per-body seam.
+    let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    crate::test_support::compile_defns_in_module(
+        &[&defn],
+        &[],
+        &no_targets,
         &symbol_tables,
-        &module_aliases,
         module_path,
+        jit.jit_module(),
     );
-    jit.compile_defn(&defn, compile_ctx).expect("compile");
     let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
     assert!(!ptr.is_null(), "finalized pointer must be non-null");
 
@@ -341,7 +335,6 @@ fn jit_cross_module_got_dispatch_end_to_end() {
     let producer_ptr: *const u8 = {
         use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
         let mut jit = Jit::new_with_symbols(&[]).expect("producer JIT");
-        jit.declare_intrinsics().expect("intrinsics");
         let name = Symbol::from("producer_fn");
         let defn = Defn {
             name: name.clone(),
@@ -358,8 +351,6 @@ fn jit_cross_module_got_dispatch_end_to_end() {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-        let func_arities: HashMap<Symbol, usize> = HashMap::new();
         let symbol_tables: dashmap::DashMap<
             cranelisp_types::ModuleFullPath,
             cranelisp_types::SymbolTable,
@@ -369,10 +360,16 @@ fn jit_cross_module_got_dispatch_end_to_end() {
             module_path.clone(),
             cranelisp_types::SymbolTable::new(module_path.clone()),
         );
-        let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-        let compile_ctx =
-            jit.build_compile_context(&func_ids, &func_arities, &symbol_tables, &module_aliases, module_path);
-        jit.compile_defn(&defn, compile_ctx).expect("compile");
+        // S111 R4 §1.3: compile through the production per-body seam.
+        let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+        crate::test_support::compile_defns_in_module(
+            &[&defn],
+            &[],
+            &no_targets,
+            &symbol_tables,
+            module_path,
+            jit.jit_module(),
+        );
         let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
         // Leak `jit` so the code pages stay live for the duration of the test.
         std::mem::forget(jit);

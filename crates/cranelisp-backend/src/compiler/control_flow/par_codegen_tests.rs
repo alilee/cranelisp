@@ -19,15 +19,14 @@
 
 use crate::jit::Jit;
 use cranelisp_types::{Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, Type, Visibility};
-use std::collections::HashMap;
 
 /// Compile a zero-arg `defn` whose body is the given `Expr`, returning the
 /// emitted CLIF-IR text. Branches need only be structurally valid for
 /// `compile_expr` (we use int literals as stand-in IO-tree pointers — the
 /// guard is the emitted Par-node SHAPE, not its runtime IO semantics).
 fn clif_of_body(body: Expr) -> String {
+    // S111 R4 §1.3: probe rides the production per-body seam.
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     let name = Symbol::from("par_codegen_probe");
     let defn = Defn {
@@ -42,8 +41,6 @@ fn clif_of_body(body: Expr) -> String {
         span: Span::SYNTHETIC,
     };
 
-    let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
     let symbol_tables: dashmap::DashMap<
         cranelisp_types::ModuleFullPath,
         cranelisp_types::SymbolTable,
@@ -58,25 +55,24 @@ fn clif_of_body(body: Expr) -> String {
     symbol_tables.insert(module_path.clone(), st);
     let resolved_targets =
         crate::test_support::call_carriers(defn.body(), &module_path, &["par_codegen_probe"]);
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
+    crate::test_support::probe_defn_clif(
+        &defn,
+        &[],
+        &resolved_targets,
         &symbol_tables,
-        &module_aliases,
         module_path,
-    );
-    jit.compile_defn_with_targets(&defn, &resolved_targets, compile_ctx)
-        .expect("compile")
-        .clif_ir
+        jit.jit_module(),
+    )
 }
 
 /// Like `clif_of_body`, but also declares the extra user functions in
 /// `extra` (name, arity) so a `Var`-apply against them resolves. Only the
 /// probe body is compiled+returned; the extras need only be *declared*.
 fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
+    // S111 R4 §1.3: probe rides the production per-body seam; the extras are
+    // declared (not compiled) so a NotDetermined-stub call resolves via the
+    // FuncId tail.
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     let probe_name = Symbol::from("par_codegen_probe");
     let probe = Defn {
@@ -103,12 +99,6 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
         })
         .collect();
 
-    let all: Vec<&Defn> = std::iter::once(&probe).chain(extra_defns.iter()).collect();
-    let func_ids = jit.declare_functions(&all).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = extra
-        .iter()
-        .map(|(name, arity)| (Symbol::from(*name), *arity))
-        .collect();
     let symbol_tables: dashmap::DashMap<
         cranelisp_types::ModuleFullPath,
         cranelisp_types::SymbolTable,
@@ -127,17 +117,15 @@ fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
     known.push("par_codegen_probe");
     let resolved_targets =
         crate::test_support::call_carriers(probe.body(), &module_path, &known);
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
+    let extra_refs: Vec<&Defn> = extra_defns.iter().collect();
+    crate::test_support::probe_defn_clif(
+        &probe,
+        &extra_refs,
+        &resolved_targets,
         &symbol_tables,
-        &module_aliases,
         module_path,
-    );
-    jit.compile_defn_with_targets(&probe, &resolved_targets, compile_ctx)
-        .expect("compile")
-        .clif_ir
+        jit.jit_module(),
+    )
 }
 
 /// A String literal expression (a heap-typed `AlwaysHeap` value).

@@ -426,7 +426,10 @@ where
     }
 
     /// Compile a call to a resolved callee (builtin, trait method, sig-dispatch,
-    /// or auto-curry). Handles the four `ResolvedCall` variants.
+    /// or auto-curry). Handles the four `ResolvedCall` variants — one named
+    /// `FnCompiler` method per variant (S111 R5 §2 — pure protocol-boundary
+    /// extraction, byte-identical). TraitMethod and SigDispatch share
+    /// `compile_moded_user_call` (the P7 dedup: identical below the `sym` bind).
     fn compile_resolved_call(
         &mut self,
         resolved: ResolvedCall,
@@ -441,310 +444,31 @@ where
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
-                // Decision 24: uniform consuming convention. Extern primitives
-                // dec their own heap args; inline builtins operate on NeverHeap
-                // operands. The caller never emits a post-call temporary dec.
-
-                // IO bind: intercept and compile inline.
-                // bind uses consuming semantics: it takes ownership of both args
-                // by storing them in the Bind node. For variables, inc to add
-                // the Bind node's reference. For temporaries, transfer ownership
-                // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
-                if op_name.as_ref() == "bind" {
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    return self.compile_bind_inline(&arg_vals, span);
-                }
-
-                // Race/select combinators (S96 Chunk C, slice 7): name-matched
-                // here exactly like `bind` (the inline-primitive precedent — NOT
-                // an inferred AST marker; `io-trampoline.md §16.2`). `select`
-                // takes one branch `Vec (IO a)` (consuming convention, so a
-                // temporary `[..]` literal transfers its rc and a `Var` is inc'd
-                // once); `race a b` builds the same node over a 2-element branch
-                // Vec from its two IO args (`compile_race` compiles the args
-                // itself via `compile_vec_lit`). Both produce the one
-                // `IO_TAG_SELECT` node (`io-trampoline.md §16.3/§16.4`).
-                if op_name.as_ref() == "select" {
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    return self.compile_select(&arg_vals, span);
-                }
-                if op_name.as_ref() == "race" {
-                    self.in_tail_position = saved_tail;
-                    return self.compile_race(args, span);
-                }
-
-                // `sleep` — the runtime timer poll leaf (S96 Chunk C4, slice 7;
-                // `reactor.md §2.18`). Name-matched here like `race`/`select`/`bind`
-                // (the inline-primitive precedent). `compile_sleep` builds an
-                // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the RUNTIME symbol
-                // `runtime/sleep_pollfn` (the new non-GOT runtime-symbol path —
-                // distinct from `compile_poll_effect`'s GOT-slot load).
-                if op_name.as_ref() == "sleep" {
-                    self.in_tail_position = saved_tail;
-                    return self.compile_sleep(args, span);
-                }
-
-                // Vec operations: intercept and compile inline.
-                // Vec ops handle their own temporary cleanup internally
-                // via emit_vec_drop_if_temporary (COW-specific, not post-call
-                // convention). See ring2-rc.md §3.3.
-                if is_vec_primitive(op_name) {
-                    let arg_vals = self.compile_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
-                        return Ok(val);
-                    }
-                    // Fall through to extern if compile_vec_op returned None.
-                    return self.compile_extern_call(op_name, &arg_vals, span);
-                }
-
-                // Trace ADT field accessors (`name`/`params`/`result`/
-                // `children`/`nanos`) are seeded by int's bootstrap as bare-named
-                // `DefKind::Primitive` entries with NO GOT slot and NO code — the
-                // bodies are the `cranelisp_trace_*` intrinsics in
-                // `cranelisp-intrinsics::trace`, published via `intrinsics_table()`
-                // (FIXME 0256). typecheck resolves the call as
-                // `BuiltinFn { name: "nanos" }` with no rewrite, so without this
-                // intercept the unknown-builtin arm below would emit
-                // `Linkage::Import` for the undefined symbol `nanos`
-                // ("can't resolve symbol nanos" — FIXME 0292 / 0285 defect 1).
-                //
-                // The bare-name → intrinsic-name mapping lost in the W1.5 trace
-                // relocation is restored here: rewrite to `cranelisp_trace_<field>`
-                // and route through `compile_extern_call`, which the catalog
-                // resolves identically in JIT (`JITBuilder::symbol`), cache-hit
-                // (`Linker::register_symbol`), and `--link` (archive force-link).
-                // Scoped to a Trace-typed receiver (the single arg's inferred type
-                // is `primitives/Trace`) so a user `nanos`/`name` field on an
-                // unrelated ADT is not hijacked. The intrinsics use the consuming
-                // convention (each consumes its Trace arg via `consume_trace_call`),
-                // matching the other `cranelisp_trace_*` externs.
-                if let Some(intrinsic) = self.trace_accessor_intrinsic(op_name, args) {
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    return self.compile_extern_call(intrinsic, &arg_vals, span);
-                }
-
-                if is_extern_primitive(op_name) {
-                    // Decision 24 (Sprint 56 Step 2c): uniform consuming
-                    // convention. Every extern dec's its own heap args via
-                    // `rc::consume_shallow` (simple heap) or
-                    // `crate::drop::consume_*` (complex heap — SList, Sexp,
-                    // Vec, Trace ADT, IO tree). Caller incs heap-typed Var
-                    // args here so the Var's scope still holds a live
-                    // reference after the callee's dec. `string-identity`
-                    // is special: it inc-and-returns its arg, so callers
-                    // stay on plain arg compilation (the identity retains
-                    // the original reference).
-                    let arg_vals = if op_name.as_ref() == "string-identity" {
-                        self.compile_arg_list(args)?
-                    } else {
-                        self.compile_consuming_arg_list(args)?
-                    };
-                    // H3 per-extern adaptation-pair attribution (§9.2 / §13.2.1):
-                    // `str-len` is the single increment-I template instance of the
-                    // dual-symbol convention — a hand-audited only-read consuming
-                    // extern whose call sites pay a Decision-24 adaptation pair
-                    // (the consuming dec, plus an adaptation inc on a borrowed
-                    // arg). Tally the site into `CRANELISP_RC_STATS` so `/qa`'s
-                    // L-D5 lane reads the per-extern pair population. Runtime tally
-                    // (the pair is paid at run) gated on the codegen-time RC_STATS
-                    // switch (off ⇒ no emitted IR ⇒ byte-identical).
-                    if op_name.as_ref() == "str-len" {
-                        heap::emit_rc_stat_call_gated(
-                            &mut self.builder,
-                            self.module,
-                            "runtime/extern_adapt_str_len",
-                        );
-                    }
-                    self.in_tail_position = saved_tail;
-                    // Per Decision 0048 §"Structural invariant — backend
-                    // dep-ban": every PRIMITIVE call site MUST emit
-                    // GOT-indirect dispatch against `__cranelisp_got_primitives`
-                    // — never a `Linkage::Import` direct extern, which the
-                    // cache-mode in-process linker (`cache::linker::Linker`)
-                    // cannot resolve via dlsym. Primitives registered in
-                    // `PRIMITIVES_TABLE` (see `cranelisp-primitives::PRIMITIVES_TABLE`)
-                    // have a populated GOT slot.
-                    //
-                    // S110 W1 (§1.1/§1.3 — S1): the GOT-vs-direct-extern
-                    // discrimination is now a keyed read of the Apply carrier, not
-                    // a symbol-table scan. A slot-carried primitive (the fetched
-                    // entry answers `callable_got_slot()`) dispatches GOT-indirect;
-                    // otherwise it is the documented `resolved_target`-with-no-slot
-                    // / known-extern-name arm — an **int-hosted intrinsic** (Trace
-                    // ADT field accessors `cranelisp_trace_name`/`_params`/… or the
-                    // like) registered via `JITBuilder::symbol()` from
-                    // `int_intrinsics()` and NOT a GOT-dispatched SymbolTable entry;
-                    // it lowers as a by-name `Linkage::Import` the JIT/cache linker
-                    // resolves. (Rev-2: no scan fallback — a slotless carrier is the
-                    // extern arm, a bare miss is the extern arm; both by-name.)
-                    let sym = Symbol::from(op_name.as_ref());
-                    let has_got_slot = apply_target
-                        .and_then(|fq| self.ctx.entry_at(fq))
-                        .is_some_and(|(_, e)| e.callable_got_slot().is_some());
-                    if has_got_slot {
-                        return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
-                    }
-                    return self.compile_extern_call(op_name, &arg_vals, span);
-                }
-
-                // Unrecognized builtin: a platform-effect function or a
-                // direct-extern. Platform functions use the consuming
-                // convention — the DLL owns heap args (e.g. `CLString::own()`
-                // captures the string).
-                if !primitives_inline::is_known_builtin(op_name) {
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    // Platform GOT-indirect dispatch arm (TARGET shape;
-                    // platform-interface.md §6.2/§6.3, BC §3 "the
-                    // platform-interface codegen role"). When the platform
-                    // entry carries the NEW shape — a populated `got_slot`
-                    // adopted from the DLL's exported GOT
-                    // (`__cranelisp_got_platform_<name>`, manifest index) —
-                    // dispatch GOT-indirect, structurally identical to
-                    // user-module GOT dispatch. Backend does NOT emit the
-                    // platform GOT (the DLL exports it); it emits the
-                    // dispatch, referencing the GOT data symbol as a
-                    // `Linkage::Import` (resolved by `dlsym` in JIT / `ld` in
-                    // `--link`).
-                    //
-                    // TRANSITIONAL MECHANICS: the fetched entry answers
-                    // `callable_got_slot()` IFF it carries the new `got_slot:
-                    // Some(_)` shape; the as-built shape carries `got_slot: None`
-                    // (the worker stores the fn ptr via a host-allocated slot +
-                    // `JITBuilder::symbol(jit_name, ptr)` direct extern, §9). So
-                    // this `if`-guard activates the new arm exactly when
-                    // int/platform flip to the DLL-exported-GOT model, and keeps
-                    // the as-built direct-extern path live until then — no mode
-                    // fork, no flag (Principle 11). When the flip completes the
-                    // `compile_extern_call` fallback below becomes dead for
-                    // platform fns (the expected narrowing signal).
-                    //
-                    // S110 W1 (§1.1/§1.3 — S2): keyed read of the Apply carrier
-                    // replaces the `resolve_got_target` scan; behaviour-identical
-                    // (the carrier records the same entry the scan terminated at).
-                    let sym = Symbol::from(op_name.as_ref());
-                    let has_got_slot = apply_target
-                        .and_then(|fq| self.ctx.entry_at(fq))
-                        .is_some_and(|(_, e)| e.callable_got_slot().is_some());
-                    if has_got_slot {
-                        // `compile_direct_call` emits the GOT-indirect dispatch AND
-                        // stamps the platform fn-name into the returned Effect
-                        // node's field-3 when the target is a `DefKind::PlatformEffect`
-                        // (step 2/4 of the fault-guarded dispatch funnel; S81 / FIXME
-                        // 0327; BC §3 + §5 invariant 9 Option A). The stamp lives at
-                        // that single chokepoint so EVERY dispatch path stamps —
-                        // this `BuiltinFn` arm and the bare-import `compile_var_apply`
-                        // path alike — and it lands at node-construction time (before
-                        // the force), so the baked name survives a thunk panic on the
-                        // fault path.
-                        return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
-                    }
-                    // As-built fallback: direct `Linkage::Import` against the
-                    // mangled jit_name (the platform fn ptr reaches the JIT via
-                    // `JITBuilder::symbol(jit_name, ptr)`; the cache linker
-                    // registers it identically). Retires when the GOT flip
-                    // lands (§6.3 verdict).
-                    return self.compile_extern_call(op_name, &arg_vals, span);
-                }
-
-                // Inline Ring 0 primitive (arithmetic, comparison, boolean).
-                // All operands are NeverHeap (Int/Bool/Float) — no dec work.
-                //
-                // Per FIXME 0174 + `facades/backend.md` §"Non-goals / forbidden
-                // patterns": `try_emit_inline_primitive` returns `None` for
-                // names outside the inline table — the caller MUST fall
-                // through to the GOT-indirect path. `is_known_builtin` is
-                // checked above so by this point the name IS in the table,
-                // but we still pattern-match the `Some` arm conservatively;
-                // a None here would indicate the two tables drifted apart.
-                let arg_vals = self.compile_arg_list(args)?;
-                self.in_tail_position = saved_tail;
-                match primitives_inline::try_emit_inline_primitive(
-                    &mut self.builder, op_name, &arg_vals, span,
-                    self.module, self.ctx.panic_func_id,
-                ) {
-                    Some(result) => result,
-                    None => {
-                        // Drift between `is_known_builtin` and
-                        // `try_emit_inline_primitive`: fall through to the
-                        // GOT-indirect path (Ring 0 primitives have GOT
-                        // slots per FIXME 0174 resolution).
-                        let sym = Symbol::from(op_name.as_ref());
-                        self.compile_direct_call(&sym, &arg_vals, span, apply_target)
-                    }
-                }
+                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target)
             }
-            ResolvedCall::TraitMethod {
-                ref mangled_name,
-                ..
-            } => {
-                // Per Decision 43 + FIXME 0185: backend has no trait knowledge.
-                // The pre-D43 `primitive_for_trait_method((TraitName, Symbol,
-                // TypeName))` dispatch table — keyed on `(Num, "+", Int)` →
-                // `add-i64` — is the canonical D43-forbidden pattern and has
-                // been deleted. Backend dispatches uniformly: every
-                // ResolvedCall::TraitMethod goes via the trait-impl's
-                // mangled name (e.g., `Num.+$Int`), GOT-indirect like any
-                // user function.
-                //
-                // Performance note: trait operator calls now traverse one
-                // extra call frame compared to the pre-D43 inline-IR path
-                // (the impl body is `(defn + [a b] (add-i64 a b))` — one
-                // hop to the inline-substituted primitive). FIXME 0185
-                // tracks the typecheck-side migration that restores inline
-                // optimisation by having typecheck emit `BuiltinFn { name:
-                // "add-i64" }` directly for primitive-implemented trait
-                // methods, bypassing the `TraitMethod` route entirely.
-                // User (trait-impl) function — moded consuming convention
-                // (§3.1): the callee's `ModeSummary` keys the per-position inc;
-                // temporaries to `Borrowed` params owe a post-call dec.
+            ResolvedCall::TraitMethod { ref mangled_name, .. } => {
                 let sym = Symbol::from(mangled_name.as_ref());
-                let (arg_vals, post_call_decs) =
-                    self.compile_consuming_arg_list_moded(args, apply_target)?;
-                self.in_tail_position = saved_tail;
-                let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
-                self.emit_post_call_decs(&post_call_decs);
-                Ok(result)
+                self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
             }
             ResolvedCall::SigDispatch { mangled_name } => {
-                // User function — moded consuming convention (§3.1).
                 let sym = Symbol::from(mangled_name.as_ref());
-                let (arg_vals, post_call_decs) =
-                    self.compile_consuming_arg_list_moded(args, apply_target)?;
-                self.in_tail_position = saved_tail;
-                let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
-                self.emit_post_call_decs(&post_call_decs);
-                Ok(result)
+                self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
             }
             ResolvedCall::AutoCurry {
                 ref target_name,
                 applied_count,
                 total_count,
                 ref trait_resolution,
-            } => {
-                // Compile applied args with consuming convention:
-                // the auto-curry closure captures them, and the wrapper
-                // will inc before forwarding to the target function.
-                let arg_vals = self.compile_consuming_arg_list(args)?;
-                self.in_tail_position = saved_tail;
-                // S110 W2 (row 17): the Apply-span carrier is the plain-fn curry
-                // target's STORAGE key (callee-span transport, W0.1b), threaded to
-                // the wrapper's GOT read.
-                self.compile_auto_curry(
-                    target_name,
-                    &arg_vals,
-                    applied_count,
-                    total_count,
-                    args,
-                    span,
-                    trait_resolution.as_deref(),
-                    apply_target,
-                )
-            }
+            } => self.compile_auto_curry_call(
+                target_name,
+                args,
+                applied_count,
+                total_count,
+                trait_resolution.as_deref(),
+                span,
+                saved_tail,
+                apply_target,
+            ),
             // `ResolvedCall` is `#[non_exhaustive]` (cranelisp-types crate-root
             // policy): a wildcard arm is required for cross-crate matches. Any
             // future variant the backend does not yet lower is a codegen error
@@ -754,6 +478,378 @@ where
                 location: ErrorLocation::from_span(span),
             }),
         }
+    }
+
+    /// S111 R5 §2.1 (Principle 7): the single "does the keyed entry carry a GOT
+    /// slot" predicate, shared by the extern-primitive and platform GOT-dispatch
+    /// arms (was the identical inline predicate at both — the §2.1 dedup). Pure
+    /// (no side effects), so evaluating it at each arm's point is byte-identical
+    /// to the two former inline copies.
+    fn apply_target_has_got_slot(&self, apply_target: Option<&FQSymbol>) -> bool {
+        apply_target
+            .and_then(|fq| self.ctx.entry_at(fq))
+            .is_some_and(|(_, e)| e.callable_got_slot().is_some())
+    }
+
+    /// The `ResolvedCall::BuiltinFn` arm (S111 R5 §2.3). A linear guard chain:
+    /// the four inline-effect interceptors (`bind`/`select`/`race`/`sleep`), the
+    /// vec-op and trace-accessor intercepts, then the three heavy dispatch
+    /// classes (`compile_extern_primitive_call` / `compile_platform_or_direct_extern_call`
+    /// / `compile_inline_ring0_call`), each delegating.
+    fn compile_builtin_fn_call(
+        &mut self,
+        op_name: &Symbol,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        // Decision 24: uniform consuming convention. Extern primitives
+        // dec their own heap args; inline builtins operate on NeverHeap
+        // operands. The caller never emits a post-call temporary dec.
+
+        // IO bind: intercept and compile inline.
+        // bind uses consuming semantics: it takes ownership of both args
+        // by storing them in the Bind node. For variables, inc to add
+        // the Bind node's reference. For temporaries, transfer ownership
+        // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
+        if op_name.as_ref() == "bind" {
+            let arg_vals = self.compile_consuming_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            return self.compile_bind_inline(&arg_vals, span);
+        }
+
+        // Race/select combinators (S96 Chunk C, slice 7): name-matched
+        // here exactly like `bind` (the inline-primitive precedent — NOT
+        // an inferred AST marker; `io-trampoline.md §16.2`). `select`
+        // takes one branch `Vec (IO a)` (consuming convention, so a
+        // temporary `[..]` literal transfers its rc and a `Var` is inc'd
+        // once); `race a b` builds the same node over a 2-element branch
+        // Vec from its two IO args (`compile_race` compiles the args
+        // itself via `compile_vec_lit`). Both produce the one
+        // `IO_TAG_SELECT` node (`io-trampoline.md §16.3/§16.4`).
+        if op_name.as_ref() == "select" {
+            let arg_vals = self.compile_consuming_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            return self.compile_select(&arg_vals, span);
+        }
+        if op_name.as_ref() == "race" {
+            self.in_tail_position = saved_tail;
+            return self.compile_race(args, span);
+        }
+
+        // `sleep` — the runtime timer poll leaf (S96 Chunk C4, slice 7;
+        // `reactor.md §2.18`). Name-matched here like `race`/`select`/`bind`
+        // (the inline-primitive precedent). `compile_sleep` builds an
+        // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the RUNTIME symbol
+        // `runtime/sleep_pollfn` (the new non-GOT runtime-symbol path —
+        // distinct from `compile_poll_effect`'s GOT-slot load).
+        if op_name.as_ref() == "sleep" {
+            self.in_tail_position = saved_tail;
+            return self.compile_sleep(args, span);
+        }
+
+        // Vec operations: intercept and compile inline.
+        // Vec ops handle their own temporary cleanup internally
+        // via emit_vec_drop_if_temporary (COW-specific, not post-call
+        // convention). See ring2-rc.md §3.3.
+        if is_vec_primitive(op_name) {
+            let arg_vals = self.compile_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
+                return Ok(val);
+            }
+            // Fall through to extern if compile_vec_op returned None.
+            return self.compile_extern_call(op_name, &arg_vals, span);
+        }
+
+        // Trace ADT field accessors (`name`/`params`/`result`/
+        // `children`/`nanos`) are seeded by int's bootstrap as bare-named
+        // `DefKind::Primitive` entries with NO GOT slot and NO code — the
+        // bodies are the `cranelisp_trace_*` intrinsics in
+        // `cranelisp-intrinsics::trace`, published via `intrinsics_table()`
+        // (FIXME 0256). typecheck resolves the call as
+        // `BuiltinFn { name: "nanos" }` with no rewrite, so without this
+        // intercept the unknown-builtin arm below would emit
+        // `Linkage::Import` for the undefined symbol `nanos`
+        // ("can't resolve symbol nanos" — FIXME 0292 / 0285 defect 1).
+        //
+        // The bare-name → intrinsic-name mapping lost in the W1.5 trace
+        // relocation is restored here: rewrite to `cranelisp_trace_<field>`
+        // and route through `compile_extern_call`, which the catalog
+        // resolves identically in JIT (`JITBuilder::symbol`), cache-hit
+        // (`Linker::register_symbol`), and `--link` (archive force-link).
+        // Scoped to a Trace-typed receiver (the single arg's inferred type
+        // is `primitives/Trace`) so a user `nanos`/`name` field on an
+        // unrelated ADT is not hijacked. The intrinsics use the consuming
+        // convention (each consumes its Trace arg via `consume_trace_call`),
+        // matching the other `cranelisp_trace_*` externs.
+        if let Some(intrinsic) = self.trace_accessor_intrinsic(op_name, args) {
+            let arg_vals = self.compile_consuming_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            return self.compile_extern_call(intrinsic, &arg_vals, span);
+        }
+
+        if is_extern_primitive(op_name) {
+            return self.compile_extern_primitive_call(op_name, args, span, saved_tail, apply_target);
+        }
+
+        // Unrecognized builtin: a platform-effect function or a direct-extern.
+        if !primitives_inline::is_known_builtin(op_name) {
+            return self.compile_platform_or_direct_extern_call(
+                op_name, args, span, saved_tail, apply_target,
+            );
+        }
+
+        self.compile_inline_ring0_call(op_name, args, span, saved_tail, apply_target)
+    }
+
+    /// The extern-primitive dispatch class (S111 R5 §2.3; was the
+    /// `is_extern_primitive` arm of `compile_builtin_fn_call`). Consuming
+    /// convention with the `string-identity` no-consume exception + the `str-len`
+    /// H3 RC-stat tally; then the §2.1 GOT-vs-direct-extern decision.
+    fn compile_extern_primitive_call(
+        &mut self,
+        op_name: &Symbol,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        // Decision 24 (Sprint 56 Step 2c): uniform consuming
+        // convention. Every extern dec's its own heap args via
+        // `rc::consume_shallow` (simple heap) or
+        // `crate::drop::consume_*` (complex heap — SList, Sexp,
+        // Vec, Trace ADT, IO tree). Caller incs heap-typed Var
+        // args here so the Var's scope still holds a live
+        // reference after the callee's dec. `string-identity`
+        // is special: it inc-and-returns its arg, so callers
+        // stay on plain arg compilation (the identity retains
+        // the original reference).
+        let arg_vals = if op_name.as_ref() == "string-identity" {
+            self.compile_arg_list(args)?
+        } else {
+            self.compile_consuming_arg_list(args)?
+        };
+        // H3 per-extern adaptation-pair attribution (§9.2 / §13.2.1):
+        // `str-len` is the single increment-I template instance of the
+        // dual-symbol convention — a hand-audited only-read consuming
+        // extern whose call sites pay a Decision-24 adaptation pair
+        // (the consuming dec, plus an adaptation inc on a borrowed
+        // arg). Tally the site into `CRANELISP_RC_STATS` so `/qa`'s
+        // L-D5 lane reads the per-extern pair population. Runtime tally
+        // (the pair is paid at run) gated on the codegen-time RC_STATS
+        // switch (off ⇒ no emitted IR ⇒ byte-identical).
+        if op_name.as_ref() == "str-len" {
+            heap::emit_rc_stat_call_gated(
+                &mut self.builder,
+                self.module,
+                "runtime/extern_adapt_str_len",
+            );
+        }
+        self.in_tail_position = saved_tail;
+        // Per Decision 0048 §"Structural invariant — backend
+        // dep-ban": every PRIMITIVE call site MUST emit
+        // GOT-indirect dispatch against `__cranelisp_got_primitives`
+        // — never a `Linkage::Import` direct extern, which the
+        // cache-mode in-process linker (`cache::linker::Linker`)
+        // cannot resolve via dlsym. Primitives registered in
+        // `PRIMITIVES_TABLE` (see `cranelisp-primitives::PRIMITIVES_TABLE`)
+        // have a populated GOT slot.
+        //
+        // S110 W1 (§1.1/§1.3 — S1): the GOT-vs-direct-extern
+        // discrimination is now a keyed read of the Apply carrier, not
+        // a symbol-table scan. A slot-carried primitive (the fetched
+        // entry answers `callable_got_slot()`) dispatches GOT-indirect;
+        // otherwise it is the documented `resolved_target`-with-no-slot
+        // / known-extern-name arm — an **int-hosted intrinsic** (Trace
+        // ADT field accessors `cranelisp_trace_name`/`_params`/… or the
+        // like) registered via `JITBuilder::symbol()` from
+        // `int_intrinsics()` and NOT a GOT-dispatched SymbolTable entry;
+        // it lowers as a by-name `Linkage::Import` the JIT/cache linker
+        // resolves. (Rev-2: no scan fallback — a slotless carrier is the
+        // extern arm, a bare miss is the extern arm; both by-name.)
+        let sym = Symbol::from(op_name.as_ref());
+        if self.apply_target_has_got_slot(apply_target) {
+            return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
+        }
+        self.compile_extern_call(op_name, &arg_vals, span)
+    }
+
+    /// The unrecognized-builtin dispatch class (S111 R5 §2.3; was the
+    /// `!is_known_builtin` arm). Platform GOT-adopt arm (§2.1 decision) else the
+    /// as-built direct-extern fallback.
+    fn compile_platform_or_direct_extern_call(
+        &mut self,
+        op_name: &Symbol,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        // Platform functions use the consuming convention — the DLL owns heap
+        // args (e.g. `CLString::own()` captures the string).
+        let arg_vals = self.compile_consuming_arg_list(args)?;
+        self.in_tail_position = saved_tail;
+        // Platform GOT-indirect dispatch arm (TARGET shape;
+        // platform-interface.md §6.2/§6.3, BC §3 "the
+        // platform-interface codegen role"). When the platform
+        // entry carries the NEW shape — a populated `got_slot`
+        // adopted from the DLL's exported GOT
+        // (`__cranelisp_got_platform_<name>`, manifest index) —
+        // dispatch GOT-indirect, structurally identical to
+        // user-module GOT dispatch. Backend does NOT emit the
+        // platform GOT (the DLL exports it); it emits the
+        // dispatch, referencing the GOT data symbol as a
+        // `Linkage::Import` (resolved by `dlsym` in JIT / `ld` in
+        // `--link`).
+        //
+        // TRANSITIONAL MECHANICS: the fetched entry answers
+        // `callable_got_slot()` IFF it carries the new `got_slot:
+        // Some(_)` shape; the as-built shape carries `got_slot: None`
+        // (the worker stores the fn ptr via a host-allocated slot +
+        // `JITBuilder::symbol(jit_name, ptr)` direct extern, §9). So
+        // this `if`-guard activates the new arm exactly when
+        // int/platform flip to the DLL-exported-GOT model, and keeps
+        // the as-built direct-extern path live until then — no mode
+        // fork, no flag (Principle 11). When the flip completes the
+        // `compile_extern_call` fallback below becomes dead for
+        // platform fns (the expected narrowing signal).
+        //
+        // S110 W1 (§1.1/§1.3 — S2): keyed read of the Apply carrier
+        // replaces the `resolve_got_target` scan; behaviour-identical
+        // (the carrier records the same entry the scan terminated at).
+        let sym = Symbol::from(op_name.as_ref());
+        if self.apply_target_has_got_slot(apply_target) {
+            // `compile_direct_call` emits the GOT-indirect dispatch AND
+            // stamps the platform fn-name into the returned Effect
+            // node's field-3 when the target is a `DefKind::PlatformEffect`
+            // (step 2/4 of the fault-guarded dispatch funnel; S81 / FIXME
+            // 0327; BC §3 + §5 invariant 9 Option A). The stamp lives at
+            // that single chokepoint so EVERY dispatch path stamps —
+            // this `BuiltinFn` arm and the bare-import `compile_var_apply`
+            // path alike — and it lands at node-construction time (before
+            // the force), so the baked name survives a thunk panic on the
+            // fault path.
+            return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
+        }
+        // As-built fallback: direct `Linkage::Import` against the
+        // mangled jit_name (the platform fn ptr reaches the JIT via
+        // `JITBuilder::symbol(jit_name, ptr)`; the cache linker
+        // registers it identically). Retires when the GOT flip
+        // lands (§6.3 verdict).
+        self.compile_extern_call(op_name, &arg_vals, span)
+    }
+
+    /// The inline Ring-0 primitive dispatch class (S111 R5 §2.3; was the inline
+    /// arm). `try_emit_inline_primitive` with the drift fall-through to a
+    /// GOT-indirect `compile_direct_call`.
+    fn compile_inline_ring0_call(
+        &mut self,
+        op_name: &Symbol,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        // Inline Ring 0 primitive (arithmetic, comparison, boolean).
+        // All operands are NeverHeap (Int/Bool/Float) — no dec work.
+        //
+        // Per FIXME 0174 + `facades/backend.md` §"Non-goals / forbidden
+        // patterns": `try_emit_inline_primitive` returns `None` for
+        // names outside the inline table — the caller MUST fall
+        // through to the GOT-indirect path. `is_known_builtin` is
+        // checked above so by this point the name IS in the table,
+        // but we still pattern-match the `Some` arm conservatively;
+        // a None here would indicate the two tables drifted apart.
+        let arg_vals = self.compile_arg_list(args)?;
+        self.in_tail_position = saved_tail;
+        match primitives_inline::try_emit_inline_primitive(
+            &mut self.builder, op_name, &arg_vals, span,
+            self.module, self.ctx.panic_func_id,
+        ) {
+            Some(result) => result,
+            None => {
+                // Drift between `is_known_builtin` and
+                // `try_emit_inline_primitive`: fall through to the
+                // GOT-indirect path (Ring 0 primitives have GOT
+                // slots per FIXME 0174 resolution).
+                let sym = Symbol::from(op_name.as_ref());
+                self.compile_direct_call(&sym, &arg_vals, span, apply_target)
+            }
+        }
+    }
+
+    /// The shared TraitMethod / SigDispatch dispatch (S111 R5 §2.2 — the P7
+    /// dedup: both `ResolvedCall` arms are IDENTICAL below the `sym` bind).
+    ///
+    /// Per Decision 43 + FIXME 0185: backend has no trait knowledge.
+    /// The pre-D43 `primitive_for_trait_method((TraitName, Symbol,
+    /// TypeName))` dispatch table — keyed on `(Num, "+", Int)` →
+    /// `add-i64` — is the canonical D43-forbidden pattern and has
+    /// been deleted. Backend dispatches uniformly: every
+    /// ResolvedCall::TraitMethod goes via the trait-impl's
+    /// mangled name (e.g., `Num.+$Int`), GOT-indirect like any
+    /// user function.
+    ///
+    /// Performance note: trait operator calls now traverse one
+    /// extra call frame compared to the pre-D43 inline-IR path
+    /// (the impl body is `(defn + [a b] (add-i64 a b))` — one
+    /// hop to the inline-substituted primitive). FIXME 0185
+    /// tracks the typecheck-side migration that restores inline
+    /// optimisation by having typecheck emit `BuiltinFn { name:
+    /// "add-i64" }` directly for primitive-implemented trait
+    /// methods, bypassing the `TraitMethod` route entirely.
+    /// User (trait-impl) / sig-dispatch function — moded consuming convention
+    /// (§3.1): the callee's `ModeSummary` keys the per-position inc; temporaries
+    /// to `Borrowed` params owe a post-call dec.
+    fn compile_moded_user_call(
+        &mut self,
+        sym: &Symbol,
+        args: &[MonoExpr],
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        let (arg_vals, post_call_decs) =
+            self.compile_consuming_arg_list_moded(args, apply_target)?;
+        self.in_tail_position = saved_tail;
+        let result = self.compile_direct_call(sym, &arg_vals, span, apply_target)?;
+        self.emit_post_call_decs(&post_call_decs);
+        Ok(result)
+    }
+
+    /// The `ResolvedCall::AutoCurry` arm (S111 R5 §2.2).
+    #[allow(clippy::too_many_arguments)]
+    fn compile_auto_curry_call(
+        &mut self,
+        target_name: &Symbol,
+        args: &[MonoExpr],
+        applied_count: usize,
+        total_count: usize,
+        trait_resolution: Option<&ResolvedCall>,
+        span: Span,
+        saved_tail: bool,
+        apply_target: Option<&FQSymbol>,
+    ) -> Result<Value, CranelispError> {
+        // Compile applied args with consuming convention:
+        // the auto-curry closure captures them, and the wrapper
+        // will inc before forwarding to the target function.
+        let arg_vals = self.compile_consuming_arg_list(args)?;
+        self.in_tail_position = saved_tail;
+        // S110 W2 (row 17): the Apply-span carrier is the plain-fn curry
+        // target's STORAGE key (callee-span transport, W0.1b), threaded to
+        // the wrapper's GOT read.
+        self.compile_auto_curry(
+            target_name,
+            &arg_vals,
+            applied_count,
+            total_count,
+            args,
+            span,
+            trait_resolution,
+            apply_target,
+        )
     }
 
     /// Compile a function application where the callee is a Var.
@@ -2275,3 +2371,6 @@ mod tail_transfer_skip_tests;
 
 #[cfg(test)]
 mod moded_arg_rc_tests;
+
+#[cfg(test)]
+mod keyed_miss_tests;

@@ -294,7 +294,6 @@ fn load_meta_corrupt_bytes_returns_cache_stale_deserialise() {
 
 // -- Deprecated shim coverage (kept compiling for /int + /qa migration window) --
 
-#[allow(deprecated)]
 #[test]
 fn deprecated_metadata_round_trip_still_works() {
     let dir = tempfile::tempdir().unwrap();
@@ -308,7 +307,6 @@ fn deprecated_metadata_round_trip_still_works() {
     assert_eq!(loaded.symbol_table.path, ModuleFullPath::from("legacy"));
 }
 
-#[allow(deprecated)]
 #[test]
 fn deprecated_read_nonexistent_returns_error() {
     let result = read_cached_metadata(Path::new("/nonexistent/path/test.meta.json"));

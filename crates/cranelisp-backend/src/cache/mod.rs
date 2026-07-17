@@ -409,7 +409,6 @@ fn module_dir_and_stem(module_path: &cranelisp_types::ModuleFullPath) -> (String
 /// re-done from source (fast compared to full pipeline). Full `.o` loading
 /// via the Linker is deferred to a future sprint.
 #[derive(Debug, Clone)]
-#[allow(deprecated)]
 pub struct CachedModule {
     /// The deserialized module metadata (symbol table, structure, codegen state).
     ///
@@ -426,7 +425,6 @@ pub struct CachedModule {
     pub has_object: bool,
 }
 
-#[allow(deprecated)]
 impl CachedModule {
     /// Get the restored symbol table.
     pub fn symbol_table(&self) -> &cranelisp_types::SymbolTable {
@@ -473,7 +471,6 @@ impl CachedModule {
 /// `SymbolTable` must have the same entries as a freshly typechecked module.
 /// This is enforced structurally: both paths feed the same
 /// `install_module_scope()` function in the pipeline.
-#[allow(deprecated)]
 pub fn try_load_cached_module(
     cache_dir: &std::path::Path,
     module_path: &cranelisp_types::ModuleFullPath,
@@ -535,7 +532,6 @@ pub fn try_load_cached_module(
 /// into the live GOT using the slot assignments from `cached.codegen_state().got_slots`.
 ///
 /// Returns a map of function name → code pointer (`*const u8`).
-#[allow(deprecated)]
 pub fn load_cached_object(
     linker: &mut linker::Linker,
     cached: &CachedModule,
@@ -586,5 +582,4 @@ pub(crate) fn atomic_write(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests;

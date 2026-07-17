@@ -226,12 +226,10 @@ fn test_compile_module_to_object_simple() {
     let tables = table_with_def(&module, defn.clone(), scheme);
 
     let mut obj_module = test_object_module();
-    let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
     let _result = crate::compile_to_module(
         module,
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj_module,
         false,
     ).unwrap();
@@ -293,12 +291,10 @@ fn test_compile_module_to_object_with_params() {
     let tables = table_with_def(&module, defn.clone(), scheme);
 
     let mut obj_module = test_object_module();
-    let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
     let _result = crate::compile_to_module(
         module,
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj_module,
         false,
     ).unwrap();

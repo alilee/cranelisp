@@ -34,7 +34,6 @@ use cranelisp_types::{ErrorLocation,
     Scheme, Span, Symbol, SymbolTable, Type,
 };
 
-#[allow(deprecated)]
 use super::serialize::CacheMetadata;
 
 /// All inputs needed to compile a module to an ObjectModule.
@@ -185,7 +184,6 @@ pub fn build_isa(
 /// envelope. The current `metadata: &CacheMetadata` parameter is preserved
 /// during the Wave 2b parallel migration; it is wrapped onto an
 /// already-deprecated type.
-#[allow(deprecated)]
 pub fn build_cache_packet(
     cache_dir: &Path,
     module_path: &ModuleFullPath,
@@ -270,21 +268,17 @@ pub fn process_cache_packet(
         let mut obj_module = ObjectModule::new(obj_builder);
 
         // Object-mode full-module compile: cross-module references are emitted
-        // GOT-indirect and resolved by the linker at load (not via alias-prefix
-        // resolution at codegen), so an empty alias table is the correct,
-        // behaviour-preserving input here — the keyed entry fetch (`entry_at`)
-        // reads the callee by its fully-qualified name with no alias
-        // substitution (the S110-W1-deleted `resolve_got_target` qualified-name
-        // path no longer runs). (S75 W2 D41 rotation added the `module_aliases`
-        // param to `compile_to_module`.)
-        let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
+        // GOT-indirect and resolved by the linker at load, and the keyed entry
+        // fetch (`entry_at`) reads the callee by its fully-qualified name with
+        // no alias substitution (the S110-W1-deleted `resolve_got_target`
+        // qualified-name path no longer runs; the S111-R4-deleted
+        // `module_aliases` compile param carried nothing after W3).
         // Object-mode cache rebuild is a batch path (introspection off) — the
         // CLIF text is dropped unread, so skip rendering it (FIXME 0325).
         crate::compile_to_module(
             input.module_path.clone(),
             &names,
             symbol_tables,
-            &module_aliases,
             &mut obj_module,
             false,
         )?;
@@ -330,5 +324,4 @@ pub struct ProcessedPacket {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests;

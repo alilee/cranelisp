@@ -19,61 +19,6 @@ use cranelisp_types::{
     Span, Symbol, SymbolTables,
 };
 
-/// Compilation artifacts returned by `compile_defn`.
-///
-/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
-/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)"). This is the
-/// lower-level codegen-step record produced inside `Jit::compile_defn`;
-/// `compile_to_module` repackages it into the boundary `CompilationArtifacts`.
-///
-// FIXME(W4): the struct + its fields read no further in-crate now that the
-// JIT-orchestration surface narrowed to `pub(crate)` — its only consumers
-// were int's parallel `pipeline.rs` path (collapses into `compile_to_module`
-// in S77). `allow(dead_code)` is the expected narrowing signal; W4/S77
-// decides delete-vs-fold.
-#[allow(dead_code)]
-pub(crate) struct CompileArtifacts {
-    /// Cranelift IR text (captured before machine code generation).
-    pub clif_ir: String,
-    /// Native disassembly text (None if disasm not supported on this platform).
-    pub disasm: Option<String>,
-    /// Size of generated machine code in bytes.
-    pub code_size: Option<usize>,
-}
-
-use crate::compiler::{CompileContext, FnCompiler};
-
-/// Build the ISA for the current host architecture.
-///
-/// Single construction point for the entire backend.
-pub(crate) fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, CranelispError> {
-    let mut flag_builder = settings::builder();
-    flag_builder
-        .set("use_colocated_libcalls", "false")
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to set ISA flag: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-    flag_builder
-        .set("is_pic", "false")
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to set ISA flag: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-
-    let isa_builder =
-        cranelift_native::builder().map_err(|msg| CranelispError::CodegenError {
-            message: format!("host architecture not supported: {msg}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-
-    isa_builder
-        .finish(settings::Flags::new(flag_builder))
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to build ISA: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })
-}
 
 /// Register all runtime intrinsics on a JITBuilder by function pointer.
 ///
@@ -219,18 +164,6 @@ pub struct Jit {
     module: Option<JITModule>,
     ctx: cranelift::codegen::Context,
     func_ctx: FunctionBuilderContext,
-    /// FuncId for `runtime/alloc` — needed by heap emission helpers.
-    alloc_func_id: Option<FuncId>,
-    /// FuncId for `runtime/dealloc` — needed by RC dec emission.
-    dealloc_func_id: Option<FuncId>,
-    /// FuncId for `runtime/alloc_string` — needed by string literal codegen.
-    alloc_string_func_id: Option<FuncId>,
-    /// FuncId for `runtime/panic` — needed for match exhaustiveness failure.
-    panic_func_id: Option<FuncId>,
-    /// FuncId for `runtime/vec_new` — needed by Vec literal codegen.
-    vec_new_func_id: Option<FuncId>,
-    /// FuncId for `runtime/vec_drop` — needed by Vec drop glue.
-    vec_drop_func_id: Option<FuncId>,
     /// Host-promised symbol map — the escape hatch consulted at module
     /// finalization for symbols neither codegen-emitted, bundled
     /// (`cranelisp-primitives`), nor catalogued
@@ -318,7 +251,7 @@ impl Jit {
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
-        let isa = build_isa()?;
+        let isa = crate::cache::object::build_isa(false)?;
         let mut builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
@@ -354,7 +287,7 @@ impl Jit {
     pub(crate) fn new_with_symbols(
         extra_symbols: &[(&str, *const u8)],
     ) -> Result<Self, CranelispError> {
-        let isa = build_isa()?;
+        let isa = crate::cache::object::build_isa(false)?;
         Self::from_isa(isa, extra_symbols)
     }
 
@@ -429,12 +362,6 @@ impl Jit {
             module: Some(module),
             ctx,
             func_ctx,
-            alloc_func_id: None,
-            dealloc_func_id: None,
-            alloc_string_func_id: None,
-            panic_func_id: None,
-            vec_new_func_id: None,
-            vec_drop_func_id: None,
             host_symbols,
         }
     }
@@ -502,18 +429,10 @@ impl Jit {
     /// Must be called before compiling any function that needs heap operations.
     /// Returns the declared FuncIds for use by codegen.
     ///
-    /// Delegates to the generic `declare_intrinsics_generic<M>` and stores
-    /// the 6 convenience FuncIds on the Jit struct for `build_compile_context`.
+    /// Delegates to the generic `declare_intrinsics_generic<M>` and projects out
+    /// the 6 convenience FuncIds callers use directly.
     pub(crate) fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
         let generic_ids = declare_intrinsics_generic(self.module_mut())?;
-
-        // Store on self for build_compile_context.
-        self.alloc_func_id = generic_ids.alloc;
-        self.dealloc_func_id = generic_ids.dealloc;
-        self.alloc_string_func_id = generic_ids.alloc_string;
-        self.panic_func_id = generic_ids.panic;
-        self.vec_new_func_id = generic_ids.vec_new;
-        self.vec_drop_func_id = generic_ids.vec_drop;
 
         Ok(IntrinsicIds {
             alloc: generic_ids.alloc.expect("runtime/alloc must be declared"),
@@ -578,155 +497,6 @@ impl Jit {
         Ok(())
     }
 
-    /// Compile a function definition into Cranelift IR.
-    /// Returns the CLIF IR text for introspection.
-    ///
-    /// The `compile_ctx` bundles all environment needed for codegen: function IDs,
-    /// arities, GOT state, and intrinsic IDs. Construct it at the call site using
-    /// `Jit::build_compile_context`.
-    pub(crate) fn compile_defn<C, L>(
-        &mut self,
-        defn: &Defn,
-        compile_ctx: CompileContext<'_, C, L>,
-    ) -> Result<CompileArtifacts, CranelispError>
-    where
-        C: cranelisp_types::CodeStore,
-        L: cranelisp_types::LinkerStore,
-    {
-        self.compile_defn_with_targets(
-            defn,
-            &std::collections::HashMap::new(),
-            compile_ctx,
-        )
-    }
-
-    /// Like [`Self::compile_defn`] but threads the W1 dispatch carriers
-    /// (`resolved_targets`, span-keyed) into the lenient view build (KC-W0-6).
-    /// After the W1 flip a poll/platform/extern/direct-call site reads the
-    /// callee's `resolved_target`; a harness that seeds a `DefKind::PlatformEffect`
-    /// / `PrimitiveExtern` / user-fn entry supplies the FQ it stored it under so
-    /// the keyed read (`entry_at`) lands. `compile_defn` above passes an empty
-    /// map for the fixtures whose bodies drive no keyed read.
-    pub(crate) fn compile_defn_with_targets<C, L>(
-        &mut self,
-        defn: &Defn,
-        resolved_targets: &std::collections::HashMap<Span, cranelisp_types::FQSymbol>,
-        compile_ctx: CompileContext<'_, C, L>,
-    ) -> Result<CompileArtifacts, CranelispError>
-    where
-        C: cranelisp_types::CodeStore,
-        L: cranelisp_types::LinkerStore,
-    {
-        self.ctx.func.signature = self.build_sig(defn.params().len());
-        self.ctx.func.name =
-            cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
-
-        // Build the function body.
-        // The caller provides the enriched defn (with resolved_call and
-        // inferred_type annotations from post-pass enrichment). Do NOT
-        // override with the symbol table's ast field — that version has
-        // unresolved type variables from the dual-write and lacks post-pass
-        // enrichment (resolve_deferred_trait_calls, final substitution).
-        //
-        // S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391):
-        // the codegen walk is over `MonoExpr` (every node `ConcreteType`-typed).
-        // This path takes a bare enriched `&Defn` (NOT a `ModuleEntry`), so there
-        // is NO `codegen_view` to consume — it builds one LENIENTLY here.
-        //
-        // **NO LIVE CALLER (KC-W0-2 finding, 2026-07-15 call-site grep; design
-        // §5 finding 3).** `compile_defn` is reached ONLY from `#[cfg(test)]`
-        // harnesses (`jit/tests.rs`, `module_assembly_tests.rs`, the
-        // `*_codegen_tests.rs` siblings). The prior rustdoc's "the GENERIC defn
-        // template that the REPL calls directly" was STALE: the live REPL/`--run`
-        // path is `compile_to_module`, which post-W0.b consumes the
-        // typecheck-populated `codegen_view` (typecheck is the SOLE mono-view
-        // producer — `backend-keyed-consumer.md` §4 W0.b/§5) and hard-errors on a
-        // `None`; the lenient rebuild lives ONLY here. A bare generic template
-        // (`(defn id [x] x)` with `x: Var a`) is lowered only by this test helper;
-        // its residual `Var` nodes are read ONLY via `signature_heap_category`
-        // (Var→Mixed).
-        //
-        // W3 (`backend-keyed-consumer.md` §4/§5): the backend `lenient_mono_from_expr`
-        // wrapper was DELETED — this test-only helper now calls the ONE view builder
-        // (`cranelisp_types::MonoExpr::lenient_from_expr`, the home beside
-        // `from_expr`) directly. The `pattern_ctors` sidecar is empty (a bare
-        // template lowers no ctor patterns); the dispatch carriers come from the
-        // harness-supplied `resolved_targets` (KC-W0-6).
-        let body = cranelisp_types::MonoExpr::lenient_from_expr(
-            defn.body(),
-            &std::collections::HashMap::new(),
-            resolved_targets,
-        );
-        // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
-        // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing
-        // the module through a method (`self.module_mut()`) would re-borrow
-        // the whole `Jit` — instead reach into the `Option` field directly.
-        // Panicking in the `None` arm is unreachable: the module is only
-        // `None` inside `Drop::drop`, which cannot coexist with `&mut self`.
-        let module = self.module.as_mut().unwrap_or_else(|| {
-            unreachable!(
-                "invariant: Jit::module is Some for the Jit's entire lifetime"
-            )
-        });
-        FnCompiler::compile_body(
-            defn,
-            &body,
-            // Lenient JIT/REPL/dev-session path: no `codegen_view`, hence no
-            // ownership summary — protect_return_value stays Decision-24.
-            None,
-            &mut self.ctx.func,
-            &mut self.func_ctx,
-            module,
-            compile_ctx.clone(),
-        )?;
-
-        // Capture CLIF IR text before compilation.
-        let clif_ir = format!("{}", self.ctx.func.display());
-
-        // Enable disassembly capture.
-        self.ctx.set_disasm(true);
-
-        // Compile to machine code.
-        let func_id = *compile_ctx
-            .func_ids
-            .get(&defn.name)
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: format!("function '{}' not declared", defn.name),
-                location: ErrorLocation::from_span(defn.span),
-            })?;
-
-        let module = self.module.as_mut().unwrap_or_else(|| {
-            unreachable!(
-                "invariant: Jit::module is Some for the Jit's entire lifetime"
-            )
-        });
-        module
-            .define_function(func_id, &mut self.ctx)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define function '{}': {e}", defn.name),
-                location: ErrorLocation::from_span(defn.span),
-            })?;
-
-        // Capture disasm + code size after compilation, before clear_context.
-        let (disasm, code_size) = if let Some(compiled) = self.ctx.compiled_code() {
-            (
-                compiled.vcode.clone(),
-                Some(compiled.code_info().total_size as usize),
-            )
-        } else {
-            (None, None)
-        };
-
-        let module = self.module.as_mut().unwrap_or_else(|| {
-            unreachable!(
-                "invariant: Jit::module is Some for the Jit's entire lifetime"
-            )
-        });
-        module.clear_context(&mut self.ctx);
-
-        Ok(CompileArtifacts { clif_ir, disasm, code_size })
-    }
-
     // Decision 23 (Sprint 58 Wave 2 follow-on): per-module GOT slabs are
     // registered with the JIT via `JITBuilder::symbol()` (passed through
     // `Jit::new_with_symbols`'s `extra_symbols`). The symbol address IS the
@@ -739,47 +509,6 @@ impl Jit {
     // has been removed; callers now fold GOT registrations into
     // `extra_symbols`.
 
-    /// Build a `CompileContext` from environment parameters.
-    ///
-    /// Bundles all the information needed for codegen into a single struct,
-    /// eliminating the need to pass individual fields to `compile_defn`.
-    ///
-    /// `symbol_tables` is the shared DashMap of per-module symbol tables.
-    /// `current_module` identifies the module being compiled.
-    pub(crate) fn build_compile_context<'a, C, L>(
-        &self,
-        func_ids: &'a HashMap<Symbol, FuncId>,
-        func_arities: &'a HashMap<Symbol, usize>,
-        symbol_tables: &'a dashmap::DashMap<
-            cranelisp_types::ModuleFullPath,
-            cranelisp_types::SymbolTable<C, L>,
-        >,
-        module_aliases: &'a cranelisp_types::ModuleAliases,
-        current_module: cranelisp_types::ModuleFullPath,
-    ) -> CompileContext<'a, C, L>
-    where
-        C: cranelisp_types::CodeStore,
-        L: cranelisp_types::LinkerStore,
-    {
-        CompileContext {
-            func_ids,
-            func_arities,
-            symbol_tables,
-            module_aliases,
-            current_module,
-            alloc_func_id: self.alloc_func_id,
-            dealloc_func_id: self.dealloc_func_id.unwrap_or_else(|| {
-                unreachable!(
-                    "invariant: declare_intrinsics must run before \
-                     build_compile_context (Decision 24)"
-                )
-            }),
-            alloc_string_func_id: self.alloc_string_func_id,
-            panic_func_id: self.panic_func_id,
-            vec_new_func_id: self.vec_new_func_id,
-            vec_drop_func_id: self.vec_drop_func_id,
-        }
-    }
 
     /// Finalize all pending function definitions.
     pub(crate) fn finalize(&mut self) -> Result<(), CranelispError> {

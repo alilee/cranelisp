@@ -269,9 +269,6 @@ impl core::marker::Unpin for cranelisp_backend::code::Code
 impl core::marker::UnsafeUnpin for cranelisp_backend::code::Code
 impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::code::Code
 impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::code::Code
-pub mod cranelisp_backend::codegen_types
-pub use cranelisp_backend::codegen_types::GOT_TABLE_SIZE
-pub use cranelisp_backend::codegen_types::NULLARY_TAG_THRESHOLD
 pub mod cranelisp_backend::compiler
 pub struct cranelisp_backend::compiler::CompileContext<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub cranelisp_backend::compiler::CompileContext::alloc_func_id: core::option::Option<cranelift_module::module::FuncId>
@@ -280,7 +277,6 @@ pub cranelisp_backend::compiler::CompileContext::current_module: cranelisp_types
 pub cranelisp_backend::compiler::CompileContext::dealloc_func_id: cranelift_module::module::FuncId
 pub cranelisp_backend::compiler::CompileContext::func_arities: &'a std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, usize>
 pub cranelisp_backend::compiler::CompileContext::func_ids: &'a std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelift_module::module::FuncId>
-pub cranelisp_backend::compiler::CompileContext::module_aliases: &'a cranelisp_types::module::ModuleAliases
 pub cranelisp_backend::compiler::CompileContext::panic_func_id: core::option::Option<cranelift_module::module::FuncId>
 pub cranelisp_backend::compiler::CompileContext::symbol_tables: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
 pub cranelisp_backend::compiler::CompileContext::vec_drop_func_id: core::option::Option<cranelift_module::module::FuncId>
@@ -351,8 +347,6 @@ impl core::marker::Unpin for cranelisp_backend::exe::PlatformLayoutCheck
 impl core::marker::UnsafeUnpin for cranelisp_backend::exe::PlatformLayoutCheck
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
-pub mod cranelisp_backend::got
-pub use cranelisp_backend::got::GotTable
 pub mod cranelisp_backend::got_observer
 #[non_exhaustive] #[repr(u8)] pub enum cranelisp_backend::got_observer::GotEventTag
 pub cranelisp_backend::got_observer::GotEventTag::JitWrite
@@ -581,7 +575,7 @@ pub fn cranelift_object::backend::ObjectModule::define_module_got_data(&mut self
 pub fn cranelift_object::backend::ObjectModule::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelift_object::backend::ObjectModule::try_get_finalized_function(&self, cranelift_module::module::FuncId) -> core::option::Option<*const u8>
 pub fn cranelisp_backend::build_isa(bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::compile_to_module<M, C, L>(cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::newtype::Symbol], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &cranelisp_types::module::ModuleAliases, &mut M, bool) -> core::result::Result<cranelisp_backend::CompilationArtifacts, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::compile_to_module<M, C, L>(cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::newtype::Symbol], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &mut M, bool) -> core::result::Result<cranelisp_backend::CompilationArtifacts, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::compile_trap_stub(*const u8, usize) -> core::result::Result<(*const u8, cranelisp_backend::code::Code), cranelisp_backend::error::CompilationError>
 pub fn cranelisp_backend::load_object<C, L>(&cranelisp_types::newtype::ModuleFullPath, &[u8], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::LinkerArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::produce_disasm<C, L>(&cranelisp_types::newtype::FQSymbol, usize, &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<alloc::string::String, cranelisp_backend::error::CompilationError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore

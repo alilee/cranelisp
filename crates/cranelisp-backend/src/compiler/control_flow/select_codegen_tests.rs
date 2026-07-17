@@ -54,8 +54,8 @@ fn builtin_call(name: &str, args: Vec<Expr>) -> Expr {
 
 /// Compile a probe `defn` whose body is `body` and return its CLIF.
 fn clif_of_body(body: Expr) -> String {
+    // S111 R4 §1.3: probe rides the production per-body seam.
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     let name = Symbol::from("select_codegen_probe");
     let defn = Defn {
@@ -70,22 +70,18 @@ fn clif_of_body(body: Expr) -> String {
         span: Span::SYNTHETIC,
     };
 
-    let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
     let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
     let module_path = ModuleFullPath::from("user");
     symbol_tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
+    let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    crate::test_support::probe_defn_clif(
+        &defn,
+        &[],
+        &no_targets,
         &symbol_tables,
-        &module_aliases,
         module_path,
-    );
-    jit.compile_defn(&defn, compile_ctx)
-        .expect("compile")
-        .clif_ir
+        jit.jit_module(),
+    )
 }
 
 // spec: io-trampoline.md §16.4 — `(race a b)` bakes the one `IO_TAG_SELECT` (= 6)

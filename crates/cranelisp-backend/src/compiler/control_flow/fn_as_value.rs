@@ -19,19 +19,6 @@ use crate::primitives_inline;
 
 use super::{emit_capture_inc_into, FnCompiler};
 
-/// Linker name for an auto-curry closure's capture drop glue.
-///
-/// Keyed by `disc` (`FnCompiler::inner_fn_discriminator()` — the mono instance +
-/// create-gate arm) and `span`, IDENTICALLY to its sibling wrapper name
-/// `__curry_{target}_{disc}{span}__` (F2, P7/P8: wrapper + drop glue must share
-/// one identity). Span alone under-keys: two monomorphizations of one span with
-/// different capture `HeapCategory`s produce distinct wrappers but would collide
-/// on a span-only glue name, silently mis-dropping captures. Folding `disc` makes
-/// glue identity track wrapper identity.
-pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
-    format!("runtime/curry_drop_glue_{}{}_{}", disc, span.start, span.end)
-}
-
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
 /// The per-site element-type recovery for the vec-query wrapper emission
@@ -55,12 +42,17 @@ fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<Type> {
 #[cfg(test)]
 mod ctor_value_tests;
 
-#[cfg(test)]
-mod curry_glue_name_tests;
+// (The auto-curry drop-glue naming-identity test folded into the ONE
+// consolidated `resolution::tests::drop_glue_naming_identity_*` battery at
+// S111 R6 §4.4 — the naming fns now live in `resolution.rs`, their identity
+// home.)
 
 // Relocated crate-root fn-as-value + value-use tests (FIXME 0495 step 1).
 #[cfg(test)]
 mod value_use_tests;
+
+#[cfg(test)]
+mod keyed_miss_tests;
 
 /// Borrowed-builder form of `FnCompiler::emit_adt_construct` (apply.rs): emit an
 /// ADT construction (`alloc` + tag + field stores) onto an arbitrary `builder`,
@@ -1004,18 +996,16 @@ where
         Ok(wrapper_func_id)
     }
 
-    /// Build drop glue for an auto-curry closure's captured arguments.
-    ///
-    /// For each heap-typed capture, loads from the closure env at its offset
-    /// and emits `rc_dec`. Returns `None` if no captures are heap-typed.
+    /// Build drop glue for an auto-curry closure's captured arguments (S111 R6
+    /// §4.2). Supplies only the capture layout (`heap_indices`) + the naming
+    /// identity; the shared envelope (`emit_capture_dec_glue`) owns idempotency +
+    /// declare/build/define + the flat capture-dec loop.
     fn build_auto_curry_drop_glue(
         &mut self,
         arg_categories: &[HeapCategory],
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let dealloc_id = self.ctx.dealloc_func_id;
-
-        // Collect indices of heap-typed captures.
+        // Collect indices of heap-typed captures — the capture layout specific.
         let heap_indices: Vec<(usize, HeapCategory)> = arg_categories
             .iter()
             .enumerate()
@@ -1025,109 +1015,15 @@ where
             })
             .collect();
 
-        if heap_indices.is_empty() {
-            return Ok(None);
-        }
-
-        // Key the drop glue IDENTICALLY to its sibling `__curry_…` wrapper —
-        // fold in `inner_fn_discriminator()` (the mono/gate-arm discriminator),
-        // NOT span alone (F2, P7/P8: a closure wrapper and its drop glue MUST
-        // share one identity). The wrapper name `__curry_{target}_{disc}{span}__`
-        // already folds the disc; the glue previously used span alone, so two
-        // DISTINCT monomorphizations of the same span with DIFFERENT
-        // `arg_categories` (a capture position's `HeapCategory` differing across
-        // instantiations) produced distinct wrapper names but a COLLIDING glue
-        // name — and the `get_name` idempotency skip below would then hand the
-        // 2nd mono the 1st mono's glue → wrong capture-drop (dec a non-heap
-        // capture / skip a heap one → corruption or leak), silently. Folding the
-        // disc makes glue identity track wrapper identity: distinct monos get
-        // distinct glue; the two arms of ONE create-gate (same disc + span,
-        // identical `arg_categories` by construction) still share one glue.
-        let glue_name = curry_drop_glue_name(&self.inner_fn_discriminator(), span);
-
-        // `declare_function` is idempotent (returns the existing FuncId on a
-        // name match), but `define_function` is NOT — a second definition of the
-        // same identifier is a hard `Duplicate definition` codegen error. When a
-        // create-gate compiles the SAME auto-curry expression on BOTH its lenient
-        // and sequential arms (ledger item 25), the glue is declared once but the
-        // second arm's `define_function` would die `Duplicate definition`. Skip
-        // re-definition when this glue was already built — with the disc-keyed
-        // name a `get_name` hit means the SAME mono instance at the SAME span, so
-        // `arg_categories` are identical by construction and sharing one glue
-        // definition is sound (the `build_elem_dec_fn` / `build_adt_drop_glue_fn`
-        // idempotency precedent, vec_codegen.rs).
-        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
-            self.module.get_name(&glue_name)
-        {
-            return Ok(Some(existing_id));
-        }
-
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // closure ptr
-
-        let glue_func_id = self
-            .module
-            .declare_function(&glue_name, Linkage::Local, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare auto-curry drop glue: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        let mut ctx = self.module.make_context();
-        let mut func_ctx = FunctionBuilderContext::new();
-        ctx.func.signature = sig;
-
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-        builder.seal_block(entry);
-
-        let closure_ptr = builder.block_params(entry)[0];
-
-        // For each heap-typed capture, load and dec.
-        for (cap_idx, category) in &heap_indices {
-            let cap_val = heap::heap_load(
-                &mut builder,
-                closure_ptr,
-                HeapClosure::capture_offset(*cap_idx),
-            );
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_dec(
-                        &mut builder,
-                        self.module,
-                        cap_val,
-                        dealloc_id,
-                        None,
-                    );
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_dec_guarded(
-                        &mut builder,
-                        self.module,
-                        cap_val,
-                        dealloc_id,
-                        None,
-                        true,
-                    );
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {} // unreachable, filtered above
-            }
-        }
-
-        builder.ins().return_(&[]);
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        self.module
-            .define_function(glue_func_id, &mut ctx)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define auto-curry drop glue: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-
-        Ok(Some(glue_func_id))
+        // Naming identity (ledger item 25): fold `inner_fn_discriminator()` +
+        // span IDENTICALLY to the sibling `__curry_…` wrapper so glue identity
+        // tracks wrapper identity (else two distinct monos of one span with
+        // different `arg_categories` collide on a span-only glue name and
+        // silently mis-drop captures). Composed by the ONE naming fn (S111 R6
+        // §4.1, `resolution::curry_drop_glue_name`).
+        let glue_name =
+            crate::compiler::curry_drop_glue_name(&self.inner_fn_discriminator(), span);
+        self.emit_capture_dec_glue(&glue_name, span, &heap_indices)
     }
 }
 

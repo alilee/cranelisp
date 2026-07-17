@@ -76,16 +76,6 @@ where
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    /// Session-level module-alias table (spec §8.6.6). Added S75 W2 (D41
-    /// rotation) to feed the qualified-name alias substitution inside the
-    /// `resolve_*` resolvers. **S110 W3: those resolvers were deleted** (the
-    /// backend keyed-reads typecheck's `resolved_target` — no name resolution,
-    /// hence no alias substitution). The field is now threaded but UNREAD;
-    /// dropping it from `CompileContext` / `compile_to_module` / the
-    /// `build_compile_context` chain is a follow-on signature cleanup deferred
-    /// out of W3 because it moves the `pub` `compile_to_module` surface and int's
-    /// call sites (W3 is backend-internal, zero public-API movement).
-    pub module_aliases: &'a cranelisp_types::ModuleAliases,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
 
@@ -120,7 +110,6 @@ where
             func_ids: self.func_ids,
             func_arities: self.func_arities,
             symbol_tables: self.symbol_tables,
-            module_aliases: self.module_aliases,
             current_module: self.current_module.clone(),
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,

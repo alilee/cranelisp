@@ -253,12 +253,10 @@ fn test_compile_load_and_execute_cached_module() {
     let obj_builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
     let mut obj_module = ObjectModule::new(obj_builder);
 
-    let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
     crate::compile_to_module(
         module,
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         &mut obj_module,
         false,
     ).unwrap();

@@ -185,9 +185,8 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
     let extras: Vec<(&str, *const u8)> = vec![(got_data_name.as_str(), got_base)];
 
     let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
-    let aliases = empty_aliases();
     let names = vec![ctor_defn.name.clone(), consumer_defn.name.clone()];
-    compile_to_module(module.clone(), &names, &tables, &aliases, jit.jit_module(), true)
+    compile_to_module(module.clone(), &names, &tables, jit.jit_module(), true)
         .expect("constructor Def + consumer compile (closure deletion regression guard)");
 
     // Stage 1 assertion: the constructor `Def`'s body compiled into a live
@@ -377,13 +376,11 @@ fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).expect("jit init");
-    let aliases = empty_aliases();
     let names = vec![defn.name.clone()];
     let result = compile_to_module(
         module.clone(),
         &names,
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     );

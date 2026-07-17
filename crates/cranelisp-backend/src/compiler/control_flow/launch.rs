@@ -376,12 +376,7 @@ fn launch_continuation_consuming_call_on_capture_keeps_it_live() {
     };
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    jit.declare_intrinsics().unwrap();
-    let func_ids = jit.declare_functions(&[&keep, &entry]).unwrap();
-    let arities: HashMap<Symbol, usize> =
-        vec![(Symbol::from("keep$String"), 1)].into_iter().collect();
     let tables = empty_tables();
-    let aliases = empty_aliases();
     // W1 (KC-W0-6): the continuation's `(keep$String h)` call reads the callee's
     // `resolved_target`. Seed a NotDetermined stub so `entry_at` resolves it (→
     // FuncId tail, byte-identical) and thread the carrier at the call span.
@@ -393,26 +388,18 @@ fn launch_continuation_consuming_call_on_capture_keeps_it_live() {
     let entry_targets =
         call_carriers(entry.body(), &ModuleFullPath::from("user"), &["keep$String"]);
 
-    {
-        let ctx = jit.build_compile_context(
-            &func_ids,
-            &arities,
-            &tables,
-            &aliases,
-            ModuleFullPath::from("user"),
-        );
-        jit.compile_defn(&keep, ctx).unwrap();
-    }
-    {
-        let ctx = jit.build_compile_context(
-            &func_ids,
-            &arities,
-            &tables,
-            &aliases,
-            ModuleFullPath::from("user"),
-        );
-        jit.compile_defn_with_targets(&entry, &entry_targets, ctx).unwrap();
-    }
+    // S111 R4 §1.3: compile keep$String + entry through the PRODUCTION per-body
+    // seam (`compile_defn_in_module`), preserving their hand-built String schemes
+    // (heap-classification-sensitive — the whole point of this RC guard). No
+    // finalize here; the caller finalizes + runs.
+    crate::test_support::compile_defns_in_module(
+        &[&keep, &entry],
+        &[],
+        &entry_targets,
+        &tables,
+        ModuleFullPath::from("user"),
+        jit.jit_module(),
+    );
     let entry_ptr = jit
         .finalize_and_get_ptr(&Symbol::from("entry"), 0)
         .unwrap();

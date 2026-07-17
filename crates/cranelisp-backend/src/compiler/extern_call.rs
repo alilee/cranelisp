@@ -224,8 +224,7 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
     }
 
     let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
-    let aliases = empty_aliases();
-    let result = compile_to_module(user_module, &[name], &tables, &aliases, jit.jit_module(), true);
+    let result = compile_to_module(user_module, &[name], &tables, jit.jit_module(), true);
     assert!(
         result.is_ok(),
         "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",

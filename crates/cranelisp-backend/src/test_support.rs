@@ -86,11 +86,124 @@ pub(crate) fn empty_tables() -> DashMap<ModuleFullPath, SymbolTable> {
     DashMap::new()
 }
 
-/// Empty session-level module-alias table for tests that drive
-/// `compile_to_module` / `build_compile_context` (S75 W2 D41 rotation
-/// added the `module_aliases` param).
-pub(crate) fn empty_aliases() -> cranelisp_types::ModuleAliases {
-    DashMap::new()
+/// S111 R4 §1.3 — the CLIF-probe seam (replaces the deleted `Jit::compile_defn`
+/// test front door). Compile a single hand-built probe `defn` through the
+/// PRODUCTION per-body function `compile_defn_in_module` — the EXACT call
+/// `compile_to_module_impl`'s Step 3 makes — and return its rendered CLIF text.
+///
+/// This is a thin delegator: it declares the intrinsic FuncIds + the probe fn
+/// and builds a `CompileContext` the way `compile_to_module_impl` does, so the
+/// probe tier stops maintaining a parallel context-assembly (the S107 A.2
+/// risk 6 / S110 §2.6 drift the deleted front door caused). It captures CLIF
+/// WITHOUT finalizing (matching the old `compile_defn` — no GOT-base
+/// registration required for the poll/platform probes). `symbol_tables` must
+/// already carry any auxiliary entries (platform effects, callees) the probe
+/// body references; the probe `defn` itself is declared here. `resolved_targets`
+/// threads the W1 dispatch carriers the keyed reads consume. `extra_decls` are
+/// additional user fns to DECLARE into `func_ids` (so a NotDetermined-stub call
+/// against them resolves through the FuncId tail) but NOT compile — only the
+/// probe body's CLIF is returned.
+pub(crate) fn probe_defn_clif<M, C, L>(
+    defn: &Defn,
+    extra_decls: &[&Defn],
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: ModuleFullPath,
+    module: &mut M,
+) -> String
+where
+    M: cranelift_module::Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let clifs = compile_defns_in_module(
+        std::slice::from_ref(&defn),
+        extra_decls,
+        resolved_targets,
+        symbol_tables,
+        module_path,
+        module,
+    );
+    clifs.into_iter().next().expect("probe: one compiled defn")
+}
+
+/// S111 R4 §1.3 — the multi-defn production per-body seam (the core behind
+/// [`probe_defn_clif`]). Compiles every defn in `compile` through
+/// `compile_defn_in_module` (the EXACT Step-3 call `compile_to_module_impl`
+/// makes) onto `module`, declaring `declare_only` fns as well (their FuncIds
+/// enter `func_ids` so a NotDetermined-stub call resolves through the FuncId
+/// tail, but their bodies are not emitted). Does NOT finalize — the caller
+/// finalizes + runs via its `Jit` for execution-tier tests. Returns the CLIF
+/// text of each compiled defn, in order. Preserves each defn's hand-built
+/// scheme/param types (unlike `make_def_entry`, which stamps all-`Int`), so
+/// heap-classification-sensitive tests stay faithful.
+pub(crate) fn compile_defns_in_module<M, C, L>(
+    compile: &[&Defn],
+    declare_only: &[&Defn],
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: ModuleFullPath,
+    module: &mut M,
+) -> Vec<String>
+where
+    M: cranelift_module::Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    use cranelift::prelude::{types, AbiParam, FunctionBuilderContext};
+    use cranelift_module::{Linkage, Module};
+
+    let intrinsic_ids = crate::jit::declare_intrinsics_generic(module)
+        .expect("probe: declare intrinsics");
+
+    // Declare every fn (Linkage::Local, bare name) — the Step-2 shape.
+    let mut func_ids: HashMap<Symbol, cranelift_module::FuncId> = HashMap::new();
+    let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
+    for d in compile.iter().copied().chain(declare_only.iter().copied()) {
+        let mut sig = module.make_signature();
+        for _ in d.params() {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function(d.name.as_ref(), Linkage::Local, &sig)
+            .expect("probe: declare fn");
+        func_ids.insert(d.name.clone(), func_id);
+        func_arities.insert(d.name.clone(), d.params().len());
+    }
+
+    let empty_ctors = HashMap::new();
+    let mut func_ctx = FunctionBuilderContext::new();
+    let mut clifs = Vec::with_capacity(compile.len());
+    for d in compile {
+        // Lenient body with the dispatch carriers — mirrors the `codegen_view`
+        // `compile_to_module` builds for a hand-constructed fixture (KC-W0-6):
+        // strict `from_expr` first, `lenient_from_expr` fallback.
+        let body = cranelisp_types::MonoExpr::from_expr(d.body(), &empty_ctors, resolved_targets)
+            .unwrap_or_else(|_| {
+                cranelisp_types::MonoExpr::lenient_from_expr(d.body(), &empty_ctors, resolved_targets)
+            });
+        let compile_ctx = crate::compiler::CompileContext {
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables,
+            current_module: module_path.clone(),
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids
+                .dealloc
+                .expect("probe: runtime/dealloc declared"),
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+        let art = crate::compile_defn_in_module(
+            d, &body, None, module, &mut func_ctx, &func_ids, compile_ctx, true,
+        )
+        .expect("probe: compile_defn_in_module");
+        clifs.push(art.clif_ir);
+    }
+    clifs
 }
 
 /// Read a Vec's `len` field directly from its base pointer.
@@ -649,12 +762,10 @@ pub(crate) fn test_compile_and_run(
     }
 
     let mut jit = Jit::new_with_symbols(&[])?;
-    let aliases = empty_aliases();
     let _artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&name),
         tables,
-        &aliases,
         jit.jit_module(),
         true,
     )?;
@@ -789,12 +900,10 @@ pub(crate) fn test_compile_program_and_run(
     }
 
     let mut jit = Jit::new_with_symbols(&[])?;
-    let aliases = empty_aliases();
     let _artifacts = compile_to_module(
         module.clone(),
         &names,
         tables,
-        &aliases,
         jit.jit_module(),
         true,
     )?;
@@ -1129,12 +1238,10 @@ pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     ];
 
     let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
-    let aliases = empty_aliases();
     compile_to_module(
         user.clone(),
         std::slice::from_ref(&consumer_name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     )

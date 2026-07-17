@@ -32,12 +32,10 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
     }
 
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
-    let aliases = empty_aliases();
     let artifacts = compile_to_module(
         module.clone(),
         std::slice::from_ref(&defn.name),
         &tables,
-        &aliases,
         jit.jit_module(),
         true,
     ).expect("JIT compile should succeed");
@@ -92,12 +90,10 @@ fn capture_clif_gates_clif_ir_text() {
         }
 
         let mut jit = Jit::new_with_symbols(&[]).unwrap();
-        let aliases = empty_aliases();
         compile_to_module(
             module,
             std::slice::from_ref(&defn.name),
             &tables,
-            &aliases,
             jit.jit_module(),
             capture_clif,
         )

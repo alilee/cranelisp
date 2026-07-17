@@ -212,12 +212,10 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
     }
 
     let mut obj = make_object_module();
-    let aliases = empty_aliases();
     let artifacts = compile_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,
-        &aliases,
         &mut obj,
         true, // capture_clif
     )
@@ -295,12 +293,10 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
     let store_at_field3 = format!("+{field3_off}");
 
     let mut obj = make_object_module();
-    let aliases = empty_aliases();
     let artifacts = compile_to_module(
         user.clone(),
         std::slice::from_ref(&caller.name),
         &tables,
-        &aliases,
         &mut obj,
         true,
     )

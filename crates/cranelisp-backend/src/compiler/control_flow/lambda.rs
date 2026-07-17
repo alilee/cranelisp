@@ -202,54 +202,82 @@ where
             return Ok(None);
         }
 
-        let dealloc_id = self.ctx.dealloc_func_id;
-
-        // Collect (capture_index, type, heap_category) for heap-typed captures.
-        let heap_captures: Vec<(usize, Type, HeapCategory)> = captures
+        // Collect (capture_index, heap_category) for heap-typed captures — the
+        // capture layout specific this builder supplies. (The capture type is
+        // read only for the filter; the dec loop needs only index + category.)
+        let heap_captures: Vec<(usize, HeapCategory)> = captures
             .iter()
             .enumerate()
             .filter_map(|(i, cap_name)| {
                 let ty = self.variable_types.get(cap_name)?;
                 let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                 match category {
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-                        Some((i, ty.clone(), category))
-                    }
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
                     HeapCategory::NeverHeap | HeapCategory::Value => None,
                 }
             })
             .collect();
 
+        // Naming identity (FIXME 0350): span-derived AND mono-discriminated via
+        // the SAME `inner_fn_discriminator()` scheme as the lambda body name, so
+        // the body+drop-glue symbol pair stay paired per mono instance. The name
+        // is composed by the ONE naming fn (S111 R6 §4.1,
+        // `resolution::closure_drop_glue_name`); the envelope
+        // (`emit_capture_dec_glue`) owns idempotency + declare/build/define.
+        let glue_name =
+            crate::compiler::closure_drop_glue_name(&self.inner_fn_discriminator(), span);
+        self.emit_capture_dec_glue(&glue_name, span, &heap_captures)
+    }
+
+    /// The shared capture-dec drop-glue envelope (S111 R6 §4 — the ONE
+    /// glue-emission helper owning naming identity + idempotency + the
+    /// `FunctionBuilder` boilerplate; the closure and auto-curry builders supply
+    /// only their capture layout `heap_captures`). Their bodies were byte-for-byte
+    /// identical flat capture-dec loops (a fixed `for (idx, cat)` over the closure
+    /// env), so the body is baked here rather than passed as a closure — sidestepping
+    /// the §4.3 `&mut self` re-borrow the generic-body shape would face.
+    ///
+    /// Envelope responsibilities (§4.1): (1) **idempotency skip** — a `get_name`
+    /// hit means the SAME mono instance at the SAME span, so `heap_captures` are
+    /// identical by construction and returning the existing FuncId is sound (the
+    /// closure mirror GAINS this skip here — deliberate hardening closing the last
+    /// asymmetry with the curry/ADT builders; byte-identical in practice because
+    /// the span+disc name is unique per mono, so it never fires); (2) declare
+    /// `Linkage::Local`, one `i64` (object ptr) param, no return; (3) the
+    /// FunctionBuilder boilerplate; (4) the flat capture-dec loop; (5) finish +
+    /// `define_function`, mapping errors to `CodegenError` with `span`.
+    pub(crate) fn emit_capture_dec_glue(
+        &mut self,
+        glue_name: &str,
+        span: Span,
+        heap_captures: &[(usize, HeapCategory)],
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         if heap_captures.is_empty() {
             return Ok(None);
         }
 
-        // Build the drop glue function.
-        //
-        // The name is span-derived AND monomorphisation-discriminated
-        // (FIXME 0350, follow-on to 0347 defect 1): when the enclosing fn is
-        // monomorphised, N mono instances share this lambda's span, so each
-        // emits its own drop-glue copy. The enclosing-fn discriminator keeps
-        // the N emitted symbols distinct (else the 2nd define_function
-        // collides — `Duplicate definition of identifier:
-        // runtime/closure_drop_glue_…`). This MUST use the same
-        // `inner_fn_discriminator()` scheme as the lambda body name above so
-        // the body+drop-glue symbol pair stay paired per mono instance.
-        let glue_name = format!(
-            "runtime/closure_drop_glue_{}{}_{}",
-            self.inner_fn_discriminator(),
-            span.start,
-            span.end
-        );
+        // Idempotency skip (§4.1): `declare_function` is idempotent but
+        // `define_function` is NOT — a second definition of the same identifier
+        // is a hard `Duplicate definition` error (e.g. a create-gate compiling
+        // the SAME expression on BOTH its lenient and sequential arms — the
+        // 0350 / ledger-25 class). A `get_name` hit ⇒ same mono+span ⇒ identical
+        // captures ⇒ share the one definition.
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+            self.module.get_name(glue_name)
+        {
+            return Ok(Some(existing_id));
+        }
+
+        let dealloc_id = self.ctx.dealloc_func_id;
 
         let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // closure ptr
+        sig.params.push(AbiParam::new(types::I64)); // object ptr
 
         let glue_func_id = self
             .module
-            .declare_function(&glue_name, Linkage::Local, &sig)
+            .declare_function(glue_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare closure drop glue fn: {e}"),
+                message: format!("failed to declare capture drop glue fn: {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
 
@@ -266,7 +294,7 @@ where
         let closure_ptr = builder.block_params(entry)[0];
 
         // For each heap-typed capture, load from its offset and dec.
-        for (cap_idx, _cap_ty, category) in &heap_captures {
+        for (cap_idx, category) in heap_captures {
             let cap_val = heap::heap_load(
                 &mut builder,
                 closure_ptr,
@@ -274,13 +302,7 @@ where
             );
             match category {
                 HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_dec(
-                        &mut builder,
-                        self.module,
-                        cap_val,
-                        dealloc_id,
-                        None,
-                    );
+                    heap::emit_rc_dec(&mut builder, self.module, cap_val, dealloc_id, None);
                 }
                 HeapCategory::Mixed => {
                     heap::emit_rc_dec_guarded(
@@ -303,7 +325,7 @@ where
         self.module
             .define_function(glue_func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define closure drop glue fn: {e}"),
+                message: format!("failed to define capture drop glue fn: {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
 

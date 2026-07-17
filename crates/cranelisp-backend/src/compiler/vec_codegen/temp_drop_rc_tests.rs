@@ -25,8 +25,8 @@ use std::collections::HashMap;
 
 /// Compile a zero-arg `defn` whose body is `body`, returning the emitted CLIF.
 fn clif_of_body(body: Expr) -> String {
+    // S111 R4 §1.3: probe rides the production per-body seam.
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    jit.declare_intrinsics().expect("intrinsics declare");
 
     let name = Symbol::from("temp_drop_probe");
     let defn = Defn {
@@ -41,8 +41,6 @@ fn clif_of_body(body: Expr) -> String {
         span: Span::SYNTHETIC,
     };
 
-    let func_ids = jit.declare_functions(&[&defn]).expect("declare");
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
     let symbol_tables: dashmap::DashMap<
         cranelisp_types::ModuleFullPath,
         cranelisp_types::SymbolTable,
@@ -52,17 +50,15 @@ fn clif_of_body(body: Expr) -> String {
         module_path.clone(),
         cranelisp_types::SymbolTable::new(module_path.clone()),
     );
-    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
-    let compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
+    let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
+    crate::test_support::probe_defn_clif(
+        &defn,
+        &[],
+        &no_targets,
         &symbol_tables,
-        &module_aliases,
         module_path,
-    );
-    jit.compile_defn(&defn, compile_ctx)
-        .expect("compile")
-        .clif_ir
+        jit.jit_module(),
+    )
 }
 
 fn int_lit(v: i64) -> Expr {
