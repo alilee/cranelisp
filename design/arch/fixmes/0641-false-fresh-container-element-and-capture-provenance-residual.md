@@ -40,3 +40,7 @@ CS-5 (§3.7, `e99535e4`) truthfully declared the vec-set/vec-push COW facts and 
 **Also correct the CS-5 rustdoc over-claim NOW** (small, `/design` or `/dev`): `fn_compiler.rs` §B3.2 says the `==Fresh` elision is sound iff **leaf** facts are truthful+reachable — the review disproved that (the WALK launders provenance with truthful, reachable leaf facts). Scope the claim honestly to the covered axes until this increment lands.
 
 Fix-vs-carry is `/sprint` + user: the centrepiece delivered its DECLARED scope (vec-assoc COW); this class is pre-existing + new-design-sized. Evidence-gated carry is legitimate (repros committed); or extend in-sprint if the user directs.
+
+## /arch gating note (2026-07-17, user-directed)
+
+**The increment is GATED on the sound-narrowing mechanism — `design/arch/safety-invariants.md` §3 is the binding frame.** The false-`Fresh` class closes by making the transfer walk lattice-monotone (explicit provenance ⊤; enumerated, classified rule table in `design/typecheck/ownership-inference.md` §15; P20 conditional/unconditional origin split at the producer seam), with the differential oracle as the standing end-to-end discharge — B-1/I-1/I-2 then land as rule-table corrections inside that frame, **never as a VecLit spot-fix** (the CS-1.1 → 0640 lesson: an instance-patch without the mechanism is one adversarial review away from the next layer). The `/design`(typecheck) pass authors §3(a)–(c) first; cascade task list at `safety-invariants.md` §6 item 1.
