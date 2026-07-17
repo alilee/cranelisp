@@ -3681,6 +3681,92 @@ Corpus scope caveat: certification covers the green-by-construction corpus;
 open §3.7/0633/0638 defect shapes are corpus-excluded (`EXCLUSIONS.md`) and
 are guarded by their own REDs, not this lane.
 
+#### I.4 Phase-5-close attribution addendum (`/qa`, 2026-07-17 — the conclusion-prep dispatch)
+
+Attribution verdicts for the open-defect REDs at P5 close (16 RED / 1 skip at
+HEAD `dd914241`; every RED traces below — zero genuine regressions). Full
+evidence in the P5-close `/qa` report to `/sprint`.
+
+**DG-R2 4th re-attribution (supersedes I.2's row note AND the CS-5 /review
+"vec-element-drop" verdict).** `/qa` reduction (executed): the imbalance
+survives with ONE ADT / ONE module / no vec (`(defn main [] (let [s "hi"]
+(Pure 9)))` → 2 allocs / 1 free), is ownership-independent (toggle-off
+identical), absent for non-heap lets, absent in non-`main` fns (balanced
+2/2), and the leaked allocation is always the chronologically-LAST (the IO
+result box), while the let-bound heap values ARE freed. Verdict: an
+**entry-`main` teardown leak of the final IO/result allocation, triggered by
+any heap-valued let in `main`'s body** — not drop-glue (CS-1.1 proved), not
+§3.7 (CS-5 proved), not vec-element-drop (this reduction). Owner `/dev`
+(backend main-epilogue / int IO-trampoline result-dec seam — Step-2 CLIF
+look decides the crate). `/testing`: re-annotate `// defect:` →
+`class=rc-miscount locus=entry-main IO-teardown seam`; the 2-line repro
+supersedes the R2 fixture as the narrow guard.
+
+**0641 false-Fresh residual rows (committed `dd914241`,
+`tests/false_fresh_provenance_residual.rs` — 8 RED: B-1/B-2/I-1/I-2 ×
+REPL/`--link`).** Owner split CONFIRMED by toggle-off probes: B-1 (container-
+element laundering) + I-1 (capture) are inference-half (`/dev` typecheck,
+under the 0641 `/design`(typecheck) increment); **B-2 + I-2 carry the stacked
+ownership-INDEPENDENT factor** — toggle-off yields WRONG VALUES (B-2: 55 for
+99; I-2: 190 for 9; no crash, no error), so beneath the provenance miss sits
+a backend consume/RC defect on the `vec-set`-RESULT path (result flowing
+through a match var-binding / stored as a vec-literal element under the
+all-Owned convention). Class `rc-miscount`/`uaf` at the backend vec-set
+result-consume seam. The 0641 increment therefore needs the PAIRED
+`/dev`(backend) fix — the typecheck provenance axis alone cannot flip B-2/I-2.
+
+**0638 (macro-clause invocation corruption).** Re-checked at HEAD post-CS-5:
+NOT cured, and NOT §3.7/0633 — distinct defect, attribution CONFIRMED to the
+macro-clause JIT invocation path (`src/expander.rs` invoke core +
+`src/marshal.rs` Sexp marshalling; intrinsics alloc adjacent). Evidence: the
+preserved repro SIGSEGVs plain, surfaces `macro … aborted: runtime panic:
+match failed` under `CRANELISP_RC_TRACE=1` (perturbation-sensitive), and the
+RC trace shows frees with GARBAGE header tags (corrupt heap headers) plus
+same-address alloc/free ping-pong — heap corruption, symptom polymorphic
+(double-free → match-failed → SIGSEGV). The identical helper logic through
+plain cross-module calls exits correctly (twin executed, exit 3). Owner
+`/dev` (int marshal/invoke seam first; intrinsics if the corruption is in
+the Sexp unmarshal alloc discipline). Class `uaf`. **No committed repro yet**
+— `/testing` owes the narrow test from FIXME 0638's preserved files.
+
+**I-3 renamed-import wrong-reject.** Confirmed: `(import [m [(src local)]])`
+→ `expected symbol for import name` from
+`crates/cranelisp-frontend/src/module_extract.rs::parse_names_list` (:337) —
+the §8.3.5 grammar has NO parser arm and `cranelisp_types::ImportNames`
+(module.rs:2387) has NO Renamed variant. **Pre-existing since Sprint 9**
+(git -L blame `32dff6e4`, 2026-03-07) — never implemented, not
+S111-introduced. Fix spans frontend parser + the types carrier (+ installer
+`collect_specific`) → `/arch` interface approval; carry as its own
+increment. Class `wrong-reject`. Until it lands, the a3 renamed-import reach
+path + the 0621 rider stay unit-pinned only (e2e-untestable).
+
+**0604 seam verdict: NOT-YET-LOCATABLE → CS-6 carries evidence-gated** (the
+CS-6 gate). (1) Zero fires in ~99 fresh iterations this dispatch across four
+scheduling regimes — single-shot ×5, 8-way parallel ×40, taskset 1–4-CPU
+×16, 12-way busy-load ×30 — plus the committed IR-1 lane passing UNDER
+full-suite concurrent load; cumulative with S110/S111 history: ~320
+no-fires; the only firing environment remains the S109-era `/sprint` one.
+(2) `CRANELISP_MODULE_TRACE` CANNOT locate the seam — its only emit sites
+are `process_form/cache_restore.rs:122` + `index_worker.rs:1008/:1051`;
+the foreground install path has zero trace instrumentation, so the FIXME's
+trace recipe is inoperable for seam location. (3) Static narrowing landed:
+the poison consumer (`imports.rs::insert_detecting_ambiguity` :548 branch,
+exact error shape) proves the phantom is a PUBLIC `bit-and` head in
+prelude's LIVE table at `num.bits.test` super-import install time; the
+enumerable live-table writer set (install_imports/exports — destination is
+the explicitly-passed `current_module`; the staging commit gate +
+`insert_cluster` — destination is the cluster's own module; the Code-install
+sites — mutate existing entries only; cache-restore — off under
+`--no-cache`; typecheck has NO prelude materialization write) contains no
+textual path to `prelude ← bit-and`, so the writer hides in concurrency
+plumbing invisible to enumeration — or was already removed by S110/S111
+restructurings (unprovable; verify-fix-not-symptom-absence). **Carry
+package:** IR-1 stays the guard; the missing observability is the concrete
+next step — a `/dev`(int)-sized change adding a MODULE_TRACE emit (or
+debug_assert) at live-table insertion, minimally a prelude-table invariant
+("prelude gains no entry outside its export list post-compile"), so the
+NEXT firing anywhere names the writer instead of needing this hunt again.
+
 ### Phase-5 sequencing note for `/testing`
 
 Author order: (1) **§E KC-N1..N6** (handoff enumeration to `/dev` backend —
