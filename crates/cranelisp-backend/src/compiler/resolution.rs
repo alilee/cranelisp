@@ -19,7 +19,9 @@
 //! scan, no precedence walk, no import-chain follow — each is a fixed
 //! compile-time string-composition scheme.
 
-use cranelisp_types::{FQTypeName, ModuleFullPath, Span, Symbol};
+use cranelisp_types::{
+    ModuleFullPath, PrimitiveNaming, Span, Symbol, Type, VarNaming, render_type,
+};
 
 /// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
@@ -81,7 +83,10 @@ pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> St
 // an inline `format!` (the A.4 caveat: the identity test must call the
 // PRODUCTION naming fn, not re-compose the format). Two are span+disc-keyed (the
 // closure/curry span×mono collision class — FIXME 0350 / ledger item 25); the
-// ADT is fqtn-keyed (no span/disc, so that collision class does not apply).
+// ADT is INSTANTIATION-keyed (module + name + concrete args via
+// `adt_instantiation_mangle`) — its body is per-instantiation, so the bare-name
+// key it carried through CS-1 under-determined the glue and collided on
+// heap-category-divergent siblings (FIXME 0633, re-keyed CS-1.1).
 // =========================================================================
 
 /// Linker name for a **lambda-closure** capture drop glue (S111 R6). Keyed by
@@ -106,13 +111,47 @@ pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
     format!("runtime/curry_drop_glue_{}{}_{}", disc, span.start, span.end)
 }
 
-/// Linker name for an **ADT** field drop glue (S111 R6). Keyed by the type's
-/// bare name only — an ADT drop glue is per-TYPE (its multi-ctor tag-branch body
-/// dec's every heap field), so the span×mono collision class the closure/curry
-/// mirrors face does not apply; the `get_name` idempotency skip dedups the
-/// per-module re-emit.
-pub(crate) fn adt_drop_glue_name(fqtn: &FQTypeName) -> String {
-    format!("runtime/drop_glue_{}", fqtn.name)
+/// Symbol-safe identity mangle of a fully concrete ADT **instantiation**
+/// (`Type::ADT(fqtn, concrete_args)`): module + type name + concrete type args.
+///
+/// This is the drop-glue keying identity (FIXME 0633). An ADT drop glue's BODY
+/// is per-INSTANTIATION — `build_adt_drop_glue_fn` substitutes `concrete_args`
+/// into each ctor field and classifies per-field heap-ness *before* emitting the
+/// field decs — so the glue **key** must carry that same instantiation identity.
+/// Keying on the bare `fqtn.name` alone (dropping module + concrete args) let the
+/// first-build-wins `get_name` skip serve one instantiation's glue to a
+/// heap-category-divergent sibling in the same `compile_to_module` batch:
+/// `(Vec (Duo Int Str))` then `(Vec (Duo Str Int))` reused the first glue, so
+/// `atomic_rmw Sub` ran against the second's raw `Int` field (SIGBUS) and its
+/// `Str` field leaked. Distinct instantiations MUST get distinct mangles;
+/// identical instantiations MUST get a stable mangle (so the `get_name` reuse is
+/// sound). This is the Principle-24 "resolve once" keyed-identity discipline: the
+/// key fully determines the artifact.
+///
+/// Built from the canonical single-source `render_type` walk (Principle 7 — the
+/// ONE `Type`→string renderer in the workspace) with `PrimitiveNaming::Qualified`
+/// so the module qualifier of every referenced type is present, then sanitized
+/// into a Cranelift symbol name exactly as `inner_fn_discriminator_for` sanitizes
+/// mono names: every non-`[A-Za-z0-9_]` char (the `/`, spaces, and parens
+/// `render_type` emits for a qualified applied ADT) maps to `_`.
+pub(crate) fn adt_instantiation_mangle(ty: &Type) -> String {
+    render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Linker name for an **ADT** field drop glue (S111 R6; re-keyed S111 CS-1.1,
+/// FIXME 0633). Keyed by the full concrete instantiation
+/// (`adt_instantiation_mangle` — module + type name + concrete type args), NOT
+/// the bare type name: the glue body is per-instantiation, so distinct
+/// instantiations (different module, different name, or different concrete args)
+/// get distinct glue and the `get_name` idempotency skip dedups ONLY the
+/// per-module re-emit of the *same* instantiation. The vec elem-dec layer
+/// (`build_elem_dec_fn`) keys on the same mangle, so the two under-keyed layers
+/// discriminate instantiations identically.
+pub(crate) fn adt_drop_glue_name(ty: &Type) -> String {
+    format!("runtime/drop_glue_{}", adt_instantiation_mangle(ty))
 }
 
 #[cfg(test)]

@@ -731,8 +731,16 @@ where
         span: Span,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         let suffix = if guarded { "mixed" } else { "heap" };
+        // Key on the FULL concrete instantiation (module + name + concrete args),
+        // not the bare `fqtn.name` — the dec fn bakes in the per-instantiation
+        // drop glue, so a bare-name key let the first-built dec fn serve a
+        // heap-category-divergent sibling (FIXME 0633). Same mangle the glue
+        // layer (`adt_drop_glue_name`) keys on, so both layers discriminate
+        // instantiations identically.
         let type_suffix = match elem_type {
-            Type::ADT(fqtn, _) => format!("_{}", fqtn.name),
+            Type::ADT(..) => {
+                format!("_{}", crate::compiler::adt_instantiation_mangle(elem_type))
+            }
             _ => String::new(),
         };
         let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
@@ -865,10 +873,14 @@ where
         // Build the drop glue function. Naming is composed by the ONE naming fn
         // (S111 R6 §4.1, `resolution::adt_drop_glue_name`) — never an inline
         // `format!` (the A.4 caveat: the identity test calls the production fn).
-        // The ADT builder keeps its own envelope (a multi-ctor tag-branch body,
-        // structurally richer than the closure/curry flat capture-dec loop —
-        // §4.3 fallback: only the naming home is shared for this builder).
-        let glue_name = crate::compiler::adt_drop_glue_name(&fqtn);
+        // Keyed on the FULL instantiation `ty` (module + name + concrete args),
+        // not the bare `fqtn` — the glue body substitutes `concrete_args` before
+        // heap-classifying each field, so the key must carry that identity or the
+        // `get_name` skip below serves this glue to a divergent sibling (FIXME
+        // 0633, re-keyed CS-1.1). The ADT builder keeps its own envelope (a
+        // multi-ctor tag-branch body, structurally richer than the closure/curry
+        // flat capture-dec loop — §4.3 fallback: only the naming home is shared).
+        let glue_name = crate::compiler::adt_drop_glue_name(ty);
 
         // Check if this drop glue was already built (e.g., by a previous module).
         if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =

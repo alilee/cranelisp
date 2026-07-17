@@ -45,7 +45,7 @@ bare i64 tags (`HeapAdt` rustdoc, `NULLARY_TAG_THRESHOLD`); a reader expecting a
 header on every ctor value will misread this as a missing allocation. RC lives at
 `HeapHeader::RC_OFFSET`; `emit_rc_inc/dec` emit `atomic_rmw(Add/Sub, ptr+RC_OFFSET)`.
 
-## GOT slab — fixed 1024 slots, UNCHECKED allocation (S101 item d, got_slab_tests.rs)
+## GOT slab — fixed 1024 slots, fallible allocation (S101 item d, got_slab_tests.rs)
 
 `GotTable` is a FIXED `GOT_TABLE_SIZE`(=1024)-slot `Box<[AtomicPtr<u8>; 1024]>`
 allocated once and NEVER reallocated; `base_ptr()` is structurally stable for the
