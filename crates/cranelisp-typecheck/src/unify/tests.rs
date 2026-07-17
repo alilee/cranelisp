@@ -251,3 +251,71 @@
         let mut subst = Subst::new();
         unify_with_rigid(&mut subst, &rigid, &Type::Var(10), &Type::Var(10)).unwrap();
     }
+
+    // RU-1 (FIXME 0595 item 1): the `TyConApp`-vs-`ADT` head-bind routes through
+    // `unify_var`, so the rigid guard is STRUCTURAL rather than a convention. A
+    // con_var id smuggled into `rigid` (kind-confused sig — no kind checker
+    // prevents it) can no longer be silently bound to a concrete ADT constructor;
+    // it is a skolem escape. On the LIVE (flexible con_var) path the behaviour is
+    // byte-identical to the former direct `bind_var`.
+    #[test]
+    fn tyconapp_vs_adt_head_bind_routes_through_unify_var_rigid_guard() {
+        let name = test_fqtn("Option");
+
+        // Live path: con_var `f` FLEXIBLE ⇒ binds `f -> Option` (bare ctor) and
+        // unifies the args — exactly the former behaviour.
+        let mut subst = Subst::new();
+        let flexible: HashSet<TypeId> = HashSet::new();
+        unify_with_rigid(
+            &mut subst,
+            &flexible,
+            &Type::TyConApp(30, vec![Type::Var(31)]),
+            &Type::ADT(name.clone(), vec![Type::Int]),
+        )
+        .expect("a flexible con_var head binds to the bare ADT ctor (live path unchanged)");
+        assert_eq!(apply(&subst, &Type::Var(30)), Type::ADT(name.clone(), vec![]));
+        assert_eq!(apply(&subst, &Type::Var(31)), Type::Int);
+
+        // Hardened path: con_var `f` RIGID ⇒ binding it to a concrete ADT ctor is a
+        // skolem escape (a plain type error, never "unknown type"), and the rigid
+        // head is NOT bound.
+        let mut subst = Subst::new();
+        let rigid: HashSet<TypeId> = [30].into_iter().collect();
+        let err = unify_with_rigid(
+            &mut subst,
+            &rigid,
+            &Type::TyConApp(30, vec![Type::Var(31)]),
+            &Type::ADT(name, vec![Type::Int]),
+        )
+        .expect_err("a RIGID con_var head must NOT silently bind to a concrete ADT ctor");
+        assert!(
+            !err.message().contains("unknown type"),
+            "the head-bind skolem escape must be a plain type error: {}",
+            err.message()
+        );
+        assert_eq!(
+            apply(&subst, &Type::Var(30)),
+            Type::Var(30),
+            "the rigid con_var head must not be bound by the failed unify"
+        );
+    }
+
+    // RU-2 (FIXME 0595 item 1): the `TyConApp`-vs-`TyConApp` head→head bind also
+    // routes through `unify_var`, so when the left head is rigid the FLEXIBLE
+    // (right) head acquires it — the parameter-acquisition direction — rather than
+    // the former `bind_var(f1, Var(f2))` which bound the rigid head itself.
+    #[test]
+    fn tyconapp_head_head_bind_routes_through_unify_var_acquire_direction() {
+        let mut subst = Subst::new();
+        let rigid: HashSet<TypeId> = [40].into_iter().collect();
+        unify_with_rigid(
+            &mut subst,
+            &rigid,
+            &Type::TyConApp(40, vec![Type::Var(42)]),
+            &Type::TyConApp(41, vec![Type::Var(43)]),
+        )
+        .expect("head→head with one rigid head merges via acquire, never a concrete escape");
+        // The rigid head (40) is NOT bound; the flexible head (41) acquires it.
+        assert_eq!(apply(&subst, &Type::Var(40)), Type::Var(40));
+        assert_eq!(apply(&subst, &Type::Var(41)), Type::Var(40));
+    }

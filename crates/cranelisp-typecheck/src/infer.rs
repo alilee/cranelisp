@@ -523,34 +523,51 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // ELSEWHERE (value restriction + unification), not by an eager escape check
         // here.
         let mut var_map = state.written_var_scope.take().unwrap_or_default();
-        let mut param_types = Vec::new();
-        for (param_name, annotation) in params.iter() {
-            let param_ty = if let Some(annotation) = annotation {
-                self.resolve_annotation_type_expr_in_module(
-                    annotation, &mut var_map, &state.current_module, span,
-                )?
-            } else {
-                self.fresh_var()
-            };
-            param_types.push(param_ty.clone());
-            self.bind_local(state, param_name.clone(), mono(param_ty));
-        }
-        // Restore the shared scope BEFORE inferring the body so a nested
-        // annotation / lambda co-refers through the same scope.
+        // Resolve the param annotations (extending the shared `var_map`) in a
+        // fallible closure so the shared scope is re-installed and the pushed env
+        // frame is popped on EVERY exit (Principle 18, FIXME 0595 item 2). The
+        // pre-existing `?` exits (annotation-resolution / body-inference errors)
+        // skipped `pop_scope` — leaking the frame — and left `written_var_scope`
+        // as `None` on the annotation-error path. Benign today (a Pass-2 error
+        // aborts the whole `check_forms` call and the enclosing `check_defn_body`
+        // restores its own saved scope), but the asymmetry is a trap for any
+        // future continue-after-form-error mode, so it is made structural here.
+        let param_result = (|| -> Result<Vec<Type>, CranelispError> {
+            let mut param_types = Vec::new();
+            for (param_name, annotation) in params.iter() {
+                let param_ty = if let Some(annotation) = annotation {
+                    self.resolve_annotation_type_expr_in_module(
+                        annotation, &mut var_map, &state.current_module, span,
+                    )?
+                } else {
+                    self.fresh_var()
+                };
+                param_types.push(param_ty.clone());
+                self.bind_local(state, param_name.clone(), mono(param_ty));
+            }
+            Ok(param_types)
+        })();
+        // Re-install the shared (param-extended) scope on EVERY path BEFORE the
+        // body is inferred, so a nested annotation / lambda co-refers through the
+        // same scope — and so it is never left `None` on the error path.
         state.written_var_scope = Some(var_map);
 
-        let body_ty = self.infer_expr(state, body)?;
+        let result = param_result.and_then(|param_types| {
+            let body_ty = self.infer_expr(state, body)?;
+            let fn_type = Type::Fn(
+                param_types
+                    .iter()
+                    .map(|t| self.apply_subst(state, t))
+                    .collect(),
+                Box::new(self.apply_subst(state, &body_ty)),
+            );
+            self.record_expr_type(state, span, fn_type.clone());
+            Ok(fn_type)
+        });
+        // Symmetric env-frame teardown — pop the frame pushed above on both the
+        // Ok and Err paths (the 0595-item-2 hardening).
         self.pop_scope(state);
-
-        let fn_type = Type::Fn(
-            param_types
-                .iter()
-                .map(|t| self.apply_subst(state, t))
-                .collect(),
-            Box::new(self.apply_subst(state, &body_ty)),
-        );
-        self.record_expr_type(state, span, fn_type.clone());
-        Ok(fn_type)
+        result
     }
 
     fn infer_apply(

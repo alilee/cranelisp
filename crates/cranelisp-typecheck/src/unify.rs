@@ -107,9 +107,17 @@ pub fn unify_with_rigid(
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
-            // Bind constructor variable to bare ADT constructor. HKT constructor
-            // variables are never written skolems, so they are never in `rigid`.
-            bind_var(subst, f_id, &Type::ADT(name.clone(), vec![]))?;
+            // Bind the constructor variable to the bare ADT constructor. HKT
+            // constructor variables are never written skolems, so `f_id` is never
+            // in `rigid` on the live path — but route through `unify_var` (not a
+            // raw `bind_var`) so the rigid guard is STRUCTURAL, not a convention
+            // (Principle 18, FIXME 0595 item 1): `cranelisp_types::apply` rewrites
+            // a head id along the substitution and `unify_var`'s rigid arm binds
+            // flexible vars TO rigid ids, so a kind-confused sig could smuggle a
+            // rigid id into head position; going through `unify_var` makes that a
+            // skolem-escape error rather than a silent acquire. On the live
+            // (flexible-`f_id`) path this is byte-identical to the former bind.
+            unify_var(subst, rigid, f_id, &Type::ADT(name.clone(), vec![]))?;
             for (a1, a2) in args1.iter().zip(args2.iter()) {
                 unify_with_rigid(subst, rigid, a1, a2)?;
             }
@@ -131,7 +139,11 @@ pub fn unify_with_rigid(
                 });
             }
             if f1 != f2 {
-                bind_var(subst, f1, &Type::Var(f2))?;
+                // Route the head→head bind through `unify_var` for the same
+                // structural rigid-guard reason as the TyConApp-vs-ADT arm above
+                // (Principle 18, FIXME 0595 item 1). Byte-identical to the former
+                // `bind_var(subst, f1, Var(f2))` on the live (flexible-`f1`) path.
+                unify_var(subst, rigid, f1, &Type::Var(f2))?;
             }
             for (a1, a2) in args1.iter().zip(args2.iter()) {
                 unify_with_rigid(subst, rigid, a1, a2)?;

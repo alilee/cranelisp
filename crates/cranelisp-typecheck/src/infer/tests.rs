@@ -311,6 +311,43 @@
         }
     }
 
+    // RU (FIXME 0595 item 2): `infer_lambda`'s per-body inference state is torn
+    // down symmetrically on BOTH the Ok and Err paths — a body-inference error
+    // must NOT leave the shared `written_var_scope` as `None` (the pre-existing `?`
+    // exit skipped the re-install) nor leak the pushed env frame. Pin: seed the
+    // shared scope, run a lambda whose body references an undefined variable (the
+    // body infer errors), and assert the scope survives + the frame is popped.
+    #[test]
+    fn infer_lambda_teardown_is_symmetric_on_body_error() {
+        let mut tc = tc();
+        let mut scope = std::collections::HashMap::new();
+        scope.insert(Symbol::from("a"), 999u32);
+        tc.state.written_var_scope = Some(scope.clone());
+        let frames_before = tc.state.env.top_frame_index();
+
+        // (fn [y] undefined-name) — the body Var errors at infer time.
+        let mut expr = Expr::Lambda {
+            params: vec![(Symbol::from("y"), None)],
+            body: Box::new(Expr::var(Symbol::from("undefined-name"), span(8, 22))),
+            span: span(0, 23),
+            inferred_type: None,
+        };
+        let result = tc.infer_expr_for_test(&mut expr);
+        assert!(result.is_err(), "an undefined body var must make infer_lambda error");
+
+        // The shared scope is re-installed (never None) on the error path.
+        assert_eq!(
+            tc.state.written_var_scope, Some(scope),
+            "infer_lambda must restore the shared written_var_scope on the error path"
+        );
+        // The pushed env frame is popped on the error path.
+        assert_eq!(
+            tc.state.env.top_frame_index(),
+            frames_before,
+            "infer_lambda must pop its pushed env frame on the error path"
+        );
+    }
+
     // spec: 03-types §3.9.1 — concrete type annotation constrains param type
     #[test]
     fn test_infer_lambda_annotated() {

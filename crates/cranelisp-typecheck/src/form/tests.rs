@@ -1196,3 +1196,77 @@
             .expect_err("Cluster-mode def-over-import MUST reject identically");
         }
     }
+
+    // spec: 12-runtime §12.2 — GOT exhaustion is a diagnosed compile error at the
+    // `check_forms` boundary. GE-3 (CS-2) stopped at the `result::got_exhausted_error`
+    // helper; the testing MISS was the `map_cranelisp_error` boundary where the hole
+    // hid (I-1): the pre-fix catch-all Debug-dumped the `CodegenError` variant, so the
+    // exhaustion surfaced as `typecheck error: CodegenError {…}` rather than its clean
+    // located message. This pins the boundary surface: a genuine GOT-exhaustion
+    // `CodegenError` lifts to a `CheckError::TypeError` preserving message + location.
+    #[test]
+    fn got_exhaustion_renders_clean_diagnosed_message_at_check_forms_boundary() {
+        use cranelisp_types::GOT_TABLE_SIZE;
+
+        // Exhaust a real module GOT to obtain a genuine `GotExhausted`, then route it
+        // through the SAME helper every fallible `allocate_got_slot` caller uses.
+        let mut st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("proj.widget"));
+        for _ in 0..GOT_TABLE_SIZE {
+            st.allocate_got_slot().expect("within-bounds allocation");
+        }
+        let exhausted = st.allocate_got_slot().expect_err("GOT must be exhausted");
+        let codegen_err = crate::result::got_exhausted_error(exhausted);
+
+        // The `check_forms` boundary mapper must preserve the diagnosed text, not
+        // Debug-dump the variant.
+        match map_cranelisp_error(codegen_err) {
+            CheckError::TypeError { message, .. } => {
+                assert!(
+                    message.contains("proj.widget") && message.contains("GOT slot table exhausted"),
+                    "boundary surface renders the clean diagnosed message: {message}"
+                );
+                assert!(
+                    !message.contains("CodegenError"),
+                    "must NOT Debug-dump the variant: {message}"
+                );
+            }
+            other => panic!("expected a located TypeError at the boundary, got {other:?}"),
+        }
+    }
+
+    // A GOT-exhaustion `CodegenError` that COINCIDES with a still-pending cross-module
+    // resolution gap must surface as its diagnosed self, NOT be masked into
+    // `CheckError::Gap` (CS-2 widened the class flowing through `lift_error`; the gap
+    // carrier is the retry signal — a GOT exhaustion is terminal).
+    #[test]
+    fn lift_error_does_not_mask_codegen_error_as_gap_when_a_gap_is_pending() {
+        use cranelisp_types::{CranelispError, FQSymbol, ResolutionGap};
+
+        let mut state = CheckState::new(module_path());
+        state.pending_gap = Some(ResolutionGap::SymbolTypechecked(FQSymbol {
+            module: ModuleFullPath::from("some.mod"),
+            symbol: Symbol::from("later"),
+        }));
+
+        let codegen_err = CranelispError::CodegenError {
+            message: "GOT slot table exhausted for module 'proj.widget'".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        match lift_error(codegen_err, &state) {
+            CheckError::TypeError { message, .. } => {
+                assert!(message.contains("GOT slot table exhausted"), "terminal error preserved: {message}");
+            }
+            CheckError::Gap(_) => panic!("a terminal CodegenError must NOT be masked into Gap"),
+        }
+
+        // A genuine not-found `TypeError` DOES still lift to Gap (the retry path is
+        // unchanged for the resolution class).
+        let type_err = CranelispError::TypeError {
+            message: "undefined variable: later".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        assert!(
+            matches!(lift_error(type_err, &state), CheckError::Gap(_)),
+            "a not-found TypeError with a pending gap still lifts to Gap"
+        );
+    }

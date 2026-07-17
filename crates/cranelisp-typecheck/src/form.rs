@@ -439,7 +439,16 @@ where
 /// target module) is the precise cross-module cause, so we lift to `Gap`;
 /// otherwise the original `TypeError` stands.
 fn lift_error(e: cranelisp_types::CranelispError, state: &CheckState) -> CheckError {
-    if let Some(gap) = state.pending_gap.clone() {
+    // Gap-promotion is scoped to the NOT-FOUND resolution class — a `TypeError`
+    // raised by the per-form dispatcher. CS-2 (GOT exhaustion) widened the error
+    // class flowing through here to include `CodegenError`; a hard-miss codegen
+    // error that merely COINCIDES with a still-pending cross-module resolution gap
+    // must surface as its own diagnosed self, never be masked into `CheckError::Gap`
+    // (the gap carrier is the retry signal — a GOT exhaustion is terminal, not a
+    // "dependency not ready yet"). Only a `TypeError` may lift to `Gap`.
+    if matches!(e, cranelisp_types::CranelispError::TypeError { .. })
+        && let Some(gap) = state.pending_gap.clone()
+    {
         return CheckError::Gap(gap);
     }
     map_cranelisp_error(e)
@@ -499,6 +508,17 @@ fn parsed_to_top_level(parsed: ParsedEntry) -> Option<TopLevel> {
 fn map_cranelisp_error(e: cranelisp_types::CranelispError) -> CheckError {
     match e {
         cranelisp_types::CranelispError::TypeError { message, location } => {
+            CheckError::TypeError { message, location }
+        }
+        // A `CodegenError` raised by a Pass (CS-2: GOT-slot exhaustion via
+        // `result::got_exhausted_error`) reaches the `check_forms` boundary here.
+        // Preserve its diagnosed message + location verbatim (I-1) rather than
+        // Debug-dumping the variant through the catch-all below — the exhaustion
+        // must render as its clean self-explanatory message (the module + GOT
+        // capacity it already carries), NOT `typecheck error: CodegenError {…}`.
+        // `CheckError` has no codegen arm (Gap/TypeError only), so it lands on
+        // `TypeError`, whose `Display` is the plain located message.
+        cranelisp_types::CranelispError::CodegenError { message, location } => {
             CheckError::TypeError { message, location }
         }
         other => CheckError::TypeError {

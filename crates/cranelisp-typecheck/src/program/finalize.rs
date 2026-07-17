@@ -480,6 +480,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         working_program: &[TopLevel],
         phase: AmbiguityScanPhase,
     ) -> Option<AmbiguousForm> {
+        // The ClauseIndependence (pre-drain) analogue of the ValueScan leg's
+        // resolved-`SigDispatch` exemption (OA-1): a resolved multi-sig/overload
+        // call (`(h 7)`) let-bound inside a multi-arity clause is verdicted here
+        // PRE-drain, where its return var is still a fresh placeholder; the drain
+        // (`resolve_pending_overloads`, below) will pin it to the selected
+        // variant's CONCRETE return. Collect those about-to-be-pinned vars so such
+        // a binding is not spuriously flagged, WITHOUT running the drain (which the
+        // clause-independence position forbids — a self-call would acquire a
+        // sibling clause's concrete param type). A genuinely-unresolved overload
+        // (`sum-to`'s free-arg self-call) contributes nothing, so its free arg
+        // stays flagged. Empty for the ValueScan phase (no multi-arity scanned).
+        let benign_overload_vars = match phase {
+            AmbiguityScanPhase::ClauseIndependence => {
+                self.collect_pending_overload_result_vars(state)
+            }
+            AmbiguityScanPhase::ValueScan => std::collections::HashSet::new(),
+        };
+
         for top in working_program {
             let TopLevel::Defn(defn) = top else { continue };
             // The two duties partition the defns by shape (S110 duty-split):
@@ -487,9 +505,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             //   - SINGLE-CLAUSE defns + `__expr` are verdicted POST-drain (value
             //     scan, so a deferred-overload return var / spuriously-poly caller
             //     is settled first).
-            // A defn is scanned in exactly ONE phase — never both — so the
-            // pre-drain multi-arity behaviour is byte-for-byte unchanged and only
-            // the single-clause verdict moves late.
+            // A defn is scanned in exactly ONE phase — never both.
             let is_multi_arity = defn.variants.len() > 1;
             let in_phase = match phase {
                 AmbiguityScanPhase::ClauseIndependence => is_multi_arity,
@@ -498,43 +514,93 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if !in_phase {
                 continue;
             }
+
+            if is_multi_arity {
+                // §5.1.2 clause independence: each arity clause is type-checked
+                // INDEPENDENTLY, so its legitimately-polymorphic vars are that
+                // clause's own AUTHOR-WRITTEN type vars — the `:a` free vars the
+                // author declared in that clause's param/body annotations,
+                // threaded per-clause via `defn_var_scopes["{name}__v{i}"]` — NOT
+                // the clause's whole inferred function-type free vars (which would
+                // also admit an UNANNOTATED free param). An ANNOTATED free-var
+                // param (`([:a x] :a x)`, AP-1) is thus accepted exactly as its
+                // single-arity `defn` twin (FV-6); an UNANNOTATED param that merely
+                // infers free at a non-result value position (`q`'s let-bound `x`,
+                // `sum-to`'s free-arg self-call) stays the §5.1.2 ambiguity the
+                // author must pin. The benign pending-overload return vars
+                // additionally exempt a resolved-overload call whose return the
+                // drain will concretize (OA-1). (This leg computes allowed_vars
+                // PER CLAUSE — there is no single defn-wide function type for a
+                // multi-arity defn, so there is no defn-level polymorphic skip.)
+                for (i, variant) in defn.variants.iter().enumerate() {
+                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+                    let mut allowed_vars: std::collections::HashSet<u32> =
+                        benign_overload_vars.clone();
+                    // A written type var (`:a`) at a param position is legitimately
+                    // polymorphic for THIS clause only if it FLOWS TO THE RESULT —
+                    // i.e. the clause is genuinely generic over `a` (`([:a x] :a x)`
+                    // → `(Fn [a] a)`, AP-1, the §3.9 twin of single-arity FV-6). A
+                    // written `:a` param that appears ONLY in the params — its value
+                    // forced by a deferred self-call to a sibling clause's concrete
+                    // type (`rp`'s `([:a p :a rot] (rp p rot 0))`, whose result is
+                    // the self-call return, NOT `a`) — does NOT reach the result and
+                    // stays the §5.1.2 ambiguity the author must pin
+                    // (`multi_arity_unpinned_free_var_variant_ambiguous_..._neg`).
+                    // So intersect the clause's written-var ids with its result-type
+                    // free vars.
+                    if let (Some(scope), Some((_pt, ret_ty))) = (
+                        accumulator.defn_var_scopes.get(&internal_name),
+                        accumulator.defn_type_vars.get(&internal_name),
+                    ) {
+                        let result_vars =
+                            cranelisp_types::free_vars(&self.apply_subst(state, ret_ty));
+                        for id in scope.values() {
+                            for v in cranelisp_types::free_vars(
+                                &self.apply_subst(state, &Type::Var(*id)),
+                            ) {
+                                if result_vars.contains(&v) {
+                                    allowed_vars.insert(v);
+                                }
+                            }
+                        }
+                    }
+                    if let Some((span, param)) =
+                        self.find_ambiguous_value_position(state, &variant.body, &allowed_vars)
+                    {
+                        return Some(AmbiguousForm {
+                            name: defn.name.clone(),
+                            span,
+                            clause_arity: Some(variant.params.len()),
+                            param,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // §3.11.1 value-position scan for SINGLE-CLAUSE defns + `__expr`.
+            //
             // The vars LEGITIMATELY polymorphic for this defn are the free vars
             // of its finalised function type — these are exactly what generalise
             // into the defn's scheme and are pinned per-instantiation by
-            // monomorphisation (§4.4: "a var quantified into the scheme is
-            // fine"). A value-position type whose free vars are ALL in this set
-            // is sound; a value position carrying a var OUTSIDE it is genuinely
-            // un-pinnable (free-at-root) → ambiguous. This is the discriminator
-            // that admits the polymorphic-accumulator fold (`reduce`'s body
-            // positions carry `reduce`'s own scheme vars) while rejecting an
-            // unpinned `(Option a)` in a concrete-scheme defn like `main`.
+            // monomorphisation (§4.4). A value-position type whose free vars are
+            // ALL in this set is sound; a var OUTSIDE it is free-at-root →
+            // ambiguous. This admits the polymorphic-accumulator fold while
+            // rejecting an unpinned `(Option a)` in a concrete-scheme `main`.
             // The synthetic `__expr` REPL/eval wrapper is an EXECUTION BOUNDARY
             // (the value is evaluated NOW), not a reusable polymorphic template:
             // no residual var is legitimately quantifiable, so `allowed_vars` is
-            // EMPTY and the polymorphic-skip below is suppressed. This is the
-            // 0585 die-leg (VP-3/4/5): a top-level `(if c gcount gother)` at the
-            // REPL wraps as `__expr`, and its if/match/vec branches carry
-            // free-at-root generic value refs that MUST die check-side with the
-            // §3.11 ambiguity — not leak to the backend as
-            // `generic value reference '<name>' reached codegen without a mono
-            // instance`. A bare-name/`None`/`[]` result stays safe: only nested
-            // value CHILDREN are verdicted, never the `__expr` body-result
-            // itself (§3.11.2 introspection display). A genuine user
-            // poly-returning `defn` (`(defn mk [] (fn [:b y] y))`, RD-5) still
-            // takes the skip below — its vars ARE scheme-quantified (§3.11.3).
+            // EMPTY (except the RD-3 benign resolved-dispatch stale vars) and the
+            // polymorphic-skip below is suppressed (0585 VP-3/4/5).
             let is_entry_eval = defn.name.as_ref() == "__expr";
             let sig = accumulator.defn_type_vars.get(&defn.name);
             let allowed_vars: std::collections::HashSet<u32> = if is_entry_eval {
-                // `__expr` is an execution boundary — its sig vars are NOT
-                // legitimately quantifiable. The ONLY vars it may carry sound
-                // are the STALE residual vars left by a RESOLVED dispatch
-                // (`(add2 3 4)` resolves its Int impl by argument but the
-                // method-return var is not always unified back — RD-3). Those
-                // vars are benign: the value computes concretely at runtime.
-                // Collecting them as `allowed_vars` exempts `r` in
+                // `__expr`'s only sound residual vars are the STALE vars left by a
+                // RESOLVED dispatch (`(add2 3 4)` resolves its Int impl by
+                // argument but the method-return var is not always unified back —
+                // RD-3); those compute concretely at runtime. Exempts `r` in
                 // `(let [r (add2 3 4)] r)` while still flagging a genuinely-free
-                // generic value ref (`gcount` in `(if c gcount gother)`, VP-3),
-                // whose var comes from NO resolved dispatch.
+                // generic value ref (`gcount` in `(if c gcount gother)`, VP-3).
                 let mut benign = std::collections::HashSet::new();
                 for variant in &defn.variants {
                     self.collect_resolved_dispatch_result_vars(state, &variant.body, &mut benign);
@@ -553,19 +619,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             };
             // §3.11.3 disposition 1 — a POLYMORPHIC definition (its own signature
             // retains a free type var after substitution) is a sound scheme:
-            // EVERY free var in its body is a scheme var, pinned per-instantiation
-            // by monomorphisation at concrete use sites, NOT free-at-root. The
-            // codegen-reaching ambiguity error (§3.11.1 / disposition 2) is a
-            // property of a use at a CONCRETE-scheme definition (`main`-like) that
-            // leaves a var unpinned — never of a polymorphic definition. Skip the
-            // body scan for a polymorphic defn entirely. This also keeps the
-            // full-concreteness verdict robust against the 0344 cross-defn
-            // generalize/instantiate var-id reconciliation gap: a polymorphic
-            // defn's body may carry a body-local instantiation var that the
-            // pre-body `defn_type_vars` signature did not record by the same id
-            // (the fold `collect`'s `vec-push : (Fn [(Vec a) a] (Vec a))` arg) —
-            // that var is quantifiable, not ambiguous (§3.11.3). The narrowing is
-            // disposition-faithful: a non-concrete signature ⇒ disposition 1.
+            // every free var in its body is a scheme var, pinned per-instantiation
+            // by monomorphisation, NOT free-at-root. Skip the body scan entirely.
+            // This also keeps the verdict robust against the 0344 cross-defn
+            // generalize/instantiate var-id reconciliation gap.
             let defn_is_polymorphic = !is_entry_eval && !allowed_vars.is_empty();
             if defn_is_polymorphic {
                 continue;
@@ -577,16 +634,61 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     return Some(AmbiguousForm {
                         name: defn.name.clone(),
                         span,
-                        // The offending CLAUSE (0576) — named by its arity only
-                        // for a multi-arity `defn`, so a single-sig defn keeps the
-                        // plain message.
-                        clause_arity: is_multi_arity.then_some(variant.params.len()),
+                        // Single-clause defn: the plain fn-level message (no arity
+                        // clause qualifier).
+                        clause_arity: None,
                         param,
                     });
                 }
             }
         }
         None
+    }
+
+
+    /// The ClauseIndependence (pre-drain) analogue of the ValueScan leg's
+    /// resolved-`SigDispatch` exemption (OA-1). Collect the return vars of pending
+    /// multi-sig/overload calls that WILL resolve, at the drain, to exactly one
+    /// variant with a CONCRETE return — a `(h 7)`-shaped call whose return var is
+    /// a fresh placeholder only because `resolve_pending_overloads` has not run
+    /// yet (it runs AFTER this leg, per the clause-independence position). Such a
+    /// var is not free-at-root; the drain pins it concrete.
+    ///
+    /// Read-only — it mirrors `resolve_pending_overloads`'s exact-match logic
+    /// WITHOUT unifying, so a self-call's params are never acquired. A genuinely
+    /// unresolved overload (no unique concrete-return match — `sum-to`'s
+    /// free-arg self-call) contributes nothing, so its free arg stays flagged.
+    fn collect_pending_overload_result_vars(
+        &self,
+        state: &CheckState,
+    ) -> std::collections::HashSet<u32> {
+        let mut out = std::collections::HashSet::new();
+        for (_span, base_name, arg_types, ret_type_var) in &state.pending_overload_resolutions {
+            let concrete_args: Vec<Type> =
+                arg_types.iter().map(|t| self.apply_subst(state, t)).collect();
+            let Some(variants) = state.resolved_overloads.get(base_name) else {
+                continue;
+            };
+            let matches: Vec<&(Vec<Type>, Type, Symbol)> = variants
+                .iter()
+                .filter(|(param_types, _ret, _mangled)| {
+                    param_types.len() == concrete_args.len()
+                        && param_types
+                            .iter()
+                            .zip(concrete_args.iter())
+                            .all(|(p, a)| types_compatible(p, a))
+                })
+                .collect();
+            if let [only] = matches.as_slice() {
+                let resolved_ret = self.apply_subst(state, &only.1);
+                if resolved_ret.is_concrete() {
+                    out.extend(cranelisp_types::free_vars(
+                        &self.apply_subst(state, ret_type_var),
+                    ));
+                }
+            }
+        }
+        out
     }
 
 
