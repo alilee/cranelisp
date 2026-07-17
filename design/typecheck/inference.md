@@ -136,6 +136,44 @@ hybrid exists: a *caller* relies on the constraint, not on the name.
   rigid only for the duration of one body-check. **No `cranelisp-types` type
   carries rigidity**; there is no schema or cache impact from the model.
 
+#### Structural hardening of the rigid-model invariants (FIXME 0595, S111)
+
+Two places where the rigid model's invariants hold **by convention rather than
+structurally** (Principle 18). Neither is live-reachable today (`/review` verified
+against current construction sites + error flow), so both are *hardening*, not defect
+fixes; they ride the typecheck adjacent-carries track opportunistically (0595 item (1)
+is two call edits). Design intent:
+
+1. **The `TyConApp` head-binds must route through `unify_var`.** `unify_with_rigid`'s
+   two `TyConApp` arms call `bind_var` **directly** on the head id — `unify.rs:112`
+   (`TyConApp(f,_)` vs bare-ADT: `bind_var(subst, f_id, ADT(name,[]))`) and `:134`
+   (`TyConApp(f1,_)` vs `TyConApp(f2,_)`: `bind_var(subst, f1, Var(f2))`) — bypassing
+   the rigid guard on the convention "HKT constructor variables are never written
+   skolems". True today (`Type::TyConApp` is built only in HKT trait-sig resolution,
+   whose ids are never in `rigid_vars`; the canonical annotation resolver cannot
+   produce a lowercase applied head). But `cranelisp_types::apply` rewrites a head id
+   along the substitution and `unify_var`'s rigid arm binds flexible vars TO rigid ids,
+   so a kind-confused sig (no kind checker prevents a var used both as head and in
+   plain position) could smuggle a rigid id into head position, after which `:112`/`:134`
+   bind it silently — a skolem **acquire** in the unsound direction. **Fix:** route both
+   head-binds through `unify_var` (closes the gap for two call edits); a
+   `debug_assert!(!rigid.contains(&f_id))` at each arm is the acceptable minimal
+   alternative.
+
+2. **Rigid-state teardown must be Ok-path-only-symmetric.** `check_defn_body`
+   (`program.rs` ~`:3311`→`:3335`), `infer_annotate`, and `infer_lambda` install
+   `rigid_vars` / `written_var_scope` and restore them only **past the `?`s** — an
+   inference error leaves the state polluted. Benign today (every Pass-2 error aborts
+   the whole `check_forms` call and `CheckState` is function-local, so leaked state
+   dies with the abort), but `traits/impl_check.rs::check_defn_body_with_types` already
+   does the closure-capture save/restore correctly, and the asymmetry is a trap for any
+   future continue-after-form-error mode. **Fix:** match the `impl_check` discipline —
+   a closure or RAII guard that restores on **both** exit paths — at the other three
+   sites, making the invariant structural (Principle 18) rather than convention.
+
+No `cranelisp-types` edit, no schema impact; typecheck-internal. Each fix lands with its
+unit pin (`/dev`).
+
 ### Rank-1 polymorphic returns — no eager check (§3.3.4/§3.10)
 
 A `defn` whose body **defines a rank-1 polymorphic function value** — returned

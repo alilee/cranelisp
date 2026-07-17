@@ -1,12 +1,34 @@
 # TypeExpr resolver convergence — the four-mirror single-source refactor (FIXME 0590)
 
-**Status:** DESIGN (S110 Phase 3), pre-implementation. Its own Phase-5 `/dev`
-wave, **independent of the 0583 backend seam** (different files: the type-var
-resolvers in `traits/type_resolve.rs` + `form.rs` vs `program.rs`/mono
-population — confirmed in the S110 Phase-2 review). Subordinate to
-`inference.md` (the `resolve::resolve_type_expr` core) and `traits.md` (the
-trait/HKT sig-registration callers). Where this note and `traits.md` disagree
-on the trait-sig resolution shape, this note wins for the convergence target.
+**Status:** SUBSTANTIALLY LANDED (verified S111 Phase 3, 2026-07-17) — with an S111
+residual carry (below). Subordinate to `inference.md` (the `resolve::resolve_type_expr`
+core) and `traits.md` (the trait/HKT sig-registration callers). Where this note and
+`traits.md` disagree on the trait-sig resolution shape, this note wins for the convergence
+target.
+
+**What has landed (source-verified):** the three named mirror resolvers
+`resolve_trait_type_expr` / `resolve_type_expr_hkt` / `resolve_type_expr_hkt_impl` are GONE,
+replaced by the converged `checker.rs::resolve_hkt_sig_type_expr` (`:2696`) +
+`resolve_hkt_impl_type_expr` (`:2722`) that route through the canonical resolver's
+head-resolution environment (§2 target shape); `form.rs::check_type_expr` (`:356`) now
+mints-on-miss directly, **`collect_type_var_ids` is removed** (the "immediate mechanical" leg,
+§4); the **never-error `Named` fabrication arms are DELETED** (`traits/type_resolve.rs:160`;
+§3 ruling). The four-mirror class is closed onto one resolver (Principle 24, type-var axis).
+
+**S111 residual carry — 0590 R1/I2 (SPRINT.md §5): the "0349 3rd-instance safe-direction
+wrong-reject".** The named-miss tightening (§3 — a genuinely-unknown `Named` now ERRORS where
+mirrors 2/3 fabricated) is the correct hardening in the anti-conservative direction, but
+`/review` flagged a residual in the SAFE direction: a `Named`/`TypeVar` that the pre-convergence
+mirrors *resolved or fabricated-benignly* and that is a LEGITIMATELY-resolvable name must not,
+post-convergence, become a **spurious wrong-reject** (the recurring 0349 safe-direction class,
+3rd instance). **Binding design guard (§3 addendum):** the never-error-arm deletion tightens
+ONLY genuinely-unknown names — every name that is in scope (same-module, explicit import, or
+prelude fallback) MUST still resolve through the canonical resolver's `Named` leaf; the
+convergence must not convert an in-scope-resolvable head into `TypeNotFound`. **This carry needs
+its specific `/review` R1/I2 repro** (the exact `Named`/`TypeVar` shape that regressed) from
+`/sprint`//`/review` to pin the fix and the guard test — it is a `/dev` (typecheck) correctness
+item on this crate's resolver, serial on the typecheck adjacent-carries track; the design
+constraint above is the acceptance criterion, the repro is the trigger.
 
 A Principle-24 ("Resolve once") instance on the **type-var axis**: one operation
 — "resolve a source `TypeExpr` to a `Type`, minting a fresh var for each free

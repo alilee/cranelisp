@@ -442,6 +442,8 @@ pub struct ModeSummary {                            // per callable
 }
 
 pub enum ResultMode { Fresh, ProjectionOf(usize), AliasOf(usize) }  // §4.4
+// S111 adds MayAliasOf(usize) — the COW point (§3.7; pinned diff + consumer
+// census in interfaces.md §"Ownership-inference carriers"; schema 19→20)
 pub enum ParamFlow  { Consumed, IntoResult, Retained }              // makes Q2 interprocedural
 
 // MonoDefnVariant gains: pub mode_summary: Option<ModeSummary>,   // None ⇒ Decision 24
@@ -696,6 +698,68 @@ ownership-increment machinery — it is increment-I fact-correctness, one change
 S111-sized. The `/qa` body-shape variant-matrix gap (direct/let/if/match × {in-place,
 shared} × faces, plus the return-position copy-arm leak fence and a declared-fact
 reachability fence) is filed as FIXME 0623.
+
+### 3.7.1 Carrier-extension completeness matrix (S111 Phase 3 — BINDING on the `/design`(typecheck) + `/qa` Phase-3 plans and on the Phase-5 `/dev` wave)
+
+The S110 lesson ("a new cross-crate carrier needs its axis×path matrix enumerated up
+front") generalises to a carrier whose SEMANTICS are extended: the axes are enumerated
+BEFORE `/dev` writes a line, and every cell is dispositioned before the wave closes.
+Four axes, owners assigned:
+
+1. **Reachability axis (the a3 leg)** — raw fact-lookup probes × reach paths
+   {same-module def, explicit-import chain, prelude fallback}. Raw-probe census
+   (verified in source 2026-07-17): **five** `resolve_terminal_entry_and_home` calls,
+   ALL in `ownership/fixpoint.rs` — `ClusterEnv::terminal_kind` (:77),
+   `ClusterEnv::summary_of` (:89), `UniqClusterEnv::terminal_kind` (:393),
+   `UniqClusterEnv::summary_of` (:402), `UniqClusterEnv::result_unique_of` (:413 — the
+   §3.7 prose undercounted here: the "twins" are a TRIPLE). `confinement.rs:162` reads
+   through `ClusterEnv::summary_of` via the env trait, so it is covered when the env is
+   cured — it is a consumer, not a sixth raw probe. **Structural rule (Principle 7,
+   binding): ONE shared prelude-hop helper** — a fallback-aware wrapper at the
+   `resolve_terminal_entry_and_home` seam all five probes route through (same terms as
+   `ResolutionScope::resolve`'s fallback: read-only, public-head-filtered, no §8.6.4
+   interaction), NEVER five hand-rolled hops. `/design`(typecheck) confirms no sixth
+   probe (grep `resolve_terminal_entry_and_home`/`probe_module_entry_owned` under
+   `ownership/`) and pins the unit: `summary_of` finds `vec-set`'s declared facts from
+   a prelude-fallback module.
+2. **Variant axis** — every `ResultMode` consumer, structurally forced by the enum's
+   deliberate exhaustiveness (no `#[non_exhaustive]` — `ownership.rs` module rustdoc
+   §Exhaustiveness discipline, recorded S111 Phase 3): the ONE production match
+   (`transfer.rs:592–609`) gains the `MayAliasOf(k)` arm per §3.7; the two grep
+   ESCAPES that compile silently are each verified safe-direction — backend
+   `return_is_fresh_by_summary` (`fn_compiler.rs:1722`; `== Fresh` ⇒ protect KEPT) and
+   `ModeSummary::is_abi_conservative` (`ownership.rs:201`; `== Fresh` ⇒ `MayAliasOf`
+   classifies non-conservative). `abi_eq` is variant-agnostic equality — safe by
+   construction. Sweep confirmed NO third escape (2026-07-17); `/review` re-runs the
+   `_ =>`/`== Fresh` grep on the landing change-set.
+3. **Producer axis** — `origin_to_result_mode` (`transfer.rs:237–252`): **BOTH
+   `MayParam` arms publish `MayAliasOf(idx)`** — `projection:false` (was hard
+   `AliasOf`, the §3.7(a1) letter) AND `projection:true` (was hard `ProjectionOf`;
+   RULED S111 Phase 3, `/arch` confirming the `/design`(typecheck) proposal — a
+   may-projection is a conditional claim, and §3.7's reservation clause already
+   restricts `AliasOf`/`ProjectionOf` to provable unconditional claims; the
+   pre-existing `projection:true → ProjectionOf` collapse was the same honesty
+   defect one arm over). The variant's claim is correspondingly "fresh OR reaches
+   into param *i* (identity or view)" — both consumer reads are indifferent to the
+   distinction at the May point, so the collapse is retain-side-only; the
+   unconditional `Origin::Root → AliasOf` / `Origin::Projection → ProjectionOf`
+   arms stay (flagship bare-accessor precision untouched). Binding constraint — no
+   may-origin may publish a mode whose consumer can elide an inc/protect. PLUS the **whole-table completeness sweep of `ownership_facts.rs`**:
+   the ask is "no OTHER `Borrowed`-emission primitive declares `Fresh`" — every row is
+   checked against the backend's actual emission convention (any COW-shaped or
+   borrowing emission beyond the named `vec-set`/`vec-push` pair must carry truthful
+   declared facts), a row-by-row sweep, not a two-row patch. Durable form: the
+   declared-facts contract sentence in `cranelisp-primitives/CLAUDE.md` (§3.7 — *a
+   primitive whose emission deviates from the consuming convention MUST carry
+   declared, REACHABLE facts*).
+4. **Behavioural axis** — 0623's body-shape × branch × face matrix + the two fences
+   (return-position copy-arm leak; declared-fact reachability) — filed to `/qa`
+   (FIXME 0623), actioned in its Phase-3 plan rows.
+
+Owners: axes 1–3 = `/design`(typecheck), with the primitives half of axis 3 routed
+`/dev` (backend-mode primitives) per the S111 Phase-2 table; axis 4 = `/qa`. The 0621
+`callees` → `storage_fq()` rider shares the ONE schema-20 change-set (two
+persisted-meaning changes, one bump window — S111 Phase-2 §1).
 
 ---
 

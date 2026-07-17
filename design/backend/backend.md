@@ -1,10 +1,14 @@
 # Backend — Master Design
 
-> **Owner**: `/design` (this file). Per-crate code conventions live in `crates/cranelisp-backend/CLAUDE.md` (`/dev`-narrow). Cross-crate facade is `design/arch/facades/backend.md` (`/arch`-owned). Bounded context is `design/arch/bounded-contexts.md` §3.
+> **Owner**: `/design` (this file). Per-crate code conventions live in `crates/cranelisp-backend/CLAUDE.md` (`/dev`-narrow). The public surface is stated by `design/arch/bounded-contexts.md` §3 + the per-item `///` rustdoc in `crates/cranelisp-backend/src/` (the former per-crate facade `design/arch/facades/backend.md` was **retired S75 W5b** — `design/arch/CLAUDE.md` §facades; do not cite it as authoritative). Bounded context is `bounded-contexts.md` §3.
 >
-> **Scope of this doc**. Master design intent for `crates/cranelisp-backend/`: how the crate fulfills the bounded context against the as-designed facade — internal architecture, quality attributes, concurrency, cache + linker, decision register, pointers to subordinate topic docs. This doc does NOT re-derive the public surface (cite `facades/backend.md`) or the bounded-context full statement (cite `bounded-contexts.md` §3).
+> **Scope of this doc**. Master design intent for `crates/cranelisp-backend/`: how the crate fulfills the bounded context — internal architecture, quality attributes, concurrency, cache + linker, the keyed-consumer end-state, decision register, pointers to subordinate topic docs. This doc does NOT re-derive the public surface (the authority is `bounded-contexts.md` §3 + source rustdoc + the crate `CLAUDE.md` seam map) or the bounded-context full statement (cite `bounded-contexts.md` §3).
 >
-> **Status (refresh)**. Refreshed against the canonical contract — `bounded-contexts.md` §3 + `facades/backend.md` + Decisions 22–42. The facade is **target-stating**: it specifies the as-designed shape, not the as-built. Where the implementation in `crates/cranelisp-backend/src/` does not yet match the facade, this doc names the gap by section and points to the resolution path (an audit phase, an open FIXME, or a sprint-scope item). The audit `audits/backend-20260423.md` is read as the temporal snapshot of as-built state at that date — useful for understanding how the crate got here, **not** the target. The canonical contract (BC + facade + Decisions) wins where they disagree.
+> **Status (S111 currency pass).** Two structural facts postdate this doc's S75-era body and are the crate's current defining shape; where an older section below still reads target-stating against the retired facade, **these two banners + the crate `CLAUDE.md` seam map win**:
+> 1. **Keyed-lookup consumer end-state (S110 W1–W3, `design/arch/backend-keyed-consumer.md`, Principle 24).** The backend performs **zero name resolution** — it reads typecheck's per-reference `resolved_target`/`resolved_ctor` storage key and does ONE direct keyed fetch (`CompileContext::entry_at`/`ctor_meta_at`/`got_entry_at`, `compiler/context.rs`), discriminating on the fetched `DefKind` and hard-erroring on a carrier/entry miss (Rev-2 no-soft-fallback). The `resolve_driven`/`resolve_chain` resolver family + the ten `resolve_*` entry points + `lookup_constructor` + the arbitrary-order `symbol_tables.iter()` global scan are **DELETED**; `resolution.rs` (79 ln) holds only the two symbol-naming primitives. See §2.7 below and BC §3 invariant 10. This is the transformation the acid-test names as "the as-built now IS the second-time solution" at the resolution boundary (`audits/cranelisp-backend-s110.md` §1).
+> 2. **S111 audit-drain (`audit-drain-s111.md`).** The R4 hygiene batch (one `build_isa`, Wave-2b shim removal, `compile_defn` front-door deletion, `module_aliases` field drop), the R5 funnel splits (`compile_resolved_call`, `compile_to_module_impl`), the R6 drop-glue consolidation, and the R7 GOT-exhaustion consumption. That doc is the `/dev` spec + the byte-identity strategy.
+>
+> The canonical contract (BC §3 + Decisions + source rustdoc) wins where any section disagrees. `audits/backend-20260423.md` and the S75-era facade text are **historical**, not the target.
 
 ---
 
@@ -35,13 +39,15 @@ Per Decision 41, the per-symbol code carrier (`Code`) is named in this crate as 
 
 ## 2. Public surface
 
-The facade `design/arch/facades/backend.md` is authoritative. **Do not restate signatures here** — cite §"Public surface" and §"Object file contract" of the facade for the Rust-level shape. This section names what the surface is *for* and which contract invariants this crate is responsible for upholding.
+The authority for the Rust-level shape is `bounded-contexts.md` §3 + the per-item `///` rustdoc on the public entries in `crates/cranelisp-backend/src/lib.rs` (the S75-retired `facades/backend.md` is no longer the source — `design/arch/CLAUDE.md` §facades). **Do not restate signatures here.** This section names what the surface is *for* and which contract invariants this crate is responsible for upholding.
 
 ### 2.1 The three free functions (facade §"Public surface" — S75 D41-rotated)
 
 The codegen boundary is **exactly three** free functions (facade §"Free functions"). **There is no separate object-compile entry** — the never-real `compile_to_object` free function is retracted (S75; facade tombstone); the object path is `compile_to_module::<ObjectModule>` + **caller** `finish().emit()` (the §2.5 caller-finalize contract in `compile-to-module.md`, symmetric to JIT mode where `int` holds the `JITModule` for `Arc<Jit>` reclaim).
 
-- `compile_to_module<M: Module + CodeFinalizer>(scope, names, symbol_tables, module_aliases, module) -> Result<CompilationArtifacts, CompilationError>` — the **single CLIF emission entry**. Used by `int`'s priority workers (JIT path, per-symbol cardinality per Decision 41) and nice workers (object path, per-module cardinality). Mode is determined by the supplied `M` instance per Decision 23. Backend writes `Code::Jit(Arc<Jit>)` directly into each compiled symbol's entry via `SymbolTable::write_code(&self, sym, code)` (Decision 38; interior mutable) AND writes the resulting fn pointer to the entry's GOT slot via `got().store_slot(slot, ptr)` (D41 #1 + #2). It returns the always-created introspection artefact `CompilationArtifacts { clif_ir, code_size, compile_duration }` **by value** — the caller composes its `Introspection` (REPL/trace mode) or drops it (production batch). Backend never names `Introspection` (D41 #3 retracted, S70 Phase B). The `module_aliases` param feeds `compiler::resolve_func_arity` / `resolve_got_target` qualified-callee resolution.
+- `compile_to_module<M: Module + CodeFinalizer>(scope, names, symbol_tables, module, capture_clif) -> Result<CompilationArtifacts, CompilationError>` — the **single CLIF emission entry**. Used by `int`'s priority workers (JIT path, per-symbol cardinality per Decision 41) and nice workers (object path, per-module cardinality). Mode is determined by the supplied `M` instance per Decision 23. Backend writes `Code::Jit(Arc<Jit>)` directly into each compiled symbol's entry via `SymbolTable::write_code(&self, sym, code)` (Decision 38; interior mutable) AND writes the resulting fn pointer to the entry's GOT slot via `got().store_slot(slot, ptr)` (D41 #1 + #2). It returns the always-created introspection artefact `CompilationArtifacts { clif_ir, code_size, compile_duration }` **by value** — the caller composes its `Introspection` (REPL/trace mode) or drops it (production batch). Backend never names `Introspection` (D41 #3 retracted, S70 Phase B). `capture_clif` gates CLIF-text rendering (FIXME 0325 — byte-identical-off).
+
+  > **S111 currency.** The `module_aliases` parameter is **removed** by the R4 hygiene batch (`audit-drain-s111.md` §1.4): it was fed to the `resolve_*` qualified-callee resolvers, and those resolvers were **deleted at S110 W3** (the keyed-consumer end-state, §Status banner 1) — the field has been threaded-but-UNREAD since. The S75-era claim that this param "feeds `compiler::resolve_func_arity`/`resolve_got_target`" is false on current source: `resolve_func_arity` is replaced by `CompileContext::arity_at` (a keyed read) and `resolve_got_target` is deleted with no successor scan.
 
 - `produce_disasm(fq, symbol_tables) -> Result<String, CompilationError>` — the **on-demand disassembly entry**. Invoked lazily by `int` on a REPL `/disasm <fn>` request, NOT eagerly per-compile. Resolves the FQSymbol to its entry, reads the code ptr from `got().load_slot(slot)` + `code_size` from entry metadata, produces the disassembly string. Factored out of `CompilationArtifacts` because disassembly is much more expensive than CLIF-string capture and should not be paid unless asked.
 
@@ -80,40 +86,59 @@ The audit `audits/backend-20260423.md` recorded four substantive gaps between th
 | Facade target | Pre-S75 source state | S75 closure |
 |---|---|---|
 | Single `compile_to_module<M>` entry; no separate object-compile fn | `compile_to_module<M, C, L>` exists; the `lib.rs:821` `compile_to_object` stub (returns `unimplemented!()`, cites never-filed FIXME 0184) is a phantom third entry; `Jit::compile_defn` is an internal per-fn helper | W2 deletes the `compile_to_object` stub; object path is `compile_to_module::<ObjectModule>` + caller `finish().emit()`. `Jit::compile_defn` stays internal-but-exposed (facade Row 9). |
-| `compile_to_module(...) -> Result<CompilationArtifacts, CompilationError>` + `module_aliases`; direct `write_code` + GOT-slot writes | `compile_to_module(...) -> Result<CompilationResult, CompilationError>` returning a tuple (`artifacts: HashMap<_, FunctionArtifacts>`, `code_ptrs`, `func_ids`, `entry_func_id`, `func_arities`, `warnings`); no `module_aliases` param | W2 rotates to the D41 signature (FIXME 0221): value-returned `CompilationArtifacts`, `module_aliases` param, `produce_disasm` authored, `CompilationResult` + `FunctionArtifacts` deleted. D41 #1/#2 direct-writes preserved; #3 retracted. |
+| `compile_to_module(...) -> Result<CompilationArtifacts, CompilationError>`; direct `write_code` + GOT-slot writes | `compile_to_module(...) -> Result<CompilationResult, CompilationError>` returning a tuple (`artifacts: HashMap<_, FunctionArtifacts>`, `code_ptrs`, `func_ids`, `entry_func_id`, `func_arities`, `warnings`) | W2 rotates to the D41 signature (FIXME 0221): value-returned `CompilationArtifacts`, `produce_disasm` authored, `CompilationResult` deleted. **`FunctionArtifacts` is NOT deleted** — it survives as an internal `pub(crate)` per-symbol codegen record at `lib.rs:275`, returned by `compile_defn_in_module`. The S75/S87-era "deleted" claim was an overclaim (S107 F9 / S110 §2.3): `CompilationResult` (the boundary tuple) is gone; `FunctionArtifacts` (the internal per-fn record) is live and correct as an internal helper. D41 #1/#2 direct-writes preserved; #3 retracted. |
 | `Code` in `crates/cranelisp-backend/src/code.rs`, slimmed to `Jit(Arc<Jit>)`/`Linker(Arc<Linker>)`, no `Primitive` | `Code` already in `crates/cranelisp-backend/src/code.rs` (the D41 move landed) BUT still `{ jit, ptr }` / `{ linker, ptr }` + `Primitive` | W2 slims the variant payloads (drop `ptr`) AND deletes `Primitive` (FIXME 0244 backend half) — both together, no half-rotation (Rev 3). |
 | `load_object` free fn returning `LinkerArtefact`; `Linker::load_object` `pub(crate)`; `Linker::get_symbol -> Result<_, LinkerError>` | free `load_object` already exists; `Linker::load_object` still `pub`; `Linker::get_symbol -> Option<*const u8>` | W2 narrows `Linker::load_object` to `pub(crate)`; rotates `get_symbol` to `Result<*const u8, LinkerError>` (D37). |
 
-These were observations *of the source*, not a problem with the **contract** — the contract is implementable simply against the BC + facade, and S75 is the sprint where the implementation catches up. The simplicity check (§4.1) confirms it is a *deletion + re-shape* exercise, not a *redesign*. No FIXME `target: /arch` is owed — the rotation lands the existing canonical design (FIXMEs 0221 + 0244 are the tracking records, resolved in W2).
+These were observations *of the source*, not a problem with the **contract** — the contract is implementable simply against the BC, and S75 is the sprint where the implementation catches up. The simplicity check (§4.1) confirms it is a *deletion + re-shape* exercise, not a *redesign*. No FIXME `target: /arch` is owed — the rotation lands the existing canonical design (FIXMEs 0221 + 0244 are the tracking records, resolved in W2).
+
+### 2.7 The keyed-lookup consumer end-state (S110 W1–W3 — the crate's defining transformation)
+
+Post-S110, the backend is a **pure keyed-lookup consumer** — the single largest simplification in the crate's history (`audits/cranelisp-backend-s110.md` §1: "the as-built now IS the second-time solution" at the resolution boundary). This is the current shape of how the backend answers "which callee / ctor / GOT target does this reference mean", and it supersedes every older section that describes a resolver.
+
+**The mechanism (Principle 24 "Resolve once", BC §3 invariant 10):**
+
+- **typecheck resolves once, the backend consumes.** typecheck records, per call/ctor/value reference, a `resolved_target`/`resolved_ctor` **storage FQ** — the exact key the callee's `Def` is stored under. The backend does ONE direct two-level map read (`symbol_tables.get(&fq.module)` → `table.get(&fq.symbol)`) via the `CompileContext` projections in `compiler/context.rs`:
+  - `entry_at(fq)` — the ONE keyed fetch; callers kind-discriminate on the cloned `DefKind` (got-slot dispatch via `callable_got_slot()`, platform/poll via `DefKind::PlatformEffect`, extern via `DefKind::PrimitiveExtern`, ctor via `DefKind::Constructor`, arity via `param_names`, ownership via `mode_summary()`).
+  - `ctor_meta_at(fq)` — the pattern-seam ctor projection (storage-keyed, deterministic — the answer `lookup_constructor`'s context-free re-resolution could not give for a scrutinee-directed same-named ctor).
+  - `is_callable_target_at` / `arity_at` / the value-seam GOT projections — kind-arm reads off the one `entry_at` fetch.
+- **No name resolution, no scan, no precedence.** The `resolve_driven`/`resolve_chain` driver, the ten `resolve_*` entry points, `lookup_constructor`, and the arbitrary-order `symbol_tables.iter()` global-fallback scan are **DELETED** (−993 LOC across W1–W3). `resolution.rs` (79 ln) retains only the two fixed-name-composition primitives (`got_data_symbol_name`, `inner_fn_discriminator_for`). The grep gate — zero `resolve_driven`/`resolve_*_target` in `compiler/` — is the structural acceptance.
+- **Loud on miss (Rev-2 no-soft-fallback, Principle 18).** Every keyed read hard-fails with a design-citing `CodegenError` on a carrier-miss (a `None` `resolved_target` on a table-reference kind), an entry-miss (`Some(fq)` fetching nothing), or a slot-less template at a value read — never a silent fallback. The three message families are pinned at the call seam (`compile_direct_call`, `apply.rs`), the pattern seam (`compile_constructor_pattern`, `match_codegen.rs`), and the value seam (`fn_as_value.rs`/`literals.rs`). Their **negative** side (asserting each family fires) is the S110 R2 test obligation (`backend-keyed-consumer.md` §9), landing this sprint ahead of the R4/R5 splits.
+
+**Two release-mode soft spots** remain where the discipline says loud (S110 §2.2, closed by S110 R3 / a `/dev` change): `constructor_metas` (`context.rs`) silently `filter_map`-drops a both-probes-miss ctor in release (`debug_assert!` only — a drift is a leak, not an error); `concrete_field_types` (`match_codegen.rs`) returns an empty vec on an already-validated key miss (honest posture is `unreachable!`). Neither has an observable defect today (the key was hard-validated moments earlier), but the miss posture contradicts the seam's own standard.
+
+The authoritative narrative is `design/arch/backend-keyed-consumer.md` (parked one sprint before its archive move — SPRINT.md §8) + the `context.rs:140-253` rustdoc; this section is the per-crate master's pointer to it.
 
 ---
 
 ## 3. Internal architecture
 
-### 3.1 Module layout — current (per audit File Metrics)
+### 3.1 Module layout
 
-| File | Lines | Responsibility |
-|---|---:|---|
-| `lib.rs` | 4655 | Crate root; `compile_to_module<M, C, L>`; `compile_defn_in_module`; `CodeFinalizer` impls for JIT + Object; ~3,932 lines of tests at the bottom |
-| `compiler/mod.rs` | 1560 | `FnCompiler<M>`, `CompileContext`, scope/RC helpers, dispatch entry |
-| `compiler/control_flow.rs` | 1948 | `let`, `if`, lambdas, par-bind continuation, closure + drop glue paths |
-| `compiler/vec_codegen.rs` | 1315 | Vec literals, ops, COW fast/slow paths, element inc/dec helpers |
-| `compiler/apply.rs` | 743 | Call lowering, ResolvedCall dispatch, closure invocation, bind lowering |
-| `compiler/match_codegen.rs` | 581 | Pattern-match lowering |
-| `compiler/literals.rs` | 465 | Literal lowering, constructor/operator-as-value |
-| `compiler/trace_codegen.rs` | 396 | `trace` wrapper lowering |
-| `operators.rs` | 531 | Inline primitive lowering, `(TraitName, Symbol, TypeName) → PrimitiveOp` map |
-| `heap.rs` | 501 | Heap layout offsets, RC inc/dec emission, allocation helpers, last-use predicate |
-| `jit.rs` | 1241 | `Jit` newtype + custom `Drop`, `build_isa()` (HARDCODED, parallel to `cache/object.rs`), intrinsic registration, **second** `compile_defn` and `build_compile_context` |
-| `display.rs` | 831 | Value/type formatting (belongs in `int` per BC §6 ownership of REPL display; relocation tracked by FIXME 0108) |
-| `exe.rs` | 231 | Startup-object generation for `--link` mode |
-| `cache/mod.rs` | 653 | Cache facade, paths, load helpers, **deprecated compatibility surface** |
-| `cache/manifest.rs` | 419 | Manifest hashing, freshness checks |
-| `cache/object.rs` | 707 | Object-module compilation, `build_isa(is_pic)` (the *intended* canonical helper) |
-| `cache/serialize.rs` | 734 | Cache metadata serialisation |
-| `cache/linker.rs` | 1009 | In-process object loader, relocations, GOT slot handling |
-| `got.rs` | 9 | Compatibility re-export (deletion candidate per audit MED-1) |
-| `codegen_types.rs` | 9 | Compatibility re-export (deletion candidate per audit MED-1) |
+The authoritative, kept-current module/seam map is the crate `CLAUDE.md`
+§"Submodule seam map + test-module locations" (`/dev`-narrow, reset 2026-07-11
+for the W3 keyed-consumer end-state) — this doc no longer duplicates a
+line-count inventory (the S75-era table here decayed three reorganizations deep:
+it listed `lib.rs` at 4655 with 3,932 lines of inline tests, `jit.rs` with a
+"second `compile_defn`", `operators.rs` with a forbidden `(trait, method, type)`
+map, and `got.rs`/`codegen_types.rs` as 9-line re-exports — all superseded by the
+S87 W5b decomposition, the S101 test-sibling split, and the S110 keyed-consumer
+excision). Read the seam map for the current tree.
+
+**The oversized funnels this master doc tracks** (the S111 R5 split targets,
+`audit-drain-s111.md` §2/§3) — census hand-verified at S110 (`audits/cranelisp-backend-s110.md` §2.4):
+
+| Function | Location | Lines | Disposition |
+|---|---|---:|---|
+| `compile_to_module_impl` | `lib.rs:633` | ~395 | R5 phase split (§3 of audit-drain-s111.md) |
+| `compile_resolved_call` | `compiler/apply.rs:430` | ~325 | R5 variant-arm split (§2 of audit-drain-s111.md) |
+| `generate_startup_object_checked` | `exe.rs:121` | 270 | below threshold; not this sprint |
+| `Linker::load_object` | `cache/linker.rs:229` | 235 | below threshold; not this sprint |
+| `compile_trace` | `compiler/trace_codegen.rs:691` | 209 | below threshold; not this sprint |
+| `compile_apply` | `compiler/apply.rs:155` | ~200 | below threshold; the S107 R4 third target, de-scoped at S110 |
+
+`display.rs` relocation to `int` is FIXME 0108 (BC §6). `got.rs` / `codegen_types.rs`
+are the Wave-2b re-export shims the R4 hygiene batch deletes (`audit-drain-s111.md` §1.2).
 
 ### 3.2 Module layout — target
 
@@ -319,7 +344,7 @@ The cache-hit path is **not** a parallel codepath (Decision 37). It lives inside
 - For each defined symbol `s` in `symbol_tables[scope]`, `linker.get_symbol(bare_name(s))` resolves the address. Bare-name lookup per Decision 36; `Linkage::Local` symbols are still indexable from the in-process linker (it filters only `.L*`-style debug symbols).
 - Returns `LinkerArtefact { linker: Arc<Linker>, ptrs: HashMap<Symbol, *const u8> }` — `int` writes resolved ptrs into the SymbolTable GOT slots and constructs `Code::Linker { linker, ptr }` per symbol via `write_code`.
 
-**No swallowed failures (Decision 37)**. The facade exposes `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` (a typed `Result`, not the source's current `Option`). At facade-level the contract is: **callers MUST treat resolution failure as `CacheLoadError`, not silently push NULL**. The pre-Sprint-58 `worker.rs:2810-2823` regression came from the `Option` → silent-skip pattern; Decision 37 plus the typed `Result` shape closes the door. The typed-`Result` shape is now pinned in `facades/backend.md`; **FIXME 0100** (`*-relocate-single-consumer-types*`) Phase 2 covers placing `LinkerError` and the rest of backend's single-consumer types in `cranelisp-backend` per Principle 15.
+**No swallowed failures (Decision 37)**. `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` returns a typed `Result` (not `Option`). The contract is: **callers MUST treat resolution failure as `CacheLoadError`, not silently push NULL**. The pre-Sprint-58 `worker.rs:2810-2823` regression came from the `Option` → silent-skip pattern; Decision 37 plus the typed `Result` shape closes the door. The typed-`Result` shape is authoritative in the `Linker::get_symbol` source rustdoc (BC §3); **FIXME 0100** (`*-relocate-single-consumer-types*`) Phase 2 covers placing `LinkerError` and the rest of backend's single-consumer types in `cranelisp-backend` per Principle 15.
 
 ### 6.3 Schema versioning (Decision 34)
 
@@ -376,7 +401,8 @@ The existing docs under `design/backend/` (this `backend.md` is the master; 5 in
 
 | Topic | File | Status |
 |---|---|---|
-| Compilation function shape | `compile-to-module.md` | **Live**. Authoritative on §17 generics activation; describes Decision 25 + 32 + 35 outcome. **S75 banner at top of file** states the D41-rotated target (`Result<CompilationArtifacts, CompilationError>` + `module_aliases` param + `produce_disasm`; `compile_to_object` retracted; 3-entry boundary; `Code` slim + `Primitive` drop; `compile_constr_adt` §2.6). The body §8/§9.1 `CompilationResult` text is pre-rotation migration narrative superseded by the banner. |
+| S111 audit-drain (R4/R5/R6/R7) | `audit-drain-s111.md` | **Live**. The `/dev` spec for the hygiene batch, the two funnel splits, the drop-glue consolidation, and the GOT-exhaustion consumption + the byte-identity strategy. Cited from §Status banner 2 + §3.1. |
+| Compilation function shape | `compile-to-module.md` | **Live** (with a currency caveat). Authoritative on §17 generics activation; describes Decision 25 + 32 + 35 outcome. **S75 banner at top of file** states the D41-rotated target (`Result<CompilationArtifacts, CompilationError>` + `produce_disasm`; `compile_to_object` retracted; 3-entry boundary; `Code` slim + `Primitive` drop; `compile_constr_adt` §2.6). **Caveat**: the banner's `module_aliases` param and any `resolve_*` narrative are S110/S111-superseded (the resolvers are deleted, the param is dropped — §2.7 + `audit-drain-s111.md` §1.4). The body §8/§9.1 `CompilationResult` text is pre-rotation migration narrative superseded by the banner. |
 | Minimal JIT-setup boundary (S76) | `jit-setup-boundary.md` | **Live**. Authoritative on the `Jit::new(symbol_tables)` constructor (the BC §3 minimal-JIT-setup boundary), `cranelisp_intrinsics::INTRINSICS_TABLE` consumption (construct + cache-hit), the `.meta.json` platform `schema_literal` round-trip (FIXME 0232), and the 0122 `--link` GOT-alignment re-test (fix already in `lib.rs:388`). Confirms the S76 W-Macro change is a backend NO-OP. |
 | Ring 1 codegen | `ring1-codegen.md` | **Live**. Stable. Ring 0/1 primitives backbone. §"Bitwise Inline Primitives (FIXME 0416, S91)" is authoritative on the `bit-and/or/xor/not`·`shl`·`shr`·`popcount` 1:1 CLIF lowering, `add-i64`-mirrored registration, Cranelift-implicit shift masking, and zero public-API/`cranelisp-types` movement |
 | Ring 2 RC discipline | `ring2-rc.md` | **Live**. Authoritative on Decision 24 (uniform consuming convention). **§3 S100 note: Decision 24 is now framed as the conservative point (⊤) of the ownership-inference mode lattice** — retained verbatim as the absent-summary default; refinements are inferred, per `ownership-codegen.md` (FIXME 0465 actioned S100). §10 addendum (string-literal RC residual through `print`) is current. **§1.6 (S84 / FIXME 0375) — retire the unsound `<1024` RC guard from the `Type::Var` path** (gated on FIXME 0374 typecheck Tier-2): `classify(Type::Var)` becomes `unreachable!`; the guard is kept ONLY for the type-known mixed-ADT nullary-tag path (BC §3 invariant 9). §1.5 records the two historical sources of `Mixed` and why they are separable at `classify`, not at the 15 guarded-RC call sites |
@@ -415,7 +441,7 @@ The contract questions surfaced by earlier refreshes have all been resolved into
 
 ### FIXME 0100 — Relocate single-consumer types (was: pin `Linker::get_symbol` typed-Result shape)
 
-`target: /dev`. The typed-`Result` shape for `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` is now pinned in `facades/backend.md`. FIXME 0100 Phase 2 covers placing `LinkerError`, `CompilationError`, and the GOT observer types in `cranelisp-backend` per Principle 15 (facade types live with their behavior). See `design/arch/fixmes/0100-dev-relocate-single-consumer-types-to-originating-crates.md`.
+`target: /dev`. The typed-`Result` shape for `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` is authoritative in the `Linker::get_symbol` source rustdoc (BC §3). FIXME 0100 Phase 2 covers placing `LinkerError`, `CompilationError`, and the GOT observer types in `cranelisp-backend` per Principle 15 (facade types live with their behavior). See `design/arch/fixmes/0100-dev-relocate-single-consumer-types-to-originating-crates.md`.
 
 ### FIXME 0096 — Stale subordinate-doc archival pass
 
@@ -441,7 +467,9 @@ The contract questions surfaced by earlier refreshes have all been resolved into
 
 ## 10. Cross-references
 
-- `design/arch/facades/backend.md` — public surface (authoritative)
+- `design/arch/bounded-contexts.md` §3 + `crates/cranelisp-backend/src/lib.rs` per-item `///` rustdoc — public surface (authoritative; the former `design/arch/facades/backend.md` was retired S75 W5b)
+- `design/arch/backend-keyed-consumer.md` — the keyed-lookup consumer end-state (§2.7; parked one sprint pre-archive per SPRINT.md §8)
+- `design/backend/audit-drain-s111.md` — the S111 R4/R5/R6/R7 `/dev` spec + byte-identity strategy
 - `crates/cranelisp-types/src/lib.rs` `//!` rustdoc + per-item `///` — boundary types this crate consumes; `design/arch/bounded-contexts.md` §7 for cross-type narrative
 - `design/arch/bounded-contexts.md` §3 — bounded-context full statement
 - `design/arch/principles.md` and `design/arch/principles/NN-*.md` — principles cited above (1, 3, 4, 5, 6, 7, 11)

@@ -341,6 +341,30 @@ Nested quasiquote with symbol construction:
 ;; Expands to: (if (> x 0) (print "positive") 0)
 ```
 
+### 9.4.4 Legal Wherever an Expression Is Legal
+
+Quote (`'`), quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) are
+**reader-level syntactic sugar** (§1.6): during parsing they desugar to
+`(quote form)`, `(quasiquote form)`, `(unquote form)`, and
+`(unquote-splicing form)`, and the quasiquote desugaring (§9.4.1) rewrites the
+template into ordinary applications of the `macros`-module constructors
+(`macros/SexpSym`, `macros/SexpInt`, `macros/SexpList`, `macros/SCons`,
+`macros/SNil`, …; emitted qualified so no import is required — §9.1.3). The
+result is an **ordinary expression of type `Sexp`**.
+
+Consequently these forms are legal **wherever an expression is legal** — they are
+NOT restricted to `defmacro` clause bodies. The desugaring runs on every form, in
+any position; there is no dedicated special form and no separate typing rule for
+quasiquote. A quasiquoted form evaluated outside a macro simply constructs and
+yields a `Sexp` value (an unquote splices an evaluated `Sexp` in place, §9.4.2),
+exactly as it would inside a macro body — consistent with §9.4.2's statement that
+an unquote "evaluates `expr` in the current scope", whatever that scope is.
+
+Unquote (`~`) and unquote-splicing (`~@`) remain governed by §9.4.2: they are
+meaningful only within an enclosing quasiquote template (unquote-splicing only
+inside a list or bracket form). Lifting the macro-body restriction concerns
+**where a quasiquote may appear**, not those template-internal rules.
+
 ## 9.5 Bare-Symbol Expansion [Tested tests/spec_11_stdlib::prelude_loads_without_errors]
 
 Zero-argument macros expand when referenced as bare symbols, without parentheses. This enables named constants and value aliases.

@@ -1,12 +1,12 @@
 # Sprint 111: vec-assoc COW ownership root + backend audit-debt drain + quasiquote normative
 
-Status: PHASE 2 ARCHITECTURE REVIEW (scope user-approved 2026-07-17)
+Status: PHASE 4 COMPLETE — waves organized, both /arch rulings landed; ready for PHASE 5 (awaiting user go-ahead to launch implementation)
 Audit: cranelisp-frontend (rotation — longest since assessment, s87; /sprint sets final target at Phase 4)
 
 ## Phase-1 decisions (user-approved 2026-07-17)
 
 1. **Breadth: BROAD** — centrepiece + full backend audit drain + quasiquote + Principle-24 sweep + adjacent carries. Decomposed into waves.
-2. **0613 quasiquote: ruled (A) LEGAL EVERYWHERE.** Quote/quasiquote desugar wherever an expression is legal. Sole owner is `cranelisp-frontend` (a wiring fix, no typecheck/backend involvement, no new special form — see §3). Routes to `/dev`(frontend) + one-line `/arch` seam note + `/testing` matrix. 0614 becomes a `/stdlib` no-op (derive.cl helpers compile once the wiring lands); 0615 rides.
+2. **0613 quasiquote: ruled (A) LEGAL EVERYWHERE.** Quote/quasiquote desugar wherever an expression is legal. Typecheck/backend see no quasiquote (no new special form, no typing rule). **`/arch` Phase-2 correction:** NOT sole-frontend — `src/expander.rs::expand_scoped` (Pass-1 macro expansion) runs before `build_forms` and recurses into all sub-lists with zero quote handling, so a naive fold would let `(defn f [] '(m x))` (m a macro) silently corrupt the quoted literal. Fix = fold `expand_quasiquotes` into `build_form` (frontend) PLUS an int-side quote shield (hold `quote` verbatim; under `quasiquote` descend only into `unquote`/`unquote-splicing`). Two `/dev` surfaces (`cranelisp-frontend` + `src/`), one logical wave; `/testing` matrix gains quote × macro-expansion interaction rows. 0614 becomes a `/stdlib` no-op; 0615 rides.
 3. **4th-audit backend items: SHIP ALL this sprint** (dup `build_isa`, dispatch funnels, drop-glue, GOT exhaustion) — no 3rd deferral.
 
 ## Scope
@@ -363,17 +363,81 @@ exception record.
 + 0628), `/qa` (0623 matrix + P24 pattern battery + R2 rows + 0613 interaction
 rows), `/testing` (0613 matrix), then the Phase-4 wave plan per §1 ordering.
 
-## Skill plans (Phase 3)
+## Skill plans (Phase 3) — 2026-07-17
 
-_pending_
+Full detail lives in each skill's owned design docs; this is the coordination synthesis.
 
-## Waves (Phase 4)
+### /arch — cross-crate interface pins (design/arch/*, cranelisp-types rustdoc; NOT landed — coupled to implementing waves)
+- **`ResultMode::MayAliasOf(usize)`** pinned as exact diff (`interfaces.md` §"Ownership-inference carriers" + `ownership.rs` rustdoc). Serde-visible → `CACHE_SCHEMA_VERSION` 19→20, **0621 rider inside the one bump window**. Consumer census: ONE compiler-forced exhaustive match (`transfer.rs:592–609`); exactly TWO grep escapes both safe-direction (`return_is_fresh_by_summary`, `is_abi_conservative`) — no third. `#[non_exhaustive]` deliberately absent (P18 exhaustiveness = the safety feature); exception recorded in `ownership.rs` rustdoc + types `CLAUDE.md`.
+- **GOT R7** pinned schema-INDEPENDENT: `allocate_got_slot(&mut self) -> Result<usize, GotExhausted>` (no bump on failure). **Caller census corrected: 10 typecheck fallible sites** (Phase-2 table missed `program/register.rs:376`+`:948`) → ONE typecheck `CheckError` mapping helper (P7); 3 bootstrap `unreachable!`; int `redefine.rs:254` (existing S101 guard collapses onto the Result).
+- **Carrier-completeness matrix** authored as binding `ownership-inference.md` §3.7.1 (4 axes). Reachability probes = **FIVE** (not "twins": `result_unique_of` `fixpoint.rs:413` included); `confinement.rs:162` is not a sixth (routes through site 2).
+- Quasiquote BC currency: `bounded-contexts.md` §1 invariant 10 (fold) + §6 quote-shield sentence; `lib.rs:48` claim becomes TRUE.
+- Filed **FIXME 0632** (P24 sweep battery inputs → /qa); /qa produced the register (0632 resolvable at its close).
 
-_pending_
+### /spec — DONE (both FIXMEs user-ratified dispositions; no normative question opened)
+- **0630 DELETED** — §5.1.2 multi-sig example fixed to concrete `(Vec Int)`/`(List Int)` (bare `:Vec` under-specifies; S109 assert-not-acquire) + explanatory paragraph tying to the section's own two rules.
+- **0613** — new `spec/09-macros.md` §9.4.4 "Legal Wherever an Expression Is Legal" (reader sugar, desugars every form to `macros/Sexp*` ctor application yielding `Sexp`; no new special form/typing rule; unquote/unquote-splicing still §9.4.2-governed). Coverage band left to /qa.
+
+### /design (typecheck) — schema-20 a1/a3 + 0621 + carries (design/typecheck/*)
+- **a3 fix = ONE shared prelude-hop helper** on `TypeCheckEnv` delegating to `scope_resolve_in` (`checker.rs:1037`) — prelude fallback + import-chain + I-1 filter intrinsic to `ResolutionScope::resolve`, hand-rolls nothing. All 5 `fixpoint.rs` sites (`:77/:89/:393/:402/:413`) call it. **No sixth site** (confinement/transfer route transitively).
+- **a1 producer arm** `origin_to_result_mode` (`transfer.rs:237`): BOTH `MayParam` arms → `MayAliasOf(i)` (`{projection:false}` at `:237` + `{projection:true}` at `:248`, was `ProjectionOf`). **/arch CONFIRMED** (2026-07-17) — completes §3.7's reservation clause; hard `AliasOf`/`ProjectionOf` reserved for unconditional claims only.
+- a1 consumer transfer-join arm (`transfer.rs:591`): `join_origin(Fresh, arg_origins[k])` (0520 rule); only exhaustive `ResultMode` match in crate → variant axis closed by compiler. Increment-II (`uniqueness.rs`) unaffected.
+- **0621 rider**: `checker.rs:1468` `resolved.fq` → `storage_fq()`, same change-set as schema bump.
+- Carries: **0628** HKT-on-primitive — root cause is HKT-ness derived from method-body usage (bare con_var invisible); fix = derive from declaration + arity-independent non-type-constructor rejection. **0595** two P18 hardenings (not live-reachable). **0590** substantially LANDED already; R1/I2 residual is a `/dev` correctness item with a binding never-error-arm guard.
+
+### /design (backend) — audit drain R4/R5/R6/R7 + COW currency (design/backend/audit-drain-s111.md NEW)
+- **R5 splits byte-identical** (empty `CRANELISP_CODEGEN_DUMP` corpus diff is acceptance): `compile_resolved_call` ~325→~35 ln (3 moves incl. 2 P7 dedups); `compile_to_module_impl` ~395→~40 ln (5 phase helpers, lands AFTER R4 §1.4).
+- **R4 one change-set**: delete dup `build_isa`; Wave-2b shim removal; **delete** `compile_defn` harness path (re-seam CLIF probe through production seam); drop `module_aliases` (`pub compile_to_module` sig moves).
+- **R6** drop-glue: shared `emit_drop_glue_fn` envelope + 3 named naming fns (identity test calls them, not inline `format!`).
+- **R7 census CORRECTION**: `extern_call.rs:151` is a **`#[cfg(test)]` fixture** — backend has **ZERO production `allocate_got_slot` sites**. **Open /arch decision: is `store_slot` a checked Result (backstop) or exhaustion refused at allocation seam only?** /design recommends allocation-seam-primary + cheap always-on `store_slot` backstop. **→ routed to /arch.**
+- Item 5: `MayAliasOf` changes NO emitted instruction (COW machinery byte-stable — only flips which bodies keep already-emitted protect); belongs to centrepiece wave. `backend.md` truth pass done (retired-facade cites repointed, `FunctionArtifacts` overclaim corrected, keyed-consumer end-state added).
+- **R8 archive moves NOT executed** (deliberate — prior curation kept some as cite-with-care); **/sprint to confirm disposition** + `git rm` FIXME 0096 (§9 marks DONE).
+
+### /design (frontend) — quasiquote fold (design/frontend/quasiquote-fold.md NEW)
+- Fold `expand_quasiquotes` into `build_forms`/`build_form` (first step, before `:Type` pairing). `build_expr` does NOT fold (internal recursion primitive, zero prod direct callers) — keeps backstop. Idempotent fixpoint → `macro_clause.rs:67` caller **retained harmless**. Zero public-API diff; `lib.rs:48` claim becomes TRUE.
+
+### /design (int) — quote shield (design/int/quote-shield.md NEW)
+- Two guard clauses at top of `expand_scoped` non-empty-list arm: Rule Q (`quote` verbatim, no descent); Rule QQ (`shield_qq` depth-tracked walker, expand only live unquote/unquote-splicing bodies). **~40–55 ln** (arch's ~15 was guard-core only). Recognizes quote family by SAME structural test as the fold (lockstep, never double-desugar). **Shield lands ≤ fold** (shield-only inert-safe; fold-without-shield opens corruption). One logical wave, two `/dev` surfaces.
+
+### /qa — sprint-wide failing-test plan (tests/plan/PLAN.md §S111 + risks.md + s111-principle24-register.md) — EXIT GATE PASS
+- **0623 + 0591 FIXMEs DELETED** into PLAN §A / §G.4. Every unit-tier deferral enumerates its cases; standing REDs named as wave acceptance.
+- §A vec-COW: 4 committed REDs (CW-1..4) + 7 new cells + Fence-2 (copy-arm exactly-one-count) + Fence-3 (declared-fact reachability twin). §B carrier-completeness (15 reachability cells + whole-table `MayAliasOf`=={vec-set,vec-push} pin). §C quasiquote 3×3×2 + all 8 interaction cells + nesting depth + backstop. §D GOT boundary (1023/1024). §E R2 hard-miss negatives (must-author-FIRST). §F P24 battery (primitives/intrinsics/platform CLOSED grep-zero; 11 int sites pre-listed; `jit.rs:117` lean = structural tie-error). §G carries (0604 foreground repro; 0590 R1; 0595; 0591 ruled §2.3.8/§3.9 violations). §H R4/R5 byte-identity gates.
+- **ESCALATION VALVE:** CW-F3a (explicit-import control) is a verification probe, authored FIRST — if RED at HEAD the declared-fact reachability gap is wider than §3.7 states; **/arch hears before the ownership wave lands.**
+
+### Open items — RESOLVED for Phase 4
+1. **/arch decisions — BOTH RULED (2026-07-17):**
+   - `MayParam{projection:true}` collapse **CONFIRMED** — end-state producer table: BOTH `MayParam` arms → `MayAliasOf(idx)` (completes §3.7's reservation clause — the `projection:true→ProjectionOf` arm at `transfer.rs:248` was the same honesty defect one arm over); unconditional `Root→AliasOf` / `Projection→ProjectionOf` stay (flagship accessor precision untouched). Variant claim widened to "fresh OR reaches into param *i* (the param or a view rooted in it)"; both consumer reads verified indifferent to identity-vs-view at the May point (retain-side-only, zero soundness exposure).
+   - `store_slot` shape **RULED**: `Result`-shaped `store_slot` **REJECTED**; instead `GotTable::store_slot`/`load_slot` (`got.rs:135/:146`) promote `debug_assert!`→**always-on `assert!`** (signatures unchanged) — an in-process OOB index is an invariant breach (compiler defect) → located hard-fail, not release UB, not a laundered `Result` (P18/P20/P6). The ONE genuine untrusted source — cache-deserialized `.meta.json` `got_slot` — gets the **diagnosed error at the cache-load trust boundary** (`got_slot < GOT_TABLE_SIZE`; violation ⇒ cache-stale → recompile). **Companion obligation routed /design(backend), same R7 track / same change-set.**
+2. **/sprint dispositions:** R8 archive moves + `git rm` 0096 → confirmed, execute in CS-1; 0591 → rides CS-3 quasiquote wave; 0604 firing environment → provide to /testing at Stage 1.
+3. **Census for Phase-4 waves:** R7 = 10 tc callers + **0 backend production** (`extern_call.rs:151` is `#[cfg(test)]`); reachability = 5 sites.
+4. **Wave-org note (/arch):** R5 funnel-split should keep `lib.rs:994` stable, else the GOT-backstop change-set re-anchors that line reference.
+
+## Waves (Phase 4) — 2026-07-17
+
+**Structuring constraint:** worktree isolation is broken → **one source-touching agent at a time** (root CLAUDE.md §Testing). So Phase-5 "waves" are an ordered **serial pipeline of atomic change-sets**; only read-only work (the P24 sweep, /qa planning, /audit) parallelizes. Ordering also obeys /arch §1: R2 negatives → backend byte-identical → schema-20 ownership LAST (emission-affecting, scoped re-baseline as its final act); quasiquote shield ≤ fold; GOT schema-independent/early.
+
+### Phase 5 Stage 1 — QA-first failing set (one /testing invocation, sprint-wide)
+`/testing` authors the full RED set to `tests/plan/PLAN.md §S111`, in /qa's stated order: **CW-F3a FIRST** (the declared-fact-reachability verification probe — if RED at HEAD the gap is wider than §3.7 states, escalate to /arch BEFORE the ownership wave); **R2 hard-miss negatives must-author-first** for the backend track; then the remaining matrices (vec-COW CW-1..11 + fences, quasiquote QQ + 8 interaction cells, GOT GE-1..4, 0628/0590/0595 pins, 0604 foreground repro IR-1). Failing-not-ignored. `/sprint` provides the 0604 firing environment.
+
+### Phase 5 Stage 2 — serial change-set pipeline (each: /dev → /review; iterate per crate)
+
+- **CS-1 · Backend byte-identical drain** (R4 hygiene + R5 splits + R6 drop-glue). `/dev`(backend) → `/review`(backend). Acceptance = empty `CRANELISP_CODEGEN_DUMP` corpus diff (byte-identity), not just green suite. FIRST so it lands on a clean golden baseline before any emission change. (R8 archive moves + `git rm` FIXME 0096 ride here — /design(backend) deferred the physical move for /sprint confirmation; confirmed: execute in CS-1.)
+- **CS-2 · GOT exhaustion (R7)** — schema-INDEPENDENT, early. `/arch` lands fallible `allocate_got_slot` + `GotExhausted` in `cranelisp-types`; `/dev`(typecheck) the 10 fallible callers via ONE `CheckError` mapping helper; `/dev`(backend) promotes `store_slot`/`load_slot` `debug_assert!`→**always-on `assert!`** (signatures unchanged) PLUS the **cache-load-seam `got_slot < GOT_TABLE_SIZE` validation** (violation ⇒ cache-stale/recompile — the diagnosed error at the one untrusted boundary; same change-set). Boundary test GE-1 (1023/1024). Keep `lib.rs:994` line-stable across the R5 split or re-anchor. → `/review`.
+- **CS-3 · Quasiquote** (one logical wave, two surfaces, **shield ≤ fold**): `/dev`(int) quote shield in `expand_scoped` FIRST-or-same-change-set, then `/dev`(frontend) fold into `build_forms`/`build_form`. **0591 rides** (same /dev-frontend surface — /qa ruled it §2.3.8/§3.9 violations). → `/review`(frontend) covering both legs + the 8 interaction cells (QQ-I1..I4 the corruption/over-shield guards).
+- **CS-4 · Typecheck adjacent carries** — 0590 R1/I2 (safe-direction wrong-reject, against the recorded guard), 0595 (two P18 hardenings), 0628 (HKT-on-primitive: HKT-ness from declaration + arity-independent rejection). `/dev`(typecheck) → `/review`. Kept before the centrepiece so typecheck changes stay incremental and the big re-baseline is isolated.
+- **CS-5 · Schema-20 COW centrepiece (LAST — emission-affecting)** — ONE coordinated change-set: `/arch` lands `ResultMode::MayAliasOf(usize)` + `CACHE_SCHEMA_VERSION` 19→20; `/dev`(primitives) truthful `ownership_facts.rs` (whole-table sweep, not 2-row patch) + CLAUDE.md declared-facts contract; `/dev`(typecheck) the ONE shared prelude-hop helper + a1 producer/consumer arms + **0621 rider inside this bump window** (+ /arch's projection-collapse ruling, open item 1); `/dev`(backend) rustdoc currency (no instruction change). → `/review`. **Scoped + attributed golden re-baseline is the wave's LAST act** (S102 §6.2) — invalidates caches wholesale; drift beyond the COW class is expected (a3 activates inert increment-I precision). Flips the 4 RED carries + 0623 matrix green.
+- **CS-6 · 0604 index-race fix** — after IR-1 repro lands; foreground-attributed (not the index feed). Owner set at repro (likely `/dev` int or typecheck per attribution).
+
+### Read-only lane (parallel, no ordering constraint) — Phase 6 timing for the frontend leg
+- **Principle-24 sweep**: `/qa` owns the compiler-wide register (`tests/plan/s111-principle24-register.md`); typecheck → int legs classified as their change-sets settle; **`/audit` frontend rotation carries the frontend leg in depth AFTER the quasiquote fold lands** (end-state lens, S110 post-W3 precedent). Backend already classified (s110 audit §2.1 — cite).
 
 ## Dispatch log
 
-_pending_
+All via agent-type shims (model/effort pinned per artefacts.md §II.3); all default-tier unless noted.
+- **P2**: arch × scope review — default (fable/xhigh). Committed `5b57f4ed`.
+- **P3** (parallel, read-only design surfaces, no-commit → /sprint batch commit): arch × interface pins; spec × 0630+0613; design × typecheck; design × backend; design × frontend; design × int; qa × sprint-plan — all defaults.
+- **P3 follow-up**: SendMessage → arch (resume) for 2 rulings (projection-collapse; store_slot shape) — default.
+- No model-tier escalations. No named fallbacks.
 
 ## Notes
 

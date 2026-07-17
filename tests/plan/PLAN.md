@@ -3273,3 +3273,371 @@ verification for the 0609 deletion; (7) post-fix items (IF-3 sweep, C4-3
 mode-parity, VA flips) ride their fixing waves. Standing REDs (RD-1/RD-2,
 C4-1, VA-1/VA-2) are already committed — no re-authoring; they are the
 acceptance criteria their waves flip.
+
+## Sprint 111 — sprint-wide failing-test plan (Phase-3 exit gate, 2026-07-17, /qa)
+
+The QA-first drafting spec for `/testing` (Phase 5 authors to THIS plan before
+per-crate D/D/R begins). Scope: `sprints/SPRINT.md` §§1–5 (archived at close
+as `sprints/archive/sprint-111.md`). Design contracts:
+`design/arch/ownership-inference.md` §3.7 (the 3-layer COW ownership root —
+`ResultMode::MayAliasOf` + truthful COW facts + prelude-fallback-aware envs,
+schema 19→20, ONE coordinated change-set); SPRINT.md §"Architecture review"
+§5 (the four carrier-completeness axes — binding input to this plan);
+`design/arch/backend-keyed-consumer.md` §1.1/§1.2/§9 (hard-miss families);
+`design/arch/principles/24-resolve-once.md` (the battery source);
+`audits/cranelisp-backend-s110.md` §2.1 + R2/R7 (backend P24 classification —
+cited, not redone; the R2 zero-hit finding; the GOT R7 seam). Spec contracts:
+`spec/09-macros.md` §9.4 (incl. §9.4.4 "Legal Wherever an Expression Is
+Legal" — the user's 0613 ruling, scribed); `spec/12-runtime.md` §12.1 +
+§12.3.1; `spec/03-types.md` §3.11 + §2.3.8/§3.9; `spec/05-definitions.md`
+§5.1.2; `spec/08-modules.md` §8.6.4 (prelude ≡ explicit import — the
+reachability axis's spec ground).
+
+FIXME dispositions this pass: **0623 ACTIONED → §A below, file deleted**;
+**0591 ACTIONED → §G.4 below (the §L-addendum position map + the
+spec-conformance judgment), file deleted**. Both per the FIXME-file lifecycle
+(the plan rows + the Phase-5 committed REDs are the durable record and
+trigger; no FIXME needed alongside a failing-not-ignored repro).
+
+Discipline reminders binding on this plan: REDs are failing-not-ignored;
+every fix pairs a `/dev` unit test in the same change-set (METHOD §2.2);
+every deferral to the unit tier ENUMERATES its cases (S108 Inc2); fixtures
+are stdlib-free (SG-1 is the ONE sanctioned exception, already committed);
+language-semantics rows run all modes; RC-trace rows run serially. Wave-order
+constraints from the Phase-2 review are load-bearing for authoring order:
+**§E (R2 keyed-miss negatives) exists FIRST** (they guard everything after),
+then the R4/R5 byte-identity gates (§H), then the schema-20 ownership wave
+(§A/§B) with its scoped re-baseline as the wave's last act; the quasiquote
+int shield lands ≤ the frontend fold (§C's interaction negatives are the
+guard for fold-without-shield).
+
+### Risk read (summary; full entries in `risks.md` §"S111 risk read")
+
+Highest-silent-failure changes, in order: (1) **schema-20 window discipline**
+— 0621's `callees` meaning-flip and the COW-fact meaning-flip must sit inside
+the ONE bump window; a cache written between two separate bumps carries
+schema-20 with alias edges (arch §1 — same CHANGE-SET, not same sprint);
+(2) **RC polarity inversion** — fixing the vec-COW under-count (UAF) by
+widening converts it into an over-count (leak) the flipped-GREEN repros
+cannot see (the S110-8 successor; §A fences); (3) **partial landing of the
+3-layer root** — facts (a2) without reachability (a3) leaves declared facts
+silently dead in production, the exact gap §3.7 names (§A CW-F3 twins);
+(4) **quasiquote fold-without-shield** — macro expansion silently corrupting
+quoted literals (§C interaction negatives); (5) **GOT fallible-refactor
+caller misses** — one of the 10 enumerated callers keeps `unwrap`/
+`unreachable!` and the diagnosed error is UB again on that path (§D);
+(6) **P24 mis-classification** — an identity-scan waved through as
+"enumeration" (register discipline: grounds per row, acid test verbatim).
+
+### A. CENTREPIECE — vec-COW ownership root: body-shape × branch × face matrix + fences (0623 actioned)
+
+File: `tests/vec_assoc_param_mutate_return_uaf.rs` (+ the leak sibling
+`tests/vec_cow_value_use_leak.rs` for shared-source/leak polarity). Spec:
+`spec/12-runtime.md` §12.1 (value representation & RC), §12.3.1 (heap free).
+Design: `ownership-inference.md` §3.7. This is the standing
+coverage-by-definition-variants category made flesh: COW-in-return-position
+must behave UNIFORMLY across the body-shape family; the S110 W2 review found
+the direct-body cell fixed while let/match siblings still UAF'd.
+
+#### A.1 Acceptance — the 4 committed REDs flip GREEN at the schema-20 wave
+
+| Row | Committed guard (RED today) | Flips at |
+|---|---|---|
+| CW-1 | `vec_set_let_wrapped_param_returned_and_consumed_repl_yields_correct_value` | the §3.7 change-set |
+| CW-2 | `vec_set_let_wrapped_param_returned_link_does_not_corrupt_heap` | same |
+| CW-3 | `vec_set_match_arm_param_returned_and_consumed_repl_yields_correct_value` | same |
+| CW-4 | `vec_set_match_arm_param_returned_link_does_not_corrupt_heap` | same |
+
+Must-holds: the direct-body pair (`vec_set_on_param_returned_*`, GREEN —
+S110's fix) and ALL THREE `vec_cow_value_use_leak.rs` negatives (the
+opposite-polarity leak fences — an RC fix that flips under-count into
+over-count is the named risk).
+
+#### A.2 The matrix — new cells (variant × {pos, neg}; pin load-bearing cells, don't re-probe all 60)
+
+Axes: body shape {direct [pinned], let-wrapped [RED above], match-arm [RED
+above], **if-branch [new]**, **chained COW [new]**} × source branch {rc==1
+in-place, rc>1 shared → copy} × face {REPL, `--run`, `--link`} × op
+{`vec-set`, `vec-push`}. Positive = correct value + clean exit; negative =
+no premature free (RC-trace balanced), no SIGABRT, source unchanged on the
+copy branch. The W2 probe list named chained/lambda-captured/nested-double
+cells probed SAFE — pin the load-bearing ones:
+
+| Row | Cell | Proposed test (all `// spec: spec/12-runtime.md §12.1`) | Status |
+|---|---|---|---|
+| CW-5 | if-branch × rc==1 × all modes | `vec_set_if_branch_param_returned_yields_correct_value` — `(defn f [v i x] (if (lt i 0) v (vec-set v i x)))`, returned + consumed; `run_through_all_modes` | [S111] — expected RED with CW-1..4 (same class) — verify against HEAD |
+| CW-6 | chained COW × rc==1 × all modes | `vec_push_chained_cow_returns_correct_vec` — `(defn g [v] (vec-push (vec-push v 4) 5))` (inner Fresh result consumed by outer MayAliasOf) | [S111] — probed SAFE at W2; pin as GREEN control |
+| CW-7 | vec-push × let-wrapped × REPL + `--link` | `vec_push_let_wrapped_param_returned_*` twins of CW-1/CW-2 (op-uniformity: the SECOND truthful-COW row must not grow its own codepath) | [S111] — expected RED |
+| CW-8 | shared-source (rc>1) × let-wrapped × REPL | `vec_set_let_wrapped_shared_source_copies_neg` — source bound twice, COW through the let shape; assert result correct AND source still reads its ORIGINAL element (the copy-branch "wrong thing absent" negative) + clean exit | [S111] |
+| CW-9 | shared-source × match-arm × REPL | match-arm twin of CW-8 | [S111] |
+| CW-10 | `--run` face for the two RED shapes | convert CW-1/CW-3 programs through `--run` (or fold into `run_through_all_modes` at flip time) — the matrix names three faces; the committed pairs cover only REPL + `--link` | [S111] |
+| CW-11 | lambda-captured source | `vec_set_lambda_captured_source_safe` — GREEN control (probed SAFE at W2 review) | [S111] — pin |
+
+#### A.3 Fence 2 — return-position copy-arm residual magnitude (RED → flips at the fix → deliberately re-flips at exactness)
+
+| Row | Guard | Status |
+|---|---|---|
+| CW-F2 | `vec_set_shared_source_nondirect_return_copy_residual_exactly_one_per_call` (file: `vec_cow_value_use_leak.rs` harness — RC-trace, serial): K-call loop, shared source, COW returned through a NON-direct shape; assert (i) correct values, (ii) NO UAF/SIGABRT, (iii) alloc/free imbalance == EXACTLY K (the §3.7 retain-side conservative over-inc: one count per call — never more). Against HEAD the shape UAFs → RED; flips at the §3.7 fix; **goes RED again when the per-site-fact exactness generalization lands** (imbalance → 0) — at that flip `/testing` updates the assertion to 0 and the `return_cow_source` recognizer deletes (its named deletion trigger). An accidental WIDENING (imbalance > K) fails immediately — that is the fence's job | [S111] — RED |
+
+#### A.4 Fence 3 — declared-fact reachability twins (the a3 leg, e2e face)
+
+The gap §3.7 names: `ClusterEnv` resolves via the fallback-less
+`resolve_terminal_entry_and_home`, so §3.1(a) declared-fact precision is
+silently dead for prelude-fallback modules. Twin fixture (highest-signal
+shape — one invariant, two provenances, SAME assertion):
+
+| Row | Guard | Status |
+|---|---|---|
+| CW-F3a | `borrowed_declared_primitive_explicit_import_no_percall_rc` — explicit `(import [primitives [vec-len]])`, K-iteration loop over `vec-len` on one vec; RC-trace: inc/dec count on the vec is O(1), NOT O(K) | [S111] — expected GREEN control (explicit chain reaches facts today); **verify against HEAD — if RED, the gap is wider than §3.7 states: report to `/arch` before the wave** |
+| CW-F3b | `borrowed_declared_primitive_prelude_fallback_no_percall_rc` — IDENTICAL program, provenance = prelude fallback (`spec/08-modules.md` §8.6.4) | [S111] — **RED** (the fence that would have caught "declared facts silently dead"); flips at a3 |
+
+#### A.5 Schema-20 window + 0621 rider
+
+| Row | Guard | Tier / owner |
+|---|---|---|
+| CW-S1 | Cache 19→20: warm-cache row (cold then warm identical result) + stale-cache neg (a pre-bump cache INVALIDATED wholesale — never deserialised into mixed-meaning views: alias `callees` edges or false-`Fresh` COW facts). `tests/cache.rs`, the KC-W0-3/DC-9 template | e2e / `/testing` — author with the wave |
+| CW-S2 | 0621 rider unit pins, SAME change-set as the bump: `program::tests::callees_renamed_import_records_storage_key` (`[(foo bar)]` → edge `{m, foo}`, never `{m, bar}`) + `callees_bare_accessor_records_member_key` (edge `{m, Box.v}`, never `{m, v}`) | unit / `/dev` (typecheck) |
+| CW-S3 | 0621 landing cross-check: `extract_call_graph_edges`' ResolvedCall channel already storage-keyed (post-W0.1b) — verify, record in the change-set | `/dev` verify |
+| CW-S4 | ONE-window structural check: both meaning changes (COW facts + `callees`) inside the single commit window that flips `CACHE_SCHEMA_VERSION` | `/review` structural criterion |
+
+### B. Carrier-completeness matrix (arch §5 axes 1–3 — binding input)
+
+The S110 lesson generalized: a carrier whose SEMANTICS are extended needs its
+axis×path matrix enumerated before `/dev` writes a line. Axis 4 (behavioural)
+is §A above.
+
+#### B.1 Reachability axis — 5 fact-lookup sites × 3 reach paths (unit tier, enumerated)
+
+Sites (from §3.7; `/design` typecheck re-verifies completeness by grepping
+`resolve_terminal_entry_and_home`/`probe_module_entry_owned` under
+`ownership/` — no sixth site): `ClusterEnv::summary_of` +
+`ClusterEnv::terminal_kind` (`ownership/fixpoint.rs:72–93`), the
+`UniqClusterEnv` twins (`:388–415`), confinement's read
+(`confinement.rs:162`). Paths: {same-module def, explicit-import chain,
+prelude fallback}.
+
+| Row | Guard | Tier |
+|---|---|---|
+| CC-R1..R5 | Per site, a three-path unit: a declared fact (e.g. `vec-len` → `Borrowed` param) reached through EACH path yields the declared summary, not the conservative default — 15 cells, one test fn per site with three-path fixtures | unit / `/dev` (typecheck), enumerated here per the S108 Inc2 rule |
+| CC-R6 | Structural (Principle 7): ONE shared prelude-hop helper routed through the existing scope-resolve machinery — zero hand-rolled hops at the five sites | `/review` grep criterion |
+| CC-R7 | The `transfer.rs:590` `Fresh` default STAYS for genuinely-unresolvable callees (co-sound with ⊤-`Owned` under the consuming convention — the §3.7 ruling): unit pin that an unknown callee still defaults `Fresh` — the reachability fix must not "cure" the default | unit / `/dev` |
+| CC-R8 | E2e face of this axis = CW-F3a/CW-F3b (§A.4) | — |
+
+#### B.2 Variant axis — exhaustive `ResultMode` consumption (structural + two safe-direction pins)
+
+`ResultMode` deliberately carries no `#[non_exhaustive]` (arch §2 note) — the
+compiler forces every exhaustive match to be revisited. Test obligations are
+the two known BINARY consumers (each collapses the enum to a bool — the
+escape hatch exhaustiveness cannot see):
+
+| Row | Guard | Tier |
+|---|---|---|
+| CC-V1 | `return_is_fresh_by_summary(MayAliasOf(k)) == false` — protect kept (safe direction) | unit / `/dev` (typecheck) |
+| CC-V2 | `is_abi_conservative` classifies `MayAliasOf` non-conservative | unit / `/dev` |
+| CC-V3 | `/review` greps `_ =>` / `== Fresh` binaries over `ResultMode` consumers — NO third binary beyond the two above; any new one needs its own safe-direction pin | structural |
+| CC-V4 | Transfer-join arms unit-enumerated (minimum): `MayAliasOf ⊔ Fresh`, `MayAliasOf(0) ⊔ MayAliasOf(1)`, the widening-toward-Owned direction (monotone soundness — widening always legal) | unit / `/dev`, per `/design`'s arm table |
+
+#### B.3 Producer axis — publish arms + the whole-table `ownership_facts.rs` sweep
+
+| Row | Guard | Tier |
+|---|---|---|
+| CC-P1 | `origin_to_result_mode` publish arms (`transfer.rs:240–252`): `MayParam{projection:false}` → `MayAliasOf`; `projection:true` NOT; hard `AliasOf`/`ProjectionOf` reserved for unconditional claims — one unit per arm | unit / `/dev` (typecheck) |
+| CC-P2 | **Whole-table sweep pin**: a `cranelisp-primitives` unit enumerating the COMPLETE `ownership_facts.rs` table and asserting the `MayAliasOf` row set == exactly {`vec-set`, `vec-push`} at landing — the ask is "no other `Borrowed`-emission primitive declares `Fresh` for a result that can alias an argument", and the pin is the unforgettable form: any new COW-shaped row forces an explicit classification edit to this test. The one-time classification of every existing row (Fresh-legit vs COW-shaped) is executed by `/dev`(primitives) with `/design` input at Phase 5 and recorded in the table rustdoc | unit / `/dev` (primitives) |
+| CC-P3 | Fail-on-revert: `vec-set`/`vec-push` no longer declare `Fresh` (the false declaration §3.7 kills) | unit / `/dev` (primitives) |
+| CC-P4 | The `cranelisp-primitives/CLAUDE.md` declared-facts contract sentence (§3.7's durable form) lands with the wave — `/qa` verifies presence at Phase 6 | doc, not a test row |
+
+### C. Quasiquote 0613 — form × position × mode matrix + macro-interaction rows
+
+Spec: `spec/09-macros.md` §9.4 (esp. §9.4.4). File: `tests/spec_09_macros.rs`.
+Modes {REPL, `--run`} per the FIXME (mode-uniform defect); use
+`run_through_all_modes` where the fixture has a `main` (adds `--link` free).
+`// defect: class=wrong-reject locus=crates/cranelisp-frontend (missing
+pre-build_form desugar wiring) found=S110 owner=/dev` on the repro rows.
+
+Core matrix — form {quote / quasiquote+unquote / unquote-splicing} ×
+position {defmacro clause body [GREEN control] / `defn`+`defn-` body /
+top-level expr}:
+
+| Row | Cell | Proposed test | Status |
+|---|---|---|---|
+| QQ-1 | quasiquote+unquote × defn body | `quasiquote_in_defn_body_desugars` — `(defn helper [x] `(if ~x 1 0))` + use; result is the Sexp | **[S111] — RED** (the 0613 one-liner) |
+| QQ-2 | quote × defn body | `quote_in_defn_body_desugars` — `(defn f [] '(1 2))` | **[S111] — RED** |
+| QQ-3 | unquote-splicing × defn- body | `unquote_splicing_in_private_defn_body_desugars` — `(defn- g [xs] `(begin ~@xs))` via a public caller | **[S111] — RED** |
+| QQ-4 | all three forms × top-level expr | `'(1 2)` / `` `(a ~x) `` / splice at top level — three cells, REPL + `--run` | **[S111] — RED ×3** |
+| QQ-5 | GREEN control — all three forms × defmacro clause body keep working (the `macro_clause.rs` caller becomes idempotent; the desugar is a fixpoint) | existing defmacro suite + one explicit idempotence pin | [S111] — must-hold |
+| QQ-6 | 0614 rider | `stdlib_conformance.rs::stdlib_all_public_modules_compile_and_run` (SG-1) flips GREEN — `derive` compiles with NO stdlib rewrite (confirms 0614 = `/stdlib` no-op) | RED today — the acceptance |
+
+Interaction rows (arch §3 — the fold-without-shield guard; these are the
+NEGATIVES that make the int quote-shield's absence loud). Fixture: a
+registered macro `m` whose expansion is observably distinct from the literal
+(e.g. `(defmacro m [x] 999)`):
+
+| Row | Cell: macro-call shape × context | Must | Status |
+|---|---|---|---|
+| QQ-I1 | `(m x)` under quote × {defn body, top level} — `(defn f [] '(m x))` | **NOT expand**: the quoted literal survives as the 2-element Sexp list `(m x)` — assert the DATUM (e.g. via `shead`), never `999` | **[S111] — RED-class negative** (fires if fold lands without shield) |
+| QQ-I2 | `(m x)` under quasiquote OUTSIDE unquote × both contexts — `` `(m x) `` | **NOT expand** — datum preserved | [S111] — same class |
+| QQ-I3 | `(m 1)` under unquote — `` `(a ~(m 1)) `` | **MUST expand** (ordinary expression position): element is `999` | [S111] |
+| QQ-I4 | `(m 1)` under unquote-splicing — `` `(a ~@(m2 1)) `` with `m2` expanding to a list-producing expr | **MUST expand** and splice | [S111] |
+| QQ-I5 | Nested quasiquote depth — `` `(a `(b ~(m 1))) ``: the inner unquote belongs to the INNER quasiquote | inner `(m 1)` **NOT expanded** at outer processing (shield tracks nesting depth) | [S111] — negative |
+| QQ-I6 | Macro-ARGUMENT representation (the arch ruling "macro arguments stay raw"): a macro receiving `'(1 2)` as an argument sees the `(quote …)` sexp the user wrote (desugar-at-build, i.e. AFTER expansion dispatch) | pin via a macro that inspects its arg's head | [S111] — pin |
+| QQ-B1 | Backstop invariant stays: a synthetic surviving `quasiquote` symbol still rejected at `ast_builder.rs:1160+` ("should have been expanded") | unit / `/dev` (frontend) | [S111] |
+
+Structural (not test rows): `lib.rs:48`'s claim ("desugaring runs before
+`build_form`") becomes TRUE — `/review` cites the currency fix;
+`frontend.md:127` likewise (the `/audit` frontend rotation sanity-checks
+both, arch §7).
+
+### D. GOT slot exhaustion (R7) — diagnosed error, not release-mode UB
+
+Seam: `cranelisp-types` `allocate_got_slot` → `Result` (arch-approved shape);
+10 production callers enumerated in the arch §2 table (9 typecheck + backend
+`extern_call.rs:151`; bootstrap `unreachable!` by convention — a fresh table
+cannot exhaust). Provenance: audit R7 (3rd consecutive naming; Phase-H
+release-critical) + the self-documenting-errors principle. No spec section
+constrains the limit — design-doc provenance.
+
+| Row | Guard | Tier |
+|---|---|---|
+| GE-1 | Boundary unit in `cranelisp-types/src/module/tests.rs`: slots 0..1023 allocate; the 1024th (`next_got_slot == GOT_TABLE_SIZE`) returns the exhaustion `Err` — never a wrap, never a panic, release-mode semantics (a `Result`, not a `debug_assert!`) | unit / `/dev` (types) |
+| GE-2 | The exhaustion error names the module and the capacity (actionable diagnostic) | unit, same fn |
+| GE-3 | Caller-side session-surfaced pin: representative typecheck caller (`adt.rs` or `program/body.rs`) with a nearly-full fixture table → a diagnosed `CheckError` (not `unwrap`/`unreachable!`); + the backend `extern_call.rs:151` → `CodegenError` arm pin | unit / `/dev` (typecheck + backend) |
+| GE-4 | E2e (author IF cheap, `/testing` sizes the runtime cost): generated source exceeding 1024 slots in one module `--run`s to the diagnosed error, clean exit, no SIGSEGV. If skipped, the deferral is already enumerated: GE-3 + the `/review` caller sweep (all 10 callers map the `Err` to a diagnosed error) cover the surface | e2e / `/testing` |
+
+### E. Backend hard-miss negatives (s110 R2) — author the three §9 families FIRST
+
+Carried verbatim from §"Sprint 110" A.2's KC-N1..N6 enumeration (planned
+S110, **not authored** — audit R2 confirms zero test hits on the §9
+families). Unit tier, backend harness; each family asserts a DISTINCT pinned
+`CodegenError` message (names the reference + the miss), NOT `undefined
+variable`, and never a silent wrong value: **KC-N1/N3** carrier-`None` on a
+table-reference kind (call + value seams), **KC-N2/N4** `Some(fq)` fetching
+nothing (both seams), **KC-N5** slot-less `Polymorphic` template at a value
+read (the pinned "generic value reference … reached codegen without a mono
+instance" message, release builds included), **KC-N6** the false-positive
+fence (local/lambda-param `None` is NOT a miss). Provenance:
+`backend-keyed-consumer.md` §1.1/§9. **Ordering: first wave of the backend
+drain track — these guard the R4/R5 refactors and the ownership wave's
+backend touches.** Owner: `/dev` (backend) unit tier per audit R2; `/testing`
+verifies presence at Phase-5 close.
+
+### F. Principle-24 classification battery + compiler-wide register
+
+The battery, the criteria transcription (acid test + both carve-outs
+verbatim from `principles/24-resolve-once.md`), the leg protocol, the grep
+classes, and the register itself live in
+**`tests/plan/s111-principle24-register.md`** (this pass, /qa-owned). Plan
+rows:
+
+| Row | Item | Status |
+|---|---|---|
+| P24-1 | Register discipline: every row = site → verdict ∈ {chain, enumeration (carve-out 1), `/search` (carve-out 2), **identity-scan (defect)**} → GROUNDS (why order-independent / complete-set-consumed / tie = error). A verdict without grounds is not a classification | standing |
+| P24-2 | Leg closures: primitives/intrinsics/platform CLOSED this pass (grep zero — evidence in the register); backend CITED (audit s110 §2.1, four legit enumerations); typecheck leg (priority 1) + int leg (11 `symbol_tables.iter()` sites pre-listed in the register) classified during S111; frontend leg rides the `/audit` rotation (post-quasuote-landing, arch §7) | [S111] |
+| P24-3 | Pre-seeded row `jit.rs:117` (`register_platform_effect_symbols`): enumeration whose tie-discipline is convention-only (platform names globally unique today; two same-named effects would be last-write-wins by DashMap order) — the sweep decides structural tie-error vs documented uniqueness invariant | [S111] — decision owed |
+| P24-4 | Outcome rule (the defect rule): any identity-scan found ⇒ a failing-not-ignored test (when a divergence is constructible) or a FIXME naming the owner (when not); findings land as plan-row addenda at Phase 6 | standing |
+
+### G. Adjacent carries
+
+#### G.1 0604 — index-race, re-attributed FOREGROUND: the failing repro is the deliverable
+
+The S110 `/dev` disposition PROVED the index feed inert under the recipe
+(`--run` never arms the index; instrumented 0×) — the phantom
+`bit-and → primitives/bit-and` write is on the **foreground concurrent-compile
+path** (eval thread + priority/nice workers building `num.bits` + prelude +
+~13 re-exported domain modules concurrently). S110 §F's IF-1 gate did its job
+(locate-first prevented patching the wrong seam).
+
+| Row | Item | Owner | Status |
+|---|---|---|---|
+| IR-1 | **Foreground repro production**: run the deterministic recipe (`0604` §recipe) in the environment where it fires 16/16, `CRANELISP_MODULE_TRACE=1`, and catch the phantom write's origin on the foreground path (`src/process_form/`, `src/imports.rs`, `src/worker.rs`). Deliverable = a DETERMINISTIC committed repro at the located write seam — an intermittent RED is its own defect; if determinism is not achievable free-standing, the deliverable is the located seam + attribution record update (`s109-attribution-index-feed-race.md` §3) naming the writer, and the fail-on-revert guard rides the fix | `/testing` (reduction) + `/qa` (attribution) | [S111] |
+| IR-2 | Fix acceptance (carried from §S110 F): unit at the located write seam (METHOD §2.2) + ≥25-iteration recipe sweep landing WITH the fix + the twin guards stay GREEN (`super_import_wrapper_*` — do NOT weaken the §8.6.5 poison; the consumer is spec-correct) | `/dev` (int) + `/testing` | gate on the fix |
+| IR-3 | `concurrency_capacity::same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks` — its OWN defect (fails CONSISTENTLY ~151–156ms vs the 150ms overlap threshold on the `/dev` VM; not interleaving-dependent): triage row, effect-concurrency track; threshold-vs-mechanism call is the triage question. NOT folded into 0604 | `/qa` triage | [S111] |
+
+#### G.2 0590 R1 (+ M2) — the 0349-class 3rd-instance wrong-reject
+
+Spec: `spec/03-types.md` §3.11 + `spec/05-definitions.md` §5.1.2. File:
+`tests/spec_03_types.rs`. The S110 tc-rereview named the repro; the class:
+multi-arity bodies are verdicted PRE-drain (correct per the C-4 constraint),
+where a deferred-overload ret var is still fresh.
+
+| Row | Guard | Status |
+|---|---|---|
+| OA-1 | `multi_clause_body_let_bound_resolved_overload_call_compiles` — `(defn h ([:Int x] x) ([:Int x :Int y] x))` + `(defn g ([:Int a] (let [r (h 7)] a)) ([:Int a :Int b] a))` MUST compile (today: spurious `ambiguous type …` at the `(h 7)` span); mode-uniform (REPL + `--run`); BOTH let-bound-dropped and let-bound-returned variants. `// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs (AmbiguityScanPhase pre-drain multi-arity leg) found=S110 owner=/dev` | **[S111] — RED ×2** |
+| OA-2 | Must-holds around the fix (it re-touches the same pass ordering): the single-clause twin (LEG-2-fixed) + B1/B2's S110 guards + RD-3 + rows 13–15 + VP-3/4/5 stay GREEN | must-hold set |
+| OA-3 | M2 asymmetry pins (GREEN, documenting INTENDED §5.1.2 behaviour): `(defn p ([x] x) ([x y] x))` accepted; `(defn q ([x] (let [v x] v)) ([x y] x))` rejected with the purpose-built per-clause message | [S111] — pins |
+
+Note for `/sprint`/`/design`: I2 (converge the regeneralize family; give
+"drained/settled" a representational carrier — Principles 18/20) is the
+durable cure and `/design`(typecheck) territory. If the OA-1 fix is a FOURTH
+positional patch of the 0349 class, `/qa` escalates to `/arch` per the
+recurrence rule.
+
+#### G.3 0595 — rigid-unify structural hardening (unit tier, enumerated; rides a typecheck wave)
+
+| Row | Guard | Tier |
+|---|---|---|
+| RU-1 | TyConApp head-bind guard: both head binds (`unify_with_rigid` ~:109/:131) route through `unify_var` (or minimum: `debug_assert!(!rigid.contains(&f_id))`); unit fixture = a kind-confused sig smuggling a rigid id into head position via `cranelisp_types::apply`'s head rewrite — the silent acquire is refused | unit / `/dev` (typecheck) |
+| RU-2 | Teardown symmetry: `rigid_vars`/`written_var_scope` restored on the ERROR path at `check_defn_body`, `infer_annotate`, `infer_lambda` (match `impl_check.rs`'s save/restore discipline); unit induces an inference error and asserts restoration | unit / `/dev` |
+
+#### G.4 0591 ACTIONED — §L addendum: the annotation-position parse-gap map
+
+**Spec-conformance judgment (`/qa`, the call the FIXME asks for): these four
+positions are §2.3.8/§3.9 VIOLATIONS to schedule, not carve-out candidates.**
+Spec ground: `:Type` binds the immediately-following form in ALL positions
+(§§1.4.5/2.3.8/4.9 — user-settled, scribed). The W6 uniformity claim is
+bounded by parseability, not violated — but parseability itself is the
+non-uniform operation: the SAME body shape `[:a x] :a x` parses in
+single-arity `defn` (FV-6, GREEN) and dies at parse in a multi-arity clause
+and in `fn` — the definition-variants class. Owner of the fix: `/dev`
+(frontend); fix shape: adopt `build_one_expr_at`/`build_args_with_annotations`
+at the four builders (`build_defn_variant`, `build_fn`, `build_match_arms`,
+`build_if`). The frontend is already open this sprint (quasiquote wave) —
+ride-candidate; `/sprint` decides the wave. The REDs are authored Phase 5
+regardless (the durable record + trigger; FIXME file deleted this pass).
+
+§L position-map extension — current verdict at HEAD: parse error (never
+`unknown type 'a'`):
+
+| Row | Position (new §L rows) | RED repro | Free-var cell | Status |
+|---|---|---|---|---|
+| AP-1 | multi-arity defn clause (params + body ascription) | `(defn g ([:a x] :a x) ([:a x :Int n] x))` parses + typechecks; call both arities | same fixture IS the `:a` cell | **[S111] — RED** |
+| AP-2 | `fn` params + body ascription | `(fn [:a x] :a x)` applied; concrete twin `(fn [:Int x] :Int x)` | `:a` pins via use | **[S111] — RED** |
+| AP-3 | match-arm BODY ascription | `(match 5 [n :Int n])` | `:a` variant once parsing lands | **[S111] — RED** |
+| AP-4 | `if` branch ascription | `(if true :Int 1 2)` | `:a` variant | **[S111] — RED** |
+
+Each position, once parsing, exercises the typecheck seam for free
+(`Expr::Annotate` → `infer_annotate` — the §L consistency lens: ONE rule per
+cell, everywhere); the free-var cells are the proof. `// spec:
+spec/03-types.md §3.9` (+ §2.3.8); `// defect: class=wrong-reject
+locus=crates/cranelisp-frontend/src/ast_builder.rs (four builders never
+adopted the annotation-pairing primitive) found=S109 owner=/dev`.
+
+### H. Backend drain invariance gates (R4 hygiene batch + R5 funnel splits) — no new failing tests
+
+Pure-refactor claims are gated, not test-authored (the §S110 K template):
+(a) **CLIF byte-identity** over the golden corpus (`golden_clif_w0b` + the
+S102 §6.2 classifier — these change-sets are emission-affecting NEVER);
+(b) full suite green, zero new REDs vs the S111-entry RED set; (c) backend
+`public-api.txt` regen for the `module_aliases`/`compile_to_module` signature
+move, in the same change-set (baseline-diff discipline); (d) `/review`
+confirms the R4 items actually land (the `module_aliases` field is
+threaded-but-UNREAD since W3 — a 5th audit carrying it is a Principle-8
+failure, arch §5 watch item). Ordering: AFTER §E's negatives exist, BEFORE
+the emission-affecting ownership wave (arch constraint 1) — golden
+attribution stays clean.
+
+### Phase-5 sequencing note for `/testing`
+
+Author order: (1) **§E KC-N1..N6** (handoff enumeration to `/dev` backend —
+they exist before any backend-drain change-set) + **QQ-I1/I2/I5** (the
+fold-without-shield negatives — must exist before the quasiquote wave) +
+**CW-F3a verification probe** (if the explicit-import control is RED at HEAD,
+escalate to `/arch` before the ownership wave); (2) the new REDs: QQ-1..4 +
+QQ-6 verification, CW-5/CW-7/CW-10 + CW-F2 + CW-F3b, OA-1, AP-1..4, GE-1..3
+handoff to `/dev`; (3) GREEN pins/controls (CW-6/CW-8/CW-9/CW-11, QQ-5,
+QQ-I3/I4/I6, OA-3) + CW-S1 cache rows authored with the schema wave; (4) the
+B-section unit enumerations are `/dev` handoffs recorded per-crate at wave
+dispatch (CC-R1..R7, CC-V1/V2/V4, CC-P1..P3) — `/review` verifies each
+enumerated case has a fail-on-revert guard; (5) IR-1 reduction runs as its
+own lane (environment-bound — coordinate with `/sprint` for the firing
+environment). Standing REDs (CW-1..4, SG-1/QQ-6, RD-1/RD-2, C4-1) are already
+committed — no re-authoring; they are their waves' acceptance criteria.

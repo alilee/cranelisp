@@ -172,11 +172,19 @@ command: `design/arch/CLAUDE.md` §Baseline-diff) WITHOUT `--features
 test-support` — that gate keeps `test_support` (Tier-2 builder, consumed by
 typecheck's unit suite via the Cargo feature) off the frozen edge.
 `#[non_exhaustive]` is policy on every pub struct/enum EXCEPT: string
-newtypes, `View` (private fields), and the `#[repr(C)]`/`#[repr(u32)]` ABI
+newtypes, `View` (private fields), the `#[repr(C)]`/`#[repr(u32)]` ABI
 types (`SchedulingClass`, `ConcurrencyDescriptor`, `Poll`, `HeapHeader`) —
 layout contracts governed by `cranelisp_platform::ABI_VERSION` bumps
 (Principle 14), offsets pinned by const asserts (`heap.rs:35`) and layout
-tests (`scheduling.rs:445`).
+tests (`scheduling.rs:445`) — and the ownership mode vocabulary (`Mode`,
+`ResultMode`, `ParamFlow`, plus `ModeSummary`): ABI-bearing memory-model
+enums where exhaustive consumer matches are the Principle-18 safety feature
+(a variant addition MUST break every consumer match at compile time;
+`#[non_exhaustive]` would compel the `_ =>` arms that hide a missed variant)
+and a summary struct constructed literally by both producers. See the
+`ownership.rs` module rustdoc §"Exhaustiveness discipline" (recorded S111
+Phase 3); every variant-adding change-set re-runs the `_ =>`/`== Fresh`
+escape grep over `ResultMode`.
 
 ## Seam map + `#[cfg(test)]` locations
 

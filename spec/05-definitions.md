@@ -57,9 +57,17 @@ A multi-signature function definition provides multiple variants with different 
 
 ```clojure
 (defn size "Return the number of elements"
-  ([:Vec v] (vec-len v))
-  ([:List l] (list-len l)))
+  ([:(Vec Int) v] (vec-len v))
+  ([:(List Int) l] (list-len l)))
 ```
+
+Each clause annotates its parameter with a **concrete** type. A parametric type
+such as `Vec` or `List` MUST supply its type argument (`:(Vec Int)`, not bare
+`:Vec` — §5.2, §3), and because each clause is type-checked independently (see
+below) a clause parameter cannot be left polymorphic — `:(Vec a)` would leave
+`a` unpinned in that clause's own body, an ambiguous-type error. A concrete
+element type (here `Int`) is what pins the parameter and lets the clause
+compile.
 
 **Semantics:**
 

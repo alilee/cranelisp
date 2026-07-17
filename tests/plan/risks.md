@@ -1,5 +1,29 @@
 # QA Risk Review
 
+## S111 risk read (2026-07-17, /qa — shapes the depth of the S111 plan in `PLAN.md` §"Sprint 111")
+
+S111 pairs an emission-affecting schema-window centrepiece (the §3.7 vec-COW
+ownership root) with byte-identical refactors (R4/R5), a language-surface fix
+with a data-corruption hazard (quasiquote fold vs int shield), and a
+release-phase UB closure (GOT). The profile is dominated by *partial landings
+of coordinated change-sets* and *fix-polarity inversions*.
+
+| # | Risk | Severity | Why silent | Guard (PLAN §S111 rows) |
+|---|---|---|---|---|
+| S111-1 | **Schema-20 window discipline** — two persisted-meaning changes (truthful COW facts; 0621 `callees` → storage keys) must sit inside the ONE commit window that bumps `CACHE_SCHEMA_VERSION`; a cache written between two separate bumps carries schema-20 with alias edges, and the reverse-index consumer (when it goes live) silently misses affected-set closures — the 0472 starvation class | HIGH | No error at write OR read time; the failure fires in a future sprint's session-transaction machinery | CW-S1 (stale-cache invalidated wholesale) + CW-S2 rider units + CW-S4 one-window `/review` criterion |
+| S111-2 | **RC fix-polarity inversion** (S110-8 successor) — curing the vec-COW under-count (UAF) by widening flips it into an over-count (leak) that the flipped-GREEN value-correctness repros cannot see; conversely the conservative copy-arm residual could silently WIDEN | HIGH | A leak is invisible to value assertions; a widened residual looks like "still no UAF" | The three `vec_cow_value_use_leak.rs` must-holds + CW-F2 pinning the residual at EXACTLY one count per call (any widening fails loudly) |
+| S111-3 | **Partial landing of the 3-layer root** — facts (a2) without reachability (a3) leaves declared facts silently dead in production (the exact §3.7 gap); a1 without a2 has no producer; the suite stays green either way because the default is conservative | HIGH | Conservatism masks absence — nothing miscomputes, performance/RC behaviour just silently stays wrong-class | CW-F3a/CW-F3b twin fence (prelude-fallback leg RED until a3); CC-R1..R5 per-site three-path units; ONE-change-set is the arch ruling `/review` enforces |
+| S111-4 | **Quasiquote fold-without-shield** — post-fold, int's Pass-1 macro expander rewrites macro-call-shaped lists INSIDE quoted literals before the desugar sees them: `(defn f [] '(m x))` silently corrupts quoted DATA (wrong value, no error) | HIGH | The corruption only fires when a quoted list head collides with a registered macro name — rare in tests, common in macro-writing code (the exact derive.cl audience) | QQ-I1/I2/I5 negatives authored BEFORE the wave; arch ordering: shield lands ≤ fold |
+| S111-5 | **GOT fallible-refactor caller miss** — one of the 10 enumerated `allocate_got_slot` callers keeps an `unwrap`/`unreachable!` arm and exhaustion is a panic (or, pre-refactor, silent UB) on exactly that path | MEDIUM-HIGH | Exhaustion needs >1024 slots in one module — unreachable in the suite's natural fixtures | GE-1/GE-2 boundary units + GE-3 caller pins + the `/review` 10-caller sweep (GE-4 e2e if cheap) |
+| S111-6 | **P24 sweep mis-classification** — an identity-scan waved through as "enumeration" launders a real divergence surface into the register as legit; the sweep's value inverts | MEDIUM | A wrong verdict looks identical to a right one unless grounds are stated and checkable | Register discipline (P24-1: grounds per row, acid-test verbatim); pre-seeded rows carry their evidence; findings must land as failing tests or FIXMEs (P24-4) |
+| S111-7 | **Golden-attribution muddying** — interleaving the byte-identical R4/R5 refactors with the emission-affecting ownership wave makes CLIF diffs unattributable; a real emission drift hides inside the expected re-baseline | MEDIUM | The re-baseline "explains" every diff | §H gates + arch wave-order constraint 1 (R2 → R4/R5 byte-identical → ownership wave, re-baseline last act) |
+| S111-8 | **0604 environment-bound repro** — the foreground write fires 16/16 in one environment and 0/175 in another; a fix validated only where it never fired is the S98 false-green class | HIGH | Symptom absence in the wrong environment proves nothing | IR-1 locate-first (deterministic repro or located-seam attribution BEFORE any patch) + IR-2 sweep-with-fix + twins must-hold |
+| S111-9 | **0590 R1 fix regressing the S110 duty-split** — the finer discriminator re-touches `AmbiguityScanPhase` ordering; B1/B2 (wrong-reject AND wrong-accept) are one mis-ordering away in each direction | MEDIUM-HIGH | B2-class wrong-accepts codegen with never-scanned bodies — no error anywhere | OA-2 must-hold set (B1/B2 guards + RD-3 + rows 13–15 + VP-3/4/5) run at the fix |
+
+Depth allocation: fences and pre-wave guards first (KC-N1..N6, QQ-I1/I2/I5,
+CW-F3a probe, CW-F2), per the S108 Inc2 rule — arch-pre-flagged boundaries
+and revert-class fences before happy paths.
+
 ## S110 risk read (2026-07-15, /qa — shapes the depth of the S110 plan in `PLAN.md` §"Sprint 110")
 
 Most of S110 is behaviour-invariant plumbing (0583 waves, R-2 wiring,

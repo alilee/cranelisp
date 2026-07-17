@@ -32,6 +32,27 @@
 //! (Principles 7 + 18 — one home for the ⊤ rule; both typecheck and backend
 //! read through these accessors).
 //!
+//! # Exhaustiveness discipline — the mode enums carry NO `#[non_exhaustive]`
+//!
+//! [`Mode`], [`ResultMode`], and [`ParamFlow`] are deliberate EXCEPTIONS to
+//! the types-crate `#[non_exhaustive]` policy
+//! (`crates/cranelisp-types/CLAUDE.md` §Public-surface mechanics), and
+//! [`ModeSummary`] is excepted with them (it is literally constructed by both
+//! producers — typecheck's fixpoint and primitives' declared-fact table).
+//! For an ABI-bearing memory-model vocabulary, exhaustive consumer matches
+//! ARE the safety feature (Principle 18's structural completeness): adding a
+//! variant must force every consumer match to be revisited at compile time,
+//! whereas `#[non_exhaustive]` would compel exactly the `_ =>` wildcard arms
+//! that let a missed variant default silently — the unsound direction for a
+//! leak/double-free contract. Binary reads that survive a variant addition
+//! WITHOUT a compile error (`== ResultMode::Fresh` in
+//! [`ModeSummary::is_abi_conservative`] here and the backend's
+//! `return_is_fresh_by_summary`) must individually be safe-direction for ANY
+//! new variant, and every variant-adding change-set re-runs the escape grep
+//! (`_ =>` / `== Fresh` over `ResultMode`) to confirm no third binary read
+//! has appeared. (Exception recorded S111 Phase 3, with the pinned
+//! `MayAliasOf` diff — see `ResultMode`'s type-level docs.)
+//!
 //! # The master toggle
 //!
 //! [`ownership_analysis_off`] is the read-once `CRANELISP_NO_OWNERSHIP` gate
@@ -79,6 +100,22 @@ pub enum Mode {
 /// owned by the caller (caller decs) or a borrowed view (caller must not dec)
 /// is a caller/callee agreement (spine §3.3, the 0467 folding rationale).
 /// `Fresh` is the `Default` — the Decision-24 as-built convention.
+///
+/// **PINNED S111 Phase 3 — `MayAliasOf(usize)` joins this enum in the S111
+/// Phase-5 schema-20 ownership wave (NOT before):** "the result EITHER is a
+/// fresh value OR reaches into param *i* — the param itself or a view rooted
+/// in it — decided at runtime" — the COW pair (`vec-set`/`vec-push`: copy arm
+/// vs rc==1 in-place arm) and the conditional projection. The consumer must
+/// never elide protection on it and must never assume it reaches the param;
+/// `AliasOf`/`ProjectionOf` remain reserved for provable UNCONDITIONAL
+/// claims (both `MayParam` producer arms — `projection: false|true` —
+/// publish `MayAliasOf`; S111 Phase-3 ruling). The variant is serde-visible on persisted summaries, so
+/// `CACHE_SCHEMA_VERSION` 19→20 rides the same change-set (with the 0621
+/// `callees`→`storage_fq()` rider inside the one bump window). Ruling +
+/// consumer semantics: `design/arch/ownership-inference.md` §3.7/§3.7.1;
+/// exact diff + consumer census: `design/arch/interfaces.md`
+/// §"Ownership-inference carriers". This enum deliberately carries no
+/// `#[non_exhaustive]` — see the module docs §Exhaustiveness discipline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ResultMode {
     /// The result is a fresh caller-owned value (Decision-24 as-built).

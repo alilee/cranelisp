@@ -146,9 +146,17 @@ struct OwnershipSummary {
 
 enum ResultMode {
     Fresh,                // owned rc=1 temporary (Decision-24 as-built)
-    ProjectionOf(usize),  // borrowed view rooted in param i (accessors — §4.4)
-    AliasOf(usize),       // param i returned as-is, ownership flows through
-                          // (the `string-identity` / `vec-push-grow` shapes)
+    ProjectionOf(usize),  // borrowed view rooted in param i (accessors — §4.4).
+                          // UNCONDITIONAL: reserved for a provable borrowed view
+                          // (`vec-get`, a bare field accessor).
+    AliasOf(usize),       // param i returned as-is, ownership flows through —
+                          // UNCONDITIONAL (`string-identity`).
+    MayAliasOf(usize),    // S111 §15/§3.7-spine: the result is EITHER a fresh
+                          // materialization OR param i's own reference, decided
+                          // dynamically (the COW shape — `vec-set`/`vec-push`).
+                          // The consumer MUST keep protect and must never assume
+                          // it IS the param. Absent this point, the COW truth had
+                          // no representation and was falsely declared `Fresh`.
 }
 
 enum ParamFlow {          // where an Owned param's reference goes
@@ -731,8 +739,13 @@ in the pass:
   `ResolvedCall::BuiltinFn`/the vec-codegen path; their declared facts are the projection
   vocabulary — `vec-get: params [Borrowed], result ProjectionOf(0)` (§4.4-projection-covered:
   the element read is rc-free against the vec's root); `vec-set`/`vec-push`
-  (`…-copy` semantics): `params [Owned/Consumed, …]`, `result Fresh` — the COW copy is a
-  genuine materialization and is precisely the increment-II Q4 target, not a read-path fact.
+  (`…-copy` semantics): `params [Owned/Consumed, …]`, **`result MayAliasOf(0)`** (S111 —
+  §15 / spine §3.7). **This corrects the former `result Fresh` declaration, which was FALSE:**
+  COW is dynamic — the rc==1 in-place arm returns param 0's OWN reference, only the rc>1 arm
+  materializes a fresh copy. Declaring `Fresh` let the B3.2 return-protect elision drop a needed
+  protect on the in-place arm (the vec-assoc UAF class). `MayAliasOf(0)` is the honest point:
+  either-fresh-or-param-0, consumer keeps protect. The in-place reuse itself remains the
+  increment-II Q4 target; the read-path fact is unchanged.
   Their facts drive **site classification only**; there is no callee body and no summary walk.
   (Their GOT value-path gap — NULL slots on value-use — is the spine §9 `/qa` triage item.)
 - **`vec-len`, `eq`, `display`/`trace`-family, the string family (extern-shimmed):** ordinary
@@ -1929,3 +1942,202 @@ overhead bars including F2v serial.
   no action needed before the implementing sprint.
 - `/qa` — author the verification plan (parts 17–18) inheriting spine §9 + §12 items 5–8 here.
 - `/sprint` — sequence at close per spine §5.7: R3 machinery → increment I → increment II.
+
+---
+
+## §15. The vec-assoc COW schema-20 landing — typecheck side (S111 Phase 3)
+
+**Status:** DESIGN (S111 Phase 3), pre-implementation. Realizes the typecheck (a1/a3)
+layers of the `/arch` §3.7 ruling (`design/arch/ownership-inference.md`; the spine governs).
+The peer layers land in the SAME coordinated change-set (spine §3.7 / SPRINT.md §2):
+`cranelisp-types` `ResultMode::MayAliasOf(usize)` + `CACHE_SCHEMA_VERSION` 19→20 (`/arch`);
+`cranelisp-primitives` truthful COW declarations (`/dev` backend-paired). This section
+answers the SPRINT.md §5 **carrier-completeness matrix axes 1 (reachability) + 3 (producer)**
+for this crate; axis 2 (variant exhaustiveness) is structurally forced (§15.4). **The whole
+landing is emission-affecting BY DESIGN** — see §15.6 for the disposition every `/dev` +
+`/qa` step inherits.
+
+### 15.1 The three coupled defects, restated at this crate's seams
+
+Per the spine §3.7 root-cause: (1) `ResultMode` lacked the COW point ⇒ a legal state (the
+dynamic either-fresh-or-alias result) was falsely declared `Fresh`; (2) the declared COW
+facts on `vec-set`/`vec-push` said `Fresh`; (3) the declared facts were **unreachable** from
+prelude-fallback modules, so even a corrected declaration would be dead code. Layers (1)+(2)
+are §15.3 (producer) + the §9.3/§2.2 doc-currency fixes above + the `cranelisp-primitives`
+peer; layer (3) is §15.2 (reachability) — **this crate's load-bearing new work**, because
+without it a2 is dead code (spine §3.7(a3)).
+
+### 15.2 Reachability — prelude-fallback-aware ownership environments (axis 1; the a3 leg)
+
+**The defect precisely.** The ownership envs resolve callee facts through
+`TypeCheckEnv::resolve_terminal_entry_and_home` (`checker.rs:1889`) — a raw
+`probe_module_entry_owned` current-module probe + `chain_follow_to_home` `Import`-chain
+follow, with **no prelude fallback and no I-1 public-head filter**. In any module that
+reaches primitives via the implicit prelude (essentially all user code), the probe misses:
+`summary_of → None`, `terminal_kind → None`. Params then degrade to ⊤-`Owned`
+(conservative-safe, precision lost) and — the anti-conservative direction this defect is
+about — results default to `Fresh` at the transfer walk (`transfer.rs:590`
+`unwrap_or(ResultMode::Fresh)`). The entire §3.1(a)/§9 declared-fact precision is silently
+inert in production.
+
+**Confirmed fact-lookup site inventory (grep-verified 2026-07-17; the SPRINT.md §5 axis-1
+completeness obligation — "confirm no sixth site").** The raw fallback-less resolve is
+`resolve_terminal_entry_and_home`; there are **exactly five call sites, ALL in
+`ownership/fixpoint.rs`, zero `probe_module_entry_owned` under `ownership/`:**
+
+| # | Env method | Site | Returns |
+|---|---|---|---|
+| 1 | `ClusterEnv::terminal_kind` | `fixpoint.rs:77` | `TerminalKind` |
+| 2 | `ClusterEnv::summary_of` | `fixpoint.rs:89` | `(FQSymbol, ModeSummary)` |
+| 3 | `UniqClusterEnv::terminal_kind` | `fixpoint.rs:393` | `TerminalKind` |
+| 4 | `UniqClusterEnv::summary_of` | `fixpoint.rs:402` | `ModeSummary` |
+| 5 | `UniqClusterEnv::result_unique_of` | `fixpoint.rs:413` | `bool` |
+
+All five are the byte-identical expression
+`self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())`.
+**`confinement.rs:162` is NOT a sixth site** — it calls `self.env.summary_of` where
+`self.env: E: TransferEnv` is the `ClusterEnv`, so it is a *consumer* of site 2, fixed
+transitively (verified: `Confiner<'e, E: TransferEnv>`). Likewise every `self.env.summary_of`
+/ `self.env.terminal_kind` in `transfer.rs` routes through sites 1–2. The spine §3.7's "five
+sites (ClusterEnv twins + UniqClusterEnv twins + confinement's read)" and this grep converge:
+the confinement read is subsumed by fixing ClusterEnv::summary_of, and UniqClusterEnv carries
+the third raw twin (`result_unique_of`) the spine folded into its `:388–415` range.
+
+**The fix — ONE shared prelude-hop helper (Principle 7 — binding, spine §3.7(a3)).** Add a
+single fallback-aware `(entry, home)` resolver on `TypeCheckEnv`, e.g.
+`resolve_terminal_entry_and_home_scoped(current_module, name) -> Option<(ModuleEntry<C>,
+ModuleFullPath)>`, that **delegates to the existing scope-resolve machinery**
+(`scope_resolve_in(current_module, name, Span::SYNTHETIC)`, `checker.rs:1037`) and maps
+`Ok(resolved) → Some((resolved.entry, resolved.storage_fq().module))`, `Err(_) → None`. All
+five sites call this ONE helper. Rationale:
+
+- `scope_resolve_in` is **staging-aware** (it selects `SymbolTableRead::Cluster` when
+  `staging.module == current_module`, else `Live`) — parity with the ownership pass's current
+  staging-visibility (the pass runs at finalize while staging is live).
+- Prelude fallback + `Import`-chain follow + the I-1 public-head filter + the
+  qualified-never-retries guard are ALL **intrinsic to `ResolutionScope::resolve`** (decided
+  once at scope construction from the `PreludeFallback` bit) — so the helper hand-rolls
+  nothing (the `cranelisp-typecheck/CLAUDE.md` "never re-thread `prelude_fallback_target` at a
+  new call site" rule). It is the terminal-entry sibling of the existing `resolve_entry_scoped`
+  (`checker.rs:1769`), differing only in also returning the home the ownership FQSymbols need.
+- Same-module and explicit-import reach are behaviour-preserved (scope resolve subsumes the
+  raw probe + chain-follow); prelude reach is newly correct; a **private** prelude binding is
+  now correctly filtered (I-1) rather than leaking — a strict correctness gain.
+
+**Home/symbol identity (design pin, consistent with 0620/0621).** Site 2's returned FQSymbol
+currently uses `FQSymbol { module: home, symbol: name.clone() }` — the WRITTEN name. Prefer
+`resolved.storage_fq()` (home + terminal storage key) so the returned identity is the storage
+key, not a member/renamed alias (the same discipline the 0620/0621 flip enforces on the
+`resolved_targets`/`callees` carriers). This is **not load-bearing for fixpoint correctness**
+— a prelude/imported callee is a boundary condition (never on the worklist), and its recorded
+`deps` FQSymbol (`transfer.rs:571`) drives only intra-cluster caller re-entry, which a
+non-cluster key never triggers — but using `storage_fq()` avoids re-seeding the alias class in
+a new carrier and keeps the crate's identity discipline uniform.
+
+**Unit pin (spine §3.7(a3)):** `summary_of` finds `vec-set`'s declared `MayAliasOf(0)` facts
+from a prelude-fallback module (`tf.prelude_fallback.insert(module, true)` per the CLAUDE.md
+test recipe). Negative pin: a *private* prelude entry is NOT resolved (I-1 filter honoured).
+
+### 15.3 The producer arm — `origin_to_result_mode` (axis 3)
+
+The body-final-origin → published `ResultMode` map (`transfer.rs:237`) currently publishes a
+**hard `AliasOf`** for a may-alias origin. Per spine §3.7(a1) with the binding constraint
+*"no may-origin may publish a mode whose consumer can elide an inc/protect; retain-side
+imprecision is acceptable"*:
+
+| origin | current | S111 | grounds |
+|---|---|---|---|
+| `Root(s)`, `param_root=Some(i)` | `AliasOf(i)` | `AliasOf(i)` (unchanged) | UNCONDITIONAL — the value IS param i on every path |
+| `Projection(s)`, `param_root=Some(i)` | `ProjectionOf(i)` | `ProjectionOf(i)` (unchanged) | UNCONDITIONAL borrowed view (the clean accessor; only a single-path `Origin::Projection` reaches here, never a join — §15 note) |
+| `MayParam{rep, projection:false}`, `param_root=Some(i)` | `AliasOf(i)` | **`MayAliasOf(i)`** | may-alias — a `Fresh`-path exists; `AliasOf` would let a future consumer assume it IS param i and transfer/skip a dec (unsound on the fresh arm) |
+| `MayParam{rep, projection:true}`, `param_root=Some(i)` | `ProjectionOf(i)` | **`MayAliasOf(i)`** (recommended) | may-projection — also conditional; `AliasOf`/`ProjectionOf` are reserved for UNCONDITIONAL claims (spine §3.7(a1)). Collapsing to `MayAliasOf` is the conservative, no-unsound-elision choice. Precision cost is nil: the consumer already writes **no** provenance fact for a may-projection (`transfer.rs:601`), and the flagship accessor stays `Origin::Projection` (row 2), so no S99-target read-path shrinks |
+| `Fresh` / `None` param_root | `Fresh` | `Fresh` (unchanged) | no param reaches the result |
+
+**The projection-true row is a `/design` ruling the spine left to this pass** (§3.7(a1) named
+only the `projection:false` flip explicitly). I rule **both may-arms publish `MayAliasOf`** —
+it maximally satisfies the binding constraint (a may-origin can never mislead a consumer into
+an unsound elision) at zero measured cost. Flagged for `/review`/`/arch` visibility since it
+is stronger than the letter of the ruling; a reviewer preferring the minimal change (keep the
+projection-true arm at `ProjectionOf`) is retain-side-safe **today** — the current backend
+consumer reads only `== Fresh`, so `ProjectionOf` keeps protect — but is future-fragile
+against any projection-provenance last-use consumer, which is why the collapse is the
+recommended end-state.
+
+### 15.4 The transfer-walk consumer arm (axis 2 — variant exhaustiveness)
+
+`walk_apply`'s result-origin match on the CALLEE's `ResultMode` (`transfer.rs:591`) has **no
+wildcard** and `ResultMode` carries no `#[non_exhaustive]` (the `/arch` §2 exhaustiveness-as-
+safety exception) — so adding `MayAliasOf` **forces** this arm to be written at compile time
+(Principle 18). The arm, per spine §3.7(a1) ("the join of `Fresh` with `arg_origins[k]`"):
+
+```rust
+ResultMode::MayAliasOf(k) => {
+    // Result is EITHER fresh OR arg k's reference (COW, dynamic). Join Fresh with
+    // the arg's origin: a param-reaching arg ⇒ Origin::MayParam (never collapses to
+    // Fresh — the 0520 rule keeps protect); a fresh/non-param arg ⇒ Fresh.
+    let arg = arg_origins.get(k).cloned().unwrap_or(Origin::Fresh);
+    self.join_origin(Origin::Fresh, arg)
+}
+```
+
+`join_origin` already produces `MayParam` when one side reaches a param and `Fresh` when
+neither does (§transfer, FIXME 0520) — so this arm reuses the exact 0520 may-alias
+composition, no new join logic. **This is the only exhaustive `match` on `ResultMode` in the
+crate** (grep-confirmed: the sole consumer match is `transfer.rs:591`; `origin_to_result_mode`
+at `:237` produces it; `uniqueness.rs` reads the separate `result_unique` bool, never the
+variant; `trace.rs` Debug-formats it). Axis 2 is therefore closed by the compiler.
+
+**Increment-II non-impact (checked).** The uniqueness stratum admits a call result as a
+unique root only when the callee's `result_unique` bit proves it — **never** `result == Fresh`
+(`uniqueness.rs:29`). A `MayAliasOf`-producing COW body has `result_unique = false` (it may
+return a shared param), so the stratum already refuses to treat it as unique. No `MayAliasOf`
+handling is owed in `uniqueness.rs`; the new variant is invisible to increment II by
+construction.
+
+### 15.5 The 0621 rider — `callees` records `storage_fq()` (SAME change-set)
+
+Per FIXME 0621 + SPRINT.md §2 (binding: same CHANGE-SET, not merely same sprint — the schema
+constant flips once). `record_reference_target` (`checker.rs:1417`) records **two** feeds from
+one resolution: `resolved_targets` (already `storage_fq()` since the 0620 landing, `:1464`)
+and `user_fn_refs`/`callees` (still `resolved.fq`, `:1468`). Flip `:1468`:
+`state.user_fn_refs.insert(span, resolved.storage_fq())`, and correct the method rustdoc
+(`:1388–1395`, which currently documents `callees` as recording `resolved.fq` NOT
+`storage_fq()`). This is a persisted-`.meta.json` meaning change ⇒ it MUST ride the same
+`CACHE_SCHEMA_VERSION` 19→20 bump (the `Def.callees` completeness contract in
+`cranelisp-typecheck/CLAUDE.md` — "changing what `callees` records is a meaning change: bump
+in the same change-set"). Unit pins (`program::tests::callees_*` family): a **renamed import**
+(`[(foo bar)]` → edge names `{m, foo}` the storage key, not the `{m, bar}` alias) and a **bare
+accessor** reference (edge names `{m, Box.v}` canonical, not bare `{m, v}`). Landing check
+(from 0621): confirm `extract_call_graph_edges`' `ResolvedCall` channel is already
+storage-keyed (post-W0.1b it is). `/dev` implements; the schema constant + the types
+`MayAliasOf` variant are `/arch`-authored in the same change-set.
+
+### 15.6 Golden / byte-identity disposition (inherited by every `/dev` + `/qa` step)
+
+**The landing is emission-affecting by design, in TWO ways** (spine §3.7 "Golden/byte-identity
+disposition"): (i) protect re-emission on COW-return chains (the fix's point); (ii) the a3
+reachability leg **activates the designed increment-I precision** (`Borrowed` param narrowing,
+`ProjectionOf` accessor results) in production prelude-fallback modules where it was silently
+inert — so CLIF changes **beyond** the COW class are EXPECTED AND INTENDED. Discipline: schema
+19→20 invalidates caches wholesale; every drifted golden frame must be attributed to one of
+the two named mechanisms and re-baselined **scoped + attributed** per MANIFEST.md (S102 §6.2 —
+extension ≠ re-baseline), with the re-baseline as the wave's LAST act (SPRINT.md §1 ordering
+constraint 1: byte-identical backend work lands BEFORE this wave). This is the standing risk
+`/qa` must pin — see §15.7.
+
+### 15.7 Risks routed to `/qa` (0623 fences)
+
+1. **Declared-fact reachability fence (0623 item 3):** a prelude-fallback module exercising a
+   `Borrowed`-declared primitive (`str-eq`/`vec-len` in a loop) must show the narrowed emission
+   once §15.2 lands — the fence that would have caught "declared facts silently dead in
+   production". Absent this, an accidental regression of the prelude hop is invisible.
+2. **Return-position copy-arm leak fence (0623 item 2):** post-fix, a shared-source COW returned
+   through a NON-direct shape conservatively over-incs the copy arm by exactly one (retain-side
+   residual — the summary-driven protect vs the direct-body recognizer's exact accounting, spine
+   §3.7). Pin the residual's magnitude (exactly one, never a UAF); flip when the walk-emitted
+   per-site-fact generalization lands.
+3. **Body-shape × branch × face matrix (0623 item 1):** the four RED siblings (let-wrapped +
+   match-arm × REPL/`--link`) plus if-branch/chained-COW × {in-place, shared} — `/qa` authors,
+   `/testing` builds. The typecheck-side guarantee: `MayAliasOf` keeps protect on EVERY body
+   shape (the summary is body-shape-agnostic), so all shapes are safe-by-summary; the direct-body
+   recognizer's re-scope to a leak-exactness optimization is backend-side (spine §3.7).

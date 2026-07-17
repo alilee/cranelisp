@@ -108,6 +108,39 @@ Per Decision 30 (form-by-form scheduler; mutual-import deadlock), there is **no 
 
 The shared top-level classifier (target-state §3.2 item 5) is the entry point both batch and REPL drive, with thin policy wrappers — REPL accepts bare expressions, batch rejects them. Today the two paths (`build_program` for batch, `build_repl_input` / `build_repl_input_from_sexps` for REPL) duplicate the rejection-of-pre-AST-forms and the `parse_def_visibility` dispatch; the target collapses to one classifier with the policy difference at the rim.
 
+### 4.1 Quasiquote/quote desugar fold (S111, FIXME 0613)
+
+**Desugaring is folded into the AST chokepoints `build_forms`/`build_form` as
+their first step**, so every form is desugared before dispatch and no caller can
+forget it (the single-codepath lever; Principle 7, Principle 18). This closes
+FIXME 0613 — quote/quasiquote templates in ordinary `defn` bodies and top-level
+exprs (legal wherever an expression is legal, ruled (A) by the user S111) that
+previously died at the `ast_builder.rs:1167` backstop because the only production
+caller of `expand_quasiquotes` was `macro_clause.rs:67`.
+
+The post-fold per-form chain: `parse` → (int Pass-1 macro expansion, quote-shielded)
+→ `build_program_compat`/`flatten_begin` → **`build_forms`/`build_form` [desugar
+fold]** → `build_form_inner`/`build_expr`. Key contracts, elaborated in
+`design/frontend/quasiquote-fold.md`:
+
+- **Chokepoint set** = `build_forms` (universal, via `build_program_compat`) +
+  `build_form` (save.rs re-parse). `build_expr` has no production direct caller,
+  is the internal recursion primitive, does NOT fold, and keeps the backstop.
+- **Idempotence** — `expand_quasiquotes` is a fixpoint (no quote-family head
+  survives one pass, span/gensym-stable), so the pre-existing `macro_clause.rs:67`
+  call becomes redundant-but-harmless and is **retained, not removed**.
+- **Backstop invariant** — the `ast_builder.rs:1167+` rejection stays: a surviving
+  `quote`/`quasiquote` head is now always a bug (a chokepoint bypassed the fold);
+  a surviving `unquote`/`unquote-splicing` head may also be a genuine
+  outside-a-template user error.
+- **Currency fix** — the `lib.rs:48` claim ("Quasiquote desugaring runs before
+  `build_form`") is currently FALSE and becomes TRUE (`/dev` sharpens the rustdoc).
+- **Named int seam** — the fold runs AFTER macro expansion, so macros receive raw
+  `(quote …)`/`(quasiquote …)` argument sexps (conservative). The complementary
+  obligation that int's `src/expander.rs::expand_scoped` not rewrite quoted-literal
+  interiors is int's **quote shield** (separate `/design`(int) dispatch), landing
+  ≤ the frontend fold. Frontend states its side; the shield is out of this surface.
+
 The implicit pipeline contract — unexpanded macros reaching `build_ast` become silent generic applications — is preserved (the spec needs it for forward-compatibility with new macros that expand to function-shaped applications) but is documented in the target-state `crates/cranelisp-frontend/CLAUDE.md` (`/dev`-narrow follow-up).
 
 ---
@@ -288,6 +321,7 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | Frontend plan | `crates/cranelisp-frontend/plan-frontend.md` | **Stale (architectural).** Names `peg` 0.8 as the parser; reality is hand-written. This is the highest-impact doc-drift item per audit HIGH-5 |
 | S66 slice (overall) | `design/frontend/implementation-slice-s66.md` | **Partially superseded.** Rows 5 + 6 (per-form `build_ast` / `build_expr` pair) are SUPERSEDED by `design/frontend/wave-3a-build-form.md` — collapsed into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156 resolution + Decision 44. Rows 3, 4, 7, 16 remain authoritative |
 | S66 Wave 3a-β (`build_form` + `expand`) | `design/frontend/wave-3a-build-form.md` | **Current.** Authored 2026-05-12 for FIXME 0156 + FIXME 0098 Phase 2 under Decision 44 (amended 0167, 0168) — `/dev` implementation target |
+| Quasiquote/quote desugar fold | `design/frontend/quasiquote-fold.md` | **Current (authored S111 Phase 3).** The FIXME 0613 fold of `expand_quasiquotes` into `build_forms`/`build_form`: fold point + chokepoint set, idempotence/fixpoint contract, backstop invariant, family coverage, `lib.rs:48` currency fix, and the named int quote-shield seam. `/dev` Phase-5 target. Makes `s76-syntactic-only.md:74`'s aspirational "quasiquote desugaring runs before `build_form`" literally accurate |
 
 Refresh order, in priority of audit blast radius:
 
@@ -313,7 +347,7 @@ The audit's recommended-remediation item 5 ("refresh or replace stale design doc
 - `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md` — multi-crate migration covering `extract_module_declarations`/`parse_import_sexp` signatures (Phase 2) and `expand`/`ExpansionError`/`ResolutionGap` placement (Phase 1 types → Phase 2 frontend)
 - `audits/frontend-20260423.md` — current-state ground truth (point-in-time; supersession-marked)
 - `audits/frontend-20260423-current-state.mmd`, `audits/frontend-20260423-target-state.mmd` — current and target diagrams
-- `design/frontend/{ast-builder,reader,comment-preservation,module-preamble,macro-plan,macro-resolver-trait,modules}.md` — subordinate topic docs (staleness register §9)
+- `design/frontend/{ast-builder,reader,comment-preservation,module-preamble,macro-plan,macro-resolver-trait,modules,quasiquote-fold}.md` — subordinate topic docs (staleness register §9)
 - `crates/cranelisp-frontend/src/{lib,reader,ast_builder,module_extract,quasiquote,defmacro}.rs` — implementation
 - `crates/cranelisp-frontend/plan-frontend.md` — pre-Ring-0 plan (architectural drift; staleness register item 1)
 - `src/expander.rs` — current home of `expand_sexp_recursive`; migrates per FIXME 0098 Phase 2

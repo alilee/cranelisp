@@ -248,6 +248,51 @@ fence, spine §8.2).
 > `f4_sudoku` (each = one protect inc elided on a `Fresh` non-`Apply` return; the
 > param scope-dec retained). Unit matrix updated: `fresh_summary_elides_all_body_shapes`.
 >
+> **DESIGN — S111 schema-20 truthful-COW-facts B3.2 falsity correction (centrepiece,
+> `design/arch/ownership-inference.md` §3.7; NOT an audit-drain wave).** The B3.2
+> protect-elision consumer (`return_is_fresh_by_summary`, `fn_compiler.rs:1718`) elides
+> `protect_return_value`'s inc when a present summary has `result == Fresh`, on the stated
+> invariant that "a `Fresh` result is provably not aliased to any scope binding … the
+> analysis widens any returned/escaping param away from `Fresh` before emitting the summary"
+> (`fn_compiler.rs:126-129` rustdoc). **That invariant had a hole**: the `vec-set`/`vec-push`
+> COW primitives declared `Fresh` in `ownership_facts.rs` — a **lie**, because the COW fast
+> path returns the SAME backing (aliasing arg 0) when `rc==1`. A body whose result flowed
+> from a COW op thus reported `Fresh`, the protect was elided, and the returned vec — actually
+> aliasing a live scope binding — was freed at scope cleanup (the vec-assoc COW UAF/leak root,
+> 0623 + the four RED siblings). The schema-20 change (`CACHE_SCHEMA_VERSION` 19→20) declares
+> the two COW primitives `MayAliasOf(0)` (truthful), so a COW-returning body now reports a
+> non-`Fresh` result and the protect is **correctly kept**.
+>
+> **Backend obligations in the schema-20 change-set** (the "B3.2 rustdoc falsity corrections"
+> routed to `/dev` backend-mode-primitives per SPRINT.md §2; land in the CENTREPIECE wave,
+> AFTER the byte-identical R4/R5 audit-drain, with the scoped+attributed re-baseline as that
+> wave's last act — SPRINT.md §1 constraint 1):
+> 1. **`ResultMode` consumer arms** — the two backend binaries are safe-direction for the new
+>    variant and need only the exhaustive-match arm the non-`#[non_exhaustive]` enum forces
+>    (`/arch` §2 note): `return_is_fresh_by_summary` (`fn_compiler.rs:1718`, `== Fresh` — a
+>    `MayAliasOf` is not `Fresh` ⇒ protect kept ✓) and `is_abi_conservative`'s two consumers
+>    (`apply.rs:1025`, `fn_as_value.rs:517`, `!s.is_abi_conservative()` — `MayAliasOf` must
+>    classify non-conservative ✓). The change-set review greps for `_ =>` / `== Fresh` over
+>    `ResultMode` and confirms no third binary silently mis-handles `MayAliasOf`.
+> 2. **Rustdoc corrections (the named "B3.2 falsity")** — the sites whose prose asserts the
+>    holed invariant or a `Fresh`-COW claim: `fn_compiler.rs:126-129` (the `current_mode_summary`
+>    rustdoc — add "the fact table must be truthful; schema-20 removed the COW-primitive
+>    `Fresh` hole"); `fn_compiler.rs:1703-1720` (`return_is_fresh_by_summary` sound-consumer
+>    contract — note `MayAliasOf` is the third non-eliding result kind alongside
+>    `AliasOf`/`ProjectionOf`); the §3.3 variant enumeration above (done, this doc);
+>    `cache/mod.rs:250` persisted-`ResultMode` narrative (add the schema-20 soundness-
+>    invalidation bump entry alongside the S102 bump-14 FIXME-0520 entry — same value-only
+>    shape-unchanged pattern). The `ownership_facts.rs` COW rows + the
+>    `cranelisp-primitives/CLAUDE.md` declared-facts contract sentence are `/dev`
+>    primitives-side (SPRINT.md §5 producer axis 3), not backend.
+> 3. **No new emission** — `MayAliasOf` changes NO emitted instruction on the codegen path;
+>    it only flips which bodies keep their protect (via the already-emitted `protect_return_value`
+>    path). The COW codegen itself (`compile_vec_set`/`compile_vec_push`, the inline COW
+>    fast/slow paths) is unchanged — the fix is a *fact-table truthfulness* change consumed by
+>    the *ownership analysis*, surfacing at the return-protect seam. This is why the schema-20
+>    wave is "emission-affecting by design" (the protect incs it restores) yet the COW
+>    machinery is byte-stable.
+>
 > **AS-BUILT — B3.2 borrow-elision core (S102 Wave 11b, this change-set).** The
 > coupled caller/callee ABI change landed as ONE atomic unit (§3.1 + §3.2 + §3.4
 > + §3.5). Seams:
@@ -429,9 +474,26 @@ widens any returned/escaping param to `Owned`/`AliasOf` before the summary is em
 Consuming the typecheck proposal's §4.2 rule 4 + FIXME 0467's result mode:
 
 - **`ResultMode::Fresh`** (and absent-summary default): today's handling verbatim — the
-  result is an owned rc=1 temporary.
+  result is an owned rc=1 temporary. **Soundness precondition (S111 schema-20):** `Fresh` is
+  a *provably-not-aliased* claim, so the fact table must never let a primitive that MAY alias
+  an argument (COW `vec-set`/`vec-push`) declare `Fresh` — schema-20's truthful-COW-facts
+  change (the S111 banner in §3) establishes this; before it, the two COW primitives' false `Fresh`
+  was a hole in the invariant the `return_is_fresh_by_summary` consumer trusts.
+- **`ResultMode::MayAliasOf(i)`** (S111 schema-20 — the new variant, `cranelisp-types`, ruled
+  in `design/arch/ownership-inference.md` §3.7): the result **may** alias the root of
+  argument `i` (a conditional alias — the COW fast path returns the same backing when `rc==1`,
+  the slow path returns a fresh copy). The backend treats it **conservatively, safe-direction**
+  (it is not a `Fresh` claim): the value is handled as a possibly-aliased owned reference —
+  `return_is_fresh_by_summary` sees `result != Fresh` and **keeps** the return protect (the
+  correct outcome the false-`Fresh` used to skip — the vec-assoc COW UAF root); `is_abi_conservative`
+  classifies `MayAliasOf` as **non-conservative** (so the moded-body/wrapper adaptation and
+  the caller's summary-driven emission still fire — it is a real refined fact, not the ⊤
+  point). No new emission arm is minted for `MayAliasOf` in the audit-drain waves — it rides
+  the centrepiece schema-20 change-set (the S111 banner in §3).
 - **`ResultMode::AliasOf(i)`**: emission-neutral for the caller (the result is an owned
   reference flowing through); the value of the fact is analysis-side. No backend change.
+  (Distinct from `MayAliasOf`: `AliasOf` is an **unconditional** alias claim — the callee
+  always returns argument `i`; `MayAliasOf` is the conditional COW shape.)
 - **`ResultMode::ProjectionOf(i)`**: the call's result is a **borrowed view rooted at the
   root of argument i**. The caller binds it into `borrowed_vars` with a provenance root read
   from the site facts (typecheck §2.3 — the backend never recomputes interprocedural

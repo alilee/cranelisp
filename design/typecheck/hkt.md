@@ -213,13 +213,101 @@ After computing `hkt_param_index` for each method, update the `TraitDecl` stored
 
 When `register_trait_impl` processes an impl for an HKT trait:
 
-1. **Detect HKT trait**: Look up the trait declaration. If `decl.type_params` is non-empty, this is an HKT impl.
+1. **Detect HKT trait**: Look up the trait declaration. **HKT-ness comes from the DECLARATION
+   FORM, not from method-body usage**: a trait declared `(Name var …)` (parenthesized head with
+   a type parameter) makes `var` a type-constructor variable of kind `* -> *` — higher-kinded —
+   **regardless of whether any method uses `var` applied (`(f a)`) or bare (`:a`)**. So
+   `decl.type_params` non-empty ⟺ HKT (grammar §7 L12; a `*`-kind return-poly trait uses the
+   bare head `Name` + `self` and carries NO type_params — spec §7.1.1). See §5.4 for the 0628
+   correction to a former usage-derived gate.
 
-2. **Compute expected arity**: Scan method signatures for the first `Applied` use of each constructor variable name. The number of args in that `Applied` node is the expected arity.
+2. **Compute expected arity**: Scan method signatures for the first `Applied` use of each
+   constructor variable name (`con_var_arity`). The number of args in that `Applied` node is the
+   expected arity. **A con_var used only BARE (`:a`, never `(f a)`) yields no applied use, so
+   `con_var_arity` returns `None` — but the declaration still asserts kind `* -> *` (arity ≥ 1).**
+   The arity is used only to check a *matching-arity ADT* target; it is NOT needed to reject a
+   *non-constructor* (primitive) target (§5.4).
 
-3. **Validate target arity**: Look up the impl target type (e.g., `Option`). If it's a known ADT, check that its `type_params.len()` matches the expected arity. If the target is a primitive type (`Int`, `Bool`, `String`, `Float`), reject with error: primitives are not type constructors.
+3. **Validate target arity**: Look up the impl target type (e.g., `Option`). If it's a known ADT,
+   check that its `type_params.len()` matches the expected arity (when known). **If the target is
+   not a type constructor at all — a primitive scalar (`Int`/`Bool`/`String`/`Float`) or a
+   nullary/0-param type — reject with "not a type constructor", INDEPENDENT of the exact expected
+   arity** (a scalar can never satisfy a `* -> *` con_var). This rejection is the §7.2 gate and
+   MUST fire for every con_var-use shape (applied and bare — §5.4).
 
 4. **Register impl**: Store in `ImplRegistry` under the bare constructor name (e.g., `"Option"`, not `"(Option a)"`).
+
+### 5.4 The bare-con_var impl-on-primitive leak (FIXME 0628, S111)
+
+**Defect.** An HKT trait implemented on a **primitive** is silently accepted, then leaks an
+opaque backend `undefined function` at first use, when the constructor var appears **bare**
+(`:a`) in a method type rather than **applied** (`(f a)`) — violating the self-documenting-REPL
+principle (an ill-formed program must be rejected check-side with an actionable message, not a
+codegen leak). Repro:
+
+```
+(deftrait (Zeroable a) (zed [] :a))   ; (Name var) ⇒ higher-kinded; `a` : *->*
+(impl Zeroable Int (defn zed [] 0))   ; MUST reject "Int is not a type constructor"; today ACCEPTED
+:Int (zed)                            ; today → codegen error: undefined function: zed
+```
+
+A sibling type-display defect: `(deftrait (Container a) (unwrap [:a x] :a))` + `(impl Container
+Int …)` is accepted and `(unwrap 7)` prints `:a 7` instead of `:primitives/Int 7`. One root, two
+symptoms.
+
+**Root cause (source-verified).** The impl-target validation gate (`traits/impl_check.rs:39–92`)
+derives HKT-ness from **method-body usage**, not the declaration:
+
+```rust
+let is_hkt = decl.methods.iter().any(|m|
+    m.params.iter().any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
+        || type_expr_uses_con_var(&m.ret_type, &decl.type_params));
+```
+
+and `type_expr_uses_con_var` / `con_var_arity` / `find_applied_arity`
+(`traits/type_resolve.rs:165–226`) match ONLY `TypeExpr::Applied` (recursing into `FnType`),
+with a `_ => false` / `_ => None` arm — so a **bare** con_var (a `TypeVar`/`Named` leaf) is
+invisible to all three. Consequence for `(Zeroable a)` with `(zed [] :a)`: `is_hkt = false` ⇒
+the whole con_var loop (incl. the primitive rejection) is skipped; and even if reached,
+`con_var_arity` returns `None` and `if expected_arity > 0` (`:50`) gates the primitive-reject out.
+
+**The fix — the HKT gate is the declaration; the primitive-reject is arity-independent.**
+
+1. **HKT-ness from the declaration.** The outer guard `if !decl.type_params.is_empty()` (`:39`)
+   IS the correct HKT condition; the inner usage-derived `is_hkt` is exactly the buggy narrowing
+   — **remove it and run the con_var validation for every trait with type parameters**. (Confirm
+   the premise "`(Name var)` ⇒ HKT" against spec §7.1.1 / grammar §7 L12 — the FIXME grounds it
+   there; if a future non-HKT parametric-trait form is ever added, this gate revisits. No `/spec`
+   change is requested; the premise is asserted, cited, and the "Not this" `self`-spelled *-kind
+   case confirms *-kind traits carry no type_params.)
+
+2. **Reject any non-type-constructor target, arity-independent.** For an HKT trait, resolve the
+   impl target once (through the scope — the `:71` `scope_resolve` + `type_def_view_of` already
+   present, prelude-fallback-aware) and reject when it is **not a type constructor**: a primitive
+   scalar, OR a resolved type with 0 `type_params`. This subsumes and hardens the hardcoded
+   `"Int"|"Bool"|"String"|"Float"` list (a Principle-19 module-by-name smell) into a structural
+   "is this a `* -> *`-kinded constructor?" check, and it fires for bare-con_var traits because
+   it no longer depends on `expected_arity > 0`. The matching-arity ADT check (`:76`,
+   `td.type_params.len() != expected_arity`) stays as the additional precision for applied
+   con_vars where `con_var_arity` is `Some`.
+
+**Target diagnostic** (ideal, per the FIXME): name the higher-kinded trait and point at `self`
+for `*`-kind intent — e.g. *"`Int` is not a type constructor; trait `Zeroable` is higher-kinded
+(kind `* -> *`). For a trait whose method returns the implementing type, declare it `*`-kind:
+`(deftrait Zeroable (zed [] self))`."* Minimal acceptable: the existing "not a type constructor
+(trait `T` expects arity `n`)" message, made reachable for the bare shape.
+
+**Coverage (routed `/qa`, FIXME 0628 / SPRINT.md §5).** The §7.2 rejection needs a
+**con_var-use × impl-target matrix**: {applied `:(f a)`, bare-ret `:a`, bare-arg `:a`} ×
+{primitive target, arity-mismatched ADT, well-kinded ADT}. `tests/spec_07_traits.rs::
+hkt_impl_on_primitive_type_is_rejected_neg` covers only the applied×primitive cell (GREEN); the
+bare rows are the hole. Repro class: `check-gate-leak` (a source fault typecheck must decide,
+that today leaks past the check boundary as a backend codegen error — sibling of S108 0571 D1).
+
+**Scope.** Typecheck-only (`traits/impl_check.rs` gate + optionally the `type_expr_uses_con_var`
+family if a reviewer prefers the detector-level fix; the gate-level fix above is sufficient and
+narrower). No `cranelisp-types` edit, no schema bump — rides the typecheck adjacent-carries
+track (SPRINT.md §5), serial after the centrepiece.
 
 ### 5.2 Self-type construction for HKT impls
 

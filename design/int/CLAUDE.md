@@ -84,6 +84,8 @@ doc is subordinate.
 **Active subordinate feature docs** (scoped, live):
 `index-worker-isolation.md` (S110, FIXME 0604 — the index-feed isolation contract),
 `repl-decomposition.md` (S110, FIXME 0606 — the `repl.rs` module-cut sign-off),
+`quote-shield.md` (S111, FIXME 0613 — `expand_scoped` holds quoted data out of Pass-1
+macro expansion; the int leg of the quasiquote-legal-everywhere wave),
 `multi-sig-introspection.md`, `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.
 
