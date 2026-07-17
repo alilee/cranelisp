@@ -921,8 +921,10 @@ fn quasiquote_in_defmacro_body_still_expands() {
 
 // -----------------------------------------------------------------------------
 // §C interaction rows (arch §3) — the fold-WITHOUT-shield negatives. Fixture:
-// a registered macro `m` whose expansion (999) is observably distinct from the
-// literal 2-element datum `(m x)`. If the fold lands without int's quote
+// a registered macro `m` whose body `(macros/SexpInt 999)` is a well-typed
+// `Sexp` (a valid defmacro per §9.5 — a bare `999` would type-error at the
+// `defmacro`), expanding to the literal `999` — observably distinct from the
+// preserved 2-element datum `(m x)`. If the fold lands without int's quote
 // shield, a macro-call-shaped list inside quoted DATA is expanded before the
 // desugar sees it → the quoted literal is silently corrupted to `999`.
 // -----------------------------------------------------------------------------
@@ -936,7 +938,7 @@ fn quasiquote_in_defmacro_body_still_expands() {
 #[test]
 fn macro_call_under_quote_in_defn_body_not_expanded() {
     repl_prims(
-        "(defmacro m [x] 999)\n\
+        "(defmacro m [x] (macros/SexpInt 999))\n\
          (defn f [] '(m x))\n\
          (f)\n",
     )
@@ -951,7 +953,7 @@ fn macro_call_under_quote_in_defn_body_not_expanded() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn macro_call_under_quote_at_top_level_not_expanded() {
-    repl_prims("(defmacro m [x] 999)\n'(m x)\n")
+    repl_prims("(defmacro m [x] (macros/SexpInt 999))\n'(m x)\n")
         .assert_stdout_contains(":macros/Sexp")
         .assert_stdout_contains("Sexp.SexpSym \"m\"")
         .assert_stdout_does_not_contain("999")
@@ -965,7 +967,7 @@ fn macro_call_under_quote_at_top_level_not_expanded() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn macro_call_under_quasiquote_outside_unquote_not_expanded() {
-    repl_prims("(defmacro m [x] 999)\n`(m x)\n")
+    repl_prims("(defmacro m [x] (macros/SexpInt 999))\n`(m x)\n")
         .assert_stdout_contains(":macros/Sexp")
         .assert_stdout_contains("Sexp.SexpSym \"m\"")
         .assert_stdout_does_not_contain("999")
@@ -973,16 +975,19 @@ fn macro_call_under_quasiquote_outside_unquote_not_expanded() {
 }
 
 // QQ-I3 — a macro under unquote MUST expand (ordinary expression position).
-// NOTE: unquote requires a `Sexp` result (§9.4.2), so the fixture macro yields
-// a `Sexp` (`macros/SexpInt 999`) rather than a bare Int — the plan's intent
-// (macro-under-unquote expands) with a well-formed body. The expanded `999`
-// element appears in the result.
+// NOTE: unquote requires a `Sexp` result (§9.4.2). The macro body must return
+// the constructor-CALL sexp, `(quote (macros/SexpInt 999))`, NOT the raw value
+// `(macros/SexpInt 999)`: the raw value expands `~(me 1)` to a bare Int, which
+// then type-errors as an unquote result (an Int is not a Sexp). Expanding the
+// quoted call form, `~(me 1)` becomes `~(macros/SexpInt 999)`, which evaluates
+// to the `Sexp` value `SexpInt 999` and splices in cleanly. Result:
+// `SexpList (SCons (SexpSym "a") (SCons (SexpInt 999) SNil))`.
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn macro_call_under_unquote_expands() {
     repl_prims(
-        "(defmacro me [x] (macros/SexpInt 999))\n\
+        "(defmacro me [x] (quote (macros/SexpInt 999)))\n\
          `(a ~(me 1))\n",
     )
     .assert_stdout_contains(":macros/Sexp")
@@ -990,14 +995,19 @@ fn macro_call_under_unquote_expands() {
     .assert_stdout_does_not_contain("should have been expanded");
 }
 
-// QQ-I4 — a macro under unquote-splicing MUST expand and splice. The fixture
-// macro yields a `(SList Sexp)` (7, 8) that is spliced into the list.
+// QQ-I4 — a macro under unquote-splicing MUST expand and splice. `~@` requires
+// an `(SList Sexp)` result (§9.4.2). The macro body must return the quoted
+// `SCons`-producing CALL, `(quote (macros/SCons ...))` — a `Sexp` value (a
+// valid defmacro per §9.5) — NOT a body of type `(SList Sexp)` (which
+// type-errors at the `defmacro`). Expanding the quoted call, `~@(m2 1)` becomes
+// `~@(macros/SCons (SexpInt 7) (SCons (SexpInt 8) SNil))`, which evaluates to an
+// `(SList Sexp)` whose two elements (7, 8) are spliced into the list.
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn macro_call_under_unquote_splicing_expands_and_splices() {
     repl_prims(
-        "(defmacro m2 [x] (macros/SCons (macros/SexpInt 7) (macros/SCons (macros/SexpInt 8) macros/SNil)))\n\
+        "(defmacro m2 [x] (quote (macros/SCons (macros/SexpInt 7) (macros/SCons (macros/SexpInt 8) macros/SNil))))\n\
          `(a ~@(m2 1))\n",
     )
     .assert_stdout_contains(":macros/Sexp")
@@ -1014,7 +1024,7 @@ fn macro_call_under_unquote_splicing_expands_and_splices() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn macro_call_inside_nested_quasiquote_not_expanded() {
-    repl_prims("(defmacro m [x] 999)\n`(a `(m x))\n")
+    repl_prims("(defmacro m [x] (macros/SexpInt 999))\n`(a `(m x))\n")
         .assert_stdout_contains(":macros/Sexp")
         .assert_stdout_does_not_contain("999")
         .assert_stdout_does_not_contain("should have been expanded");
@@ -1036,4 +1046,34 @@ fn macro_argument_stays_raw_quote_datum() {
     .assert_stdout_contains("Sexp.SexpInt 1")
     .assert_stdout_contains("Sexp.SexpInt 2")
     .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// S-5 — nested-quasiquote DEPTH AGREEMENT (int quote-shield ↔ frontend desugar
+// fold, /review CS-3 S-5). QQ-I5 pins that a macro call in nested-quoted DATA
+// stays shielded; this row pins the other side of the same seam — a macro call
+// at the correct COMBINED unquote depth MUST expand, and one unquote short of
+// live (belonging to the INNER quasiquote) MUST NOT. The two polarities share
+// the SAME registered, well-formed nullary macro `mm` (body `(quote
+// (macros/SexpInt 777))` → the constructor-call sexp, so a live `~~(mm)`
+// expands to `(macros/SexpInt 777)` which evaluates to a `Sexp`), so the only
+// difference between the cells is unquote depth — an unforgiving pin on the
+// shield↔frontend depth math (closes the silent-divergence residual).
+//   `~~(mm)` : outer ` (d1) inner ` (d2) ~ (d1) ~ (d0=live)  → mm EXPANDS (777)
+//   `~(mm)`  : outer ` (d1) inner ` (d2) ~ (d1, inner-qq datum) → mm PRESERVED
+// spec: spec/09-macros.md §9.4.2
+#[test]
+fn nested_quasiquote_depth_agreement_double_unquote_expands_single_does_not() {
+    // Double unquote reaches live depth 0 — mm expands, 777 appears, no `mm`.
+    repl_prims("(defmacro mm [] (quote (macros/SexpInt 777)))\n`(a `(b ~~(mm)))\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpInt 777")
+        .assert_stdout_does_not_contain("SexpSym \"mm\"")
+        .assert_stdout_does_not_contain("should have been expanded");
+    // Single unquote belongs to the inner quasiquote — mm stays a datum symbol,
+    // 777 never appears.
+    repl_prims("(defmacro mm [] (quote (macros/SexpInt 777)))\n`(a `(b ~(mm)))\n")
+        .assert_stdout_contains(":macros/Sexp")
+        .assert_stdout_contains("Sexp.SexpSym \"mm\"")
+        .assert_stdout_does_not_contain("777")
+        .assert_stdout_does_not_contain("should have been expanded");
 }
