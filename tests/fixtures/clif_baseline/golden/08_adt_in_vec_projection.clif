@@ -1,5 +1,5 @@
-; === CLIF user::Given ===
-function %Given(i64) -> i64 system_v {
+; === CLIF user::Cell.Given ===
+function %Cell.Given(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
 
@@ -14,9 +14,9 @@ block1(v1: i64):
     store notrap aligned v1, v3+24
     return v3
 }
-; === end CLIF user::Given ===
-; === CLIF user::Solved ===
-function %Solved(i64) -> i64 system_v {
+; === end CLIF user::Cell.Given ===
+; === CLIF user::Cell.Solved ===
+function %Cell.Solved(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
 
@@ -31,7 +31,7 @@ block1(v1: i64):
     store notrap aligned v1, v3+24
     return v3
 }
-; === end CLIF user::Solved ===
+; === end CLIF user::Cell.Solved ===
 ; === CLIF user::build ===
 function %build(i64, i64, i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v

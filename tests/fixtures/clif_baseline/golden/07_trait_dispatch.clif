@@ -1,5 +1,5 @@
-; === CLIF user::MkBox ===
-function %MkBox(i64) -> i64 system_v {
+; === CLIF user::Box.MkBox ===
+function %Box.MkBox(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
 
@@ -14,41 +14,7 @@ block1(v1: i64):
     store notrap aligned v1, v3+24
     return v3
 }
-; === end CLIF user::MkBox ===
-; === CLIF user::MkTag ===
-function %MkTag(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-    fn1 = u0:1 sig1
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 0
-    store notrap aligned v7, v6+16  ; v7 = 0
-    store notrap aligned v1, v6+24
-    v8 = iadd_imm v1, 8
-    v9 = iconst.i64 1
-    v10 = atomic_rmw.i64 sub v8, v9  ; v9 = 1
-    v11 = icmp eq v10, v9  ; v9 = 1
-    brif v11, block3, block2
-
-block3:
-    fence 
-    v12 = call fn1(v1)
-    jump block2
-
-block2:
-    return v6
-}
-; === end CLIF user::MkTag ===
+; === end CLIF user::Box.MkBox ===
 ; === CLIF user::Sizeable.size$user/Box ===
 function %Sizeable.size$user/Box(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
@@ -123,6 +89,40 @@ block2(v2: i64):
     return v2
 }
 ; === end CLIF user::Sizeable.size$user/Tag ===
+; === CLIF user::Tag.MkTag ===
+function %Tag.MkTag(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+    fn1 = u0:1 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iadd_imm v1, 8
+    v3 = iconst.i64 1
+    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
+    v5 = iconst.i64 16
+    v6 = call fn0(v5)  ; v5 = 16
+    v7 = iconst.i64 0
+    store notrap aligned v7, v6+16  ; v7 = 0
+    store notrap aligned v1, v6+24
+    v8 = iadd_imm v1, 8
+    v9 = iconst.i64 1
+    v10 = atomic_rmw.i64 sub v8, v9  ; v9 = 1
+    v11 = icmp eq v10, v9  ; v9 = 1
+    brif v11, block3, block2
+
+block3:
+    fence 
+    v12 = call fn1(v1)
+    jump block2
+
+block2:
+    return v6
+}
+; === end CLIF user::Tag.MkTag ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
     gv0 = symbol userextname0

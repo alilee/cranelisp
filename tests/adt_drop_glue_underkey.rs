@@ -18,11 +18,12 @@
 // implicated. These REDs flip GREEN when CS-1.1 re-keys BOTH layers on a mangle
 // of the full concrete instantiation (module + type name + concrete args).
 //
-// NOTE ON THE `class=` TAG: `drop-glue-underkey` is not yet in the controlled
-// `// defect:` vocabulary (`tests/CLAUDE.md`). It is used here per the S111
-// dispatch; /qa to ratify the class addition (the closest existing tags are
-// `uaf` for the R1 corruption face and `rc-miscount` for the R2 leak face —
-// both are the SAME root under-key, hence the dedicated class).
+// The `class=drop-glue-underkey` tag is the ratified controlled vocabulary
+// (`tests/CLAUDE.md` §"Defect-repro notation"; ratified S111, /qa): a
+// per-INSTANTIATION artifact deduped under a key that under-determines its
+// body. The closest existing tags — `uaf` (R1 corruption face) and
+// `rc-miscount` (R2 leak face) — are two symptoms of the SAME root under-key,
+// hence the dedicated class.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
