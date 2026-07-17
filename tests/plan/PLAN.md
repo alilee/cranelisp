@@ -3625,6 +3625,62 @@ failure, arch §5 watch item). Ordering: AFTER §E's negatives exist, BEFORE
 the emission-affecting ownership wave (arch constraint 1) — golden
 attribution stays clean.
 
+### I. In-sprint additions (S111 P5 — rows added at the CS-0.5 /qa touch)
+
+#### I.1 §5.1.2 multi-arity clause-param pinning matrix (CS-4/CS-4.1 B-1 vectors 1–2 FIXED + /review B-2 vector 3 CARRIED; committed `03b8bf30`)
+
+File: `tests/multi_arity_clause_param_51_2.rs`. Spec: `spec/05-definitions.md`
+§5.1.2 — per-clause independent type-checking (a written clause var must be
+pinned by its own clause, never acquired from a sibling). `// defect:
+class=wrong-accept` (vocabulary ratified this touch). Fix for the B-2 rows is
+CS-4.2, evidence-gated + coupled to the pending I-C user ruling.
+
+| Row | Test | Status |
+|---|---|---|
+| MA-G1 | `rp4_delegating_let_body_multi_arity_param_not_pinned_rejected` — B-1 vector 1 (delegating self-call `let` body) rejection guard | [Tested+Neg tests/multi_arity_clause_param_51_2.rs::rp4_delegating_let_body_multi_arity_param_not_pinned_rejected] — GREEN; protects the CS-4.1 revert |
+| MA-G2 | `rp2_body_ascription_self_call_multi_arity_param_not_pinned_rejected` — B-1 vector 2 (body-ascription unifies self-call ret var with a param var) rejection guard | [Tested+Neg tests/multi_arity_clause_param_51_2.rs::rp2_body_ascription_self_call_multi_arity_param_not_pinned_rejected] — GREEN; protects the param-subtraction close |
+| MA-R1 | `lf1_leaf_literal_body_unused_free_var_param_should_reject` — B-2: leaf literal body escapes `find_ambiguous_value_position` (child-positions-only scan) | [S111] — RED wrong-accept guard (B-2, CS-4.2) |
+| MA-R2 | `lf2_leaf_body_returns_free_var_param_should_reject` — B-2: leaf `Var` body returning the free-var param | [S111] — RED wrong-accept guard (B-2, CS-4.2) |
+| MA-R3 | `rp15_leaf_body_var_clause_escapes_param_scan_defn_accepted_should_reject` — B-2 all-mode DEFN-accept marker (heap-ptr read narrated, not asserted — no-flaky rule) | [S111] — RED wrong-accept guard (B-2, CS-4.2) |
+| MA-R4 | `rp19_mirror_int_read_as_string_cross_batch_should_reject` — B-2 REPL cross-batch unsafe READ face (stable `<invalid:1>` Int-as-String observable; `refresh_multi_sig_variant_ret_types` refreshes ret only) | [S111] — RED wrong-accept guard (B-2, CS-4.2) |
+
+#### I.2 0633 ADT drop-glue under-key (FIXME 0633 REACHABLE verdict; committed `9371f9f2`; fix = CS-1.1)
+
+File: `tests/adt_drop_glue_underkey.rs`. Spec: `spec/12-runtime.md` §12.3.1.
+Attribution record: `tests/plan/s111-0633-adt-drop-glue-underkey.md` (two
+under-keyed layers: `resolution.rs::adt_drop_glue_name` +
+`vec_codegen.rs::build_elem_dec_fn`, both bare-`fqtn.name` first-build-wins).
+`// defect: class=drop-glue-underkey` (vocabulary ratified this touch).
+Collision scope differs per mode (batch cardinality) — hence the 3-mode split;
+CS-1.1 must flip all three + R2.
+
+| Row | Test | Status |
+|---|---|---|
+| DG-R1a | `adt_vec_drop_glue_concrete_args_axis_repl_r1` — `(Vec (Pair Int Str))` + `(Vec (Pair Str Int))` dropped in one batch; wrong glue → corruption (REPL face) | [S111] — RED guard (CS-1.1) |
+| DG-R1b | `adt_vec_drop_glue_concrete_args_axis_run_r1` — same, `--run` face | [S111] — RED guard (CS-1.1) |
+| DG-R1c | `adt_vec_drop_glue_concrete_args_axis_link_r1` — same, `--link` face | [S111] — RED guard (CS-1.1) |
+| DG-R2 | `adt_vec_drop_glue_module_axis_leak_r2` — module axis: alloc/free imbalance (Str leak) under RC stats | [S111] — RED guard (CS-1.1) |
+
+#### I.3 CS-0.5 L-B1 golden-lane certification (this touch — verdict record)
+
+The 10-frame drift (S103 baseline → HEAD) certified sound by `/qa`:
+R7 differential oracle (`CRANELISP_NO_OWNERSHIP=1` all-Owned lowering)
+MATCH 13/13 frames (exit + stdout); RC balance allocs==deallocs equal-or-
+better ownership-ON vs the conservative oracle on every frame;
+`CRANELISP_RC_DEC_CHECK=1` zero stale decs 13/13; counts deterministic ×3.
+Reshape attributed: (1) S104 M-static spark admission (`3804e425` +
+default-flip `4924c26c`) — non-recursive call sites lose the runtime-guarded
+spark leg (the RC/fence/call/block reductions); (2) S109 W1c2 canonical
+`Type.Ctor` keying + S110 keyed-consumer resolver deletion (`be06f6cb`) —
+ctor frame renames, GOT renumbering, single keyed `call_indirect` leg;
+(3) S102–S107 ownership increments — non-atomic RC on confined temporaries,
+consumer-driven vec-get projection elision, borrow elision (f1 rc_inc 528→17
+vs oracle). GREEN-LIGHT → `/testing` re-baselines via `clif_golden.sh
+capture` (all 13 entries, this attribution cited in the commit body).
+Corpus scope caveat: certification covers the green-by-construction corpus;
+open §3.7/0633/0638 defect shapes are corpus-excluded (`EXCLUSIONS.md`) and
+are guarded by their own REDs, not this lane.
+
 ### Phase-5 sequencing note for `/testing`
 
 Author order: (1) **§E KC-N1..N6** (handoff enumeration to `/dev` backend —
