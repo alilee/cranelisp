@@ -294,6 +294,7 @@ pub use scheduling::SchedulingClass;
 pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole};
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
+    GotExhausted,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec,
     PrimitiveBody, StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists,

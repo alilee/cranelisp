@@ -86,7 +86,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Eager constrained-fn detection + the S83 determination point: finalise
         // this defn's `fn_state` (Concrete{slot} / Constrained / Polymorphic)
         // from its trial scheme (`program-decomposition.md` §2.2).
-        let constrained_fn = self.determine_fn_state(state, defn, param_types, ret_ty, accumulator);
+        let constrained_fn = self.determine_fn_state(state, defn, param_types, ret_ty, accumulator)?;
 
         // Extract new method resolutions and expr types added during this form
         let mut form_mr = HashMap::new();
@@ -143,7 +143,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         param_types: &[Type],
         ret_ty: &Type,
         accumulator: &ModuleCheckAccumulator,
-    ) -> Option<Symbol> {
+    ) -> Result<Option<Symbol>, CranelispError> {
         // Eager constrained-fn detection
         let fn_type = Type::Fn(
             param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
@@ -215,7 +215,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     fn_state: UserFnState::Constrained(Box::new(cf)),
                 });
             }
-            Some(defn.name.clone())
+            Ok(Some(defn.name.clone()))
         } else if !trial_scheme.ty.is_concrete()
             && defn.name.as_ref() != "__expr"
         {
@@ -261,7 +261,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     fn_state: UserFnState::Polymorphic(Box::new(pf)),
                 });
             }
-            None
+            Ok(None)
         } else {
             // Unconstrained AND concrete: allocate (or reuse) the slot and pin
             // `Concrete`.
@@ -275,7 +275,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .get(&defn.name)
                 .copied()
                 .or_else(|| existing_callable_slot(&st, defn.name.as_ref()));
-            let got_slot = reuse.unwrap_or_else(|| st.allocate_got_slot());
+            let got_slot = match reuse {
+                Some(s) => s,
+                None => st
+                    .allocate_got_slot()
+                    .map_err(crate::result::got_exhausted_error)?,
+            };
             // Slot-reuse invariant (replaces the retired `assert_well_formed`):
             // a reused slot is below the high-water mark; a freshly allocated one
             // equals it minus one. Either way it is a valid allocated index.
@@ -292,7 +297,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
                 });
             }
-            None
+            Ok(None)
         }
     }
 
@@ -514,7 +519,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     .get(&internal_name)
                     .copied()
                     .or_else(|| existing_callable_slot(&st, internal_name.as_ref()));
-                let got_slot = reuse.unwrap_or_else(|| st.allocate_got_slot());
+                let got_slot = match reuse {
+                    Some(s) => s,
+                    None => st
+                        .allocate_got_slot()
+                        .map_err(crate::result::got_exhausted_error)?,
+                };
                 debug_assert!(
                     got_slot < st.next_got_slot,
                     "multi-sig determination-point got_slot {got_slot} must be \

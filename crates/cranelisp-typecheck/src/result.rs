@@ -8,8 +8,24 @@
 //! pattern-match target for the gap-orchestration retry loop.
 
 use cranelisp_types::{
-    DisplayInfo, ErrorLocation, ResolutionGap, ResolveError, Span, Symbol, Warning,
+    CranelispError, DisplayInfo, ErrorLocation, GotExhausted, ResolutionGap, ResolveError, Span,
+    Symbol, Warning,
 };
+
+/// The ONE typecheck mapping of module-local GOT exhaustion into the crate's
+/// error carrier (Principle 7). Every fallible `SymbolTable::allocate_got_slot`
+/// caller routes its `Err(GotExhausted)` through this helper — never a
+/// hand-rolled per-site `map_err` closure. The `GotExhausted` `Display` already
+/// names the module and the GOT capacity, so the resulting located
+/// `CodegenError` is self-explanatory; it is lifted to [`CheckError`] at the
+/// `check_forms` boundary (`form.rs::map_cranelisp_error`/`lift_error`) like
+/// every other `CranelispError` the passes raise.
+pub(crate) fn got_exhausted_error(e: GotExhausted) -> CranelispError {
+    CranelispError::CodegenError {
+        message: e.to_string(),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
 
 /// Why a return-type-polymorphic dispatch site is still unresolved at finalize
 /// (`design/typecheck/return-poly-dispatch-signal.md` §5). Typecheck-local — no
@@ -113,6 +129,38 @@ impl From<ResolveError> for CheckError {
         CheckError::TypeError {
             message: e.message(),
             location: ErrorLocation::from_span(e.span()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelisp_types::{ModuleFullPath, SymbolTable, GOT_TABLE_SIZE};
+
+    // spec: 12-runtime §12.2 — GOT exhaustion is a diagnosed compile error (GE-3,
+    // typecheck caller-side surface). Exhaust a real module GOT to obtain a
+    // genuine `GotExhausted`, then route it through the ONE mapping helper every
+    // fallible `allocate_got_slot` caller uses: it must become a located
+    // `CranelispError::CodegenError` naming the module (which lifts to
+    // `CheckError` at the check_forms boundary). A diagnosed error, never a
+    // panic on user input.
+    #[test]
+    fn got_exhausted_maps_to_located_codegen_error_naming_module() {
+        let mut st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("proj.widget"));
+        for _ in 0..GOT_TABLE_SIZE {
+            st.allocate_got_slot().expect("within-bounds allocation");
+        }
+        let exhausted = st.allocate_got_slot().expect_err("GOT must be exhausted");
+        let mapped = got_exhausted_error(exhausted);
+        match mapped {
+            CranelispError::CodegenError { message, .. } => {
+                assert!(
+                    message.contains("proj.widget"),
+                    "caller-side error names the exhausted module: {message}"
+                );
+            }
+            other => panic!("expected a located CodegenError, got {other:?}"),
         }
     }
 }

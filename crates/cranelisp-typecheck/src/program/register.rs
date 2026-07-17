@@ -204,7 +204,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
                 let resolved = self.resolve_variant_types(state, defn, type_vars)?;
                 let (mangled_defns, resolved_info) =
-                    self.register_mangled_variants(state, defn, &resolved);
+                    self.register_mangled_variants(state, defn, &resolved)?;
                 mangled_by_base
                     .entry(defn.name.clone())
                     .or_default()
@@ -341,7 +341,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         defn: &Defn,
         resolved: &[ResolvedVariant],
-    ) -> (Vec<Defn>, Vec<MangledVariantInfo>) {
+    ) -> Result<(Vec<Defn>, Vec<MangledVariantInfo>), CranelispError> {
         let mut mangled_defns = Vec::new();
         let mut resolved_info = Vec::new();
 
@@ -373,7 +373,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // A resolved multi-sig mangled variant is a concrete callable born
             // with its slot (S83 deferred allocation, Principle 20): the slot
             // rides inside the `Concrete` `fn_state`, not a flat `Def` field.
-            let slot = st.allocate_got_slot();
+            let slot = st
+                .allocate_got_slot()
+                .map_err(crate::result::got_exhausted_error)?;
             let mut builder = ModuleEntry::def(
                 scheme.clone(),
                 DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None } },
@@ -413,7 +415,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             resolved_info.push((concrete_params.clone(), concrete_ret.clone(), mangled));
         }
 
-        (mangled_defns, resolved_info)
+        Ok((mangled_defns, resolved_info))
     }
 
 
@@ -945,7 +947,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // slot (the `Polymorphic` original had none).
             let concrete_scheme = mono(Type::Fn(vec![], Box::new(option_string.clone())));
             let mut st = self.current_symbol_table_mut(state);
-            let got_slot = st.allocate_got_slot();
+            let got_slot = st
+                .allocate_got_slot()
+                .map_err(crate::result::got_exhausted_error)?;
             if let Some(ModuleEntry::Def { scheme, kind, ast, codegen_view: cv, .. }) =
                 st.symbols.get_mut(&name)
             {

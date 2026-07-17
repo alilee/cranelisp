@@ -148,7 +148,7 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
     let tables = empty_tables();
     let primitives_path = ModuleFullPath::from("primitives");
     let mut prim_table: SymbolTable = SymbolTable::new(primitives_path.clone());
-    let slot = prim_table.allocate_got_slot();
+    let slot = prim_table.allocate_got_slot().expect("fresh table has free slots");
     prim_table.got.store_slot(slot, sconcat_stub as *const u8);
     prim_table.insert(
         Symbol::from("sconcat"),

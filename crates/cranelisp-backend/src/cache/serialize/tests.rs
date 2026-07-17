@@ -428,3 +428,47 @@ fn build_id_mismatch_has_diagnostic_reason() {
     assert!(msg.contains("\"a\""), "display includes found: {msg}");
     assert!(msg.contains("\"b\""), "display includes expected: {msg}");
 }
+
+/// Build a Def carrying an arbitrary GOT slot (used to forge an out-of-range
+/// slot the on-disk cache would otherwise never legally hold).
+fn make_def_with_slot(slot: usize) -> ModuleEntry {
+    let mut entry = make_def("x");
+    if let ModuleEntry::Def { kind, .. } = &mut entry {
+        **kind = DefKind::UserFn {
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+        };
+    }
+    entry
+}
+
+// spec: 12-runtime §12.2 — GOT exhaustion / out-of-range slot at the ONE
+// untrusted GOT-index boundary (GE-3, backend cache-load validation). A
+// corrupt / hand-edited `.meta.json` carrying `got_slot >= GOT_TABLE_SIZE` is
+// the only path to an out-of-range index once allocation is checked at the seam.
+// The cache-load seam validates each restored callable's slot and treats a
+// violation as cache-stale (→ recompile) — a diagnosed recovery, NEVER a panic
+// on disk content (which the always-on `store_slot`/`load_slot` assert would be).
+#[test]
+fn cache_load_rejects_out_of_range_got_slot_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join("corrupt.meta.json");
+
+    // A well-formed within-bounds slot loads cleanly.
+    let mut ok_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
+    ok_table.insert(Symbol::from("f"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1));
+    write_meta(&meta_path, &ok_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    load_meta(&meta_path).expect("in-bounds slot must load");
+
+    // Forge a cache with an out-of-range slot (== GOT_TABLE_SIZE, the first
+    // illegal index) and confirm the load refuses it as cache-stale.
+    let mut bad_table = SymbolTable::new(ModuleFullPath::from("corrupt"));
+    bad_table.insert(Symbol::from("f"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE));
+    write_meta(&meta_path, &bad_table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+
+    match load_meta(&meta_path) {
+        Err(CacheStale::GotSlotOutOfRange { slot, .. }) => {
+            assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE, "reports the offending slot");
+        }
+        other => panic!("expected GotSlotOutOfRange cache-stale, got {other:?}"),
+    }
+}

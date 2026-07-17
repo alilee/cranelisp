@@ -227,31 +227,31 @@ pub(crate) fn classify_redefinition(
 // GOT exhaustion guard (S101 accumulated obligation 3)
 // ---------------------------------------------------------------------------
 
-/// Allocate a live GOT slot with an explicit exhaustion check.
+/// Allocate a live GOT slot, adding the session's user-facing remedy to a
+/// module-local exhaustion.
 ///
-/// `SymbolTable::allocate_got_slot` is an unchecked monotone bump; the
-/// per-module slab is a fixed `GOT_TABLE_SIZE`-slot array whose
-/// `store_slot`/`load_slot` only `debug_assert!` the bound — in release,
-/// slot `GOT_TABLE_SIZE` is UB (backend `got.rs`). This is the session's
-/// honest guard at its allocation chokepoint (the staging→live commit):
-/// exhaustion surfaces as a compile error, never UB.
+/// `SymbolTable::allocate_got_slot` is now the fallible seam (S111 R7): once the
+/// fixed `GOT_TABLE_SIZE`-slot slab is full it returns `GotExhausted` rather
+/// than overflowing (the former unchecked monotone bump risked a release-mode
+/// OOB `store_slot`/`load_slot`). The manual pre-check that used to live here is
+/// gone; this wrapper only re-messages the seam error with the session-specific
+/// "restart to reclaim frozen slots" remedy (the redefinition chokepoint is the
+/// one path where a long dev session with many ABI-changing redefinitions
+/// approaches the bound).
 #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
 pub(crate) fn allocate_live_got_slot(
     live: &mut SessionSymbolTable,
     module: &ModuleFullPath,
 ) -> Result<usize, CranelispError> {
-    if live.next_got_slot >= GOT_TABLE_SIZE {
-        return Err(CranelispError::CodegenError {
-            message: format!(
-                "GOT slot table exhausted for module '{module}' \
-                 ({GOT_TABLE_SIZE} slots): too many definitions and \
-                 ABI-changing redefinitions in one session. Restart the \
-                 session to reclaim frozen slots.",
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    }
-    Ok(live.allocate_got_slot())
+    live.allocate_got_slot().map_err(|_e| CranelispError::CodegenError {
+        message: format!(
+            "GOT slot table exhausted for module '{module}' \
+             ({GOT_TABLE_SIZE} slots): too many definitions and \
+             ABI-changing redefinitions in one session. Restart the \
+             session to reclaim frozen slots.",
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1893,7 +1893,7 @@ mod tests {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
-        let slot = ut.allocate_got_slot();
+        let slot = ut.allocate_got_slot().expect("fresh table has free slots");
         ut.insert(Symbol::from("g"), concrete_def(fn_ty(vec![Type::Int], Type::Int), slot));
         let old_ptr = 0xDEAD_0000usize as *const u8;
         ut.got.store_slot(slot, old_ptr);

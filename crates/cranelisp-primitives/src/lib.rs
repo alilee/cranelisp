@@ -227,7 +227,9 @@ fn insert_primitive_entry(
     prim: &PrimitiveDef,
     shims: &HashMap<&'static str, *const u8>,
 ) {
-    let slot = table.allocate_got_slot();
+    let slot = table
+        .allocate_got_slot()
+        .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
     if let Some(ptr) = shims.get(prim.name.as_ref()) {
         table.got.store_slot(slot, *ptr);
     }
@@ -345,7 +347,9 @@ fn insert_vec_query_entries(
         // emission keyed by canonical bare name (Principle 20: callability is a
         // kind, not a slot-presence proxy).
         let body = if name == "vec-len" {
-            let slot = table.allocate_got_slot();
+            let slot = table.allocate_got_slot().unwrap_or_else(|_| {
+                unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+            });
             if let Some(ptr) = shims.get(name) {
                 table.got.store_slot(slot, *ptr);
             }

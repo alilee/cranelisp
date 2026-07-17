@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{
-    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModeSummary, ModuleFullPath,
-    ModuleName, MonoDefnVariant, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDeclInfo,
-    TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GOT_TABLE_SIZE, GotTable, ModeSummary,
+    ModuleFullPath, ModuleName, MonoDefnVariant, Scheme, SchedulingClass, Sexp, Span, Symbol,
+    TraitDeclInfo, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- CodeStore / LinkerStore marker traits (Sprint 58 Wave 3a; Decision 32) ---
@@ -574,6 +574,35 @@ impl ModuleEntry<()> {
     }
 }
 
+/// Module-local GOT exhaustion: [`SymbolTable::allocate_got_slot`] was called
+/// when `next_got_slot` had already reached [`GOT_TABLE_SIZE`], so no free slot
+/// remains in the module's fixed 1024-slot GOT slab.
+///
+/// Constructed ONLY by [`SymbolTable::allocate_got_slot`]. It is never
+/// serialised (GOT slot allocation is not persisted state — the slab is
+/// re-derived per session), so a schema bump is not part of its lifecycle.
+/// Callers map it into their own error carrier — a located compile error
+/// naming the module — never a panic on user input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GotExhausted {
+    /// The module whose GOT has no free slot.
+    pub module: ModuleFullPath,
+}
+
+impl std::fmt::Display for GotExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GOT slot table exhausted for module '{}' ({GOT_TABLE_SIZE} slots): \
+             too many definitions and ABI-changing redefinitions in one session",
+            self.module
+        )
+    }
+}
+
+impl std::error::Error for GotExhausted {}
+
 impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// Construct an empty `SymbolTable<C, L>` for a generic instantiation.
     ///
@@ -606,10 +635,22 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     }
 
     /// Allocate the next available module-local GOT slot.
-    pub fn allocate_got_slot(&mut self) -> usize {
+    ///
+    /// The GOT is a fixed [`GOT_TABLE_SIZE`]-slot slab; once `next_got_slot`
+    /// reaches that bound there is no free slot and allocation fails with
+    /// [`GotExhausted`]. `next_got_slot` is **not** advanced on failure, so
+    /// exhaustion is stable and repeatable (a second call fails identically).
+    /// This makes exhaustion a diagnosed compile error at the seam rather than
+    /// release-mode UB at the eventual `store_slot`/`load_slot` (Phase H).
+    pub fn allocate_got_slot(&mut self) -> Result<usize, GotExhausted> {
+        if self.next_got_slot >= GOT_TABLE_SIZE {
+            return Err(GotExhausted {
+                module: self.path.clone(),
+            });
+        }
         let slot = self.next_got_slot;
         self.next_got_slot += 1;
-        slot
+        Ok(slot)
     }
 
     /// REPL append path — extends the appropriate structural Vec with one new

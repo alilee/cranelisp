@@ -108,7 +108,7 @@ fn kc_n3_value_seam_carrier_none_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // No carrier for the curry Apply span.
         let empty_targets: HashMap<Span, FQSymbol> = HashMap::new();
         st.insert(
@@ -152,7 +152,7 @@ fn kc_n4_value_seam_entry_miss_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // A carrier IS present but points at a non-existent symbol — the wrapper
         // GOT read fetches nothing.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -201,7 +201,7 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // `gen` is a determined generic template — slot-less, EXCLUDED from
         // codegen. It is present in the table (so the carrier fetches it) but is
         // NOT compiled (not in `names`, so not in func_ids).
@@ -242,7 +242,7 @@ fn kc_n5_value_seam_slotless_template_hard_errors() {
                 value_use: false,
             },
         );
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // The value ref DOES carry the template's storage key — the mint-that-
         // should-have-happened never did.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -304,7 +304,7 @@ fn kc_n6_local_none_carrier_is_not_a_miss() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         st.insert(identity.name.clone(), make_def_entry_slot(identity.clone(), 0));
         tables.insert(user.clone(), st);
     }

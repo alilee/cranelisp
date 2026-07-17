@@ -29,7 +29,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span, SymbolTable};
+use cranelisp_types::{
+    ErrorLocation, CranelispError, GOT_TABLE_SIZE, ModuleFullPath, Span, SymbolTable,
+};
 
 // ---------------------------------------------------------------------------
 // CacheStale — failure-mode discriminator (Sprint 58 §14.7)
@@ -79,6 +81,15 @@ pub enum CacheStale {
         expected: ModuleFullPath,
         found: ModuleFullPath,
     },
+    /// A restored entry carried a `got_slot >= GOT_TABLE_SIZE` — the one
+    /// untrusted GOT-index source (S111 R7). With allocation checked at the
+    /// seam, an out-of-range slot can only enter from a corrupt or hand-edited
+    /// `.meta.json`; treating it as cache-stale (→ recompile) is the diagnosed
+    /// recovery, never a panic on disk content nor a later OOB GOT access.
+    GotSlotOutOfRange {
+        path: std::path::PathBuf,
+        slot: usize,
+    },
 }
 
 impl CacheStale {
@@ -91,6 +102,7 @@ impl CacheStale {
             CacheStale::Io { .. } => "io",
             CacheStale::Deserialise { .. } => "deserialise",
             CacheStale::PathMismatch { .. } => "path_mismatch",
+            CacheStale::GotSlotOutOfRange { .. } => "got_slot_out_of_range",
         }
     }
 }
@@ -134,6 +146,11 @@ impl std::fmt::Display for CacheStale {
             } => write!(
                 f,
                 "cache path mismatch at {}: expected {expected}, found {found}",
+                path.display()
+            ),
+            CacheStale::GotSlotOutOfRange { path, slot } => write!(
+                f,
+                "cache GOT slot out of range at {}: slot {slot} >= {GOT_TABLE_SIZE}",
                 path.display()
             ),
         }
@@ -268,6 +285,23 @@ pub(crate) fn deserialise_meta_with_build_id(
             found: found_build_id,
             expected: expected_build_id.to_string(),
         });
+    }
+    // S111 R7 — validate every restored callable's GOT slot at the ONE
+    // untrusted GOT-index boundary. Allocation is now checked at the seam, so
+    // an in-process out-of-range slot is a hard-fail invariant breach; the only
+    // remaining way an out-of-range index enters is a corrupt / hand-edited
+    // `.meta.json`. Treat it as cache-stale (→ recompile) rather than letting it
+    // reach the always-on `store_slot`/`load_slot` `assert!` as a panic on disk
+    // content.
+    for (_sym, entry) in table.all_symbols() {
+        if let Some(slot) = entry.callable_got_slot()
+            && slot >= GOT_TABLE_SIZE
+        {
+            return Err(CacheStale::GotSlotOutOfRange {
+                path: path.to_path_buf(),
+                slot,
+            });
+        }
     }
     Ok(table)
 }

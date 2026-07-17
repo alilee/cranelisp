@@ -174,7 +174,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         accumulator: &ModuleCheckAccumulator,
-    ) {
+    ) -> Result<(), CranelispError> {
         for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
             let fn_type = Type::Fn(
                 param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
@@ -229,8 +229,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // test-fn mono-root pass (`register_test_fn_mono_roots`).
             let stay_polymorphic = is_reslot_candidate && !scheme.ty.is_concrete();
             let demoted_slot = if is_reslot_candidate && !stay_polymorphic {
-                Some(existing_callable_slot(&st, name.as_ref())
-                    .unwrap_or_else(|| st.allocate_got_slot()))
+                Some(match existing_callable_slot(&st, name.as_ref()) {
+                    Some(s) => s,
+                    None => st
+                        .allocate_got_slot()
+                        .map_err(crate::result::got_exhausted_error)?,
+                })
             } else {
                 None
             };
@@ -260,6 +264,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+
+        Ok(())
     }
 
 
@@ -290,7 +296,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         accumulator: &ModuleCheckAccumulator,
-    ) {
+    ) -> Result<(), CranelispError> {
         for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
             // Gate: ONLY re-settle entries currently registered `Polymorphic`.
             // A `Concrete` entry (mono-root or ordinary concrete defn) is skipped
@@ -324,8 +330,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // is still generic stays `Polymorphic`.
             let mut st = self.current_symbol_table_mut(state);
             let demoted_slot = if scheme.ty.is_concrete() {
-                Some(existing_callable_slot(&st, name.as_ref())
-                    .unwrap_or_else(|| st.allocate_got_slot()))
+                Some(match existing_callable_slot(&st, name.as_ref()) {
+                    Some(s) => s,
+                    None => st
+                        .allocate_got_slot()
+                        .map_err(crate::result::got_exhausted_error)?,
+                })
             } else {
                 None
             };
@@ -349,6 +359,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+
+        Ok(())
     }
 
 
@@ -963,7 +975,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<CheckResult, CranelispError> {
         // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
         // Clear false-positive constrained markers.
-        self.regeneralize_defn_schemes(state, accumulator);
+        self.regeneralize_defn_schemes(state, accumulator)?;
 
         // Phase 3: re-resolve deferred trait calls with final substitution.
         self.reresolve_deferred_calls(state, working_program);
@@ -1010,7 +1022,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // scheme reflect that pinning, so a spuriously-polymorphic caller
         // collapses to its true monomorphic scheme and the backend emits a
         // direct call to the mono variant rather than the polymorphic template.
-        self.regeneralize_defn_schemes(state, accumulator);
+        self.regeneralize_defn_schemes(state, accumulator)?;
 
         // S84 Wave 1b (FIXME 0374/0378 issue 3): register discovered `test-*`
         // entry points as monomorphisation ROOTS — mint a concrete
@@ -1094,7 +1106,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // already errored before any overload resolution runs. Genuinely
         // polymorphic defns (`(defn empty [] [])`, scheme stays `(Fn [] (Vec a))`)
         // are non-concrete after re-generalize and stay `Polymorphic`.
-        self.regeneralize_only_polymorphic(state, accumulator);
+        self.regeneralize_only_polymorphic(state, accumulator)?;
 
         // LEG 2 — §3.11.1 value-position scan for SINGLE-CLAUSE defns + `__expr`,
         // POST-drain (the S110 duty-split). It runs AFTER `resolve_pending_overloads`

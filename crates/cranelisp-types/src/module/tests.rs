@@ -396,8 +396,8 @@ fn wave0_symbol_table_got_present_and_serde_skipped() {
 
     // Slot bookkeeping before and after allocation.
     assert_eq!(st.next_got_slot, 0);
-    let s0 = st.allocate_got_slot();
-    let s1 = st.allocate_got_slot();
+    let s0 = st.allocate_got_slot().expect("fresh table has free slots");
+    let s1 = st.allocate_got_slot().expect("fresh table has free slots");
     assert_eq!(s0, 0);
     assert_eq!(s1, 1);
     assert_eq!(st.next_got_slot, 2);
@@ -1524,4 +1524,62 @@ fn primitive_reshape_serde_shape() {
         }
         other => panic!("expected Extern Primitive, got {other:?}"),
     }
+}
+
+// ---- S111 R7 — GOT slot exhaustion is a diagnosed error, not release UB ----
+
+// spec: 12-runtime §12.2 — GOT exhaustion boundary (GE-1)
+// The GOT slab is a fixed `GOT_TABLE_SIZE` array; `allocate_got_slot` hands out
+// `Ok(0)..=Ok(GOT_TABLE_SIZE-1)` and then refuses with `Err(GotExhausted)` — the
+// diagnosed replacement for the former unchecked `+= 1` (release slot-1024 UB).
+// Failure is idempotent: `next_got_slot` is NOT advanced, so a second call fails
+// identically.
+#[test]
+fn got_slot_exhaustion_boundary() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+    // 1024 consecutive allocations succeed with the monotone slot indices.
+    for expected in 0..crate::GOT_TABLE_SIZE {
+        match st.allocate_got_slot() {
+            Ok(slot) => assert_eq!(slot, expected, "slot {expected} must allocate in order"),
+            Err(e) => panic!("slot {expected} must be Ok, got {e:?}"),
+        }
+    }
+
+    // The 1025th call is refused, carrying the exhausted module.
+    let first = st.allocate_got_slot();
+    match &first {
+        Err(GotExhausted { module }) => {
+            assert_eq!(module, &ModuleFullPath::from("user"), "carries the module");
+        }
+        Ok(slot) => panic!("slot {slot} past the slab bound must be Err(GotExhausted)"),
+    }
+
+    // Idempotent failure — `next_got_slot` was not advanced, so a second call
+    // fails identically (stable, repeatable; no bump on failure).
+    let second = st.allocate_got_slot();
+    assert_eq!(first, second, "exhaustion failure is stable and repeatable");
+    assert_eq!(
+        st.next_got_slot,
+        crate::GOT_TABLE_SIZE,
+        "next_got_slot must NOT advance past the bound on failure"
+    );
+}
+
+// spec: 12-runtime §12.2 — GOT exhaustion diagnostic content (GE-2)
+// The error names the module AND the capacity, so the caller-mapped compile
+// error is self-explanatory without re-deriving either.
+#[test]
+fn got_slot_exhaustion_diagnostic_names_module_and_capacity() {
+    let mut st = SymbolTable::new(ModuleFullPath::from("proj.widget"));
+    for _ in 0..crate::GOT_TABLE_SIZE {
+        st.allocate_got_slot().expect("within-bounds allocation");
+    }
+    let err = st.allocate_got_slot().expect_err("must be exhausted");
+    let text = err.to_string();
+    assert!(text.contains("proj.widget"), "diagnostic names the module: {text}");
+    assert!(
+        text.contains(&crate::GOT_TABLE_SIZE.to_string()),
+        "diagnostic names the capacity: {text}"
+    );
 }

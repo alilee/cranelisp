@@ -691,7 +691,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // shape — the real `Bind` `Def` under `IO.Bind` (`member_key`), the bare
         // `Bind` an `Import` alias onto it (this fixture stands in for the int
         // seeds, so it must not keep a bare-keyed sum-ctor `Def`).
-        let bind_ctor_slot = primitives_table.allocate_got_slot();
+        let bind_ctor_slot = primitives_table
+            .allocate_got_slot()
+            .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
         let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
         primitives_table.insert(
             bind_canonical.clone(),
@@ -1018,7 +1020,9 @@ where
             let kind = if name == "quote-sexp" {
                 DefKind::PrimitiveExtern
             } else {
-                DefKind::primitive(prims.allocate_got_slot())
+                DefKind::primitive(prims.allocate_got_slot().unwrap_or_else(|_| {
+                    unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+                }))
             };
             let mut builder = ModuleEntry::def(mono(ty), kind).param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
@@ -1095,7 +1099,9 @@ where
                 constraints: HashMap::new(),
                 ty,
             };
-            let got_slot = prims.allocate_got_slot();
+            let got_slot = prims
+                .allocate_got_slot()
+                .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
             let mut builder = ModuleEntry::def(scheme, DefKind::primitive(got_slot))
                 .param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {

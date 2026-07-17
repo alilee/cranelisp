@@ -664,7 +664,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         } else {
             // Concrete trait-impl method body (mangled name), born with its slot
             // (S83 deferred allocation): slot rides inside `Concrete` fn_state.
-            let got_slot = st.allocate_got_slot();
+            let got_slot = st
+                .allocate_got_slot()
+                .map_err(crate::result::got_exhausted_error)?;
             let mut builder = ModuleEntry::def(
                 concrete_scheme,
                 DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, mode_summary: None } },

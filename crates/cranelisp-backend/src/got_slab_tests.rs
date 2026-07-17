@@ -29,7 +29,7 @@ fn slab_base_is_stable_across_full_allocation_and_store_churn() {
     // slab has and store a distinct pointer into each.
     let mut slots = Vec::with_capacity(GOT_TABLE_SIZE);
     for i in 0..GOT_TABLE_SIZE {
-        let slot = st.allocate_got_slot();
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
         assert_eq!(slot, i, "allocate_got_slot must be monotone from 0");
         st.got.store_slot(slot, (0x1000 + i * 8) as *const u8);
         slots.push(slot);
@@ -66,8 +66,8 @@ fn slab_base_is_stable_across_full_allocation_and_store_churn() {
 fn in_place_slot_patch_is_isolated_and_base_stable() {
     let mut st: SymbolTable = SymbolTable::new(ModuleFullPath::from("user"));
     let base = st.got.base_ptr();
-    let a = st.allocate_got_slot();
-    let b = st.allocate_got_slot();
+    let a = st.allocate_got_slot().expect("fresh table has free slots");
+    let b = st.allocate_got_slot().expect("fresh table has free slots");
     st.got.store_slot(a, 0xAAAA as *const u8);
     st.got.store_slot(b, 0xBBBB as *const u8);
 

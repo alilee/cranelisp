@@ -152,7 +152,9 @@ fn register_synth_adt(
     let specs: Vec<cranelisp_types::AdtCtorSpec> = ctors
         .iter()
         .map(|c| {
-            let got_slot = module.allocate_got_slot();
+            let got_slot = module.allocate_got_slot().unwrap_or_else(|_| {
+                unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT")
+            });
             cranelisp_types::AdtCtorSpec::new(
                 Symbol::from(c.name),
                 c.fields
@@ -770,7 +772,9 @@ fn register_io_type(
     // like `Pure`/`Effect` and every user `deftype` sum ctor — the real `Def` is
     // keyed `IO.Bind` (`member_key`), the bare `Bind` an `Import` alias onto it;
     // `internal: true` rides the `Def` unchanged.
-    let bind_ctor_slot = primitives.allocate_got_slot();
+    let bind_ctor_slot = primitives
+        .allocate_got_slot()
+        .unwrap_or_else(|_| unreachable!("invariant: bootstrap seeding cannot exhaust a fresh GOT"));
     let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
     primitives.insert(
         bind_canonical.clone(),

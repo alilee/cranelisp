@@ -574,7 +574,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             concrete_param_types,
             concrete_ret_ty,
             codegen_view,
-        );
+        )?;
 
         Ok(mono_defn)
     }
@@ -588,7 +588,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
         codegen_view: MonoDefnVariant,
-    ) {
+    ) -> Result<(), CranelispError> {
         let fn_ty = Type::Fn(
             concrete_param_types.to_vec(),
             Box::new(concrete_ret_ty.clone()),
@@ -608,7 +608,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `Concrete` fn_state, not a flat `Def` field.
         let existing_got_slot = st.get(mono.defn.name.as_ref())
             .and_then(|e| e.callable_got_slot());
-        let got_slot = existing_got_slot.unwrap_or_else(|| st.allocate_got_slot());
+        let got_slot = match existing_got_slot {
+            Some(s) => s,
+            None => st
+                .allocate_got_slot()
+                .map_err(crate::result::got_exhausted_error)?,
+        };
 
         let mut builder = ModuleEntry::def(
             scheme,
@@ -630,6 +635,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the backend read-flip (FIXME 0391); the backend still reads `ast`.
         builder = builder.codegen_view(codegen_view);
         st.insert(mono.defn.name.clone(), builder.build());
+        Ok(())
     }
 
     /// Instantiate a scheme with fresh type variables, unify with the given

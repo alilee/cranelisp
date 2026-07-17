@@ -55,12 +55,19 @@ backend-side slab-invariant home rehomed from the deleted `got.rs` re-export
 shim, S111 R4 §1.2). `GotTable`/`GOT_TABLE_SIZE`/`NULLARY_TAG_THRESHOLD` are
 imported from `cranelisp-types` directly (the `got.rs`/`codegen_types.rs`
 convenience-re-export shims were deleted S111 R4 §1.2).
-"Growth" is only the monotone `SymbolTable::next_got_slot` index. **GOTCHA:
-`allocate_got_slot` is UNCHECKED** (`+= 1`, no bound test); `store_slot`/`load_slot`
-only `debug_assert!(slot < 1024)` — in release, slot 1024 is OOB (UB). The hard
-bound is EXHAUSTION, not movement; long dev sessions with many ABI-changing
-redefinitions (fresh-slot churn) approach it faster. Slot exhaustion is an
-unresolved surfaced-error question, not a bug to "fix" locally.
+"Growth" is only the monotone `SymbolTable::next_got_slot` index. The hard bound
+is EXHAUSTION, not movement; long dev sessions with many ABI-changing
+redefinitions (fresh-slot churn) approach it faster. **S111 R7 closed the
+release-UB hole:** `allocate_got_slot` is now the fallible seam
+(`Result<usize, GotExhausted>`, refuses at the bound, no bump on failure — a
+diagnosed compile error at every allocation path, mapped into `CheckError`
+typecheck-side / `CranelispError::CodegenError` int-side); `store_slot`/`load_slot`
+promoted `debug_assert!` → always-on `assert!` (an in-process OOB index is a
+compiler-invariant breach → located hard-fail, never release UB). The ONE
+untrusted GOT-index source — a cache-deserialised `got_slot` — is validated at
+the cache-load seam (`serialize.rs::deserialise_meta_with_build_id`, per-entry
+`callable_got_slot() < GOT_TABLE_SIZE`) and turned into `CacheStale::GotSlotOutOfRange`
+→ recompile, never a panic on disk content.
 
 ## Cache — schema-bump discipline (cache/mod.rs)
 

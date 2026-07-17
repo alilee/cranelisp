@@ -1100,6 +1100,18 @@ impl core::marker::Unpin for cranelisp_types::FieldInfo
 impl core::marker::UnsafeUnpin for cranelisp_types::FieldInfo
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::FieldInfo
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::FieldInfo
+#[non_exhaustive] pub struct cranelisp_types::GotExhausted
+pub cranelisp_types::GotExhausted::module: cranelisp_types::ModuleFullPath
+impl core::error::Error for cranelisp_types::GotExhausted
+impl core::fmt::Display for cranelisp_types::GotExhausted
+pub fn cranelisp_types::GotExhausted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_types::GotExhausted
+impl core::marker::Send for cranelisp_types::GotExhausted
+impl core::marker::Sync for cranelisp_types::GotExhausted
+impl core::marker::Unpin for cranelisp_types::GotExhausted
+impl core::marker::UnsafeUnpin for cranelisp_types::GotExhausted
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::GotExhausted
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::GotExhausted
 pub struct cranelisp_types::GotTable
 impl cranelisp_types::GotTable
 pub fn cranelisp_types::GotTable::base_ptr(&self) -> *const u8
@@ -1548,7 +1560,7 @@ impl cranelisp_types::SymbolTable<(), ()>
 pub fn cranelisp_types::SymbolTable<(), ()>::new(cranelisp_types::ModuleFullPath) -> Self
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::SymbolTable<C, L>
 pub fn cranelisp_types::SymbolTable<C, L>::all_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)>
-pub fn cranelisp_types::SymbolTable<C, L>::allocate_got_slot(&mut self) -> usize
+pub fn cranelisp_types::SymbolTable<C, L>::allocate_got_slot(&mut self) -> core::result::Result<usize, cranelisp_types::GotExhausted>
 pub fn cranelisp_types::SymbolTable<C, L>::append_structural_decl(&mut self, cranelisp_types::StructuralDeclEntry)
 pub fn cranelisp_types::SymbolTable<C, L>::defined_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)>
 pub fn cranelisp_types::SymbolTable<C, L>::get(&self, &str) -> core::option::Option<&cranelisp_types::ModuleEntry<C>>

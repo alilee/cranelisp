@@ -1044,7 +1044,7 @@ pub(crate) fn table_with_def_and_slot(
     // Match the slot index: typecheck would have called allocate_got_slot
     // exactly `slot+1` times.
     for _ in 0..=slot {
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
     }
     let param_count = defn.params().len();
     let param_names: Vec<Symbol> = defn

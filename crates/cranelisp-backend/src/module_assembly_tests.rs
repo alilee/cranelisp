@@ -1413,8 +1413,8 @@ fn decision_23_got_data_size_matches_slot_count() {
     };
     let tables = DashMap::new();
     let mut st = SymbolTable::new(module.clone());
-    let _slot0 = st.allocate_got_slot();
-    let _slot1 = st.allocate_got_slot();
+    let _slot0 = st.allocate_got_slot().expect("fresh table has free slots");
+    let _slot1 = st.allocate_got_slot().expect("fresh table has free slots");
     for (defn, slot) in [(d1.clone(), 0usize), (d2.clone(), 1)] {
         let variant = defn.variants.first().cloned().map(|mut v| {
             concretize_test_body(&mut v.body);
@@ -1557,7 +1557,7 @@ fn decision_36_no_cross_module_function_imports() {
 
     // util module: helper at slot 0.
     let mut util_st = SymbolTable::new(util_path.clone());
-    let _ = util_st.allocate_got_slot();
+    let _ = util_st.allocate_got_slot().expect("fresh table has free slots");
     util_st.insert(
         Symbol::from("helper"),
         ModuleEntry::Def {
@@ -1585,7 +1585,7 @@ fn decision_36_no_cross_module_function_imports() {
 
     // user module: caller at slot 0, helper imported from util.
     let mut user_st = SymbolTable::new(user_path.clone());
-    let _ = user_st.allocate_got_slot();
+    let _ = user_st.allocate_got_slot().expect("fresh table has free slots");
     user_st.insert(
         Symbol::from("caller"),
         ModuleEntry::Def {

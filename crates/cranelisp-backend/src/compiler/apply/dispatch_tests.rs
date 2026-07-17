@@ -152,7 +152,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
     // that stamps). Slot 0 in the platform GOT.
     {
         let mut st = SymbolTable::new(plat.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         st.insert(
             Symbol::from("crash"),
             ModuleEntry::Def {
@@ -184,7 +184,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
     // user: imports `crash` from platform.boom + defines `caller` at slot 0.
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         st.insert(
             Symbol::from("crash"),
             ModuleEntry::Import {
@@ -271,8 +271,8 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
     let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // W1 (KC-W0-6): `caller`'s `(helper)` reads the callee's `resolved_target`
         // — the plain user fn's own home `user/helper`.
         let mut caller_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();

@@ -59,7 +59,7 @@ fn kc_n1_call_seam_carrier_none_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // NO carrier recorded for `helper`'s callee span — the keying-drift the
         // hard-miss family exists to catch.
         let empty_targets: HashMap<Span, FQSymbol> = HashMap::new();
@@ -103,7 +103,7 @@ fn kc_n2_call_seam_entry_miss_hard_errors() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(user.clone());
-        let _ = st.allocate_got_slot();
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
         // A carrier IS present, but it points at a symbol that does not exist in
         // any table — the entry-miss family.
         let mut targets: HashMap<Span, FQSymbol> = HashMap::new();

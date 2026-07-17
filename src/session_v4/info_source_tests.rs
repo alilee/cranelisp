@@ -43,7 +43,7 @@
             .entry(user.clone())
             .or_insert_with(|| SessionSymbolTable::new_with_params(user.clone()));
         if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
-            let slot = st.allocate_got_slot();
+            let slot = st.allocate_got_slot().expect("fresh table has free slots");
             let entry: ModuleEntry<Code> = ModuleEntry::def(
                 Scheme {
                     type_vars: vec![],

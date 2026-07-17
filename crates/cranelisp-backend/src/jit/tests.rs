@@ -538,7 +538,7 @@ fn jit_new_registers_platform_effect_and_got_symbols() {
     // holds `platform_ptr`.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table.allocate_got_slot();
+    let slot = plat_table.allocate_got_slot().expect("fresh table has free slots");
     plat_table.got.store_slot(slot, platform_ptr);
     plat_table.insert(Symbol::from("cranelisp_print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);
@@ -614,7 +614,7 @@ fn jit_new_follows_import_edge_for_platform_effect() {
     // Defining module: platform.stdio defines `print` as a PlatformEffect.
     let plat_mod = ModuleFullPath::from("platform.stdio");
     let mut plat_table = SymbolTable::new(plat_mod.clone());
-    let slot = plat_table.allocate_got_slot();
+    let slot = plat_table.allocate_got_slot().expect("fresh table has free slots");
     plat_table.got.store_slot(slot, platform_ptr);
     plat_table.insert(Symbol::from("print"), platform_effect_def(slot));
     tables.insert(plat_mod.clone(), plat_table);

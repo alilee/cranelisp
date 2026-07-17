@@ -100,7 +100,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &type_var_ids,
             ctor_infos,
             visibility,
-        );
+        )?;
 
         Ok(())
     }
@@ -128,7 +128,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         type_var_ids: &[TypeId],
         ctor_infos: Vec<CtorBuild>,
         visibility: Visibility,
-    ) {
+    ) -> Result<(), CranelispError> {
         let fqtn = FQTypeName::new(state.current_module.clone(), name.clone());
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
         let adt_type = Type::ADT(fqtn.clone(), type_args);
@@ -170,16 +170,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let specs: Vec<cranelisp_types::AdtCtorSpec> = ctor_infos
             .iter()
             .map(|c| {
-                let got_slot = self.current_symbol_table_mut(state).allocate_got_slot();
-                cranelisp_types::AdtCtorSpec::new(
+                let got_slot = self
+                    .current_symbol_table_mut(state)
+                    .allocate_got_slot()
+                    .map_err(crate::result::got_exhausted_error)?;
+                Ok(cranelisp_types::AdtCtorSpec::new(
                     c.name.clone(),
                     c.fields.clone(),
                     c.docstring.clone(),
                     c.internal,
                     got_slot,
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<Vec<_>, CranelispError>>()?;
 
         let entries = cranelisp_types::build_adt_entries::<C>(
             &fqtn,
@@ -237,8 +240,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if is_product {
             self.synthesise_field_accessors(
                 state, &fqtn, &ctor_infos[0], &adt_type, type_var_ids, visibility,
-            );
+            )?;
         }
+
+        Ok(())
     }
 
     /// Install a sum ctor's **bare-name convenience alias** onto its canonical
@@ -403,7 +408,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         adt_type: &Type,
         type_var_ids: &[TypeId],
         visibility: Visibility,
-    ) {
+    ) -> Result<(), CranelispError> {
         let all_field_names: Vec<Symbol> =
             ctor.fields.iter().map(|f| f.name.clone()).collect();
         for field in &ctor.fields {
@@ -416,8 +421,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 visibility,
                 field,
                 &all_field_names,
-            );
+            )?;
         }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -431,7 +437,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         visibility: Visibility,
         field: &FieldInfo,
         all_field_names: &[Symbol],
-    ) {
+    ) -> Result<(), CranelispError> {
         use cranelisp_types::{MatchArm, Pattern, SymbolRef};
 
         let accessor_name = field.name.clone();
@@ -611,7 +617,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             span: body_span,
             mode_summary: None,
         };
-        let canonical_slot = self.current_symbol_table_mut(state).allocate_got_slot();
+        let canonical_slot = self
+            .current_symbol_table_mut(state)
+            .allocate_got_slot()
+            .map_err(crate::result::got_exhausted_error)?;
         let canonical = ModuleEntry::def(
             scheme,
             DefKind::UserFn {
@@ -705,6 +714,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ));
             }
         }
+
+        Ok(())
     }
 
     /// Enumerate the **field-accessor names** owned by `fqtn` — the single

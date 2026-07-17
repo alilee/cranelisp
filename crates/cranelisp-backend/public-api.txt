@@ -192,6 +192,9 @@ pub cranelisp_backend::cache::serialize::CacheStale::BuildIdMismatch::path: std:
 pub cranelisp_backend::cache::serialize::CacheStale::Deserialise
 pub cranelisp_backend::cache::serialize::CacheStale::Deserialise::message: alloc::string::String
 pub cranelisp_backend::cache::serialize::CacheStale::Deserialise::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::GotSlotOutOfRange
+pub cranelisp_backend::cache::serialize::CacheStale::GotSlotOutOfRange::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::GotSlotOutOfRange::slot: usize
 pub cranelisp_backend::cache::serialize::CacheStale::Io
 pub cranelisp_backend::cache::serialize::CacheStale::Io::message: alloc::string::String
 pub cranelisp_backend::cache::serialize::CacheStale::Io::path: std::path::PathBuf

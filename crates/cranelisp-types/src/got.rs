@@ -133,7 +133,13 @@ impl GotTable {
     /// Uses `Release` ordering so that after a flush barrier (thread join
     /// or channel recv), the main thread sees all writes.
     pub fn store_slot(&self, slot: usize, ptr: *const u8) {
-        debug_assert!(
+        // Always-on (S111 R7): with `allocate_got_slot` fallible, an
+        // out-of-bounds slot in-process is a compiler-invariant breach, and the
+        // honest Phase-H posture for that is a located hard-fail, not release
+        // UB. The only untrusted index source (cache-deserialised `got_slot`)
+        // is validated at the cache-load seam and turned into a cache-stale
+        // recompile there — it never reaches here out of range.
+        assert!(
             slot < GOT_TABLE_SIZE,
             "invariant: GOT slot {slot} out of range"
         );
@@ -144,7 +150,9 @@ impl GotTable {
     ///
     /// Uses `Acquire` ordering to pair with worker `Release` stores.
     pub fn load_slot(&self, slot: usize) -> *const u8 {
-        debug_assert!(
+        // Always-on (S111 R7) — see `store_slot` for the invariant-breach vs
+        // release-UB rationale.
+        assert!(
             slot < GOT_TABLE_SIZE,
             "invariant: GOT slot {slot} out of range"
         );

@@ -204,7 +204,7 @@ fn insert_fn(
     scheme: Scheme,
     fake_ptr: usize,
 ) {
-    let slot = table.allocate_got_slot();
+    let slot = table.allocate_got_slot().expect("fresh table has free slots");
     let entry = ModuleEntry::def(scheme, make_kind(slot))
         .visibility(Visibility::Public)
         .build();
@@ -321,7 +321,7 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     let mut m = SymbolTable::<(), ()>::new(ModuleFullPath::from("user"));
 
     // Def with a got_slot but the GOT slot is 0 (unpopulated) — skipped.
-    let slot = m.allocate_got_slot();
+    let slot = m.allocate_got_slot().expect("fresh table has free slots");
     let entry = ModuleEntry::def(
         fn_scheme(vec![Type::Int], Type::Int),
         DefKind::UserFn {

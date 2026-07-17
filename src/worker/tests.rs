@@ -267,10 +267,10 @@
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
         // Advance the next_got_slot by allocating four slots; the 4th is slot 3.
-        let slot_0 = st.allocate_got_slot();
-        let slot_1 = st.allocate_got_slot();
-        let slot_2 = st.allocate_got_slot();
-        let slot_3 = st.allocate_got_slot();
+        let slot_0 = st.allocate_got_slot().expect("fresh table has free slots");
+        let slot_1 = st.allocate_got_slot().expect("fresh table has free slots");
+        let slot_2 = st.allocate_got_slot().expect("fresh table has free slots");
+        let slot_3 = st.allocate_got_slot().expect("fresh table has free slots");
         assert_eq!(slot_0, 0);
         assert_eq!(slot_1, 1);
         assert_eq!(slot_2, 2);
@@ -326,7 +326,7 @@
             dashmap::DashMap::new();
 
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let slot = st.allocate_got_slot();
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
         let defn_name = Symbol::from("__macro_demo_clause_0");
         st.insert(
             defn_name.clone(),
@@ -418,7 +418,7 @@
             dashmap::DashMap::new();
 
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let slot = st.allocate_got_slot();
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
         let defn_name = Symbol::from("answer");
         st.insert(
             defn_name.clone(),
@@ -473,7 +473,7 @@
             dashmap::DashMap::new();
 
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let slot = st.allocate_got_slot();
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
         let defn_name = Symbol::from("probe");
         st.insert(
             defn_name.clone(),
@@ -554,7 +554,7 @@
             dashmap::DashMap::new();
 
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let slot = st.allocate_got_slot();
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
         let expr_name = Symbol::from("__expr");
         // S69 Submission 35: `ModuleEntry::Def.ast` is `DefnVariant`.
         let expr_variant = DefnVariant {
@@ -1623,7 +1623,7 @@
         let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let prior_slot = live.allocate_got_slot();
+        let prior_slot = live.allocate_got_slot().expect("fresh table has free slots");
         let mut prior = mk_def_with_got(
             DefKind::UserFn {
                 fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
@@ -1705,7 +1705,7 @@
         let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let prior_slot = live.allocate_got_slot();
+        let prior_slot = live.allocate_got_slot().expect("fresh table has free slots");
         live.insert(
             Symbol::from("f"),
             mk_def_with_got(
