@@ -214,3 +214,154 @@ fn adt_drop_glue_identity_keys_on_full_instantiation() {
         "concrete arg types present: {mangle:?}"
     );
 }
+
+// ── mangle INJECTIVITY over the full special-char set (S111 CS-1.2 / 0640) ──
+//
+// FIXME 0640: the CS-1.1 sanitize (non-`[A-Za-z0-9_]`→`_`, and `_`→`_`) was NOT
+// injective — `-`/`?`/`!`/`.`/`/`/space all collapse to `_`, so `render_type`
+// outputs differing only in those chars produced ONE symbol → a reachable
+// drop-glue collision → SIGBUS (idiomatic hyphenated names `A-B` vs `A_B`;
+// dotted vs hyphenated module paths). The 0633-R3 battery above uses only
+// alphanumeric names and is blind to the class. These cells pin injectivity
+// directly: distinct inputs ⇒ distinct mangles, over the full reader-legal
+// special-char set AND the module axis. `escape_symbol` provides it by
+// construction (a decoder exists); the round-trip decode below IS the
+// injectivity proof.
+
+// A total, deterministic decoder for `escape_symbol`'s output. Its existence is
+// the injectivity witness: if every escaped string decodes back to its unique
+// source, the map cannot collapse two distinct inputs onto one output.
+#[cfg(test)]
+fn decode_symbol(s: &str) -> String {
+    let marker = |m: char| -> char {
+        match m {
+            's' => '/',
+            'h' => '-',
+            'd' => '.',
+            'w' => ' ',
+            'l' => '(',
+            'r' => ')',
+            'k' => '[',
+            'j' => ']',
+            'q' => '?',
+            'e' => '!',
+            'c' => ',',
+            other => panic!("unknown escape marker {other:?} in {s:?}"),
+        }
+    };
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '_' {
+            out.push(c);
+            continue;
+        }
+        match it.next().expect("escape char `_` with no following marker") {
+            '_' => out.push('_'),
+            'u' => {
+                let hex: String = (0..6)
+                    .map(|_| it.next().expect("catch-all `_u` needs six hex digits"))
+                    .collect();
+                let cp = u32::from_str_radix(&hex, 16).expect("valid hex codepoint");
+                out.push(char::from_u32(cp).expect("valid scalar value"));
+            }
+            m => out.push(marker(m)),
+        }
+    }
+    out
+}
+
+// spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop:
+// the drop-glue identity key must distinguish instantiations that differ only in
+// sanitize-equivalent chars (the FIXME 0640 collision class).
+// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+#[test]
+fn instantiation_mangle_is_injective_over_special_chars() {
+    // (1) Round-trip: every escaped string decodes back to its exact source ⇒
+    // the map is injective by construction. Cover the full char set the
+    // `render_type` walk can emit for a concrete type (`/`, space, parens, the
+    // Fn-type brackets, dotted/hyphenated/underscored/`?`/`!` names) plus the
+    // adjacency cases that stress the escape boundary (`__`, a name char that
+    // equals a marker letter, a bare `_`).
+    for probe in [
+        "primitives/Int",
+        "(user/Duo primitives/Int primitives/String)",
+        "A-B",
+        "A_B",
+        "A?B",
+        "A!B",
+        "A.B",
+        "a.b/T",
+        "a-b/T",
+        "a_b/T",
+        "(Fn [primitives/Int] primitives/Bool)",
+        "s_h_d_w_u", // marker letters as literal name content
+        "__",
+        "trailing_",
+        "café/Ünïcode", // exercises the `_u{cp:06x}` catch-all
+    ] {
+        let escaped = escape_symbol(probe);
+        assert!(
+            escaped.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "escaped form must be a legal Cranelift symbol: {escaped:?}"
+        );
+        assert_eq!(
+            decode_symbol(&escaped),
+            probe,
+            "escape_symbol must round-trip (injectivity witness): {probe:?} -> \
+             {escaped:?} -> {:?}",
+            decode_symbol(&escaped)
+        );
+    }
+
+    // (2) The exact collision witnesses from FIXME 0640: the sanitize-equivalent
+    // inputs that the old map collapsed. All mangles pairwise DISTINCT now.
+    let type_axis = [
+        adt("user", "A-B", vec![]),
+        adt("user", "A_B", vec![]),
+        adt("user", "A?B", vec![]),
+        adt("user", "A!B", vec![]),
+    ];
+    for (i, a) in type_axis.iter().enumerate() {
+        for b in type_axis.iter().skip(i + 1) {
+            assert_ne!(
+                adt_drop_glue_name(a),
+                adt_drop_glue_name(b),
+                "type-name axis: names differing only in sanitize-equivalent \
+                 chars must get distinct glue (A-B/A_B/A?B/A!B) — the 0640 SIGBUS"
+            );
+        }
+    }
+
+    // (3) Module axis: `a.b/T` vs `a-b/T` vs `a_b/T` — a dotted module path is
+    // indistinguishable from a hyphenated or underscored module name under the
+    // old sanitize; injective escaping keeps them distinct.
+    let module_axis = [
+        adt("a.b", "T", vec![]),
+        adt("a-b", "T", vec![]),
+        adt("a_b", "T", vec![]),
+    ];
+    for (i, a) in module_axis.iter().enumerate() {
+        for b in module_axis.iter().skip(i + 1) {
+            assert_ne!(
+                adt_drop_glue_name(a),
+                adt_drop_glue_name(b),
+                "module axis: dotted/hyphenated/underscored module paths must get \
+                 distinct glue (a.b/T vs a-b/T vs a_b/T) — 0640 module-axis"
+            );
+        }
+    }
+
+    // (4) A structural pair whose sanitize forms would collapse but whose true
+    // instantiations differ: `(user/Duo primitives/Int)` (an applied ADT) vs a
+    // hypothetical nullary name `user/Duo_primitives_Int` that the OLD sanitize
+    // rendered identically (space+`/`→`_`). Injective escaping separates them.
+    let applied = adt("user", "Duo", vec![cranelisp_types::Type::Int]);
+    let collapsed_name = adt("user", "Duo primitives/Int", vec![]);
+    assert_ne!(
+        adt_drop_glue_name(&applied),
+        adt_drop_glue_name(&collapsed_name),
+        "a structural applied ADT must not collide with a name that only the old \
+         sanitize rendered identically"
+    );
+}

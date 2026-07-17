@@ -172,3 +172,105 @@ fn adt_vec_drop_glue_module_axis_leak_r2() {
         out.stderr
     );
 }
+
+// -----------------------------------------------------------------------------
+// 0640 — the mangle-sanitize NON-INJECTIVITY axis (S111 CS-1.2). CS-1.1 re-keyed
+// both layers on `adt_instantiation_mangle`, but the mangle "sanitized" the
+// `render_type` output by mapping every non-`[A-Za-z0-9_]` char to `_` (and `_`
+// to itself). That map is NOT injective: `-`/`?`/`!`/`.`/`/`/space all collapse
+// to `_`, so two instantiations whose renders differ ONLY in those chars share
+// one drop-glue symbol → the exact 0633 mis-drop, reproduced against the CS-1.1
+// compiler. Hyphenated type names are IDIOMATIC, so this is directly reachable.
+// These REDs flip GREEN when CS-1.2 makes the mangle injective (prefix-free
+// escaping). Both under-keyed layers route through `adt_instantiation_mangle`,
+// so the one fix covers both by construction.
+// -----------------------------------------------------------------------------
+
+// COLLIDING pair on the TYPE-NAME axis: `A-B` and `A_B` both sanitize to `A_B`
+// under CS-1.1. Divergent field ORDER (Int,String vs String,Int) → divergent
+// per-field heap categories → the shared first-built glue runs `atomic_rmw Sub`
+// against the other instantiation's raw `Int` field (SIGBUS). Clean: exit 2.
+const R1_0640_NAME_AXIS_MODULE: &str = "\
+(deftype A-B (MkA [:Int n :String s]))
+(deftype A_B (MkB [:String s :Int n]))
+(defn main []
+  (let [va [(MkA 1 \"one\")]
+        vb [(MkB \"two\" 2)]]
+    (Pure (add-i64 (vec-len va) (vec-len vb)))))
+";
+
+// spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
+// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+#[test]
+fn adt_vec_drop_glue_name_sanitize_axis_repl_0640() {
+    // Both vecs in ONE REPL turn (one JIT batch). Clean: `:primitives/Int 2`.
+    // Defect: SIGBUS mid-teardown before the value prints.
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftype A-B (MkA [:Int n :String s]))\n\
+             (deftype A_B (MkB [:String s :Int n]))\n\
+             (let [va [(MkA 1 \"one\")] vb [(MkB \"two\" 2)]] \
+              (add-i64 (vec-len va) (vec-len vb)))\n",
+        )
+        .output()
+        .assert_stdout_contains(":primitives/Int 2");
+}
+
+// spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
+// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+#[test]
+fn adt_vec_drop_glue_name_sanitize_axis_run_0640() {
+    // --run: whole module = one codegen batch. Clean exit == returned Int (2).
+    // Defect: SIGBUS (exit 135, no clean 2).
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("main.cl", R1_0640_NAME_AXIS_MODULE)
+        .run("main.cl")
+        .output()
+        .assert_exit(2);
+}
+
+// spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
+// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+#[test]
+fn adt_vec_drop_glue_name_sanitize_axis_link_0640() {
+    // --link → run the standalone binary: whole module into one ObjectModule
+    // (widest collision scope). Clean exit == 2. Defect: SIGBUS at teardown.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("main.cl", R1_0640_NAME_AXIS_MODULE)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(2);
+}
+
+// spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
+// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+#[test]
+fn adt_vec_drop_glue_module_sanitize_axis_run_0640() {
+    // MODULE axis: two modules whose names differ ONLY in a sanitize-equivalent
+    // char (`a-b` vs `a_b`), each defining a same-bare-name `Thing` with
+    // divergent field ORDER. `FQTypeName` distinguishes `a-b/Thing` from
+    // `a_b/Thing` everywhere upstream, but the CS-1.1 sanitize mapped both module
+    // qualifiers to `a_b`, colliding the glue in the importing module's batch.
+    // Divergent order (Int,String vs String,Int) → SIGBUS. Clean exit == 2.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("a-b.cl", "(deftype Thing (MkA [:Int n :String s]))\n")
+        .file("a_b.cl", "(deftype Thing (MkB [:String s :Int n]))\n")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [a-b [MkA]])\n\
+             (import [a_b [MkB]])\n\
+             (defn main []\n\
+               (let [va [(MkA 1 \"one\")]\n\
+                     vb [(MkB \"two\" 2)]]\n\
+                 (Pure (add-i64 (vec-len va) (vec-len vb)))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(2);
+}

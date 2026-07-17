@@ -130,15 +130,81 @@ pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
 ///
 /// Built from the canonical single-source `render_type` walk (Principle 7 — the
 /// ONE `Type`→string renderer in the workspace) with `PrimitiveNaming::Qualified`
-/// so the module qualifier of every referenced type is present, then sanitized
-/// into a Cranelift symbol name exactly as `inner_fn_discriminator_for` sanitizes
-/// mono names: every non-`[A-Za-z0-9_]` char (the `/`, spaces, and parens
-/// `render_type` emits for a qualified applied ADT) maps to `_`.
+/// so the module qualifier of every referenced type is present, then INJECTIVELY
+/// escaped into a Cranelift symbol name by `escape_symbol`.
+///
+/// # Injectivity is load-bearing (FIXME 0640)
+///
+/// The CS-1.1 predecessor "sanitized" the render by mapping every
+/// non-`[A-Za-z0-9_]` char to `_` — the same scheme `inner_fn_discriminator_for`
+/// uses. That map is **not injective**: `-`, `?`, `!`, `.`, `/`, space all
+/// collapse to `_`, and `_` maps to itself, so `render_type` outputs that differ
+/// only in those chars produce the SAME symbol. Distinct instantiations
+/// (idiomatic hyphenated names `A-B` vs `A_B`; dotted vs hyphenated module paths
+/// `a.b/T` vs `a-b/T`) then shared one drop glue → the FIXME 0633 mis-drop
+/// reproduced as a reachable SIGBUS. The `inner_fn_discriminator_for` sanitize is
+/// safe ONLY because every name it feeds is additionally span+disc-keyed (the
+/// span breaks sanitize ties); `adt_instantiation_mangle` is a pure CONTENT key
+/// with no disambiguator, so its injectivity must be exact. `escape_symbol`
+/// provides it by construction (a decoder exists), keeping the output a legal
+/// Cranelift symbol (`[A-Za-z0-9_]`).
+///
+/// The reaching `Type::ADT` is post-monomorphisation concrete; a non-concrete
+/// type would embed a `render_type` `t{id}` var whose numbering is
+/// session-dependent, making the identity key unstable across builds — asserted
+/// in debug (S-2).
 pub(crate) fn adt_instantiation_mangle(ty: &Type) -> String {
-    render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-        .collect()
+    debug_assert!(
+        ty.is_concrete(),
+        "adt_instantiation_mangle requires a concrete Type::ADT (post-mono) — a \
+         non-concrete type embeds a session-dependent `t{{id}}` var, making the \
+         drop-glue identity key unstable across builds; got: {}",
+        render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
+    );
+    escape_symbol(&render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered))
+}
+
+/// Injective, prefix-free escaping of an arbitrary string into a legal Cranelift
+/// symbol (`[A-Za-z0-9_]`).
+///
+/// `_` is reserved as the escape char: an alphanumeric passes through verbatim, a
+/// literal `_` doubles to `__`, and every other char maps to `_` followed by a
+/// UNIQUE marker letter (`/`→`_s`, `-`→`_h`, `.`→`_d`, ` `→`_w`, `(`→`_l`,
+/// `)`→`_r`, `[`→`_k`, `]`→`_j`, `?`→`_q`, `!`→`_e`, `,`→`_c`), with any char
+/// outside that fixed map escaping to the catch-all `_u{codepoint:06x}` (six hex
+/// digits, so it is fixed-width and self-delimiting). Every escape sequence
+/// decodes unambiguously — on `_`, the next char selects: `_`⇒literal `_`, `u`⇒a
+/// six-hex catch-all, any other marker⇒its char — so a total deterministic
+/// decoder exists and the map is **injective**: distinct inputs yield distinct
+/// outputs. That is the property the drop-glue identity key requires
+/// (Principle 24 "Resolve once"; FIXME 0640). `u` is reserved for the catch-all
+/// and is deliberately absent from the single-char marker set.
+fn escape_symbol(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' => out.push(c),
+            '_' => out.push_str("__"),
+            '/' => out.push_str("_s"),
+            '-' => out.push_str("_h"),
+            '.' => out.push_str("_d"),
+            ' ' => out.push_str("_w"),
+            '(' => out.push_str("_l"),
+            ')' => out.push_str("_r"),
+            '[' => out.push_str("_k"),
+            ']' => out.push_str("_j"),
+            '?' => out.push_str("_q"),
+            '!' => out.push_str("_e"),
+            ',' => out.push_str("_c"),
+            other => {
+                // Catch-all for any char the fixed map misses: fixed-width six-hex
+                // codepoint escape, self-delimiting so it stays decodable.
+                let _ = write!(out, "_u{:06x}", other as u32);
+            }
+        }
+    }
+    out
 }
 
 /// Linker name for an **ADT** field drop glue (S111 R6; re-keyed S111 CS-1.1,
