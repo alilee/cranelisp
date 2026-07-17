@@ -3767,6 +3767,23 @@ debug_assert) at live-table insertion, minimally a prelude-table invariant
 ("prelude gains no entry outside its export list post-compile"), so the
 NEXT firing anywhere names the writer instead of needing this hunt again.
 
+#### I.5 Standing memory-safety coverage strategy adopted (this touch — user directive)
+
+The S111 pattern §I.1–§I.4 record — memory-safety defects found only
+incidentally (adversarial review, new language exercise), never by the
+suite — is now managed as a **standing strategy**:
+`tests/plan/memory-safety-coverage.md`. Normative content there, not here:
+the differential-oracle nextest gate (four signals: toggle-equivalence,
+`RC_STATS` balance, `RC_DEC_CHECK` zero, `--link` face), the generative
+flow-space harness, refute-instructed review as standing practice for
+safety surfaces, the rolling audit category "safety operation elided by a
+static analysis, verified by example", and the exposure quantification
+(oracle reach ≈0.6% of suite; `RC_DEC_CHECK` asserted nowhere). Binding
+sequencing: **the oracle lane gates the 0641 instance-fix** (user
+directive — the false-`Fresh` class closes by gate, not instance-by-
+instance). From S112 Phase 3, ownership/RC-affected plan rows carry the
+`[oracle]` mark and MUST be authored through the safety-matrix combinator.
+
 ### Phase-5 sequencing note for `/testing`
 
 Author order: (1) **§E KC-N1..N6** (handoff enumeration to `/dev` backend —

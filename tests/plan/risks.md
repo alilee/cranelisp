@@ -322,3 +322,21 @@ Priority gaps to address:
 2. **08-modules**: need cross-module trait and constrained-poly tests (Ring 2)
 3. **Error paths**: need systematic error message tests per ring
 4. **10-io**: par-bind! and platform interaction tests (Ring 4)
+
+## Standing risk — memory-safety signal blindness (S111, permanent until retired by gate reach)
+
+The default e2e mode (run → assert output) is structurally blind to the
+memory-safety failure modes: a leak is invisible without RC accounting; a
+UAF often returns plausible garbage in `--run`/REPL and is deterministic
+only under `--link` (SIGABRT), `CRANELISP_RC_DEC_CHECK`, or the
+conservative all-Owned differential oracle. Quantified at S111: oracle
+reach ≈0.6% of the suite, `--link` faces ≈3%, `RC_DEC_CHECK` asserted
+nowhere, unit tier (≈2,670 tests) executes no JIT code at all. Every S111
+memory-safety defect (0633/0640 drop-glue keys, multi-arity wrong-accept
+vectors, 0641 false-`Fresh` family, 0638) was found incidentally, never by
+the suite. Managed by the standing strategy
+`tests/plan/memory-safety-coverage.md` (differential-oracle nextest gate +
+generative harness + adversarial authorship + the "elided-safety-op" audit
+category). Risk retires only as the gate's reach makes the class
+mechanically RED; re-grade the §5 exposure table each sprint the lane
+grows.
