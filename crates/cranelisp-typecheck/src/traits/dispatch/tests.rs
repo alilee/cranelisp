@@ -373,15 +373,15 @@ fn test_try_resolve_with_inline_trait() {
     let num_decl = TraitDecl {
         name: TraitName::from("Num"),
         docstring: None,
-        type_params: vec![Symbol::from("a")],
+        type_params: vec![],
         methods: vec![TraitMethodSig {
             name: Symbol::from("+"),
             docstring: None,
             params: vec![
-                (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                (Symbol::from("lhs"), TypeExpr::SelfType),
+                (Symbol::from("rhs"), TypeExpr::SelfType),
             ],
-            ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+            ret_type: TypeExpr::SelfType,
             span: Span::SYNTHETIC,
             hkt_param_index: None,
             default_body: None,

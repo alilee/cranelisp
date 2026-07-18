@@ -324,18 +324,102 @@ ONE §7.3.5 Case-3 seam. **No second classifier.**
      bit to check for them — the shape check `head_con_var: None` is total.)
 4. **Slot-2 interpretation strictly per the known kind** — no "is slot-2 a trait or a
    type-constructor?" classifier (§7.3.5 Case 3 forbids it as pure redundancy):
-   - **Conventional (Case 1):** slot 2 (`target`) MUST be kind `*` (a type). A
-     bare/under-applied constructor (`(impl Display Option)`) is the sole rejection —
-     *"`Option` is a constructor, not a type; apply it: `(Option a)` or `(Option Int)`."*
-   - **Higher-kinded (Case 2):** slot 2 is the pairing `(Trait Constructor)`; the
-     kind-check lands on `Constructor` (the arg of the pairing), which MUST be a
-     **bare constructor whose arity matches** the con_var's usage-derived kind (§5.1
-     step 4). Three rejections, each with the correct §7.3.5 diagnostic:
+   - **Conventional (Case 1):** slot 2 (`target`) MUST be kind `*` (a type). When
+     the target head resolves to a known type constructor, it MUST be applied to
+     **exactly** its declared arity — the well-kinded set is `provided ==
+     td.type_params.len()`. **Two rejections** flank it (the existing `>` guard
+     GENERALISES to `!=`), each with a distinct §7.3.5 diagnostic:
+     - **Under-applied / bare (pre-existing).** `(impl Display Option)`, `Option :
+       * -> *` applied to 0 args (`provided < arity`) → *"`Option` is a constructor,
+       not a type; apply it: `(Option a)`."* **The fix suggestion is arity-aware
+       (M2).** The template emits one fresh type-var per declared parameter, drawn
+       from `td.type_params.len()`: arity 1 → `(Option a)`; arity 2
+       (`Pair : * -> * -> *`) → `(Pair a b)`; arity 3 → `(Tri a b c)`. The prior
+       hard-coded single-var template (`(Pear a)` / `(Pear Int)`) is itself
+       ill-kinded for a 2-param constructor (`(Pair a)` under-applies `Pair`) —
+       replace it with the arity-driven var list; do not hard-code one or two args.
+     - **Over-applied (I1, NEW).** `(impl Display (Option Int Int))`, `Option`
+       applied to 2 args though its arity is 1 (`provided > arity`) → *"`Option`
+       takes 1 type parameter but is applied to 2 here; apply it to exactly its
+       arity: `(Option a)`."* (The fix suggestion is likewise arity-aware.) **Care —
+       the poly-applied positive stays admissible:** `(impl Display (Option a))`,
+       `(Option Int)`, and the inline-constrained `(Option :Display a)` all supply
+       exactly one type-arg (`provided == arity == 1`, §7.3.3/§7.3.6), so `!=` never
+       fires on them. Only a genuine arity surplus is rejected.
+   - **Higher-kinded (Case 2):** slot 2 is the pairing `(Trait Constructor)`, parsed
+     `Applied(pairing_head, [Constructor])`. **The pairing head is validated FIRST
+     (B1, NEW — the 4th rejection), and only then does the kind-check land on
+     `Constructor`,** which MUST be a **bare constructor whose arity matches** the
+     con_var's usage-derived kind (§5.1 step 4). **Four rejections**, each with the
+     correct §7.3.5 diagnostic:
+     - **Pairing-head mismatch (B1, NEW — the 4th rejection).** The pairing head MUST
+       name the **same trait slot 1 resolves to** (spec §7.3 EBNF: `hkt_target =
+       '(' trait_name con_target ')'` — the pairing head *is* the trait; §7.3.5
+       Case-3 Consequence: "a higher-kinded pairing whose head isn't the trait name
+       fails as a bad pairing"). **Comparison point.** The seam has ALREADY resolved
+       slot-1's trait (into `decl`, `impl_check.rs:30`; its home-qualified identity
+       is minted at `impl_check.rs:238–241` as `fq_trait_name: FQTraitName`). The
+       pairing head is resolved as a `trait_name` reference **the same way slot 1
+       was** (`resolve_trait_decl` / `resolve_trait`) and its `FQTraitName` is
+       compared for **equality** against slot-1's — this is a comparison against
+       slot-1's **RESOLVED** trait, never its written spelling (see the
+       qualified-spelling note below). A pairing head that resolves to a **different
+       trait**, OR **does not resolve to any trait** (nonexistent name), fails — both
+       collapse to "FQ ≠ slot-1's FQ / no FQ." The diagnostic is **located** (on the
+       impl form's slot-2 span, or `impl_.span` where a finer pairing-head span is
+       unavailable — the same span the sibling Case-2 rejections use) and names what
+       was written and what was expected, §7.3.5 family style: *"impl of trait
+       `Functor` (slot 1) pairs slot 2 with head `NotFunctor`: a trait-constructor
+       pairing's head must name the trait being implemented — write `(Functor
+       Option)`, not `(NotFunctor Option)`."* (The seam MAY refine to *"`NotFunctor`
+       does not name a trait"* when the head fails to resolve versus *"`NotFunctor`
+       is a different trait"* when it resolves elsewhere; a single unified
+       written-vs-expected form is sufficient.) This closes the
+       `impl_check.rs:98` `Applied(_pairing_head, args)` head-**discard** the /review
+       B1 probe exercised (`(impl (Functor f) (NotFunctor Option) …)` silently
+       accepted + dispatched). *(Structuring note for /dev: `fq_trait_name` is
+       currently minted below the seam at `:238–241`; hoist slot-1's FQ above the
+       Case-3 seam, or resolve the pairing head inline against `decl` — either
+       satisfies Principle 24 "resolve once"; that choice is /dev's.)*
      - primitive → *"`Int` is not a type constructor"* (§7.2.3);
      - fully-applied type (`(Functor (Option Int))`) → *"kind-mismatch: slot 2 names
        the bare constructor `Option`, not an applied type"*;
      - wrong arity (`(Functor Pair)`, `Pair : * -> * -> *`) → *"`Pair` has 2 type
        parameters; trait `Functor` expects a constructor of arity 1."*
+
+**Qualified-spelling of the pairing head (B1 sub-question — spec-settled: RESOLVED
+identity).** When slot 1 and the pairing head differ in *spelling* yet resolve to the
+SAME trait — `(impl (fmt/Functor f) (Functor Option) …)` (slot 1 module-qualified,
+pairing head bare but import/prelude-resolving to `fmt.Functor`), or the mirror — the
+pairing is **admissible**: the B1 comparison is FQ-identity, not written spelling. The
+spec settles this toward resolved-identity, cited three ways:
+
+1. **§7.3 EBNF** — both slot-1's head and the pairing head are the SAME nonterminal
+   `trait_name` (`impl_head = … '(' trait_name con_var ')'`; `hkt_target = '(' trait_name
+   con_target ')'`), so both resolve under the same §8.5.1/§8.6 rules.
+2. **§7.3.5 Case-3 step 1** — "Resolve the trait **by name** — from slot 1": slot-1's
+   trait name is a resolved REFERENCE (exactly what `impl_check.rs:30` does), never a
+   spelling. The parallel treatment resolves the pairing head's `trait_name` and compares
+   resolved identities.
+3. **§8.5.1** — a `trait_name` may be qualified or bare, and two spellings name the same
+   trait precisely when they resolve to the same FQ.
+
+The verbatim-echo requirement of §7.3 ("Slot 1 is fixed, not inferable … the same
+constructor-variable spelling `(Functor f)`") is grounded explicitly in the **con_var
+binder** `f` — a fresh binder, checkable only by spelling — NOT the trait name, a
+reference checkable by resolution; it therefore does not extend to the pairing head's
+qualification. The internal precedent is slot 1 itself (§5.4 step 3): its trait name is
+already resolved while only its con_var is spelling-matched — "trait-names resolve,
+binders spell-match."
+
+> **Caveat for /sprint.** The *sole* cell where the two readings diverge is this
+> qualified/bare-same-trait pairing; if the user reads §7.3 "verbatim as declared" as
+> extending to the pairing head's qualification, this one cell flips to spelling-match.
+> The design reads it as **settled toward resolved-identity** per the three citations
+> above (and the dispatch itself names "`trait_name` in both positions resolves under
+> the same rules ⇒ resolved-identity" as a spec-settling argument). The **core** B1
+> rejection — a *different* or *nonexistent* trait head — rejects **identically under
+> both readings** and is not gated by this cell; /dev may implement the core now.
 
 **Consequence (§7.3.5 "the two forms never collide for the same trait").** Because slot
 2 is interpreted in the single mode the trait's declared kind dictates, `(Functor Option)`
@@ -361,10 +445,17 @@ single declaration-time reject + the `register_hkt_trait` guard fix (§5.1 step 
 bare-con_var trait cannot register, none of the three states is reachable. The §7.3.5
 rejection matrix `/qa` owns: slot-1 echo {`None`, `Some`-matching-spelling,
 `Some`-mismatched-spelling} × trait-declared-kind {conv, HK} ×
-slot-2 {type, bad-applied, pairing-correct, pairing-primitive, pairing-wrong-arity} — the
-declaration-reject row, the echo-shape-mismatch row, and the echo-spelling-mismatch row
-(`(impl (Functor g) …)` vs declared `(Functor f)`, step 3 "Spelling") are new; the
-diagnostic MUST name the new form. Class: `check-gate-leak` (S108 0571 D1 sibling).
+slot-2 {type, conv-over-applied, bad-applied, pairing-correct, pairing-head-mismatch,
+pairing-primitive, pairing-wrong-arity} — the declaration-reject row, the
+echo-shape-mismatch row, and the echo-spelling-mismatch row (`(impl (Functor g) …)` vs
+declared `(Functor f)`, step 3 "Spelling") are the S112-b2 new rows; the **W5.1**
+remediation adds two more: **B1 pairing-head-mismatch** (`(impl (Functor f)
+(NotFunctor Option) …)` — head names a different/nonexistent trait, resolved-identity
+compare against slot-1's FQ; a positive twin `(impl (fmt/Functor f) (Functor Option) …)`
+must stay admissible per the qualified-spelling note) and **I1 conventional-over-applied**
+(`(impl Display (Option Int Int))` — `provided > arity`; poly-applied positive twin
+`(impl Display (Option a))` stays admissible). The diagnostic MUST name the new form.
+Class: `check-gate-leak` (S108 0571 D1 sibling).
 
 **Fixture migration constraint (not designed here; /dev + /testing).** The ~24 typecheck
 unit fixtures and ~7 e2e that model the old `(X a)`-head-as-`*`-kind-parametric mismodel

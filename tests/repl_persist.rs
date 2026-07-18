@@ -1194,6 +1194,77 @@ fn persist_trait_decl_regen_preserves_source() {
     );
 }
 
+// spec: repl/spec.md §15.4 — RT-1 (S112 W5, plan §6): the settled echo-the-head
+// HK trait round-trips through the introspection printer. The applied HK deftrait
+// head `(Functor f)` and the echoed impl head `(impl (Functor f) (Functor Option)
+// …)` are ordinary nested s-expressions; the form-agnostic printer
+// (`src/pretty.rs`, `design/frontend/trait-impl-head-parse.md` §6) re-emits them
+// faithfully. `/source Functor` re-renders the deftrait with its echoed head
+// verbatim — the durable proof that the printer never fell out of sync with the
+// b0 grammar.
+#[test]
+fn hkt_new_form_source_reemits_echoed_head() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+             (impl (Functor f) (Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+             /source Functor\n/quit\n",
+        )
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("(deftrait (Functor f)"),
+        "`/source Functor` MUST re-emit the HK deftrait with its echoed head \
+         `(Functor f)` verbatim (form-agnostic printer, RT-1); got:\n{c}"
+    );
+}
+
+// spec: repl/spec.md §15.2 — RT-2 (S112 W5, plan §6): the settled echo-the-head
+// HK trait + impl persist across a session restart and the method still
+// dispatches. Session 1 defines the HK trait and the echoed-head impl over the
+// prelude-seeded `Option`; session 2 (same TempDir, cache present — the normal
+// REPL persist path) calls `fmap` and gets 42. This is the b1
+// `persist_trait_decl_regen_preserves_source` pattern extended to an HKT impl
+// case (the echoed impl form survives the persist/reload round-trip and
+// dispatches).
+//
+// NOTE (routed to /qa, plan §6): impl forms — conventional AND higher-kinded
+// alike — are persisted via the compilation cache, NOT source-regenerated into
+// `user.cl` (verified: a conventional `(impl …)` is likewise dropped from the
+// regenerated file). Source-content regeneration of impls is a pre-existing gap
+// (the FIXME-0538 §5–7 family covers deftrait/deftype decls, not impls), NOT a
+// b2 concern — so this RT row exercises the cache-backed persist path, the
+// mechanism that actually carries impls across a restart.
+#[test]
+fn hkt_impl_new_form_persists_and_reloads() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+             (impl (Functor f) (Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+             (defn trigger [] 1)\n/quit\n",
+        )
+        .output();
+    assert!(first.status.success(), "session 1 should exit cleanly: stderr={}", first.stderr);
+
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+        .stdin("(match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0])\n/quit\n")
+        .output();
+    assert!(
+        second.stdout.contains(":primitives/Int 42"),
+        "session 2: the persisted echoed-head HK impl MUST reload and `fmap` MUST \
+         dispatch over Option → 42 (RT-2); stdout:\n{}\nstderr:\n{}",
+        second.stdout, second.stderr
+    );
+}
+
 // spec: repl/spec.md §15.4 — §5–7 regen fidelity: a `deftype` authored/defined at
 // the REPL MUST survive backing-file regeneration faithfully. RED on HEAD (FIXME
 // 0538): `save.rs::generate_types` (§5–7) drops the type declaration.

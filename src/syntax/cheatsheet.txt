@@ -290,20 +290,24 @@ TOPIC hkt  [core]
 
   FORM
     (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
-    (impl Functor Option (defn fmap [g opt] ...))   ; target is BARE ctor, not (Option a)
-    ; kind/arity is inferred from usage: (f a) => arity 1.
+    (impl (Functor f) (Functor Option) (defn fmap [g opt] ...))  ; slot 1 echoes head; slot 2 pairs trait + BARE ctor
+    ; kind comes from the DECLARATION, not from impl usage: a parenthesized head
+    ; `(Functor f)` whose param `f` is APPLIED in a method sig `(f a)` is higher-kinded (* -> *);
+    ; a bare head is conventional (self = implementing type); a parenthesized head
+    ; whose param is never applied is REJECTED at deftrait.
 
   EXAMPLE
     (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
-    (impl Functor Option
+    (impl (Functor f) (Functor Option)                 ; slot 1 = declared head; slot 2 = (trait bare-ctor)
       (defn fmap [g opt] (match opt [None None (Some x) (Some (g x))])))
     (fmap (fn [n] (* n 2)) (Some 5))         ; (Option.Some 10)
 
   NOT
-    (impl Functor (Option a) ...)  -> HKT target is the bare constructor: Option
-    Int/Bool/String/Float are rejected as HKT targets (not type constructors)
+    (impl Functor Option ...)  -> old bare head REJECTED; echo the declared head: (impl (Functor f) (Functor Option) ...)
+    (impl (Functor f) (Functor (Option a)) ...)  -> slot 2 pairs the BARE ctor: (Functor Option), never an applied type
+    Int/Bool/String/Float rejected as HKT targets: (impl (Functor f) (Functor Int)) -> not a type constructor
 
-  SPEC  03 §3.7; 07 §7.2, §7.3.4
+  SPEC  03 §3.7; 07 §7.2, §7.3.4, §7.3.5
 
 === topic: deftype ===
 TOPIC deftype  [core]
@@ -358,7 +362,7 @@ TOPIC traits  [core]
   FORM
     (deftrait Name (method [params...] ReturnType) ...)   ; required method
     (deftrait Name (method [params...] body) ...)         ; default method (has body)
-    (deftrait (Name f) ...)                               ; higher-kinded trait
+    (deftrait (Name f) (m [:(f a) x] (f b)) ...)          ; higher-kinded: `f` MUST be applied in a sig
     (deftrait- Name ...)                                 ; module-private
     ; method sigs are direct children — NO outer [ ] wrapping the method list.
 
@@ -383,7 +387,7 @@ TOPIC impl  [core]
     (impl Trait Type (defn method [params] body) ...)     ; concrete
     (impl Trait (Type Arg) ...)                          ; concrete ADT instance
     (impl Trait (Type :Trait a) ...)                     ; polymorphic, constrained
-    (impl Trait Ctor ...)                                ; HKT: bare type constructor
+    (impl (Trait f) (Trait Ctor) ...)                    ; HKT: echo head, pair trait + bare ctor
 
   EXAMPLE
     (deftype Color Red Green Blue)

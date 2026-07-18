@@ -44,7 +44,14 @@
 ;; When fmap is called on (Option a), it pattern-matches:
 ;;   Some x  =>  Some (f x)   -- apply the function
 ;;   None    =>  None          -- nothing to transform
-(impl Functor Option
+;;
+;; An impl of a higher-kinded trait ECHOES the trait's declared head in
+;; slot 1 -- `(Functor f)`, the same `(Functor f)` written in the deftrait,
+;; con-var spelling and all -- and names a trait-constructor pairing in
+;; slot 2: `(Functor Option)`, the trait applied to the bare constructor
+;; being implemented. (Conventional kind-* traits keep the bare-head form,
+;; e.g. `(impl Display Int ...)`; only higher-kinded traits echo the head.)
+(impl (Functor f) (Functor Option)
   (defn fmap [f opt]
     (match opt
       [None    None

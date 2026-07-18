@@ -1,13 +1,26 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall,
-    Span, Symbol, TraitDeclInfo, TraitImpl, TraitMethodSig, Type, TypeId,
+    Span, Symbol, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
     TypeName, UserFnState, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme;
 use super::*;
+
+/// Arity-aware fix suggestion for a Case-1 kind diagnostic (`hkt.md` §5.4 M2):
+/// one fresh type-var per declared parameter, drawn from the constructor's
+/// arity. `(Option a)` for arity 1, `(Pair a b)` for arity 2, `(Tri a b c)`
+/// for arity 3 — NOT a hard-coded single-var template (which under-applies a
+/// multi-param constructor). The vars are the single lowercase letters
+/// `a, b, c, …` in order.
+fn arity_var_suggestion(head: &str, arity: usize) -> String {
+    let vars: Vec<String> = (0..arity)
+        .map(|i| ((b'a' + i as u8) as char).to_string())
+        .collect();
+    format!("({head} {})", vars.join(" "))
+}
 
 // ---------------------------------------------------------------------------
 // Impl Registration and Checking
@@ -34,62 +47,263 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 location: ErrorLocation::from_span(impl_.span),
             })?;
 
-        // HKT arity validation: if the trait has constructor variables,
-        // verify the impl target is a type constructor with matching arity.
-        if !decl.type_params.is_empty() {
-            let is_hkt = decl.methods.iter().any(|m| {
-                m.params
-                    .iter()
-                    .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
-                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
-            });
-            if is_hkt {
-                for con_name in &decl.type_params {
-                    if let Some(expected_arity) = con_var_arity(&decl, con_name) {
-                        // Check if impl target is a primitive type
-                        if expected_arity > 0 {
-                            match impl_target_name_or_panic(&impl_.target).as_ref() {
-                                "Int" | "Bool" | "String" | "Float" => {
-                                    return Err(CranelispError::TypeError {
-                                        message: format!(
-                                            "{} is not a type constructor (trait {} expects arity {})",
-                                            impl_target_name_or_panic(&impl_.target), impl_.trait_name, expected_arity
-                                        ),
-                                        location: ErrorLocation::from_span(impl_.span),
-                                    });
-                                }
-                                _ => {}
-                            }
-                        }
-                        // Check arity of known ADT types. Resolve the impl
-                        // target THROUGH THE SCOPE (S108 Wave-G, R1): a
-                        // prelude-provided target's arity was silently
-                        // unvalidated by the former current-module-only
-                        // `lookup_type_def_with_state`. The scope resolve +
-                        // `type_def_view_of` reaches a prelude-globbed ADT and
-                        // reads its `type_params` (resolve once, Principle 7).
-                        if let Some(td) = self
-                            .scope_resolve(state, impl_target_name_or_panic(&impl_.target).as_ref(), impl_.span)
-                            .ok()
-                            .as_ref()
-                            .and_then(|r| crate::checker::type_def_view_of(&r.entry))
-                            && td.type_params.len() != expected_arity
-                        {
+        // Slot-1's home-qualified trait identity, resolved ONCE here (Principle
+        // 24 — "resolve once"). It is the comparison point for the B1
+        // pairing-head check inside the Case-3 seam AND the single-source-of-
+        // truth for the impl-registry key + every impl-method `$Type` mangle
+        // below (the former `:238` minting site is gone). `impl_.trait_name`
+        // is untouched by the HK effective-target rewrite, so reading it here
+        // (before the `impl_` shadow) is identical to reading it after.
+        let bare_trait_name = impl_.trait_name.name.clone();
+        let trait_home = self
+            .resolve_trait(state, bare_trait_name.as_ref(), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
+        let fq_trait_name = FQTraitName::new(trait_home.clone(), bare_trait_name.clone());
+
+        // §7.3.5 Case-3 kind-check seam — ONE deterministic path
+        // (`design/typecheck/hkt.md` §5.4). The trait's DECLARATION is
+        // authoritative on its kind: `type_params` non-empty ⟺ higher-kinded
+        // (§5.1; Principle 24 — the sole kind source, no method-body usage
+        // re-scan). Slot 1 MUST echo that declared head shape (and, for HK, the
+        // con_var spelling); slot 2 is then interpreted STRICTLY per the known
+        // kind — no second "is slot-2 a trait or a type-constructor?" classifier.
+        // For an HK impl the pairing's constructor arg is extracted and becomes
+        // the effective impl target, so every downstream method-check (which
+        // assumes the target head is the impl type) is unchanged.
+        let is_hk = !decl.type_params.is_empty();
+
+        // Step 3: slot-1 echo validation — shape AND con_var spelling, BOTH
+        // checked here against the declaration (a parenthesized head with the
+        // WRONG con_var spelling still carries `Some(_)`, so the shape bit alone
+        // is a fidelity gap).
+        match (is_hk, &impl_.head_con_var) {
+            (true, None) => {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "trait {} is higher-kinded; its impl head must echo the \
+                         declared form `({} {})`",
+                        impl_.trait_name, decl.name, decl.type_params[0]
+                    ),
+                    location: ErrorLocation::from_span(impl_.span),
+                });
+            }
+            (false, Some(_)) => {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "trait {} is a conventional (kind-`*`) trait; its impl \
+                         head is the bare name `{}`",
+                        impl_.trait_name, decl.name
+                    ),
+                    location: ErrorLocation::from_span(impl_.span),
+                });
+            }
+            (true, Some(written)) => {
+                // §9.2: a single con_var. Shape OK — the spelling MUST match.
+                let declared = &decl.type_params[0];
+                if written != declared {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "impl head `({} {written})` does not echo trait {}'s \
+                             declared head `({} {declared})`: the constructor \
+                             variable is spelled `{written}` but was declared \
+                             `{declared}`; reproduce the declared head verbatim \
+                             as `({} {declared})`.",
+                            decl.name, impl_.trait_name, decl.name, decl.name,
+                        ),
+                        location: ErrorLocation::from_span(impl_.span),
+                    });
+                }
+            }
+            (false, None) => { /* conventional shape OK — no spelling bit */ }
+        }
+
+        // Step 4: slot-2 interpretation per the known kind, plus effective-target
+        // normalization for HK.
+        let rewritten_impl;
+        let impl_: &TraitImpl = if is_hk {
+            // Higher-kinded (§7.3.5 Case 2): slot 2 is the pairing
+            // `(Trait Constructor)`, parsed as `Applied(Trait, [Constructor])`
+            // (`hkt.md` §5.4). The kind-check lands on `Constructor`, which MUST
+            // be a bare constructor whose arity matches the con_var's
+            // usage-derived kind (§7.2.1). §9.2: exactly one con_var.
+            let con_name = &decl.type_params[0];
+            let expected_arity = con_var_arity(&decl, con_name).expect(
+                "invariant: a registered HK trait has an applied con_var \
+                 (declaration-time reject guarantees it)",
+            );
+            let con_ref: cranelisp_types::TypeRef = match &impl_.target {
+                cranelisp_types::TypeExpr::Applied(pairing_head, args)
+                    if args.len() == 1 =>
+                {
+                    // B1 (§7.3.5 Case-2, the 4th rejection) — validate the
+                    // pairing head FIRST, before the constructor kind-check. The
+                    // pairing head MUST name the same trait slot 1 resolves to
+                    // (spec §7.3 EBNF `hkt_target = '(' trait_name con_target ')'`).
+                    // Resolve it as a `trait_name` reference the SAME way slot 1
+                    // was (`resolve_trait` / `scope_resolve`, prelude-fallback
+                    // aware) and compare RESOLVED FQ-identity — never written
+                    // spelling — against slot-1's hoisted `fq_trait_name`. A head
+                    // resolving to a DIFFERENT trait OR to NO trait (nonexistent)
+                    // both collapse to "FQ ≠ slot-1's FQ / no FQ" and reject.
+                    // Closes the `:98` head-discard the /review B1 probe exercised
+                    // (`(impl (Functor f) (NotFunctor Option) …)` silently
+                    // accepted + dispatched).
+                    let pairing_fq = self
+                        .resolve_trait(state, pairing_head.name.as_ref(), impl_.span)
+                        .ok()
+                        .map(|home| {
+                            FQTraitName::new(home, TraitName::from(pairing_head.name.as_ref()))
+                        });
+                    if pairing_fq.as_ref() != Some(&fq_trait_name) {
+                        let con_disp = args[0]
+                            .head_ref()
+                            .map(|r| r.name.to_string())
+                            .unwrap_or_else(|| "_".to_string());
+                        return Err(CranelispError::TypeError {
+                            message: format!(
+                                "impl of trait `{}` (slot 1) pairs slot 2 with head \
+                                 `{}`: a trait-constructor pairing's head must name \
+                                 the trait being implemented — write `({} {})`, not \
+                                 `({} {})`.",
+                                decl.name, pairing_head.name, decl.name, con_disp,
+                                pairing_head.name, con_disp
+                            ),
+                            location: ErrorLocation::from_span(impl_.span),
+                        });
+                    }
+                    match &args[0] {
+                        cranelisp_types::TypeExpr::Named(cref) => cref.clone(),
+                        cranelisp_types::TypeExpr::Applied(cref, _) => {
+                            // fully-applied type, e.g. `(Functor (Option Int))`
                             return Err(CranelispError::TypeError {
                                 message: format!(
-                                    "{} has {} type parameters, but trait {} expects a constructor with arity {}",
-                                    impl_target_name_or_panic(&impl_.target),
-                                    td.type_params.len(),
-                                    impl_.trait_name,
-                                    expected_arity
+                                    "kind-mismatch: slot 2 names the bare \
+                                     constructor `{}`, not an applied type",
+                                    cref.name
+                                ),
+                                location: ErrorLocation::from_span(impl_.span),
+                            });
+                        }
+                        _ => {
+                            return Err(CranelispError::TypeError {
+                                message: format!(
+                                    "trait {} is higher-kinded; slot 2 must be a \
+                                     trait-constructor pairing `({} <Constructor>)`",
+                                    impl_.trait_name, decl.name
                                 ),
                                 location: ErrorLocation::from_span(impl_.span),
                             });
                         }
                     }
                 }
+                _ => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "trait {} is higher-kinded; slot 2 must be a \
+                             trait-constructor pairing `({} <Constructor>)`",
+                            impl_.trait_name, decl.name
+                        ),
+                        location: ErrorLocation::from_span(impl_.span),
+                    });
+                }
+            };
+
+            // Primitive → "not a type constructor" (§7.2.3), a DISTINCT reason
+            // from the §7.1.1 no-occurrence rule.
+            if matches!(con_ref.name.as_ref(), "Int" | "Bool" | "String" | "Float") {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "{} is not a type constructor (trait {} expects arity {})",
+                        con_ref.name, impl_.trait_name, expected_arity
+                    ),
+                    location: ErrorLocation::from_span(impl_.span),
+                });
             }
-        }
+
+            // Arity match against the known ADT constructor. Resolve THROUGH THE
+            // SCOPE (S108 Wave-G, R1) so a prelude-globbed constructor's arity is
+            // read (resolve once, Principle 7).
+            if let Some(td) = self
+                .scope_resolve(state, con_ref.name.as_ref(), impl_.span)
+                .ok()
+                .as_ref()
+                .and_then(|r| crate::checker::type_def_view_of(&r.entry))
+                && td.type_params.len() != expected_arity
+            {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "{} has {} type parameters; trait {} expects a \
+                         constructor of arity {}",
+                        con_ref.name,
+                        td.type_params.len(),
+                        impl_.trait_name,
+                        expected_arity
+                    ),
+                    location: ErrorLocation::from_span(impl_.span),
+                });
+            }
+
+            // Normalize: the effective impl target is the bare constructor, so
+            // every downstream method-check/mangle site sees the impl type in
+            // slot 2 exactly as it did for the pre-S112 `(impl Functor Option)`
+            // form. MIRROR (M1): `src/eval.rs::impl_echo_type_name` performs the
+            // reciprocal derivation on the DISPLAY side — it echoes the pairing's
+            // constructor ARGUMENT (`Option`), not the pairing head (`Functor`),
+            // so the introspection echo names the same type this normalization
+            // registers the impl under (Principle 26 — render from settled state).
+            // Keep the two in lock-step: both read the constructor out of
+            // `Applied(pairing_head, [Constructor])`.
+            rewritten_impl = TraitImpl {
+                target: cranelisp_types::TypeExpr::Named(con_ref),
+                ..impl_.clone()
+            };
+            &rewritten_impl
+        } else {
+            // Conventional (§7.3.5 Case 1): slot 2 MUST be kind `*` (a type).
+            // When the target head is a known type constructor it MUST be applied
+            // to EXACTLY its declared arity — the well-kinded set is
+            // `provided == arity`. The former `>` (under-application only) guard
+            // GENERALISES to `!=` (I1): an over-applied target `(Option Int Int)`
+            // is now rejected too. Both flanking rejections carry a distinct
+            // §7.3.5 diagnostic with an ARITY-AWARE fix suggestion (M2 — one fresh
+            // type-var per declared parameter, never a hard-coded single var).
+            let head = impl_target_name_or_panic(&impl_.target);
+            let provided = match &impl_.target {
+                cranelisp_types::TypeExpr::Applied(_, args) => args.len(),
+                _ => 0,
+            };
+            if let Some(td) = self
+                .scope_resolve(state, head.as_ref(), impl_.span)
+                .ok()
+                .as_ref()
+                .and_then(|r| crate::checker::type_def_view_of(&r.entry))
+            {
+                let arity = td.type_params.len();
+                if arity != provided {
+                    let suggestion = arity_var_suggestion(head.as_ref(), arity);
+                    let message = if provided < arity {
+                        // Under-applied / bare (pre-existing) — `Option` is a
+                        // constructor, not a type.
+                        format!(
+                            "{head} is a constructor, not a type; apply it: `{suggestion}`"
+                        )
+                    } else {
+                        // Over-applied (I1, NEW) — an arity surplus.
+                        format!(
+                            "{head} takes {arity} type parameter{plural} but is \
+                             applied to {provided} here; apply it to exactly its \
+                             arity: `{suggestion}`",
+                            plural = if arity == 1 { "" } else { "s" }
+                        )
+                    };
+                    return Err(CranelispError::TypeError {
+                        message,
+                        location: ErrorLocation::from_span(impl_.span),
+                    });
+                }
+            }
+            impl_
+        };
 
         // Impl-time field-accessor collision check (spec §7.3.1, FIXME 0365
         // Item 2). A trait `impl` whose method name equals an existing
@@ -102,18 +316,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Check all required methods are present (that don't have defaults)
         self.check_impl_methods_present(state, &decl, impl_)?;
 
-        // Resolve the trait's defining module + the impl target's FQ type
-        // identity ONCE (Principle 7). `fq_impl_type` is the home-qualified type
-        // head (`module/Type`) that every impl-method symbol minted below —
-        // default, explicit, and HKT — carries in its `$Type` suffix, kept in
-        // lock-step with the dispatch site (S102 4th lossy-head cure).
-        // `impl_.trait_name: TraitRef` carries `name: TraitName` + optional
-        // module qualification (Decision 47 — syntactic-stage shape).
-        let bare_trait_name = impl_.trait_name.name.clone();
-        let trait_home = self
-            .resolve_trait(state, bare_trait_name.as_ref(), impl_.span)
-            .map_err(cranelisp_types::CranelispError::from)?;
-        let fq_trait_name = FQTraitName::new(trait_home.clone(), bare_trait_name.clone());
+        // Resolve the impl target's FQ type identity ONCE (Principle 7).
+        // `fq_impl_type` is the home-qualified type head (`module/Type`) that
+        // every impl-method symbol minted below — default, explicit, and HKT —
+        // carries in its `$Type` suffix, kept in lock-step with the dispatch
+        // site (S102 4th lossy-head cure). It reads the EFFECTIVE (post-rewrite)
+        // `impl_.target`, so for an HK impl it resolves the bare constructor
+        // (`Option`), not the pairing. `fq_trait_name`/`trait_home` are resolved
+        // ONCE at the top of this function (Principle 24 — the sole minting site,
+        // reused by the B1 pairing-head compare and the registry key below).
         let fq_impl_type = self
             .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
             .map_err(cranelisp_types::CranelispError::from)?;
@@ -394,14 +605,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         home: Option<&ModuleFullPath>,
         fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
-        // Check if this is an HKT trait (constructor variables used in Applied position)
-        let is_hkt = !decl.type_params.is_empty()
-            && decl.methods.iter().any(|m| {
-                m.params
-                    .iter()
-                    .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
-                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
-            });
+        // Kind is read from the DECLARATION alone: `type_params` non-empty ⟺
+        // higher-kinded (§5.1; Principle 24 — the same single declaration fact
+        // the §7.3.5 Case-3 seam reads, no method-body usage re-scan). A
+        // successfully-registered non-empty-`type_params` trait is genuinely HK
+        // (the declaration-time never-applied reject guarantees it).
+        let is_hkt = !decl.type_params.is_empty();
 
         if is_hkt {
             return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig, fq_impl_type);

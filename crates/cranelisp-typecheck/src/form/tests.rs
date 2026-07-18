@@ -69,7 +69,7 @@
         ParsedEntry::TraitDecl {
             decl: TraitDecl {
                 name: cranelisp_types::TraitName::from(name),
-                type_params: vec![Symbol::from("a")],
+                type_params: vec![],
                 methods: vec![],
                 docstring: None,
                 visibility: Visibility::Private,

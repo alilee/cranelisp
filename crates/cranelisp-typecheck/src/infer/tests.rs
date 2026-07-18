@@ -1845,15 +1845,15 @@
         let num_decl = TraitDecl {
             name: TraitName::from("Num"),
             docstring: None,
-            type_params: vec![Symbol::from("a")],
+            type_params: vec![],
             methods: vec![TraitMethodSig {
                 name: Symbol::from("+"),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("lhs"), TypeExpr::SelfType),
+                    (Symbol::from("rhs"), TypeExpr::SelfType),
                 ],
-                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                ret_type: TypeExpr::SelfType,
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
                 default_body: None,
@@ -1931,13 +1931,13 @@
         let ord_decl = TraitDecl {
             name: TraitName::from("Ord"),
             docstring: None,
-            type_params: vec![Symbol::from("a")],
+            type_params: vec![],
             methods: vec![TraitMethodSig {
                 name: Symbol::from("<"),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("lhs"), TypeExpr::SelfType),
+                    (Symbol::from("rhs"), TypeExpr::SelfType),
                 ],
                 ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
@@ -2183,13 +2183,13 @@
         let eq_decl = TraitDecl {
             name: TraitName::from("Eq"),
             docstring: None,
-            type_params: vec![Symbol::from("a")],
+            type_params: vec![],
             methods: vec![TraitMethodSig {
                 name: Symbol::from("="),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("lhs"), TypeExpr::SelfType),
+                    (Symbol::from("rhs"), TypeExpr::SelfType),
                 ],
                 ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
@@ -2240,11 +2240,11 @@
         let display_decl = TraitDecl {
             name: TraitName::from("Display"),
             docstring: None,
-            type_params: vec![Symbol::from("a")],
+            type_params: vec![],
             methods: vec![TraitMethodSig {
                 name: Symbol::from("show"),
                 docstring: None,
-                params: vec![(Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a")))],
+                params: vec![(Symbol::from("x"), TypeExpr::SelfType)],
                 ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,

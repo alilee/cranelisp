@@ -2639,6 +2639,88 @@ fn impl_form_display_result_is_exactly_impl_trait_for_type() {
     );
 }
 
+// spec: repl/spec.md §1.1 — the impl registration echo `impl <trait> for <type>`
+//       (the §4.1.4 "impl shows `impl Trait for Type`" row); the implementing
+//       <type> MUST be the RESOLVED implementing type, not the surface-syntax
+//       pairing head.
+// spec: spec/07-traits.md §7.3.4 (Higher-Kinded Implementation) + §7.3.5 Case 2
+//       — the settled echo-the-head HKT impl `(impl (Functor f) (Functor Option)
+//       …)` registers the impl under the constructor `Option` (slot-2 pairing's
+//       argument), NOT the pairing head `Functor`.
+//
+// S112 W5 REGRESSION-GUARD for the display defect: after an echo-the-head HKT
+// impl, the registration echo printed `impl user/Functor for user/Functor`
+// (re-deriving from the raw slot-2 head `(Functor Option)` → head `Functor`),
+// pairing the head against itself instead of naming the resolved constructor
+// `Option`. The pre-existing impl-display e2e
+// (`impl_form_display_result_is_exactly_impl_trait_for_type`) only covers a
+// conventional bare-head impl, so this HKT surface slipped through.
+//
+// The assertion is on the EXACT resolved-type string `for user/Option`, which
+// the defective output (`for user/Functor`) does NOT contain — a substring both
+// outputs share (`impl user/Functor for user/`) would not catch it. The twin
+// `; impl:`-section asserts pin the same invariant on the type-lookup surface:
+// the implementing CONSTRUCTOR is listed, the pairing head is NOT.
+// defect: class=display-envelope-mirror locus=src/eval.rs::impl_echo_type_name found=S112 owner=/dev
+#[test]
+fn hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_head() {
+    // Settled echo-the-head HKT form (spec §7.3.5 Case 2): slot 1 echoes the
+    // declared applied head `(Functor f)`, slot 2 is the trait-constructor
+    // pairing `(Functor Option)` over the prelude-seeded `Option`. Then a bare
+    // `Functor` lookup to inspect the `; impl:` (implementing-types) section.
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         Functor\n",
+    );
+
+    // (1) The registration echo MUST be exactly `impl user/Functor for
+    // user/Option` — the RESOLVED implementing constructor, never the pairing
+    // head. The defect printed `impl user/Functor for user/Functor`.
+    assert!(
+        out.stdout.contains("impl user/Functor for user/Option"),
+        "the echo-the-head HKT impl registration echo MUST name the resolved \
+         constructor: `impl user/Functor for user/Option` per repl/spec.md §1.1 \
+         (§7.3.5 Case 2); got:\n{}",
+        out.stdout
+    );
+    // (1-neg) It MUST NOT pair the head against itself — the S112 defect string.
+    assert!(
+        !out.stdout.contains("impl user/Functor for user/Functor"),
+        "the impl echo MUST NOT print the pairing head as the implementing type \
+         (`impl user/Functor for user/Functor` — the S112 W5 display defect); \
+         got:\n{}",
+        out.stdout
+    );
+
+    // (2) The bare `Functor` lookup's `; impl:` section MUST list the
+    // implementing constructor `Option`, and (neg) MUST NOT list the pairing
+    // head `Functor` as if it were an implementing type. Locate the section body
+    // (the indented `;  <Type>` comment lines) as
+    // `bare_user_trait_lookup_impl_section_lists_type_not_others` does.
+    let impl_body: Vec<String> = out
+        .stdout
+        .lines()
+        .skip_while(|l| l.trim() != "; impl:")
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with(';'))
+        .map(|l| l.trim_start_matches(';').trim().to_string())
+        .collect();
+    assert!(
+        impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        "the `; impl:` section MUST list the implementing constructor `Option` \
+         (§4.1.4); impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Functor")),
+        "the `; impl:` section MUST NOT list the pairing head `Functor` as an \
+         implementing type (§4.1.4 +neg — the resolved constructor is `Option`); \
+         impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
 // =============================================================================
 // Sprint 64 Wave 6 batch 5 — bare-primitive value-path Slice 1 carry-forwards
 // =============================================================================

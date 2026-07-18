@@ -61,10 +61,12 @@ TOPIC hkt  [core]
 
   FORM
     (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
-    (impl Functor Option (defn fmap [g opt] ...))   ; target is BARE ctor, not (Option a)
+    (impl (Functor f) (Functor Option) (defn fmap [g opt] ...))  ; slot 1 echoes head; slot 2 pairs trait + BARE ctor
     ...
   EXAMPLE
     (fmap (fn [n] (* n 2)) (Some 5))         ; (Option.Some 10)
+  NOT
+    (impl Functor Option ...)  -> old bare head REJECTED; echo the declared head: (impl (Functor f) (Functor Option) ...)
   ...
 ▌ A higher-kinded type ranges a trait param over a type constructor: (deftrait (Functor f) ...).
 ```

@@ -1182,7 +1182,10 @@
         use cranelisp_types::{TraitDecl, TraitMethodSig};
         TraitDecl {
             name: TraitName::from("HasV"),
-            type_params: vec![Symbol::from("Self")],
+            // Conventional (kind-`*`) trait: bare head + empty `type_params` +
+            // `self` (S112 settled model — a never-applied head variable is a
+            // declaration-time reject).
+            type_params: vec![],
             methods: vec![TraitMethodSig {
                 name: Symbol::from(method),
                 docstring: None,
@@ -1307,12 +1310,37 @@
     // so an impl method `v` on `Box` is rejected for the poly product too.
     #[test]
     fn impl_method_colliding_on_polymorphic_target_rejected() {
+        use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitRef, TypeExpr, TypeRef};
         let mut tc = tf_with_scalar_imports();
         register_poly_box(&mut tc);
         tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
 
+        // Settled model (§7.3.5 Case 1): a conventional-trait target must be
+        // kind `*`, so a polymorphic product is applied — `(Box a)`, not the
+        // bare (under-applied) `Box` — before the accessor-collision check runs.
+        let poly_impl = TraitImpl {
+            head_con_var: None,
+            trait_name: TraitRef::new(None, TraitName::from("HasV")),
+            target: TypeExpr::Applied(
+                TypeRef::new(None, TypeName::from("Box")),
+                vec![TypeExpr::TypeVar(Symbol::from("a"))],
+            ),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("v"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: Expr::IntLit { value: 99, span: Span::SYNTHETIC, inferred_type: None },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
         let err = tc
-            .register_trait_impl_self(&collide_impl("Box", "v"))
+            .register_trait_impl_self(&poly_impl)
             .expect_err("a colliding impl method `v` on (Box a) must be rejected");
         assert!(format!("{err}").contains("collides with the field accessor"));
         assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));

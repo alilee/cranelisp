@@ -10,21 +10,22 @@ use cranelisp_types::{
 
 use crate::traits::test_helpers::*;
 
-/// Build a unary `(deftrait <name> (<method> [lhs rhs] a))` decl (type param
-/// `a`, both params + return `a`).
+/// Build a conventional `(deftrait <name> (<method> [lhs rhs] self))` decl —
+/// bare head, empty `type_params`, both params + return `self` (S112 settled
+/// kind-`*` model).
 fn unary_trait_decl(name: &str, method: &str) -> TraitDecl {
     TraitDecl {
         name: TraitName::from(name),
         docstring: None,
-        type_params: vec![Symbol::from("a")],
+        type_params: vec![],
         methods: vec![TraitMethodSig {
             name: Symbol::from(method),
             docstring: None,
             params: vec![
-                (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                (Symbol::from("lhs"), TypeExpr::SelfType),
+                (Symbol::from("rhs"), TypeExpr::SelfType),
             ],
-            ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+            ret_type: TypeExpr::SelfType,
             span: Span::SYNTHETIC,
             hkt_param_index: None,
             default_body: None,
@@ -258,14 +259,14 @@ fn test_generate_default_methods_produces_real_bodies() {
     let eq_decl = TraitDecl {
         name: TraitName::from("Eq"),
         docstring: None,
-        type_params: vec![Symbol::from("a")],
+        type_params: vec![],
         methods: vec![
             TraitMethodSig {
                 name: Symbol::from("="),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("x"), TypeExpr::SelfType),
+                    (Symbol::from("y"), TypeExpr::SelfType),
                 ],
                 ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
@@ -276,8 +277,8 @@ fn test_generate_default_methods_produces_real_bodies() {
                 name: Symbol::from("!="),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("x"), TypeExpr::SelfType),
+                    (Symbol::from("y"), TypeExpr::SelfType),
                 ],
                 ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
@@ -344,4 +345,523 @@ fn test_generate_default_methods_produces_real_bodies() {
 
     // Body should be (not (= x y)), not IntLit 0
     assert_apply_callee(neq.body(), "not");
+}
+
+// ===========================================================================
+// S112 §7.3.5 Case-3 kind-check seam — slot-1 echo (shape + con_var spelling)
+// and slot-2 kind interpretation (`design/typecheck/hkt.md` §5.4). One
+// deterministic path; the trait's DECLARATION is authoritative on its kind.
+// ===========================================================================
+
+use cranelisp_types::TraitRef;
+
+/// `(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))`.
+fn functor_decl() -> TraitDecl {
+    TraitDecl {
+        name: TraitName::from("Functor"),
+        docstring: None,
+        type_params: vec![Symbol::from("f")],
+        methods: vec![TraitMethodSig {
+            name: Symbol::from("fmap"),
+            docstring: None,
+            params: vec![
+                (
+                    Symbol::from("func"),
+                    TypeExpr::FnType(
+                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                        Box::new(TypeExpr::TypeVar(Symbol::from("b"))),
+                    ),
+                ),
+                (
+                    Symbol::from("x"),
+                    TypeExpr::Applied(
+                        cranelisp_types::TypeRef::new(None, TypeName::from("f")),
+                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                    ),
+                ),
+            ],
+            ret_type: TypeExpr::Applied(
+                cranelisp_types::TypeRef::new(None, TypeName::from("f")),
+                vec![TypeExpr::TypeVar(Symbol::from("b"))],
+            ),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_body: None,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    }
+}
+
+/// Register `(deftype (Option a) None (Some [:a val]))` in the fixture's module.
+fn register_option(tc: &mut crate::checker::TestFixture) {
+    tc.register_type_def_self(
+        &TypeName::from("Option"),
+        &None,
+        &[Symbol::from("a")],
+        &[
+            cranelisp_types::ConstructorDef {
+                name: Symbol::from("None"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            },
+            cranelisp_types::ConstructorDef {
+                name: Symbol::from("Some"),
+                docstring: None,
+                fields: vec![cranelisp_types::FieldDef {
+                    name: Symbol::from("val"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            },
+        ],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+}
+
+/// Register `(deftype (Pair a b) MkPair)` — an arity-2 constructor.
+fn register_pair(tc: &mut crate::checker::TestFixture) {
+    tc.register_type_def_self(
+        &TypeName::from("Pair"),
+        &None,
+        &[Symbol::from("a"), Symbol::from("b")],
+        &[cranelisp_types::ConstructorDef {
+            name: Symbol::from("MkPair"),
+            docstring: None,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+}
+
+/// Build a `Functor` impl: `(impl (<head_con_var>?) <target> (defn fmap [func x] <body>))`.
+fn functor_impl(head_con_var: Option<&str>, target: TypeExpr, body: Expr) -> TraitImpl {
+    TraitImpl {
+        head_con_var: head_con_var.map(Symbol::from),
+        trait_name: TraitRef::new(None, TraitName::from("Functor")),
+        target,
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("fmap"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("func"), None), (Symbol::from("x"), None)],
+                body,
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    }
+}
+
+/// `(Trait Constructor)` pairing target — slot 2 of a higher-kinded impl.
+fn pairing(trait_name: &str, con: &str) -> TypeExpr {
+    TypeExpr::Applied(
+        cranelisp_types::TypeRef::new(None, TypeName::from(trait_name)),
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(con)))],
+    )
+}
+
+// spec: 07-traits §7.3.4/§7.3.5 Case 2 — POSITIVE. The correctly-echoed head
+// `(Functor f)` + a well-kinded pairing `(Functor Option)` registers. The seam
+// passes shape + spelling and the constructor's arity (1) matches `f`.
+#[test]
+fn hkt_impl_correct_echo_and_pairing_accepts() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    // fmap body: `None` — has type `(Option b)`, satisfying the `(f b)` return.
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    tc.register_trait_impl_self(&impl_)
+        .expect("correct echo `(Functor f)` + well-kinded `(Functor Option)` must register");
+    assert!(tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, spelling bit) —
+// NEGATIVE. A parenthesized head with the WRONG con_var spelling `(Functor g)`
+// passes the shape bit (`Some(_)`) but its spelling `g` ≠ the declared `f`, so
+// it is rejected with a diagnostic naming BOTH spellings and the expected form.
+#[test]
+fn hkt_impl_wrong_con_var_spelling_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("g"), // wrong spelling
+        pairing("Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(Functor g)` does not echo declared `(Functor f)`");
+    let msg = err.message();
+    assert!(msg.contains('g'), "names the written spelling: {msg}");
+    assert!(msg.contains('f'), "names the declared spelling: {msg}");
+    assert!(msg.contains("Functor"), "names the trait: {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, shape bit) —
+// NEGATIVE. A bare-head impl of a higher-kinded trait is rejected: slot 1 must
+// echo `(Functor f)`.
+#[test]
+fn hkt_impl_bare_head_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        None, // bare head — shape mismatch
+        pairing("Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("a bare-head impl of an HK trait is rejected");
+    let msg = err.message();
+    assert!(msg.contains("higher-kinded"), "names the kind mismatch: {msg}");
+    assert!(msg.contains("echo"), "directs to echo the declared head: {msg}");
+}
+
+// spec: 07-traits §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, shape bit) —
+// NEGATIVE. A parenthesized (echoed) head on a CONVENTIONAL (kind-`*`) trait is
+// rejected: its impl head is the bare trait name.
+#[test]
+fn conventional_impl_parenthesized_head_rejected() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&unary_trait_decl("Display", "show"))
+        .unwrap();
+
+    let impl_ = TraitImpl {
+        head_con_var: Some(Symbol::from("f")), // parenthesized head on a conventional trait
+        trait_name: TraitRef::new(None, TraitName::from("Display")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("show"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
+                body: Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    };
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("a parenthesized head on a conventional trait is rejected");
+    let msg = err.message();
+    assert!(msg.contains("conventional"), "names the kind: {msg}");
+    assert!(msg.contains("bare name"), "directs to the bare name form: {msg}");
+}
+
+// spec: 07-traits §7.2.3 / §7.3.5 Case 2 — NEGATIVE (the 0628 root). An HK trait
+// impl'd on a PRIMITIVE is rejected "not a type constructor" — the clean §7.2
+// diagnostic, NOT a backend `undefined function` leak.
+#[test]
+fn hkt_impl_on_primitive_rejected() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Functor", "Int"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(Functor Int)` — a primitive is not a type constructor");
+    let msg = err.message();
+    assert!(msg.contains("not a type constructor"), "clean §7.2 diagnostic: {msg}");
+    assert!(msg.contains("Int"), "names the offending type: {msg}");
+}
+
+// spec: 07-traits §7.3.5 Case 2 — NEGATIVE. A fully-applied type inside the
+// pairing `(Functor (Option Int))` is a kind-mismatch: slot 2 names the BARE
+// constructor, not an applied type.
+#[test]
+fn hkt_impl_applied_type_in_pairing_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    // target = (Functor (Option Int))
+    let target = TypeExpr::Applied(
+        cranelisp_types::TypeRef::new(None, TypeName::from("Functor")),
+        vec![TypeExpr::Applied(
+            cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
+            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))],
+        )],
+    );
+    let impl_ = functor_impl(Some("f"), target, Expr::var(Symbol::from("None"), Span::SYNTHETIC));
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(Functor (Option Int))` — an applied type is not a bare constructor");
+    let msg = err.message();
+    assert!(msg.contains("kind-mismatch"), "names the kind-mismatch: {msg}");
+    assert!(msg.contains("bare constructor"), "directs to the bare constructor: {msg}");
+}
+
+// spec: 07-traits §7.2.3 / §7.3.5 Case 2 — NEGATIVE. A wrong-arity constructor
+// in the pairing `(Functor Pair)` (Pair : * -> * -> *) is rejected: the trait
+// expects a constructor of arity 1.
+#[test]
+fn hkt_impl_wrong_arity_constructor_rejected() {
+    let mut tc = tf_prims();
+    register_pair(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Functor", "Pair"),
+        Expr::var(Symbol::from("MkPair"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(Functor Pair)` — Pair has arity 2, Functor expects 1");
+    let msg = err.message();
+    assert!(msg.contains("Pair"), "names the constructor: {msg}");
+    assert!(msg.contains('2'), "names Pair's arity: {msg}");
+    assert!(msg.contains("Functor"), "names the trait: {msg}");
+}
+
+// spec: 07-traits §7.3.5 Case 1 — NEGATIVE. A conventional-trait target that is
+// a bare / under-applied constructor `(impl Display Option)` is the sole Case-1
+// rejection: `Option` is a constructor, not a type — apply it.
+#[test]
+fn conventional_impl_under_applied_constructor_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&unary_trait_decl("Display", "show"))
+        .unwrap();
+
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: TraitRef::new(None, TraitName::from("Display")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Option"))),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("show"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
+                body: Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    };
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(impl Display Option)` — Option is under-applied");
+    let msg = err.message();
+    assert!(msg.contains("Option"), "names the constructor: {msg}");
+    assert!(msg.contains("constructor, not a type"), "the §7.3.5 Case 1 diagnostic: {msg}");
+    // M2: the fix suggestion is arity-aware — one fresh var per declared param.
+    // `Option : * -> *` → `(Option a)`.
+    assert!(msg.contains("(Option a)"), "arity-aware fix suggestion (M2): {msg}");
+}
+
+// ===========================================================================
+// W5.1 remediation — B1 pairing-head mismatch (§7.3.5 Case-2 4th rejection)
+// + I1 conventional over-applied (§7.3.5 Case 1) + M2 arity-aware suggestion.
+// Unit twins of the e2e rows in `tests/spec_07_traits.rs`.
+// ===========================================================================
+
+/// Build a conventional `(deftrait <name> (shw [self] Int))` decl — bare head,
+/// empty `type_params`; a kind-`*` trait whose impl target is a plain type.
+fn disp_decl(name: &str) -> TraitDecl {
+    TraitDecl {
+        name: TraitName::from(name),
+        docstring: None,
+        type_params: vec![],
+        methods: vec![TraitMethodSig {
+            name: Symbol::from("shw"),
+            docstring: None,
+            params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
+            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_body: None,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    }
+}
+
+/// Build a conventional-trait impl `(impl <trait> <target> (defn shw [w] 5))`.
+fn disp_impl(trait_name: &str, target: TypeExpr) -> TraitImpl {
+    TraitImpl {
+        head_con_var: None,
+        trait_name: TraitRef::new(None, TraitName::from(trait_name)),
+        target,
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("shw"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("w"), None)],
+                body: Expr::IntLit { value: 5, span: Span::SYNTHETIC, inferred_type: None },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    }
+}
+
+// spec: 07-traits §7.3.5 Case 2 — B1 NEGATIVE. A pairing head naming a
+// NONEXISTENT trait `(NotFunctor Option)` is rejected FIRST (before the
+// constructor kind-check): the head resolves to no trait, so its FQ ≠ slot-1's
+// `Functor` FQ. The diagnostic names BOTH the written `(NotFunctor Option)` and
+// the expected `(Functor Option)`; the impl MUST NOT register.
+#[test]
+fn hkt_impl_pairing_head_nonexistent_trait_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("NotFunctor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(NotFunctor Option)` — the pairing head names no trait");
+    let msg = err.message();
+    assert!(msg.contains("(NotFunctor Option)"), "names the written pairing: {msg}");
+    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 Case 2 — B1 NEGATIVE, the DIFFERENT-real-trait variant.
+// A pairing head naming a second GENUINE trait `(Mappy Option)` is rejected: it
+// resolves to a trait, but its FQ ≠ slot-1's `Functor` FQ (resolved-identity
+// compare, not spelling). Names both pairings; MUST NOT register under Functor.
+#[test]
+fn hkt_impl_pairing_head_different_real_trait_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+    // A second genuine HK trait, whose name is the wrong pairing head.
+    let mut mappy = functor_decl();
+    mappy.name = TraitName::from("Mappy");
+    mappy.methods[0].name = Symbol::from("mapp");
+    tc.register_trait_decl_self(&mappy).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Mappy", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(Mappy Option)` — a different real trait as the pairing head");
+    let msg = err.message();
+    assert!(msg.contains("(Mappy Option)"), "names the written pairing: {msg}");
+    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 Case 2 — B1 POSITIVE. The matching pairing head
+// `(Functor Option)` on a correctly-echoed `(Functor f)` head registers — the
+// FQ-identity compare passes (this is the twin the two rejections flank).
+// (Same as `hkt_impl_correct_echo_and_pairing_accepts`; kept as the explicit
+// B1-axis positive.)
+#[test]
+fn hkt_impl_pairing_head_matches_slot1_accepts() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    tc.register_trait_impl_self(&impl_)
+        .expect("matching pairing head `(Functor Option)` must register");
+    assert!(tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 Case 1 — I1 NEGATIVE. An OVER-applied conventional
+// target `(Disp (Option Int Int))` applies `Option` (arity 1) to 2 args. The
+// `!=` arity guard rejects with "takes 1 type parameter but is applied to 2";
+// the fix suggestion is arity-aware (M2, `(Option a)`). MUST NOT register.
+#[test]
+fn conventional_impl_over_applied_target_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&disp_decl("Disp")).unwrap();
+
+    let target = TypeExpr::Applied(
+        cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
+        vec![
+            TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        ],
+    );
+    let err = tc
+        .register_trait_impl_self(&disp_impl("Disp", target))
+        .expect_err("`(Option Int Int)` over-applies Option (arity 1)");
+    let msg = err.message();
+    assert!(msg.contains("1 type parameter"), "names the declared arity: {msg}");
+    assert!(msg.contains("applied to 2"), "names the arity surplus: {msg}");
+    assert!(msg.contains("(Option a)"), "arity-aware fix suggestion (M2): {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Disp"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 Case 1 — I1 POSITIVE (the exactly-arity fence). A
+// target applied to EXACTLY its arity `(Disp (Option Int))` registers and stays
+// green when `>` generalises to `!=` (`provided == arity == 1`, so `!=` never
+// fires) — the guard-generalisation hazard fence.
+#[test]
+fn conventional_impl_exactly_arity_target_accepts() {
+    let mut tc = tf_prims();
+    // This impl ACCEPTS and proceeds to method-body checking, whose return type
+    // is `Int` — glob primitives into the current module so `Int` (and the
+    // target arg `Int`) resolve.
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&disp_decl("Disp")).unwrap();
+
+    let target = TypeExpr::Applied(
+        cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))],
+    );
+    tc.register_trait_impl_self(&disp_impl("Disp", target))
+        .expect("`(Option Int)` applies Option to exactly its arity — must register");
+    assert!(tc.has_impl(&TraitName::from("Disp"), &TypeName::from("Option")));
+}
+
+// spec: hkt.md §5.4 M2 — the arity-aware fix-suggestion template. One fresh
+// type-var per declared parameter, in `a, b, c, …` order.
+#[test]
+fn arity_var_suggestion_is_arity_aware() {
+    use super::arity_var_suggestion;
+    assert_eq!(arity_var_suggestion("Option", 1), "(Option a)");
+    assert_eq!(arity_var_suggestion("Pair", 2), "(Pair a b)");
+    assert_eq!(arity_var_suggestion("Tri", 3), "(Tri a b c)");
 }

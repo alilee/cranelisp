@@ -114,15 +114,48 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
-        // If trait has type_params used in Applied position, use HKT registration path
-        if !decl.type_params.is_empty()
-            && decl.methods.iter().any(|m| {
+        // Kind is derived ONCE, HERE at declaration registration, from the head
+        // shape (spec §7.1/§7.2.1; `design/typecheck/hkt.md` §5.1). A
+        // parenthesized head (non-empty `type_params`) is higher-kinded IFF its
+        // con_var is APPLIED `(a …)` somewhere in the method signatures; a
+        // parenthesized head whose con_var is NEVER applied is MALFORMED and
+        // rejected HERE, at `deftrait` (not at impl time — the old §5.4
+        // "reject the bare-con_var impl-on-primitive at impl time" framing is
+        // superseded). Every downstream consumer then reads `type_params` alone
+        // — non-empty ⟺ HKT — never re-scanning method-body usage (Principle 24
+        // "Resolve once"; the former usage-derived kind derivation here and the
+        // one at `impl_check.rs` collapse onto this single declaration fact).
+        if !decl.type_params.is_empty() {
+            let con_applied = decl.methods.iter().any(|m| {
                 m.params
                     .iter()
                     .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
                     || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
-            })
-        {
+            });
+            if !con_applied {
+                // §7.2.1 malformed: a head type variable that is never applied is
+                // not the higher-kinded form, and there is no kind-`*` trait with
+                // a head type variable — conventional traits use the bare head and
+                // `self`. Naming the fix (spec §7.1 example).
+                let con = &decl.type_params[0];
+                let example_method = decl
+                    .methods
+                    .first()
+                    .map(|m| m.name.as_ref())
+                    .unwrap_or("m");
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "trait `{}`'s type parameter `{con}` is never applied \
+                         `({con} …)`; a trait that returns the implementing type \
+                         uses the bare head and `self`: \
+                         `(deftrait {} ({example_method} [] self))`.",
+                        decl.name, decl.name,
+                    ),
+                    location: ErrorLocation::from_span(decl.span),
+                });
+            }
+            // Genuinely higher-kinded (con_var applied) — the declaration-derived
+            // kind. `register_hkt_trait` only ever sees an applied-con_var decl.
             return self.register_hkt_trait(state, decl);
         }
 

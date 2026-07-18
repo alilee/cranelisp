@@ -37,6 +37,26 @@ fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+/// Compile `src` as `user.cl` under `--run` with the PrimitivesOnly prelude.
+/// Used by the §7.3.5 mode-uniformity rows (AG-2): a rejection CLASS must fire
+/// identically under REPL, `--run`, and `--link`.
+fn run_prims(src: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(src)
+        .run("user.cl")
+        .output()
+}
+
+/// As `run_prims` but under `--link` then run the produced executable.
+fn link_prims(src: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(src)
+        .link_then_run("user.cl")
+        .output()
+}
+
 // =============================================================================
 // §7.1 Trait Declaration
 // =============================================================================
@@ -508,24 +528,31 @@ fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
     .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
 }
 
-// spec: spec/03-types.md §3.7 — negative HKT: a primitive type is NOT a type
-// constructor, so implementing a higher-kinded trait on it MUST be rejected.
-// §3.7.4 is explicit: "Primitive types (Int, Bool, String, Float) are rejected
-// as HKT impl targets because they are not type constructors." The `Functor`
-// trait uses `f` at arity 1 (`(f a)`), so `(impl Functor Int ...)` must fail
-// at impl registration with an arity / not-a-constructor diagnostic. Negative
-// companion to `hkt_deftrait_declaration_with_type_constructor_parameter_succeeds`.
+// spec: spec/07-traits.md §7.2.3 / §7.3.5 Case 2 — negative HKT: a primitive
+// type is NOT a type constructor, so implementing a higher-kinded trait on it
+// MUST be rejected. §7.2.3 is explicit: primitive types are rejected as HKT
+// impl targets because they are not type constructors. The `Functor` trait uses
+// `f` at arity 1 (`(f a)`), so the pairing `(Functor Int)` must fail at the
+// §7.3.5 Case-3 kind-check seam with a not-a-type-constructor diagnostic — a
+// clean §7.2-class check-side error, NOT a backend leak. Negative companion to
+// `hkt_deftrait_declaration_with_type_constructor_parameter_succeeds`.
+//
+// b2-swap (S112 W5, TB-14): migrated to the settled echo-the-head form — the
+// deftrait keeps its applied head `(Functor f)`, and the impl echoes it in slot
+// 1 with the trait-constructor pairing `(Functor Int)` in slot 2. Assertion
+// subject UNCHANGED (primitive-target rejection); the diagnostic re-grounds to
+// the §7.3.5 Case-2 "not a type constructor" wording.
 #[test]
 fn hkt_impl_on_primitive_type_is_rejected_neg() {
     let out = repl_prims(
         "(deftrait (Functor f)\n  (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
-         (impl Functor Int (defn fmap [func x] x))\n",
+         (impl (Functor f) (Functor Int) (defn fmap [func x] x))\n",
     );
     assert!(
         out.stdout.contains("not a type constructor")
             || out.stdout.contains("type constructor"),
         "impl of a HKT trait on the primitive `Int` MUST be rejected with a \
-         not-a-type-constructor diagnostic per spec/03-types.md §3.7.4; \
+         not-a-type-constructor diagnostic per spec/07-traits.md §7.2.3; \
          got:\n{}",
         out.stdout
     );
@@ -545,11 +572,16 @@ fn hkt_impl_on_primitive_type_is_rejected_neg() {
 fn hkt_functor_impl_on_option_dispatches_via_match() {
     // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
     // deftype under the Option-providing prelude is a define-over-prelude
-    // collision). `(impl Functor Option …)` targets the seeded Option; the
+    // collision). The pairing `(Functor Option)` targets the seeded Option; the
     // HKT dispatch-via-match behaviour is unchanged.
+    //
+    // b2-swap (S112 W5, TB-8/TB-17 positive): settled echo-the-head form — slot
+    // 1 echoes the declared head `(Functor f)`, slot 2 is the trait-constructor
+    // pairing `(Functor Option)`. Assertion subject UNCHANGED (fmap dispatches
+    // over Option, result 42).
     repl_prims(
         "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
-         (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (impl (Functor f) (Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
@@ -566,22 +598,28 @@ fn hkt_functor_impl_on_option_dispatches_via_match() {
 // `(import [prelude [Zed]])` or via the implicit prelude glob.
 //
 // Twin fixture, parametrised over the TARGET's provenance only:
-//   Leg A — `Zed` explicitly imported: the arity gate looks up `Zed`, finds a
-//     0-arity type, and REJECTS `(impl Functor Zed …)` (Functor expects arity
-//     1). GREEN control today.
-//   Leg B — `Zed` implicit-prelude-provided: the arity gate's
-//     `lookup_type_def_with_state` (impl_check.rs:70) has NO prelude fallback,
-//     misses, and the arity check is SILENTLY SKIPPED — the wrong-arity impl is
-//     accepted (exit 0). RED today; flips GREEN when the resolution convergence
-//     gives the arity-gate lookup the same fallback the reference resolvers have.
+//   Leg A — `Zed` explicitly imported: the §7.3.5 Case-2 kind-check looks up
+//     `Zed`, finds a 0-arity type, and REJECTS the pairing `(Functor Zed)`
+//     (Functor expects arity 1).
+//   Leg B — `Zed` implicit-prelude-provided: the same kind-check resolves `Zed`
+//     THROUGH THE SCOPE (`scope_resolve`, prelude-fallback intrinsic per S108
+//     Wave-G) and rejects identically. The prelude-scope-miss the arity gate
+//     once had (`lookup_type_def_with_state` had no fallback → silent-skip →
+//     wrong-arity accept) is CLOSED: the gate now resolves once, so a
+//     prelude-provided target is arity-checked on identical terms (§8.8.1).
 //
-// The divergence IS the whole signal: same program, target-provenance the only
+// The divergence WAS the whole signal: same program, target-provenance the only
 // difference, MUST reject in both arms. The specific arity substring (not a bare
 // non-zero exit) guards against a false-pass on an unrelated failure.
 //
-// spec: spec/07-traits.md §7.2.3 (Kind Checking — the arity MUST) + §7.3.4
-//       (HKT impl target) + spec/08-modules.md §8.8.1 (prelude ≡ explicit import)
-// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl (HKT arity gate, lookup_type_def_with_state has no fallback) found=S108 owner=/dev
+// b2-swap (S112 W5, TB-16): migrated to the settled echo-the-head form — the
+// deftrait keeps its applied head `(Functor f)`; the impl echoes it and names
+// the pairing `(Functor Zed)`. Both the wrong-arity reject AND the prelude
+// provenance axis survive the swap.
+//
+// spec: spec/07-traits.md §7.2.3 (Kind Checking — the arity MUST) + §7.3.5
+//       (HKT impl kind-check seam) + spec/08-modules.md §8.8.1 (prelude ≡ explicit import)
+// defect: class=prelude-scope-miss locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl (HKT kind-check now resolves the target through the fallback-aware scope; the fallback-less lookup was the miss) found=S108 owner=/dev
 #[test]
 fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
     // A prelude that provides a 0-arity type `Zed` and the arity-1 HKT trait
@@ -598,7 +636,7 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
         .file(
             "user.cl",
             "(import [prelude [Zed Functor]])\n\
-             (impl Functor Zed (defn fmap [func x] x))\n\
+             (impl (Functor f) (Functor Zed) (defn fmap [func x] x))\n\
              (defn main [] (Pure 0))\n",
         )
         .run("user.cl")
@@ -627,7 +665,7 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
         .prelude(PRELUDE)
         .file(
             "user.cl",
-            "(impl Functor Zed (defn fmap [func x] x))\n\
+            "(impl (Functor f) (Functor Zed) (defn fmap [func x] x))\n\
              (defn main [] (Pure 0))\n",
         )
         .run("user.cl")
@@ -637,9 +675,10 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
         b.contains("type parameters") && b.contains("arity"),
         "LEG B (implicit-prelude target): the wrong-arity HKT impl MUST get the \
          SAME §7.2.3 arity rejection as the explicit-import twin — a prelude-\
-         provided target is in scope on identical terms (§8.8.1). RED today: the \
-         arity gate's non-fallback `lookup_type_def_with_state` misses and the \
-         check is silently skipped;\nstdout:\n{}\nstderr:\n{}",
+         provided target is in scope on identical terms (§8.8.1). The §7.3.5 \
+         kind-check resolves the target through the fallback-aware scope, so a \
+         prelude-provided target is arity-checked exactly like an imported one;\n\
+         stdout:\n{}\nstderr:\n{}",
         leg_b.stdout,
         leg_b.stderr
     );
@@ -665,14 +704,512 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
 #[test]
 fn hkt_impl_targets_bare_type_constructor_not_applied_form() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
-    // The bare-vs-applied impl-target distinction (`(impl Functor Option …)`)
-    // is still isolated — the target is the bare seeded type constructor.
+    // The bare-vs-applied impl-target distinction is still isolated — inside the
+    // pairing, the target is the BARE seeded type constructor `Option`, never an
+    // applied form `(Option a)` (an applied pairing arg is the §7.3.5 Case-2
+    // "kind-mismatch" reject, exercised separately by
+    // `hkt_impl_applied_type_in_pairing_rejected_neg`).
+    //
+    // b2-swap (S112 W5): settled echo-the-head form — slot 1 `(Functor f)`, slot
+    // 2 the pairing `(Functor Option)` whose constructor arg is the bare `Option`.
+    // Assertion subject UNCHANGED (bare-constructor target, result 100).
     repl_prims(
         "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
-         (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (impl (Functor f) (Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 100");
+}
+
+// =============================================================================
+// The 0628 trait/impl rejection matrix (S112 W5, plan §3 — the variant×polarity
+// cure for the "wrong-form-looked-right" hole). One codepath, exercised across
+// the whole grid:
+//
+//   con_var axis (the DEFTRAIT head):
+//     applied `(Functor f)`   → genuinely higher-kinded; proceeds to the impl
+//     bare-return `(X a)` (a only as bare return)  → DECLARATION-time reject
+//     bare-arg    `(X a)` (a only as bare param)   → DECLARATION-time reject
+//   target axis (the HK impl pairing `(Trait Constructor)`):
+//     primitive        → §7.3.5 Case 2 "not a type constructor"
+//     wrong-arity ADT  → §7.3.5 Case 2 arity reject
+//     well-kinded ADT  → ACCEPT (dispatch)
+//   slot-1 echo axis (§7.3.5 Case-3 seam, hkt.md §5.4 step 3):
+//     bare head on HK trait / parenthesized head on conventional trait → shape
+//     reject; wrong con_var spelling on HK trait → spelling reject.
+//
+// The declaration-reject rows subsume the old §5.4 "bare-con_var impl-on-primitive
+// silently accepted → backend `undefined function` leak": the trait now cannot
+// register, so the impl never runs and no codegen leak can arise. The former
+// leak becomes a POSITIVE guard (0628's core symptom, now the thing we pin the
+// absence of). Diagnostics asserted mode-uniform (REPL ≡ `--run` ≡ `--link`) per
+// class (AG-2). Spec: spec/07-traits.md §7.2.1 (declaration), §7.3.4/§7.3.5
+// (impl form + kind-check). Design: design/typecheck/hkt.md §5.1/§5.4.
+// =============================================================================
+
+// ---- con_var axis: applied × primitive — the check-gate-leak flip (TB-2) -----
+
+// spec: spec/07-traits.md §7.2.3 / §7.3.5 Case 2 — a genuinely higher-kinded
+// trait impl'd on a PRIMITIVE is rejected at the §7.3.5 Case-3 kind-check seam
+// with a clean §7.2-class diagnostic ("not a type constructor"), located and
+// check-side. The 0628 core symptom — a source-level fault leaking past the
+// check boundary as a backend `undefined function` / `codegen error` — MUST NOT
+// occur: it becomes a POSITIVE guard here. Asserted across all three modes.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S110 owner=/dev
+#[test]
+fn hkt_on_primitive_no_backend_undefined_function_leak_neg() {
+    const SRC: &str = "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+                       (impl (Functor f) (Functor Int) (defn fmap [func x] x))\n";
+    // REPL facet + the leak-absence guard.
+    let repl = repl_prims(SRC);
+    let rc = format!("{}{}", repl.stdout, repl.stderr).to_lowercase();
+    assert!(
+        rc.contains("not a type constructor"),
+        "REPL: HK impl on primitive `Int` MUST be a clean §7.2.3 check-side reject; got:\n{rc}"
+    );
+    // `--run` + `--link` facets — same class of rejection (AG-2 mode-uniformity).
+    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    for (label, out) in [("--run", &run), ("--link", &link), ("repl", &repl)] {
+        let c = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+        assert!(
+            !c.contains("undefined function") && !c.contains("codegen error"),
+            "{label}: the HK-on-primitive reject MUST stay check-side — NO backend \
+             `undefined function` / `codegen error` leak (0628 core symptom); got:\n{c}"
+        );
+    }
+    assert_ne!(run.status.code(), Some(0), "--run must not compile the primitive HK impl clean");
+    assert_ne!(link.status.code(), Some(0), "--link must not compile the primitive HK impl clean");
+}
+
+// ---- con_var axis: never-applied (bare-return / bare-arg) → declaration reject
+
+// spec: spec/07-traits.md §7.2.1 — a parenthesized `deftrait` head whose type
+// parameter is NEVER APPLIED `(a …)` is malformed and rejected AT the deftrait.
+// bare-RETURN shape: `a` occurs only as a bare method return. The diagnostic
+// names the fix (the bare head + `self` form). This is A2 (rejection moved to
+// declaration time); the `(impl … Int)` question never arises.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl found=S110 owner=/dev
+#[test]
+fn deftrait_bare_return_convar_never_applied_rejected_neg() {
+    let out = repl_prims("(deftrait (Zeroable a) (zed [] :a))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("; deftrait"),
+        "a never-applied con_var `(Zeroable a)` MUST be rejected at the deftrait, \
+         NOT registered (§7.2.1); got:\n{c}"
+    );
+    assert!(
+        c.contains("never applied") && c.contains("self"),
+        "the declaration-reject diagnostic MUST name the fault (con_var never \
+         applied) and the fix (bare head + `self`); got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.2.1 — bare-ARG shape: the con_var `a` occurs only
+// as a bare method PARAMETER type, never applied. Same declaration-time reject.
+// The polarity twin of the bare-return row (both never-applied shapes reject).
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl found=S110 owner=/dev
+#[test]
+fn deftrait_bare_arg_convar_never_applied_rejected_neg() {
+    let out = repl_prims("(deftrait (Container a) (unwrap [:a x] Int))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("; deftrait"),
+        "a never-applied con_var `(Container a)` (bare-arg) MUST be rejected at the \
+         deftrait (§7.2.1); got:\n{c}"
+    );
+    assert!(
+        c.contains("never applied") && c.contains("self"),
+        "the declaration-reject diagnostic MUST name the fault and the `self` fix; got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.2.1 — the full 0628 repro transcript. A never-applied
+// `(Container a)` decl + its impl + a use: the decl rejects, so the impl `unknown
+// trait`s and the use is a clean `undefined variable` — all CHECK-side. The old
+// `:a 7` unresolved-var display and the backend `undefined function` leak are
+// BOTH absent (0628's three symptoms all closed by the single declaration reject).
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl found=S110 owner=/dev
+#[test]
+fn bare_convar_full_0628_repro_no_leak_and_no_unresolved_var_display_neg() {
+    let out = repl_prims(
+        "(deftrait (Container a) (unwrap [:a x] :a))\n\
+         (impl (Container a) (Container Int) (defn unwrap [x] x))\n\
+         (unwrap 7)\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    let lc = c.to_lowercase();
+    assert!(
+        c.contains("never applied"),
+        "the decl MUST reject (the 0628 root); got:\n{c}"
+    );
+    assert!(
+        !lc.contains("undefined function") && !lc.contains("codegen error"),
+        "NO backend leak may reach the surface (0628 symptom 1); got:\n{c}"
+    );
+    assert!(
+        !c.contains(":a 7") && !c.contains(":user/a"),
+        "the unresolved-con_var display `:a 7` MUST NEVER appear (0628 symptom 2); got:\n{c}"
+    );
+}
+
+// ---- slot-1 echo axis: shape + spelling rejects (§7.3.5 Case-3, hkt.md §5.4) --
+
+// spec: spec/07-traits.md §7.3 "Slot 1 is fixed" — the migration-era diagnostic:
+// an OLD-form bare-head impl `(impl Functor Option …)` of a higher-kinded trait
+// is rejected, and the diagnostic NAMES THE NEW FORM (echo the declared head).
+// Highest user-facing value (TB-9): the pre-b2 corpus wrote exactly this.
+#[test]
+fn old_form_hkt_impl_bare_head_rejected_names_new_form_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl Functor Option (defn fmap [func x] x))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("higher-kinded") && c.contains("echo"),
+        "a bare-head impl of an HK trait MUST be rejected naming the new echoed-head \
+         form `(Functor f)`; got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, spelling
+// bit) — a parenthesized head with the WRONG con_var spelling `(Functor g)`
+// passes the shape bit but its spelling `g` ≠ the declared `f`; the located
+// diagnostic names BOTH spellings and the verbatim expected form (TB-11).
+#[test]
+fn hkt_impl_echo_wrong_convar_spelling_rejected_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor g) (Functor Option) (defn fmap [func x] x))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("(Functor g)") && c.contains("(Functor f)"),
+        "the echo-spelling reject MUST name BOTH the written `(Functor g)` and the \
+         declared `(Functor f)` head; got:\n{c}"
+    );
+    assert!(
+        c.contains("declared") && (c.contains("spelled") || c.contains("verbatim")),
+        "the diagnostic MUST direct to reproducing the declared head verbatim; got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, shape bit)
+// — a parenthesized (echoed) head on a CONVENTIONAL (kind-`*`) trait is rejected:
+// its impl head is the bare trait name (TB-10). The polarity mirror of the
+// bare-head-on-HK-trait reject above.
+#[test]
+fn conventional_impl_parenthesized_head_rejected_neg() {
+    let out = repl_prims(
+        "(deftrait Disp (shw [self] Int))\n\
+         (impl (Disp x) Int (defn shw [w] 5))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("conventional") && c.contains("bare name"),
+        "a parenthesized head on a conventional trait MUST be rejected, directing \
+         to the bare-name form; got:\n{c}"
+    );
+}
+
+// ---- target axis: the slot-2 kind rejections (§7.3.5 Case 1 & Case 2) ---------
+
+// spec: spec/07-traits.md §7.3.5 Case 2 — wrong-arity ADT: the pairing
+// `(Functor Pair)` names a constructor of arity 2, but Functor's con_var is used
+// at arity 1. Rejected naming the constructor, its arity, and the trait (TB-16
+// sibling; direct, non-prelude-provenance form of the arity reject).
+#[test]
+fn hkt_impl_wrong_arity_pair_rejected_neg() {
+    // `Pair` is prelude-provided (arity 2). The pairing arg `Pair` is a bare
+    // constructor whose arity (2) ≠ Functor's expected arity (1).
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Functor Pair) (defn fmap [func x] x))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("Pair") && c.contains("2") && c.contains("arity"),
+        "the pairing `(Functor Pair)` MUST be rejected naming Pair's arity (2) vs \
+         the trait's expected arity (1); got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 2 — a fully-applied type inside the pairing
+// `(Functor (Option Int))` is not a bare constructor. The e2e surface catches
+// this at PARSE (slot 2's inner element is a list, not a symbol): a located parse
+// error rejects it before the typecheck kind-mismatch seam. (The typecheck-layer
+// "kind-mismatch: slot 2 names the bare constructor" wording is unit-reachable
+// only — impl_check/tests.rs::hkt_impl_applied_type_in_pairing_rejected — because
+// the parser rejects the applied inner element first; verify-example-well-formed.)
+#[test]
+fn hkt_impl_applied_type_in_pairing_rejected_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Functor (Option Int)) (defn fmap [func x] x))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("parse error") && c.contains("impl target"),
+        "an applied inner element in the pairing `(Functor (Option Int))` MUST be \
+         rejected (located parse error on the impl target); got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 1 — the SOLE conventional-trait rejection:
+// a bare / under-applied constructor target `(impl Disp Option)` — `Option` is a
+// constructor, not a type; apply it (TB-13).
+#[test]
+fn conventional_impl_bare_constructor_target_rejected_neg() {
+    let out = repl_prims(
+        "(deftrait Disp (shw [self] Int))\n\
+         (impl Disp Option (defn shw [w] 5))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("Option") && c.contains("constructor, not a type"),
+        "a bare constructor target on a conventional trait MUST be rejected \
+         (`Option` is a constructor, not a type — apply it); got:\n{c}"
+    );
+}
+
+// ---- target axis: well-kinded ADT positive — a user ADT, two-impl dispatch ----
+
+// spec: spec/07-traits.md §7.3.4 / §7.3.5 Case 2 — the well-kinded ADT positive
+// grid cell over a USER-declared constructor (not the prelude Option). A local
+// `(deftype (Box a) …)` is a well-kinded arity-1 constructor; the echoed-head
+// impl registers and `fmap` dispatches over it (TB-17: the well-kinded ADT cell,
+// distinct provenance from the prelude-Option positive above).
+#[test]
+fn hkt_impl_on_user_well_kinded_adt_dispatches() {
+    repl_prims(
+        "(deftype (Box a) (Boxed [:a v]))\n\
+         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Functor Box)\n  (defn fmap [func b]\n    (match b [(Boxed v) (Boxed (func v))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Boxed 41)) [(Boxed v) v])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// ---- mode-uniformity (AG-2): one guard per rejection CLASS across all modes ---
+
+// spec: spec/07-traits.md §7.2.1 — the DECLARATION-reject class is mode-uniform:
+// a never-applied `(Zeroable a)` head is rejected under REPL, `--run`, AND
+// `--link`, each naming the `self` fix. A new reject is a new opportunity for a
+// REPL/`--run`/`--link` split; this makes the class loud once.
+#[test]
+fn never_applied_head_declaration_reject_is_mode_uniform_neg() {
+    const DECL: &str = "(deftrait (Zeroable a) (zed [] :a))\n";
+    let repl = repl_prims(DECL);
+    let run = run_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
+    let link = link_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
+    for (label, out) in [("repl", &repl), ("--run", &run), ("--link", &link)] {
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            c.contains("never applied") && c.contains("self"),
+            "{label}: the never-applied declaration reject MUST fire with the same \
+             §7.2.1 diagnostic core (mode-uniform, AG-2); got:\n{c}"
+        );
+    }
+    assert_ne!(run.status.code(), Some(0), "--run must reject the malformed decl");
+    assert_ne!(link.status.code(), Some(0), "--link must reject the malformed decl");
+}
+
+// spec: spec/07-traits.md §7.3.5 Case-3 — the ECHO-shape-mismatch class is
+// mode-uniform: a bare-head impl of an HK trait is rejected naming the echoed
+// form under REPL, `--run`, AND `--link`.
+#[test]
+fn hkt_echo_shape_mismatch_reject_is_mode_uniform_neg() {
+    const SRC: &str = "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+                       (impl Functor Option (defn fmap [func x] x))\n";
+    let repl = repl_prims(SRC);
+    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    for (label, out) in [("repl", &repl), ("--run", &run), ("--link", &link)] {
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            c.contains("higher-kinded") && c.contains("echo"),
+            "{label}: the echo-shape-mismatch reject MUST fire with the same §7.3.5 \
+             diagnostic core (mode-uniform, AG-2); got:\n{c}"
+        );
+    }
+    assert_ne!(run.status.code(), Some(0), "--run must reject the bare-head HK impl");
+    assert_ne!(link.status.code(), Some(0), "--link must reject the bare-head HK impl");
+}
+
+// =============================================================================
+// W5.1 REMEDIATION — two wrong-ACCEPT axes the W5 /review BLOCK confirmed live,
+// both landing RED ahead of the W5.1 /dev fix (design hkt.md §5.4):
+//
+//   B1 pairing-head-mismatch (§7.3.5 Case-2 4th HK rejection): the b2 Case-3 seam
+//     binds `Applied(_pairing_head, args)` and DISCARDS the head — a pairing whose
+//     head names a different / nonexistent trait silently registers under slot 1
+//     and dispatches. The head MUST name the trait slot 1 resolves to (FQ-identity).
+//   I1 conventional over-applied (§7.3.5 Case-1): the conventional arity guard is
+//     `>` (under-application only), not `!=`; an over-applied target `(Option Int
+//     Int)` is silently accepted. The `>` MUST generalise to `!=`.
+//
+// The MATCHING positive twin (`(Functor Option)` accepts + dispatches) is already
+// covered by `hkt_impl_targets_bare_type_constructor_not_applied_form` and
+// `hkt_impl_on_user_well_kinded_adt_dispatches` — referenced, not duplicated.
+//
+// UNPINNED pending user ruling (S112 W5.1): qualified/bare same-trait pairing head
+// — `(impl (fmt/Functor f) (Functor Option) …)` (qualified slot 1, bare pairing
+// head, SAME resolved trait). Left out entirely; NOT a wave blocker — the
+// different/nonexistent-head rejection below rejects under BOTH the resolved-
+// identity and verbatim-spelling readings.
+// Spec: spec/07-traits.md §7.3.5. Design: design/typecheck/hkt.md §5.4.
+// =============================================================================
+
+// ---- B1: the pairing-head-mismatch axis (§7.3.5 Case-2 4th rejection) ---------
+
+// spec: spec/07-traits.md §7.3.5 Case 2 — pairing-head mismatch (4th HK rejection):
+// a trait-constructor pairing whose head names a NONEXISTENT trait `(NotFunctor
+// Option)` MUST be rejected — the pairing head must name the trait slot 1 resolves
+// to. The reject names BOTH the written `(NotFunctor Option)` and the expected
+// `(Functor Option)`. Twin-asserts NO dispatch: the current wrong-accept
+// (impl_check.rs:98 discards the pairing head) silently registers `impl
+// user/Functor for user/Option` and lets `fmap` dispatch → `:primitives/Int 100`.
+// Cross-mode (REPL + --run + --link) per the AG-2 uniformity convention.
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S112 owner=/dev
+#[test]
+fn hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg() {
+    const SRC: &str = "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+                       (impl (Functor f) (NotFunctor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n";
+    // REPL facet: the diagnostic + the dispatch-absence twin. The trailing `fmap`
+    // call dispatches to `:primitives/Int 100` under the wrong-accept.
+    let repl = repl_prims(&format!(
+        "{SRC}(match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n"
+    ));
+    let rc = format!("{}{}", repl.stdout, repl.stderr);
+    assert!(
+        rc.contains("(NotFunctor Option)") && rc.contains("(Functor Option)"),
+        "the pairing-head-mismatch reject MUST name BOTH the written \
+         `(NotFunctor Option)` and the expected `(Functor Option)` (§7.3.5 Case-2 \
+         4th rejection); got:\n{rc}"
+    );
+    assert!(
+        !repl.stdout.contains(":primitives/Int 100"),
+        "NO dispatch may occur — the rejected impl MUST NOT register + let `fmap` \
+         dispatch to `:primitives/Int 100` (twin-assert absence); got:\n{}",
+        repl.stdout
+    );
+    assert!(
+        !repl.stdout.contains("impl user/Functor for user/Option"),
+        "the rejected impl MUST NOT register (no `impl user/Functor for user/Option` \
+         echo); got:\n{}",
+        repl.stdout
+    );
+    // Cross-mode facet (AG-2): the reject fires uniformly under --run and --link.
+    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    for (label, out) in [("--run", &run), ("--link", &link)] {
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            c.contains("(NotFunctor Option)") && c.contains("(Functor Option)"),
+            "{label}: the pairing-head-mismatch reject MUST fire with the same \
+             §7.3.5 diagnostic core (mode-uniform); got:\n{c}"
+        );
+    }
+    assert_ne!(run.status.code(), Some(0), "--run must reject the mismatched pairing head");
+    assert_ne!(link.status.code(), Some(0), "--link must reject the mismatched pairing head");
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 2 — pairing-head mismatch, the DIFFERENT-
+// real-trait variant: a second genuine HK trait `Mappy` used as the pairing head
+// `(impl (Functor f) (Mappy Option) …)` MUST be rejected — the head resolves to a
+// trait, but not the one slot 1 (`Functor`) names (FQ-identity compare, not
+// spelling). Asserts the impl did NOT register under Functor: a bare `Functor`
+// lookup's `; impl:` section MUST NOT list `Option`. Under the current wrong-accept
+// slot 1 wins and `Functor` silently gains `Option`.
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S112 owner=/dev
+#[test]
+fn hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (deftrait (Mappy f) (mapp [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Mappy Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         Functor\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("(Mappy Option)") && c.contains("(Functor Option)"),
+        "the different-real-trait pairing-head reject MUST name BOTH the written \
+         `(Mappy Option)` and the expected `(Functor Option)` (§7.3.5 Case-2); got:\n{c}"
+    );
+    // Registration-absence: the bare `Functor` lookup's `; impl:` section MUST NOT
+    // list `Option` (the impl was rejected, never registered under slot 1). Extract
+    // the section body the same way
+    // `hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_head`
+    // does. An empty / absent section (post-fix) satisfies the assertion vacuously.
+    let impl_body: Vec<String> = out
+        .stdout
+        .lines()
+        .skip_while(|l| l.trim() != "; impl:")
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with(';'))
+        .map(|l| l.trim_start_matches(';').trim().to_string())
+        .collect();
+    assert!(
+        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        "the rejected impl MUST NOT register under `Functor` — its `; impl:` section \
+         MUST NOT list `Option`; impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
+// ---- I1: the conventional over-applied axis (§7.3.5 Case 1) -------------------
+
+// spec: spec/07-traits.md §7.3.5 Case 1 — the conventional over-applied target
+// (I1): `(impl Disp (Option Int Int))` applies `Option` (arity 1) to 2 args. The
+// existing `>` under-application guard MUST generalise to `!=`; `provided (2) !=
+// arity (1)` rejects with "takes 1 type parameter but is applied to 2". Twin-
+// asserts no registration. Currently wrong-ACCEPTS (registers `impl user/Disp for
+// user/Option`).
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S112 owner=/dev
+#[test]
+fn conventional_impl_over_applied_target_rejected_no_dispatch_neg() {
+    let out = repl_prims(
+        "(deftrait Disp (shw [self] Int))\n\
+         (impl Disp (Option Int Int) (defn shw [w] 5))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("1 type parameter") && c.contains("applied to 2"),
+        "the over-applied conventional target `(Option Int Int)` MUST be rejected \
+         naming the arity surplus (`takes 1 type parameter but is applied to 2`, \
+         §7.3.5 Case 1); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("impl user/Disp for user/Option"),
+        "the rejected over-applied impl MUST NOT register (no `impl user/Disp for \
+         user/Option` echo — twin-assert absence); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 1 — the exactly-arity POSITIVE twin of the
+// over-applied reject: `(impl Disp (Option Int))` applies `Option` to exactly its
+// arity (1). It MUST accept (register) NOW and stay green when the arity guard
+// generalises `>` → `!=` (`provided == arity == 1`, so `!=` never fires) — the
+// guard-generalisation hazard fence (hkt.md §5.4 Case-1 "Care").
+//
+// NOTE (S112 W5.1 finding — see the /testing report): the design's LITERAL poly-
+// applied twin `(impl Disp (Option a))` — a BARE type variable — is NOT green
+// today. It wrong-rejects with `unknown type a` BEFORE reaching the arity gate
+// (pre-existing, orthogonal to I1's arity concern; the canonical inline-constrained
+// form `(impl Display (Option :Display a))` from spec §7.3.3 wrong-rejects the same
+// way, and spec §7.3.5 line 352 `(impl Display (Option a)) ✓` is un-annotated /
+// untested). The concrete `(Option Int)` reaches and passes the arity gate with
+// `provided == arity == 1`, so it is the sound green fence for the generalisation.
+#[test]
+fn conventional_impl_exactly_arity_target_accepts_arity_gate_fence() {
+    repl_prims(
+        "(deftrait Disp (shw [self] Int))\n\
+         (impl Disp (Option Int) (defn shw [w] 5))\n",
+    )
+    .assert_stdout_contains("impl user/Disp for user/Option");
 }
 
 // spec: spec/07-traits.md §7.5 + spec/04-expressions.md §4.6.3 — calling a

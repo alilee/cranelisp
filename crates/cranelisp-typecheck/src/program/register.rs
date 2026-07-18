@@ -821,10 +821,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // keys the clause's `Concrete` entry — so all six carriers agree by
             // construction and order-independence is unrepresentable (Principle 24),
             // not repaired.
+            // N1 (S112 W2.1 review minor): the selected clause's mangled name is
+            // always one of `variants` (it was chosen from that very set), so the
+            // position lookup is a hard invariant, not a silent-`0` fallback — a
+            // miss would silently defer the WRONG variant's dispatch (P18/P25).
             let variant_index = variants
                 .iter()
                 .position(|(_, _, m)| *m == mangled_name)
-                .unwrap_or(0);
+                .expect(
+                    "invariant: the self-call's selected clause mangle is one of \
+                     the defn's variants",
+                );
             state
                 .deferred_self_call_dispatch
                 .push((span, base_name.clone(), variant_index));

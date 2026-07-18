@@ -84,16 +84,19 @@ pub(crate) fn make_test_trait_decl() -> TraitDecl {
     TraitDecl {
         name: TraitName::from("TestTrait"),
         docstring: None,
-        type_params: vec![Symbol::from("a")],
+        // Conventional (kind-`*`) trait: bare head, empty `type_params`, `self`
+        // for the implementing type (S112 settled model — the old
+        // `type_params: ["a"]` + bare-`a` form is now a declaration-time reject).
+        type_params: vec![],
         methods: vec![
             TraitMethodSig {
                 name: Symbol::from("test-op"),
                 docstring: None,
                 params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("lhs"), TypeExpr::SelfType),
+                    (Symbol::from("rhs"), TypeExpr::SelfType),
                 ],
-                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                ret_type: TypeExpr::SelfType,
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
                 default_body: None,
@@ -191,15 +194,18 @@ pub(crate) fn register_num_for_int(tc: &mut TestFixture) {
     let num_decl = TraitDecl {
         name: TraitName::from("Num"),
         docstring: None,
-        type_params: vec![Symbol::from("a")],
+        // Conventional (kind-`*`) trait: the `Num self` constraint rides `self`
+        // for constrained-fn detection (S112 settled model requires `SelfType`,
+        // not merely empty `type_params`).
+        type_params: vec![],
         methods: vec![TraitMethodSig {
             name: Symbol::from("+"),
             docstring: None,
             params: vec![
-                (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                (Symbol::from("lhs"), TypeExpr::SelfType),
+                (Symbol::from("rhs"), TypeExpr::SelfType),
             ],
-            ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+            ret_type: TypeExpr::SelfType,
             span: Span::SYNTHETIC,
             hkt_param_index: None,
             default_body: None,

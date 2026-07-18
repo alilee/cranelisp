@@ -120,7 +120,7 @@
 ;; apply-arguments -- `(func a)` and `(func b)` -- so both applications spark
 ;; and run in parallel. This `fmap` IS a parallel map: there is nothing extra
 ;; to write.
-(impl Functor Pair
+(impl (Functor f) (Functor Pair)
   (defn fmap [func p]
     (match p
       [(Pair a b) (Pair (func a) (func b))])))           ;; both apps spark

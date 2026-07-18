@@ -175,3 +175,122 @@ fn test_no_operators_at_startup() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// S112 — kind derived ONCE at declaration; the never-applied `(X a)` head is a
+// declaration-time reject (spec §7.1/§7.2.1; `design/typecheck/hkt.md` §5.1).
+// ---------------------------------------------------------------------------
+
+use cranelisp_types::{Span, TraitDecl, TraitMethodSig, TypeExpr, TypeRef};
+
+/// `(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))` — a
+/// genuinely higher-kinded trait: the con_var `f` is APPLIED in the method sig.
+fn functor_decl() -> TraitDecl {
+    TraitDecl {
+        name: TraitName::from("Functor"),
+        docstring: None,
+        type_params: vec![Symbol::from("f")],
+        methods: vec![TraitMethodSig {
+            name: Symbol::from("fmap"),
+            docstring: None,
+            params: vec![
+                (
+                    Symbol::from("func"),
+                    TypeExpr::FnType(
+                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                        Box::new(TypeExpr::TypeVar(Symbol::from("b"))),
+                    ),
+                ),
+                (
+                    Symbol::from("x"),
+                    TypeExpr::Applied(
+                        TypeRef::new(None, TypeName::from("f")),
+                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                    ),
+                ),
+            ],
+            ret_type: TypeExpr::Applied(
+                TypeRef::new(None, TypeName::from("f")),
+                vec![TypeExpr::TypeVar(Symbol::from("b"))],
+            ),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_body: None,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    }
+}
+
+// spec: 07-traits §7.1/§7.2.1 — NEGATIVE. A parenthesized head whose con_var is
+// NEVER applied is malformed and rejected AT `deftrait` (declaration time), not
+// at impl time. `(deftrait (Zeroable a) (zed [] :a))` — `a` bare in the return,
+// never `(a …)`. The diagnostic names the con_var and points at the bare-head +
+// `self` fix.
+#[test]
+fn deftrait_never_applied_head_var_rejected_at_declaration() {
+    let mut tc = tf_prims();
+    let decl = TraitDecl {
+        name: TraitName::from("Zeroable"),
+        docstring: None,
+        type_params: vec![Symbol::from("a")],
+        methods: vec![TraitMethodSig {
+            name: Symbol::from("zed"),
+            docstring: None,
+            params: vec![],
+            ret_type: TypeExpr::TypeVar(Symbol::from("a")), // bare `a`, never applied
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_body: None,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    let err = tc
+        .register_trait_decl_self(&decl)
+        .expect_err("a never-applied `(Zeroable a)` head is malformed (§7.2.1)");
+    let msg = err.message();
+    assert!(msg.contains("Zeroable"), "diagnostic names the trait: {msg}");
+    assert!(msg.contains('a'), "diagnostic names the con_var: {msg}");
+    assert!(msg.contains("self"), "diagnostic points at the bare-head + self fix: {msg}");
+    // And nothing registered.
+    assert!(tc.lookup_trait_decl(&TraitName::from("Zeroable")).is_none());
+}
+
+// spec: 07-traits §7.2 — POSITIVE (kind-derivation collapse, HKT side). A trait
+// whose con_var IS applied `(f a)` registers via the HKT path — `register_hkt_trait`
+// sets `hkt_param_index: Some(_)` on the stored method sig, the observable that
+// the declaration-derived kind routed correctly (no usage re-scan downstream).
+#[test]
+fn deftrait_applied_con_var_registers_as_hkt() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&functor_decl())
+        .expect("an applied-con_var trait is genuinely HKT and must register");
+    let info = tc
+        .lookup_trait_decl(&TraitName::from("Functor"))
+        .expect("Functor registered");
+    assert_eq!(info.type_params, vec![Symbol::from("f")], "HKT: non-empty type_params");
+    assert_eq!(
+        info.methods[0].hkt_param_index,
+        Some(1),
+        "register_hkt_trait set the dispatch param index (x at idx 1)"
+    );
+}
+
+// spec: 07-traits §7.1 — POSITIVE (kind-derivation collapse, conventional side).
+// A bare-head `self` trait registers via the conventional path and NEVER routes
+// to `register_hkt_trait` — empty `type_params`, `hkt_param_index: None`.
+#[test]
+fn deftrait_bare_head_registers_conventional_not_hkt() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&make_nullary_return_poly_trait_decl())
+        .expect("a bare-head self trait registers conventionally");
+    let info = tc
+        .lookup_trait_decl(&TraitName::from("NullaryRP"))
+        .expect("NullaryRP registered");
+    assert!(info.type_params.is_empty(), "conventional: empty type_params");
+    assert_eq!(
+        info.methods[0].hkt_param_index, None,
+        "the conventional path never sets hkt_param_index"
+    );
+}
