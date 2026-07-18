@@ -290,7 +290,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
 
             if let Some(mono) = self.monomorphise_call(
-                state, fn_name, &arg_types, *call_span, home_module.as_ref(),
+                state, fn_name, &arg_types, *call_span, home_module.as_ref(), None,
             )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
@@ -348,7 +348,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // skips that unify cleanly. `home` is `Some(defining_module)` for
                 // an IMPORTED generic fn-value (FIXME 0488 sig b), `None` local.
                 self.monomorphise_call(
-                    state, arg_name, param_types, Span::SYNTHETIC, home.as_ref(),
+                    state, arg_name, param_types, Span::SYNTHETIC, home.as_ref(), None,
                 )?
             {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());

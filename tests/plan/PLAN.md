@@ -3800,3 +3800,34 @@ enumerated case has a fail-on-revert guard; (5) IR-1 reduction runs as its
 own lane (environment-bound — coordinate with `/sprint` for the firing
 environment). Standing REDs (CW-1..4, SG-1/QQ-6, RD-1/RD-2, C4-1) are already
 committed — no re-authoring; they are their waves' acceptance criteria.
+
+## Sprint 112 — the 0628/I-C compiler wave (Phase-3 exit gate, 2026-07-18, /qa)
+
+**The full S112 plan lives in `plan/s112-0628-ic-wave.md`** (kept separate:
+the sprint is dominated by an UNWIND — rewriting superseded rejection assets
+to the S111-settled spec — and the per-asset disposition/preservation tables
+are working detail). This section is the durable index:
+
+- **Row families**: MS-1..10 (leg (a) §5.1.2 back-flow: rp4 anchor, poly+
+  concrete positive, boundary twins, §5.1.1 definition-site RED MS-6);
+  UW-1..12 (the unwind checklist — includes the 0432 Face-B trio 0642's list
+  missed); TB-1..19 (leg (b) declaration-reject + 3-valued echo × kind +
+  §7.3.5 slot-2 matrix + parse-diagnostic rows); AG-1..6 (arch gates: stale-
+  cache wholesale refusal, per-class mode-uniformity, `.meta.json`
+  byte-identity, return-type dispatch ×3 modes ×2 contexts, before/after
+  corpus run, prelude-fixture cleanliness); CP-1..4 (constrained-poly ×
+  multi-sig cell, user-ruled in-scope); RT-1..3 (new-form round-trip:
+  `/sexp`, `/source`, `user.cl` regeneration).
+- **Flag rulings** (s112 plan §7): §5.1.1 definition-site unifiable-overlap
+  check is OWED (spec MUST; MS-6 is the record); con_var lowercase row added
+  NOW (single-seam fix at the b0 shared helper); `program/tests.rs`
+  message-pin updates ride the same change-set; **FIXME 0644 position: the
+  leg-(a) no-bump rationale is falsified by the B-2 wrong-accept persisted
+  state — recommend leg (a) rides the 20→21 window** (/arch rules).
+- **Risk read**: `risks.md` §"S112 risk read" (S112-1..7). Ownership/RC-
+  affected rows MS-1b/CP-1b carry the `[oracle]` mark — they graduate into
+  the S113 oracle lane; this sprint they run on established observables only.
+- **Traceability**: no spec band cites a retired-name asset; §5.1.2 heading
+  and §7.3.5 carry `[S112]` markers; Phase-6 re-runs
+  `spec_coverage_reconcile.py` after the migrations and re-points bands
+  directly.

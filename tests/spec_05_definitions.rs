@@ -21,12 +21,23 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(lines)
+        .output()
+}
+
+/// REPL with the `TestStandard` prelude (Num + `+`, Eq, Ord, Option, Result) —
+/// used by the §11.4 constrained-poly × multi-sig cell (CP rows), whose
+/// constrained clause needs the `Num`/`+` trait machinery.
+fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
         .stdin(lines)
         .output()
 }
@@ -969,56 +980,51 @@ fn deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch() {
 }
 
 // =============================================================================
-// §5.1.2 — FIXME 0432: multi-clause `defn` self-call (Face B, unannotated)
+// §5.1.2 — the 0432 Face-B unwind (UW-7, plan §2): unannotated multi-clause
+// `defn` + cross-variant self-call. Under the DRIFTED §5.1.2 this was an
+// `ambiguous type` error (the 1-arg clause "could not pin the recursion").
+// Under the SETTLED rule (S111 `c9f05b64`) the delegating self-call
+// `(sum-to n 0)` pins the 1-arg clause's `n : Int` through the 2-arg sibling
+// (whose `eq-i64`/`add-i64` bodies fix it to `(Fn [Int Int] Int)`) — so the
+// definition COMPILES and `(sum-to 5)` = 5+4+3+2+1+0 = 15.
 //
-// A multi-signature `defn` whose body cross-variant self-calls, with params
-// UNANNOTATED, cannot pin the recursion's type → it is an `ambiguous type`.
-// `design/arch/fixmes/0432-multi-clause-defn-self-call-codegen.md` Face B +
-// `design/typecheck/monomorphisation.md §9`: the CORRECT outcome (both modes)
-// is a clean ambiguous-type error pointing the user at an annotation — NEVER a
-// monomorphiser panic (`monomorphise.rs build_mangled_name` `debug_assert!`).
+// UNWIND note: 0432's list MISSED this trio; /qa caught it (plan UW-7). The
+// three NEGATIVE facets survive the conversion verbatim — no monomorphiser
+// panic banner / no `build_mangled_name`/`non-concrete param` leak, the session
+// stays alive after the form, and REPL ≡ `--run` output. RED at HEAD (the
+// pre-drain scan still rejects); GREEN at leg (a).
 //
-// The §9 root fix is an early concreteness gate at `monomorphise_call` P1
-// (before `build_mangled_name`) so REPL and `--run` converge on ONE clean
-// diagnostic. These e2e rows are the cross-mode convergence guards the FIXME's
-// two-face divergence demands (REPL panic-vs-clean / `--run` clean).
-//
-// The repro form is the minimal Face-B shape (no annotations, bare primitive
-// names via the PrimitivesOnly prelude — free-standing, primitives only):
 //   (defn sum-to ([n] (sum-to n 0))
 //                ([n acc] (if (eq-i64 n 0) acc
 //                             (sum-to (sub-i64 n 1) (add-i64 acc n)))))
 // =============================================================================
 
-/// The minimal Face-B repro: unannotated multi-clause `defn` + cross-variant
-/// self-call. Bare primitive names resolve through the PrimitivesOnly prelude.
-const FIXME_0432_FACE_B: &str =
+/// The Face-B shape: unannotated multi-clause `defn` + cross-variant self-call.
+/// Bare primitive names resolve through the PrimitivesOnly prelude. Under the
+/// settled §5.1.2 it compiles; `(sum-to 5)` = 15.
+const SUM_TO_FACE_B: &str =
     "(defn sum-to ([n] (sum-to n 0)) ([n acc] (if (eq-i64 n 0) acc (sum-to (sub-i64 n 1) (add-i64 acc n)))))";
 
-// spec: spec/05-definitions.md §5.1.2 — 0432.E1: the Face-B form via the REPL
-// produces a clean ambiguous-type error AND the session does NOT crash — no
-// panic banner, and a FOLLOWING form still evals. The monomorphiser
-// `debug_assert!` MUST NOT escape the eval thread (it fired in debug builds,
-// crashing the REPL pre-fix). Post-§9-fix: clean error, session alive.
+// spec: spec/05-definitions.md §5.1.2 — UW-7.E1: the Face-B form via the REPL
+// COMPILES and `(sum-to 5)` = 15; the session does NOT crash (no panic banner,
+// a following form still evals). Preserved negatives: no monomorphiser panic /
+// `build_mangled_name` / `non-concrete param` leak.
 #[test]
-fn multi_clause_defn_self_call_repl_clean_error_not_panic() {
-    // Follow the failing defn with an independent, well-typed form: if the
-    // session crashed on the defn, this second form never evals.
-    let out = repl_prims(&format!("{FIXME_0432_FACE_B}\n(add-i64 2 3)\n"));
+fn multi_clause_defn_self_call_repl_accepts_and_runs() {
+    let out = repl_prims(&format!("{SUM_TO_FACE_B}\n(sum-to 5)\n(add-i64 2 3)\n"));
     let combined = format!("{}{}", out.stdout, out.stderr);
 
-    // (i) the clean ambiguous-type error appears, pointing at an annotation.
+    // (i) the back-flow makes the recursion compile and run to 15.
     assert!(
-        combined.contains("ambiguous type"),
-        "the Face-B self-call MUST surface a clean `ambiguous type` error per \
-         §5.1.2 / monomorphisation §9.4; got stdout={} stderr={}",
+        out.stdout.contains(":primitives/Int 15"),
+        "the Face-B self-call MUST COMPILE and `(sum-to 5)` = 15 under the \
+         settled §5.1.2 (the 1-arg clause pins `n : Int` via the delegating \
+         `(sum-to n 0)`); got stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
 
-    // (ii) NO monomorphiser panic escaped the eval thread — the debug_assert!
-    // (`build_mangled_name … non-concrete param`) and any Rust panic banner
-    // must be absent (the robustness blocker the §9 root fix removes).
+    // (ii) PRESERVED negative: no monomorphiser panic escaped the eval thread.
     let lc = combined.to_lowercase();
     assert!(
         !lc.contains("panicked")
@@ -1026,111 +1032,65 @@ fn multi_clause_defn_self_call_repl_clean_error_not_panic() {
             && !combined.contains("non-concrete param")
             && !lc.contains("internal error"),
         "the monomorphiser MUST NOT panic on the Face-B form — a typecheck \
-         panic on user input is a robustness defect (§9.2/§9.3); got stdout={} \
-         stderr={}",
+         panic on user input is a robustness defect; got stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
 
-    // (iii) the session survived: the following independent form still evals.
+    // (iii) PRESERVED negative: the session survived — the following independent
+    // form still evals to 5.
     assert!(
         out.stdout.contains(":primitives/Int 5"),
-        "after the ambiguous-type error the REPL MUST stay alive — the \
-         following `(add-i64 2 3)` must eval to `:primitives/Int 5` (proves no \
-         crash); got stdout={} stderr={}",
+        "the REPL MUST stay alive — the following `(add-i64 2 3)` must eval to \
+         `:primitives/Int 5`; got stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
 }
 
-// spec: spec/05-definitions.md §5.1.2 — 0432.E2: the same Face-B form via
-// `--run` produces the clean ambiguous-type error. This face is the
-// convergence TARGET the REPL face (E1) must match — the `--run` path compiles
-// out the monomorphiser `debug_assert!`, so the §4 ambiguity backstop already
-// reports the clean error (no panic). Pins the target message.
+// spec: spec/05-definitions.md §5.1.2 — UW-7.E2: the same Face-B form via
+// `--run` COMPILES and computes 15 (exit 15). Preserved negative: NO panic /
+// mangler leak on the batch path.
 #[test]
-fn multi_clause_defn_self_call_run_clean_error() {
+fn multi_clause_defn_self_call_run_computes_15() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user(&format!("{FIXME_0432_FACE_B}\n(defn main [] (Pure 0))"))
+        .user(&format!("{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))"))
         .output();
     let combined = format!("{}{}", out.stdout, out.stderr);
 
     assert!(
-        combined.contains("ambiguous type"),
-        "the Face-B self-call via `--run` MUST surface a clean `ambiguous \
-         type` error per §5.1.2 / monomorphisation §9.4; got stdout={} \
-         stderr={}",
+        out.status.code() == Some(15),
+        "the Face-B self-call via `--run` MUST COMPILE and `(sum-to 5)` = 15 ⇒ \
+         exit 15 per the settled §5.1.2; got exit {:?} stdout={} stderr={}",
+        out.status.code(),
         out.stdout,
         out.stderr
     );
-    // No panic / abnormal termination on the batch path.
     let lc = combined.to_lowercase();
     assert!(
         !lc.contains("panicked")
             && !combined.contains("build_mangled_name")
             && !combined.contains("non-concrete param"),
-        "the `--run` path MUST report the clean type error with NO panic; got \
+        "the `--run` path MUST compile with NO panic / mangler leak; got \
          stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
 }
 
-// spec: spec/05-definitions.md §5.1.2 — 0432.E3 (+neg): REPL and `--run`
-// produce the IDENTICAL ambiguous-type diagnostic — the cross-mode convergence
-// the FIXME demands. The +neg is NO REPL/`--run` divergence: neither a panic
-// nor a differing message. (Pre-§9-fix the REPL panicked while `--run` reported
-// the clean error — the exact divergence this guard rejects.)
+// spec: spec/05-definitions.md §5.1.2 — UW-7.E3 (+neg): REPL, `--run`, and
+// `--link` produce the IDENTICAL observation (15) — NO mode divergence, no
+// panic in any mode. The PRESERVED REPL≡run mode-equality negative, now on the
+// accepting form.
 #[test]
 fn multi_clause_defn_self_call_repl_equals_run_neg() {
-    // REPL face.
-    let repl_out = repl_prims(&format!("{FIXME_0432_FACE_B}\n"));
-    let repl_combined = format!("{}{}", repl_out.stdout, repl_out.stderr);
-
-    // `--run` face.
-    let run_out = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
-        .user(&format!("{FIXME_0432_FACE_B}\n(defn main [] (Pure 0))"))
-        .output();
-    let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
-
-    // Both report the ambiguous-type error (neither panics, neither succeeds).
-    assert!(
-        repl_combined.contains("ambiguous type"),
-        "REPL face MUST report `ambiguous type`; got stdout={} stderr={}",
-        repl_out.stdout,
-        repl_out.stderr
-    );
-    assert!(
-        run_combined.contains("ambiguous type"),
-        "`--run` face MUST report `ambiguous type`; got stdout={} stderr={}",
-        run_out.stdout,
-        run_out.stderr
-    );
-
-    // The convergence: the SAME diagnostic core appears in both. Extract the
-    // `ambiguous type …` clause through end-of-line from each mode and assert
-    // they are byte-identical (no message divergence, no panic in one mode).
-    let extract = |s: &str| -> String {
-        s.lines()
-            .find(|l| l.contains("ambiguous type"))
-            .map(|l| {
-                let idx = l.find("ambiguous type").unwrap();
-                l[idx..].to_string()
-            })
-            .unwrap_or_default()
-    };
-    let repl_msg = extract(&repl_combined);
-    let run_msg = extract(&run_combined);
-    assert!(
-        !repl_msg.is_empty() && repl_msg == run_msg,
-        "REPL and `--run` MUST converge on the IDENTICAL ambiguous-type \
-         diagnostic (§9.4) — no divergence, no panic in either mode.\n\
-         repl_msg={repl_msg:?}\nrun_msg={run_msg:?}"
-    );
+    run_through_all_modes(
+        &format!("{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))\n"),
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(15);
 }
 
 // =============================================================================
@@ -1351,46 +1311,37 @@ fn impl_method_colliding_with_field_accessor_rejected_neg() {
 // Plan: tests/plan/PLAN.md §S109 §I.
 // =============================================================================
 
-// spec: spec/05-definitions.md §5.1.2 — the spec's ERROR example: a multi-arity
-// `defn` whose 2-arg delegating clause is unannotated is an ambiguous-type
-// compile-time error (the annotated 3-arg sibling is NOT consulted; the
-// delegating call does not back-flow types). The rejection already fires; the
-// DIAGNOSTIC-QUALITY facet is the RED — the error MUST NAME the offending
-// param/clause (the 0576 `/dev` diagnostic tail) and MUST NOT leak `__expr` (0568).
-// defect: class=silent-accept locus=crates/cranelisp-typecheck (multi-arity ambiguous-clause error names the fn but not the offending param/clause) found=S108 owner=/dev
+// spec: spec/05-definitions.md §5.1.2 — UW-8 RETARGET (plan §2): the OLD SS-3
+// asset asserted this delegating clause was an ambiguous-type ERROR (the drifted
+// "sibling not consulted, no back-flow" reading). Under the SETTLED rule the
+// 2-arg clause's delegating `(rp p rot 0)` pins `p : Position` and
+// `rot : Rotation` through the 3-arg sibling — so the un-annotated delegating
+// clause COMPILES as `(Fn [Position Rotation] Int)`. The old diagnostic-quality
+// facet (names the clause/param, no `__expr` leak) MOVES to MS-7/MS-8's
+// genuinely-unpinned fixture. RED at HEAD (still rejected); GREEN at leg (a).
 #[test]
-fn defn_multi_arity_unpinned_clause_ambiguous_error_names_clause_neg() {
+fn defn_multi_arity_unannotated_delegating_clause_backflow_compiles() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [Pure Int add-i64]])\n\
              (deftype Position PZero)\n\
              (deftype Rotation RZero)\n\
              (defn rp\n\
                ([p rot] (rp p rot 0))\n\
                ([:Position p :Rotation rot :Int idx] idx))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (Pure (add-i64 (rp PZero RZero) 7)))\n",
         )
         .output();
     let text = format!("{}\n{}", out.stdout, out.stderr);
     assert!(
-        !out.status.success(),
-        "an unannotated delegating multi-arity clause MUST be an ambiguous-type \
-         error (§5.1.2); {text}"
-    );
-    assert!(
-        text.contains("rot")
-            || text.contains("clause")
-            || text.contains("variant")
-            || text.contains("arity")
-            || text.contains("2-arg"),
-        "the diagnostic MUST NAME the offending param/clause, not only the fn \
-         name (0576); {text}"
-    );
-    assert!(
-        !text.contains("__expr"),
-        "the diagnostic MUST NOT leak the internal `__expr` binder (0568); {text}"
+        out.status.code() == Some(7),
+        "the un-annotated delegating 2-arg clause `([p rot] (rp p rot 0))` MUST \
+         COMPILE — its params are pinned to Position/Rotation through the 3-arg \
+         sibling (settled §5.1.2). `(rp PZero RZero)` = idx = 0, +7 ⇒ exit 7; \
+         got exit {:?}:\n{text}",
+        out.status.code()
     );
 }
 
@@ -1525,55 +1476,377 @@ fn multi_arity_call_from_main_batch_no_main_neg() {
     );
 }
 
-// spec: spec/05-definitions.md §5.1.2 × spec/03-types.md §3.3 — a free-var
-// annotation does NOT rescue multi-arity ambiguity: the 2-arg delegating clause
-// `([:a p :a rot] (rp p rot 0))` cannot pin `a` from its own body (the delegating
-// call does not back-flow the 3-arg sibling's `:Int` types), so it is the §5.1.2
-// ambiguous-type error naming the clause — NEVER `unknown type `a``. Couples SS-3's
-// diagnostic-quality contract.
-//
-// W6.3 re-grounding (2026-07-14 — verdict UNCHANGED): the superseded W6.2
-// skolem-escape grounding is REMOVED — under W6.3 a bare `:a` pins freely, so the
-// delegating clause's `:a` is in-principle pinnable by delegation (R2 logic +
-// arity-unique dispatch). Whether cross-clause delegation MUST pin (making the
-// fixture compile) is FIXME 0576's open question; the row now stands on §5.1.2's
-// poly-variant rule ALONE. HARD assertions kept: never `unknown type`, never
-// silent acquisition of the sibling's `:Int`s. The accept-vs-ambiguous-variant
-// disposition stays SOFT pending 0576.
-// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_type_expr (free lowercase annotation var absent from var_map fell to TypeNotFound instead of minting a fresh quantified var; W6 fix) found=S109 owner=/dev
+// spec: spec/05-definitions.md §5.1.2 × spec/03-types.md §3.3 — UW-11 HARDEN
+// (plan §2): I-C is SETTLED. The 2-arg delegating clause `([:a p :a rot]
+// (rp p rot 0))` DOES pin `a := Int` — the delegating self-call resolves to the
+// 3-arg `:Int` sibling and unifies the shared written var `a` with `Int`
+// through that clause's signature, exactly as a call to a separate function
+// would. So the definition COMPILES and `(rp 1 2)` = `(rp 1 2 0)` = idx = 0.
+// The two HARD negatives survive: the acquisition is NEVER surfaced as
+// `unknown type`, and the Int is acquired into the SAME written var `a` via
+// delegation (a legitimate pin), never silently smuggled into a DIFFERENT var
+// (no `<invalid`/heap-garbage read). RED at HEAD (still rejected); GREEN at leg (a).
 #[test]
-fn multi_arity_unpinned_free_var_variant_ambiguous_not_unknown_type_neg() {
+fn multi_arity_unpinned_free_var_variant_delegation_pins_accepts() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [Pure Int add-i64]])\n\
              (defn rp\n\
                ([:a p :a rot] (rp p rot 0))\n\
                ([:Int p :Int rot :Int idx] idx))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (Pure (add-i64 (rp 1 2) 5)))\n",
         )
         .output();
     let text = format!("{}\n{}", out.stdout, out.stderr);
+    // HARD negative 1: never `unknown type` for the written free var.
     assert!(
         !text.contains("unknown type"),
-        "an unpinned free-var multi-arity clause MUST route to the §5.1.2 \
-         ambiguity path, NEVER `unknown type` (§3.3.1); got:\n{text}"
+        "the written free var `a` MUST be pinned by delegation, NEVER surfaced \
+         as `unknown type` (§3.3.1); got:\n{text}"
+    );
+    // HARD negative 2: no memory-unsafe wrong-var acquisition.
+    assert!(
+        !text.contains("<invalid"),
+        "the Int MUST be acquired into the SAME var `a` via the delegating call, \
+         never smuggled into a different var producing a wrong-type read \
+         (`<invalid:`); got:\n{text}"
+    );
+    // Accept + run: delegation pins ⇒ compiles; `(rp 1 2)` = 0, +5 ⇒ exit 5.
+    assert!(
+        out.status.code() == Some(5),
+        "delegation pins `a := Int` ⇒ the defn COMPILES and `(rp 1 2)` = 0, +5 \
+         ⇒ exit 5 (settled §5.1.2); got exit {:?}:\n{text}",
+        out.status.code()
+    );
+}
+
+// =============================================================================
+// S112 (0628/I-C wave) — §5.1.1 same-arity-unifiable overlap + §3.11 twin
+// discipline (plan §1: MS-5/MS-6/MS-7/MS-8).
+// =============================================================================
+
+// MS-5 — §5.1.1 same-arity-unifiable clauses WITH a call: `([:Int x] x)` and
+// `([:a x] x)` can unify, so `(f 1)` is a dispatch-ambiguity error (≥2 variants
+// match). GREEN at HEAD (the call-site check already fires) — a must-hold that
+// the leg-(a) rework must not regress.
+// spec: spec/05-definitions.md §5.1.1 — same-arity clauses whose signatures can
+// unify are a dispatch-ambiguity error.
+#[test]
+fn same_arity_unifiable_clauses_call_site_ambiguous_neg() {
+    // REPL facet.
+    let out = repl_prims("(defn f ([:Int x] x) ([:a x] x))\n(f 1)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("ambiguous call") || (c.contains("ambiguous") && c.contains("matching")),
+        "`(f 1)` MUST be a dispatch-ambiguity error — the same-arity `[:Int x]` \
+         and `[:a x]` clauses can unify (§5.1.1); got:\n{c}"
+    );
+    // `--run` facet: the ambiguity is mode-uniform.
+    let run = run_prims_05(
+        "(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure (f 1)))\n",
     );
     assert!(
-        !out.status.success(),
-        "a variant whose free-var params stay unpinned by its own body MUST be \
-         an ambiguous-type error (§5.1.2 — the free var does not rescue it); \
-         got:\n{text}"
+        !run.status.success(),
+        "the same-arity-unifiable call ambiguity MUST also fire under `--run` \
+         (mode-uniform §5.1.1); got exit {:?}:\n{}{}",
+        run.status.code(),
+        run.stdout,
+        run.stderr
+    );
+}
+
+// MS-6 — §5.1.1 same-arity-unifiable at the DEFINITION (no call): `([:Int x] x)`
+// + `([:a x] x)` MUST be a dispatch-ambiguity error reported AT the definition
+// (both colliding clauses named), per the §5.1.2 MUST — "reported at the
+// definition (both colliding clauses named)". RED at HEAD: the current impl only
+// catches strict-EQUAL duplicates at the definition and accepts this
+// can-unify pair silently (it errors only if later CALLED — MS-5). Owner:
+// /dev(typecheck); trigger = this row + the §5.1.2 definition-site MUST.
+// spec: spec/05-definitions.md §5.1.2 — dispatch-ambiguity reported at the
+// definition, both colliding clauses named.
+#[test]
+fn same_arity_unifiable_clauses_definition_site_error_neg() {
+    // REPL facet: the DEFN itself must be rejected (no call site).
+    let out = repl_prims("(defn f ([:Int x] x) ([:a x] x))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("; defn"),
+        "same-arity `[:Int x]` and `[:a x]` clauses can unify — the DEFINITION \
+         MUST be rejected as a dispatch-ambiguity error at the definition site \
+         (§5.1.2 MUST), NOT accepted silently and deferred to the call; got:\n{c}"
+    );
+    // `--run` facet: the definition-site rejection is mode-uniform.
+    let run = run_prims_05(
+        "(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure 0))\n",
     );
     assert!(
-        text.contains("ambig")
-            || text.contains("annotat")
-            || text.contains("rot")
-            || text.contains("clause")
-            || text.contains("variant")
-            || text.contains("arity"),
-        "the diagnostic SHOULD name the offending clause/param (couples SS-3); \
-         got:\n{text}"
+        !run.status.success(),
+        "the same-arity-unifiable definition-site rejection MUST also fire under \
+         `--run` (mode-uniform §5.1.2); got exit {:?}:\n{}{}",
+        run.status.code(),
+        run.stdout,
+        run.stderr
     );
+}
+
+// MS-7 — genuinely-unpinned local, the EQ-twin (the highest-signal shape): a
+// multi-signature clause `([n] (let [u []] n))` and the standalone twin
+// `(defn f1 [n] (let [u []] n))` MUST have the SAME disposition — the
+// separate-mutually-recursive-functions equivalence is the invariant, robust to
+// the monomorphic-let boundary. RED at HEAD: the two DIVERGE (the multi-sig half
+// rejects the `[]` with the pre-drain scan, the standalone accepts it as
+// `(Fn [a] a)`). When they error, the message MUST be §3.11-class, never the
+// false "each arity clause is type-checked independently (§5.1.2)" rationale.
+//
+// PLAN NOTE (routed to /qa): plan §1 states "twin half expected GREEN, SAME
+// assertion both = §3.11-class ambiguous diagnostic", but on HEAD the standalone
+// twin ACCEPTS (`; defn`) rather than emitting a §3.11 error. The robust
+// invariant this row therefore pins is DISPOSITION EQUALITY (multi ≡ standalone),
+// which does not bet on the settled monomorphic-let accept-vs-reject outcome.
+// spec: spec/05-definitions.md §5.1.2 — clause inference-equivalent to the
+// standalone function; spec/03-types.md §3.11 — ambiguity is a use-site property.
+#[test]
+fn unpinned_local_in_clause_matches_standalone_twin_neg() {
+    let multi = repl_prims("(defn f ([n] (let [u []] n)) ([a b] a))\n");
+    let solo = repl_prims("(defn f1 [n] (let [u []] n))\n");
+    let mc = format!("{}{}", multi.stdout, multi.stderr);
+    let sc = format!("{}{}", solo.stdout, solo.stderr);
+    let multi_accepted = mc.contains("; defn");
+    let solo_accepted = sc.contains("; defn");
+    assert_eq!(
+        multi_accepted, solo_accepted,
+        "the multi-signature clause `([n] (let [u []] n))` and the standalone \
+         twin `(defn f1 [n] (let [u []] n))` MUST have the SAME disposition \
+         (clause-equivalent to the standalone function, §5.1.2). They DIVERGE:\n\
+         multi accepted={multi_accepted}\n{mc}\nsolo accepted={solo_accepted}\n{sc}"
+    );
+    // When the multi-sig half errors, it MUST be a §3.11-class ambiguity, never
+    // the drifted "each arity clause is type-checked independently (§5.1.2)"
+    // rationale (the false claim MS-8 also pins).
+    if !multi_accepted {
+        assert!(
+            mc.contains("ambiguous type"),
+            "an unpinned-local rejection MUST be a §3.11-class `ambiguous type` \
+             error; got:\n{mc}"
+        );
+        assert!(
+            !mc.contains("each arity clause is type-checked independently"),
+            "the diagnostic MUST NOT claim the drifted §5.1.2 independence \
+             rationale (superseded); got:\n{mc}"
+        );
+    }
+}
+
+// MS-8 — diagnostic re-grounding: the §3.11 multi-sig ambiguity diagnostic for a
+// genuinely-unpinned clause local still NAMES the offending arity clause (kept),
+// cites §3.11 (the standalone-equivalence ground), and MUST NOT claim "each arity
+// clause is type-checked independently (§5.1.2)" — the false rationale, superseded
+// by the settled inference-equivalence rule.
+//
+// RE-POINTED (W2.1): the prior fixture `(defn q ([x] (let [v x] v)) ([x y] x))` is
+// ADMISSIBLE-poly under the settled §5.1.2 (the let-bound `v` is a genuinely-poly
+// clause, `(Fn [a] a)`), so it now compiles and the diagnostic never fires — the
+// test could no longer pin the message. The genuinely-ambiguous shape is a
+// CONCRETE-signature clause with an internally-unpinned local: `([:Int n] (let [u
+// []] n))` — the `[]` is unpinnable and reaches a codegen position, so the §3.11
+// ambiguity is a genuine use-site property of THIS clause (not the whole defn).
+// GREEN on the leg-(a) working tree (the re-grounded message already fires).
+// spec: spec/05-definitions.md §5.1.2 — the settled inference-equivalence rule
+// (standalone equivalence) replaces the drifted independence rationale;
+// spec/03-types.md §3.11 — ambiguity is a use-site property.
+#[test]
+fn ambiguous_clause_diagnostic_cites_standalone_equivalence() {
+    let out = repl_prims("(defn qq ([:Int n] (let [u []] n)) ([x y] x))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    // The structural facet is KEPT: the diagnostic names the offending arity
+    // clause of `qq` (the re-grounded message: "… bound in the 1-arg arity clause
+    // of `qq` (spec §3.11)").
+    assert!(
+        c.contains("clause") && c.contains("qq"),
+        "the diagnostic MUST still name the offending arity clause of `qq`; \
+         got:\n{c}"
+    );
+    // The RE-GROUNDING ground: it cites §3.11 (standalone-equivalence), NOT the
+    // drifted §5.1.2-independence rationale.
+    assert!(
+        c.contains("§3.11"),
+        "the diagnostic MUST cite §3.11 (the standalone-equivalence ground for \
+         the ambiguity); got:\n{c}"
+    );
+    assert!(
+        !c.contains("each arity clause is type-checked independently"),
+        "the diagnostic MUST NOT claim the drifted rationale 'each arity clause \
+         is type-checked independently (§5.1.2)' — superseded by the settled \
+         inference-equivalence rule; got:\n{c}"
+    );
+    // No internal-name leak: neither the `__`-binder (0568) nor the
+    // monomorphisation `$`-mangle may reach user text.
+    assert!(
+        !c.contains("__expr") && !c.contains("__v") && !c.contains("$Var"),
+        "the diagnostic MUST NOT leak an internal binder (`__expr`/`__v`) or a \
+         monomorphisation mangle (`$Var`); got:\n{c}"
+    );
+}
+
+// =============================================================================
+// S112 §11.4 — the constrained-poly × multi-sig cell (plan §5; USER-RULED
+// in-scope). Prelude: TestStandard (Num + `+`). A constrained clause
+// (`([:a x] (+ x x))`) is spec-admissible under the equivalence rule but
+// rejected-by-construction at HEAD (`collect_defns` filters multi-sig out of
+// `detect_constrained_fns`; the `ConstrainedFn` single-variant invariant).
+// =============================================================================
+
+// CP-1 — a constrained clause is admitted, dispatches, and monomorphises at TWO
+// instantiations: `(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))`;
+// `(g 3)` → 6 (Int instance), `(g 1.5)` → 3.0 (Float instance — the SECOND mono
+// instance of the same clause template), `(g 2 3)` → 5 (concrete 2-arg clause).
+// RED at HEAD (the constrained clause is rejected-by-construction). GREEN when
+// the §11.4 constrained-cell rework lands.
+// spec: spec/05-definitions.md §5.1.2 — a constrained-polymorphic clause is
+// admissible when non-overlapping; monomorphised per concrete use.
+#[test]
+fn constrained_clause_nonoverlapping_arity_dispatches_two_instantiations() {
+    // Two-instantiation facet (REPL): the constrained `([:a x] (+ x x))` clause
+    // monomorphises at Int AND Float.
+    let out = repl_std("(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g 3)\n(g 1.5)\n(g 2 3)\n");
+    out.assert_stdout_contains_all(&[
+        ":primitives/Int 6",       // constrained clause at Int
+        ":primitives/Float 3.0",   // constrained clause at Float — 2nd instance
+        ":primitives/Int 5",       // concrete 2-arg clause: 2+3
+    ]);
+    // Mode-×3 facet: the Int-summable observation is equivalent across modes.
+    run_through_all_modes(
+        "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n\
+         (defn main [] (Pure (add-i64 (g 3) (g 2 3))))\n",
+        PreludeVariant::TestStandard,
+    )
+    .assert_all_equal(11); // (g 3)=6, (g 2 3)=5 → 11
+}
+
+// CP-1b — [oracle] RC balance on constrained-clause dispatch: CP-1's `(g x)` in
+// a loop under `CRANELISP_RC_STATS` (serial by construction — nextest runs each
+// test in its own process). Assert the alloc/free balance is bounded (no leak).
+// RED at HEAD (g rejected ⇒ the loop never runs the expected sum). Graduates
+// into the S113 oracle lane.
+// spec: spec/12-runtime.md §12.3.1 — heap values MUST be freed when unreachable;
+// spec/05-definitions.md §5.1.2 — constrained-clause dispatch reaches codegen.
+#[test]
+fn constrained_clause_dispatch_loop_rc_balanced() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .env("CRANELISP_RC_STATS", "1")
+        .stdin(
+            "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n\
+             (defn gloop [:primitives/Int n :primitives/Int acc] \
+               (if (eq-i64 n 0) acc (gloop (sub-i64 n 1) (add-i64 acc (g n)))))\n\
+             (gloop 200 0)\n",
+        )
+        .output();
+    // Workload-ran facet (RED at HEAD): sum of `(g n)`=2n for n=1..200 = 40200.
+    assert!(
+        out.stdout.contains(":primitives/Int 40200"),
+        "the constrained-clause dispatch loop MUST run: sum(2n, n=1..200) = \
+         40200; got:\n{}{}",
+        out.stdout,
+        out.stderr
+    );
+    // Balance facet: allocs − deallocs is bounded (no per-iteration leak).
+    let line = out
+        .stderr
+        .lines()
+        .find(|l| l.contains("[RC_STATS]"))
+        .unwrap_or_else(|| panic!("no [RC_STATS] line on stderr:\n{}", out.stderr));
+    let field = |k: &str| -> i64 {
+        line.split_whitespace()
+            .find_map(|tok| tok.strip_prefix(&format!("{k}=")))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no {k}= field in RC_STATS line: {line}"))
+    };
+    let imbalance = field("allocs") - field("deallocs");
+    assert!(
+        imbalance.abs() <= 16,
+        "constrained-clause dispatch loop MUST be RC-balanced (bounded \
+         alloc/free imbalance); got imbalance={imbalance} on line: {line}"
+    );
+}
+
+// CP-2 — same-arity constrained × concrete OVERLAP still errors: `([:a x]
+// (+ x x))` + `([:Int x] x)` can unify (the constrained `a` covers `Int`), so it
+// is a dispatch-ambiguity (§5.1.2 overlap rule). RED at HEAD (rejected-by-
+// construction with the false "each arity clause is type-checked independently"
+// rationale, NOT the admitted-then-overlap error).
+// spec: spec/05-definitions.md §5.1.2 — same-arity clauses whose signatures can
+// unify are a dispatch-ambiguity error.
+#[test]
+fn constrained_clause_same_arity_concrete_overlap_ambiguous_neg() {
+    // REPL facet.
+    let out = repl_std("(defn g ([:a x] (+ x x)) ([:Int x] x))\n(g 5)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("; defn"),
+        "the same-arity constrained `([:a x] (+ x x))` and concrete `([:Int x] \
+         x)` clauses overlap (can unify) — MUST be a dispatch-ambiguity error \
+         (§5.1.2); got:\n{c}"
+    );
+    // RED-for-the-right-reason: the constrained clause is ADMITTED then found to
+    // overlap — NOT rejected-by-construction with the drifted independence
+    // rationale (the HEAD behaviour).
+    assert!(
+        !c.contains("each arity clause is type-checked independently"),
+        "the overlap MUST be reported as a genuine same-arity dispatch-ambiguity \
+         (constrained clause admitted, then overlap detected), NOT the drifted \
+         'each arity clause is type-checked independently' construction reject; \
+         got:\n{c}"
+    );
+    // `--run` facet: mode-uniform.
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .run("user.cl")
+        .user("(defn g ([:a x] (+ x x)) ([:Int x] x))\n(defn main [] (Pure (g 5)))\n")
+        .output();
+    assert!(
+        !run.status.success(),
+        "the same-arity overlap MUST also error under `--run` (mode-uniform); \
+         got exit {:?}:\n{}{}",
+        run.status.code(),
+        run.stdout,
+        run.stderr
+    );
+}
+
+// CP-3 — unsatisfied constraint at the call site: `(g "s")` where String lacks
+// `Num` → a clean constraint error, NOT a codegen leak. Uses CP-1's admissible
+// `g`. RED at HEAD (g is rejected-by-construction, so its defn never publishes).
+// spec: spec/05-definitions.md §5.1.2 — a constrained clause's call site checks
+// the constraint; an unsatisfied constraint is a clean type error.
+#[test]
+fn constrained_clause_unsatisfied_constraint_call_rejected_neg() {
+    let out = repl_std(
+        "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n(g \"s\")\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    // g's defn is admitted (RED at HEAD until the constrained cell lands).
+    assert!(
+        c.contains("; defn"),
+        "g's constrained clause MUST be ADMITTED (the §11.4 cell); got:\n{c}"
+    );
+    // `(g "s")` is a clean constraint error, never a backend codegen leak.
+    assert!(
+        !c.contains("undefined function") && !c.contains("codegen error"),
+        "`(g \"s\")` (String lacks Num) MUST be a clean constraint/type error, \
+         NEVER a backend `undefined function`/`codegen error` leak; got:\n{c}"
+    );
+}
+
+/// `--run` helper for the S112 §5.1 rows (PrimitivesOnly). Named distinctly from
+/// the file-wide `repl_prims` to keep the run-mode call sites explicit.
+fn run_prims_05(user: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(user)
+        .output()
 }

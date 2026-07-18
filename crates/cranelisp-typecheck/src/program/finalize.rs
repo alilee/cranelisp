@@ -24,9 +24,17 @@ pub(super) struct AmbiguousForm {
 
 impl AmbiguousForm {
     /// The user-facing ambiguity message. Names the offending arity CLAUSE and
-    /// unpinned PARAM when known (0576) — "each arity clause is type-checked
-    /// independently" (§5.1.2), so the fix is a per-clause annotation — and falls
-    /// back to the plain fn-level message otherwise.
+    /// unpinned PARAM when known (0576) and falls back to the plain fn-level
+    /// message otherwise.
+    ///
+    /// **S112 re-grounding (MS-8, §5.1.2 back-flow).** A multi-signature `defn`
+    /// is inference-equivalent to its clauses written as separate,
+    /// mutually-recursive functions (spec §5.1.2, settled S111 `c9f05b64`), so a
+    /// clause left genuinely unpinned is the §3.11 ambiguity the *equivalent
+    /// standalone function* would also raise — NOT an artefact of "each arity
+    /// clause is type-checked independently." The message keeps the per-clause
+    /// naming (arity + param) but cites §3.11 / the standalone-equivalence
+    /// rationale, never the retired independence framing.
     pub(super) fn message(&self) -> String {
         // The synthetic REPL/eval wrapper: never leak the internal `__expr`
         // binder into user text (0568, spec §3.3.3 MUST (e)). A bare §3.11
@@ -42,46 +50,17 @@ impl AmbiguousForm {
         };
         match &self.param {
             Some(p) => format!(
-                "ambiguous type: the parameter `{p}` in {where_} is not pinned — \
-                 each arity clause is type-checked independently (spec §5.1.2), so \
-                 add a `:Type` annotation to `{p}` in that clause"
+                "ambiguous type: the parameter `{p}` in {where_} remains unpinned \
+                 after inference — the equivalent standalone function would also \
+                 fail to infer it (spec §3.11); add a `:Type` annotation to `{p}`"
             ),
             None => format!(
                 "ambiguous type; add an annotation to pin the type of the \
-                 polymorphic value bound in {where_}"
+                 polymorphic value bound in {where_} (spec §3.11)"
             ),
         }
     }
 }
-
-
-/// Which of the §3.11 gate's two timing-incompatible duties a
-/// [`TypeCheckEnv::find_ambiguous_top_level_form`] pass performs.
-///
-/// The gate historically carried BOTH duties in one pre-drain pass, which is
-/// unsound: they need OPPOSITE positions relative to `resolve_pending_overloads`
-/// (the single overload/self-call drain). Splitting them by defn shape lets each
-/// run at its correct position (S110 review "gate/drain ordering composition").
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum AmbiguityScanPhase {
-    /// §5.1.2 clause-independence leg — scans MULTI-ARITY defns ONLY, and MUST
-    /// run PRE-`resolve_pending_overloads`. A multi-clause defn's per-clause
-    /// param vars must stay UNPINNED for the verdict: resolving a deferred
-    /// self-call first would let it acquire a sibling clause's concrete param
-    /// type, masking the genuine cross-variant ambiguity (the C-4 constraint;
-    /// `multi_clause_defn_self_call_is_ambiguous_not_panic`).
-    ClauseIndependence,
-    /// §3.11.1 value-position scan — scans SINGLE-CLAUSE defns and the `__expr`
-    /// eval wrapper, and MUST run POST-drain (after `resolve_pending_overloads`,
-    /// `resolve_auto_curry`, and the C-4 `regeneralize_only_polymorphic`). A
-    /// deferred-overload return var in a value position (`(let [r (h 7)] r)`) is
-    /// only unified to the selected variant's concrete return by the drain, and
-    /// a caller left spuriously `Polymorphic` at gate time is only collapsed to
-    /// `Concrete` (its body then scannable) by the scoped regeneralize — so the
-    /// verdict must read the SETTLED types (B1 wrong-reject / B2 wrong-accept).
-    ValueScan,
-}
-
 
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
@@ -478,96 +457,55 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &CheckState,
         accumulator: &ModuleCheckAccumulator,
         working_program: &[TopLevel],
-        phase: AmbiguityScanPhase,
     ) -> Option<AmbiguousForm> {
-        // The ClauseIndependence (pre-drain) analogue of the ValueScan leg's
-        // resolved-`SigDispatch` exemption (OA-1): a resolved multi-sig/overload
-        // call (`(h 7)`) let-bound inside a multi-arity clause is verdicted here
-        // PRE-drain, where its return var is still a fresh placeholder; the drain
-        // (`resolve_pending_overloads`, below) will pin it to the selected
-        // variant's CONCRETE return. Collect those about-to-be-pinned vars so such
-        // a binding is not spuriously flagged, WITHOUT running the drain (which the
-        // clause-independence position forbids — a self-call would acquire a
-        // sibling clause's concrete param type). A genuinely-unresolved overload
-        // (`sum-to`'s free-arg self-call) contributes nothing, so its free arg
-        // stays flagged. Empty for the ValueScan phase (no multi-arity scanned).
-        let benign_overload_vars = match phase {
-            AmbiguityScanPhase::ClauseIndependence => {
-                self.collect_pending_overload_result_vars(state)
-            }
-            AmbiguityScanPhase::ValueScan => std::collections::HashSet::new(),
-        };
-
         for top in working_program {
             let TopLevel::Defn(defn) = top else { continue };
-            // The two duties partition the defns by shape (S110 duty-split):
-            //   - MULTI-ARITY defns are verdicted PRE-drain (clause independence);
-            //   - SINGLE-CLAUSE defns + `__expr` are verdicted POST-drain (value
-            //     scan, so a deferred-overload return var / spuriously-poly caller
-            //     is settled first).
-            // A defn is scanned in exactly ONE phase — never both.
             let is_multi_arity = defn.variants.len() > 1;
-            let in_phase = match phase {
-                AmbiguityScanPhase::ClauseIndependence => is_multi_arity,
-                AmbiguityScanPhase::ValueScan => !is_multi_arity,
-            };
-            if !in_phase {
-                continue;
-            }
 
             if is_multi_arity {
-                // §5.1.2 clause independence: each arity clause is type-checked
-                // INDEPENDENTLY, and carries NO type information into or out of its
-                // siblings. A clause's params therefore have NO legitimately-
-                // polymorphic vars of their own — a param whose type stays free
-                // after checking that clause's own body is the §5.1.2 ambiguity the
-                // author MUST pin with an annotation, and the sibling clauses'
-                // annotations never rescue it. So `allowed_vars` for the per-clause
-                // scan carries NO clause-param vars: multi-arity clause params are
-                // NON-polymorphic.
+                // §5.1.2 back-flow (S112 leg a, FIXME 0642). A multi-signature
+                // `defn` is inference-equivalent to its clauses written as
+                // separate, mutually-recursive top-level functions (spec §5.1.2,
+                // settled S111 `c9f05b64`). There is NO clause-independence
+                // barrier: a clause pinned by a sibling self-call carries that
+                // sibling's concrete param types — the back-flow admitted by
+                // `resolve_pending_overloads`, which runs BEFORE this POST-drain
+                // scan (the former pre-drain `ClauseIndependence` leg is deleted).
                 //
-                // The one exemption is OA-1: the benign pending-overload return
-                // vars — a resolved multi-sig/overload call (`(h 7)`) whose return
-                // var is only a fresh placeholder pre-drain and the drain will pin
-                // concrete (`collect_pending_overload_result_vars`). Those are not
-                // free-at-root, so `(let [r (h 7)] r)` binding of a concrete-arg
-                // overload call is not spuriously flagged (OA-1a/b).
-                //
-                // CS-4.1 B-1 revert removed the CS-4 `∪ (written ∩ result-free)`
-                // term (it exempted a written `:a` param that flows to the clause
-                // result, but such a param can ALSO be pinned by a delegating
-                // self-call to a sibling clause's concrete type — the drain then
-                // acquires the sibling's concrete types (spec §5.1.2 forbids this
-                // back-flow) and publishes an `:Int`-declared body over a `String`
-                // pointer). Whether a multi-arity clause param may be legitimately
-                // polymorphic is an UNRULED normative question (I-C, §5.1.2 says
-                // NO); default to the written spec.
-                //
-                // B-1 has a SECOND leak vector through OA-1 itself (NOT covered by
-                // the AP-1-term revert): when a clause's body ascribes a resolved
-                // self-call result to a written param var (`([:a p :a rot] :a (rp2
-                // p rot 0))`), the `:a` ascription UNIFIES the overload call's
-                // return var with the param var `a`, so `benign_overload_vars`
-                // resolves to `a` and would exempt the PARAM — re-opening the exact
-                // memory-unsafe wrong-accept (`(rp2 "x" "y")` returns an Int over a
-                // String arg forced into the `:Int` sibling clause). Enforce
-                // "clause params are non-polymorphic" STRUCTURALLY: subtract each
-                // clause's own param-type free vars from the benign set, so an
-                // OA-1 exemption can never reach a clause param regardless of how a
-                // self-call aliased it. (Subtracting only PARAM vars, never the
-                // result vars, keeps OA-1b's returned fresh let-var `r` exempt —
-                // its param types are concrete `:Int`, contributing no free var.)
+                // Each clause is scanned with the SAME logic a single-clause defn
+                // uses (below): `allowed_vars` = the free vars of that clause's
+                // SETTLED (`apply_subst`-applied, post-drain) `__vN` signature.
+                //   - A clause pinned concrete by a sibling self-call (`rp4`'s
+                //     `p`/`rot`) has an EMPTY allowed set → scanned; nothing free
+                //     remains → admitted (back-flow).
+                //   - A clause left genuinely polymorphic (`([:a x] x)`) has a
+                //     NON-empty allowed set → the `defn_is_polymorphic` skip →
+                //     admissible (§5.1.2 admissible-poly), exactly as a single-sig
+                //     polymorphic defn (§3.11.3 disposition 1).
+                //   - A clause param GENUINELY unpinned at a codegen-reaching
+                //     position (neither its own body nor any sibling self-call
+                //     pins it) → the §3.11 ambiguity error — the same disposition
+                //     the equivalent standalone function would get.
                 for (i, variant) in defn.variants.iter().enumerate() {
                     let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                    let mut allowed_vars = benign_overload_vars.clone();
-                    if let Some((param_types, _ret)) =
-                        accumulator.defn_type_vars.get(&internal_name)
-                    {
-                        for pt in param_types {
-                            for v in cranelisp_types::free_vars(&self.apply_subst(state, pt)) {
-                                allowed_vars.remove(&v);
+                    let allowed_vars: std::collections::HashSet<u32> = accumulator
+                        .defn_type_vars
+                        .get(&internal_name)
+                        .map(|(param_types, ret_ty)| {
+                            let mut vars = std::collections::HashSet::new();
+                            for t in param_types {
+                                vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, t)));
                             }
-                        }
+                            vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, ret_ty)));
+                            vars
+                        })
+                        .unwrap_or_default();
+                    // A genuinely-polymorphic clause is admissible — its free vars
+                    // quantify into the clause's own scheme, pinned per-
+                    // instantiation by monomorphisation. Skip the body scan,
+                    // exactly as the single-clause `defn_is_polymorphic` skip below.
+                    if !allowed_vars.is_empty() {
+                        continue;
                     }
                     if let Some((span, param)) =
                         self.find_ambiguous_value_position(state, &variant.body, &allowed_vars)
@@ -648,46 +586,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
         None
-    }
-
-
-    /// The ClauseIndependence (pre-drain) analogue of the ValueScan leg's
-    /// resolved-`SigDispatch` exemption (OA-1). Collect the return vars of pending
-    /// multi-sig/overload calls that WILL resolve, at the drain, to exactly one
-    /// variant with a CONCRETE return — a `(h 7)`-shaped call whose return var is
-    /// a fresh placeholder only because `resolve_pending_overloads` has not run
-    /// yet (it runs AFTER this leg, per the clause-independence position). Such a
-    /// var is not free-at-root; the drain pins it concrete.
-    ///
-    /// Read-only — it mirrors `resolve_pending_overloads`'s exact-match logic
-    /// WITHOUT unifying, so a self-call's params are never acquired. A genuinely
-    /// unresolved overload (no unique concrete-return match — `sum-to`'s
-    /// free-arg self-call) contributes nothing, so its free arg stays flagged.
-    pub(super) fn collect_pending_overload_result_vars(
-        &self,
-        state: &CheckState,
-    ) -> std::collections::HashSet<u32> {
-        let mut out = std::collections::HashSet::new();
-        for (_span, base_name, arg_types, ret_type_var) in &state.pending_overload_resolutions {
-            let concrete_args: Vec<Type> =
-                arg_types.iter().map(|t| self.apply_subst(state, t)).collect();
-            let Some(variants) = state.resolved_overloads.get(base_name) else {
-                continue;
-            };
-            // The SAME overload-selection predicate the drain uses (Principle 7,
-            // I-B): only a UNIQUE concrete-return match contributes a benign var.
-            if let OverloadSelection::Unique(only) =
-                select_unique_overload_variant(variants, &concrete_args)
-            {
-                let resolved_ret = self.apply_subst(state, &only.1);
-                if resolved_ret.is_concrete() {
-                    out.extend(cranelisp_types::free_vars(
-                        &self.apply_subst(state, ret_type_var),
-                    ));
-                }
-            }
-        }
-        out
     }
 
 
@@ -1136,37 +1034,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // instance's slot under the same name.
         self.register_test_fn_mono_roots(state)?;
 
-        // FIXME 0373(ii) / 0374 / 0378 — §3.11.1 ambiguity check (SECONDARY
-        // backstop; the structural slot gate above is the PRIMARY SIGSEGV-
-        // prevention mechanism), split into its two timing-incompatible duties
-        // (S110 review "gate/drain ordering composition"). Per the user ruling
-        // 2026-06-16 (spec §3.11 disposition triple), this check fires ONLY for a
-        // CODEGEN-REACHING unpinned polymorphic value (§3.11.1 — a `let`-bound
-        // value consumed at runtime while a type var is free), NOT for a bare
-        // REPL polymorphic value (§3.11.2 — displayed via introspection) nor a
-        // named polymorphic defn (§3.11.3 — sound, dead-for-codegen).
-        //
-        // LEG 1 — §5.1.2 clause independence, PRE-drain. A MULTI-ARITY defn's
-        // per-clause param vars must be verdicted while still UNPINNED: running
-        // AFTER `resolve_pending_overloads` (below) would let a deferred
-        // cross-variant self-call acquire a sibling clause's concrete param type,
-        // masking a genuine ambiguity (`multi_clause_defn_self_call_is_ambiguous_
-        // not_panic`). Its position is UNCHANGED from before the split. The
-        // §3.11.1 value scan for SINGLE-CLAUSE defns + `__expr` moves POST-drain
-        // (LEG 2, below) so a deferred-overload return var / spuriously-poly
-        // caller is settled first (B1/B2).
-        if let Some(amb) = self.find_ambiguous_top_level_form(
-            state,
-            accumulator,
-            working_program,
-            AmbiguityScanPhase::ClauseIndependence,
-        ) {
-            return Err(CranelispError::TypeError {
-                message: amb.message(),
-                location: ErrorLocation::from_span(amb.span),
-            });
-        }
-
         // Pass 5: drain the deferred multi-sig/overload resolutions and
         // auto-curry. `resolve_pending_overloads` has exactly ONE call site (this
         // one) — the SINGLE drain of `state.pending_overload_resolutions`, which
@@ -1200,30 +1067,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `regeneralize_defn_schemes` would overwrite a mono-root's minted concrete
         // scheme back to its poly `defn_type_vars` signature (the finalize ordering
         // hazard the mono-root comment guards; `test_fn_registered_as_mono_root_
-        // gets_concrete_instance`). It runs AFTER the §5.1.2 clause-independence
-        // LEG (LEG 1, above) — which relies on a self-recursive multi-clause
-        // defn's own param vars staying UNPINNED (a self-call would otherwise
-        // acquire a sibling clause's concrete param type) — so that gate has
-        // already errored before any overload resolution runs. Genuinely
-        // polymorphic defns (`(defn empty [] [])`, scheme stays `(Fn [] (Vec a))`)
-        // are non-concrete after re-generalize and stay `Polymorphic`.
+        // gets_concrete_instance`). Genuinely polymorphic defns (`(defn empty []
+        // [])`, scheme stays `(Fn [] (Vec a))`) are non-concrete after
+        // re-generalize and stay `Polymorphic`.
         self.regeneralize_only_polymorphic(state, accumulator)?;
 
-        // LEG 2 — §3.11.1 value-position scan for SINGLE-CLAUSE defns + `__expr`,
-        // POST-drain (the S110 duty-split). It runs AFTER `resolve_pending_overloads`
-        // (so a deferred-overload return var in a value position — `(let [r (h 7)]
-        // r)` — is unified to the variant's concrete return, no false-reject: B1)
-        // AND AFTER `regeneralize_only_polymorphic` (so a caller left spuriously
-        // `Polymorphic` at drain time — `(defn main [] (let [u []] (Pure (h 7))))`
-        // — is collapsed to `Concrete`, its unpinned-`[]` body then SCANNED rather
-        // than poly-skipped: B2). It stays BEFORE `sweep_post_pass_outputs`
-        // (below), which drains `state.expr_types` that both this scan and
-        // `collect_unresolved_dispatch` read by span.
+        // §3.11.1 value-position scan for ALL top-level forms — single-clause
+        // defns, `__expr`, AND multi-arity clauses (S112 leg a: the former
+        // pre-drain `ClauseIndependence` leg is collapsed into this ONE post-drain
+        // pass). It runs AFTER `resolve_pending_overloads` (so a clause pinned by a
+        // sibling self-call — `rp4`'s `p`/`rot` — has acquired the concrete param
+        // types the back-flow gives it: §5.1.2; and a deferred-overload return var
+        // in a value position — `(let [r (h 7)] r)` — is unified to the variant's
+        // concrete return: B1) AND AFTER `regeneralize_only_polymorphic` (so a
+        // caller left spuriously `Polymorphic` at drain time is collapsed to
+        // `Concrete`, its unpinned-`[]` body then SCANNED rather than poly-skipped:
+        // B2). It stays BEFORE `sweep_post_pass_outputs` (below), which drains
+        // `state.expr_types` that both this scan and `collect_unresolved_dispatch`
+        // read by span.
         if let Some(amb) = self.find_ambiguous_top_level_form(
             state,
             accumulator,
             working_program,
-            AmbiguityScanPhase::ValueScan,
         ) {
             return Err(CranelispError::TypeError {
                 message: amb.message(),
@@ -1244,17 +1109,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // adjacent within the same pre-sweep window. EMPTY for every valid program.
         let unresolved_dispatch = self.collect_unresolved_dispatch(state, working_program);
 
-        // S91 Wave-7 (FIXME 0432 Face A): a multi-sig variant whose body
-        // contains an in-body self-call has a return type that is only pinned
-        // once `resolve_pending_overloads` resolves that self-call. But the
-        // variant return types were captured into `resolved_overloads`, the
-        // persisted `DefKind::Overloaded` base entry, and the mangled entries'
-        // schemes back in `resolve_multi_sig_overloads` (Pass 2.5) — BEFORE
-        // that resolution. Without this refresh the variant return stays a free
-        // var: a later REPL cluster rehydrates `resolved_overloads` from the
-        // stale persisted `OverloadVariant.ret_type` and a call to the variant
-        // displays an unresolved type (`:a` instead of `:primitives/Int`).
-        self.refresh_multi_sig_variant_ret_types(state, &multi_sig_mangled_names);
+        // Post-drain multi-sig variant finalisation (S112 leg a §11.3(B), extends
+        // the S91 Wave-7 / FIXME 0432 Face A return-type refresh). Runs AFTER the
+        // drain so the §5.1.2 back-flow has settled every clause's params: Phase A
+        // promotes a back-flow-pinned clause (registered as a `$Var` `Polymorphic`
+        // template pre-drain) to its `Concrete{slot}` sibling under the concrete
+        // mangle — the exact name the drain's concrete branch recorded in each
+        // caller's `SigDispatch`; Phase B refreshes persisted return types so a
+        // later REPL cluster sees the concrete return (not a stale `:a`). It
+        // mutates `multi_sig_mangled_names` to re-point at the concrete siblings so
+        // the `finalize_annotations_and_publish` re-annotation below targets them.
+        self.finalize_multi_sig_variant_types(
+            state,
+            working_program,
+            accumulator,
+            &mut multi_sig_mangled_names,
+        )?;
 
         // Surface any field-accessor synthesis collisions with a NON-accessor
         // binding (FIXME 0351(a)) as non-fatal warnings.

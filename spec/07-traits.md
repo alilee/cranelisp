@@ -337,7 +337,7 @@ A higher-kinded impl echoes the declared head `(Functor f)` in slot 1 and names 
 
 The constructor named in the slot-2 pairing (`Option`, `List`, `Seq`) is a bare type constructor, never an applied type. The implementation MUST validate that this constructor's arity matches the trait's constructor variable (§7.2.3).
 
-### 7.3.5 Kind-Checking of Impl Targets
+### 7.3.5 Kind-Checking of Impl Targets [S112 — rejection matrix: plan/s112-0628-ic-wave.md §3]
 
 The `impl` **syntax** of §7.3 is settled: a conventional (kind-`*`) trait takes a **type** target, a higher-kinded trait takes a **trait-constructor pairing** `(Trait Constructor)`. This section settles the **impl-target kind-matching table** — exactly which targets are well-kinded for a given trait head, and which are rejected and with what diagnostic.
 

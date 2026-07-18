@@ -1599,12 +1599,17 @@ pub struct OverloadVariant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstrainedFn {
-    pub defn: Defn,
+    // S70 narrowing: `defn: Defn` → `variant: DefnVariant` (symmetry with
+    // `ModuleEntry::Def.ast`; the outer `Defn` metadata is canonical on the
+    // parent `Def`). Single-variant ALWAYS — since S112 (multi-sig ×
+    // constrained SUPPORTED) each constrained clause is its OWN one-variant
+    // template referenced from `OverloadVariant.mangled_name`; dispatch
+    // routes on the referenced entry's kind. Canonical statement: the
+    // `ConstrainedFn` rustdoc in `module.rs` + monomorphisation.md §11.4.
+    pub variant: DefnVariant,
     pub scheme: Scheme,
 }
 ```
-
-No changes from v1.
 
 ### Backend-hosted `Code` Enum (in `cranelisp-backend`)
 

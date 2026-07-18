@@ -871,6 +871,17 @@ this doc's seam scope, noted for coordination.
 
 ## 9. FIXME 0432 — multi-clause `defn` self-call: the panic→clean-error root fix (S90 R2 layer a)
 
+> **S112 SUPERSEDED-IN-PART by §11 (leg a, FIXME 0642; /arch A2).** §9 was written
+> under the DRIFTED §5.1.2 ("each clause checked independently / no back-flow"), and
+> §9.5's "NOT a multi-clause inference change" bullet is **REVERSED** by the S111-
+> settled spec: a multi-signature `defn` is now inference-equivalent to its clauses
+> written as **separate mutually-recursive functions**, so a sibling self-call DOES
+> pin a clause's params (`sum-to`/`rp4` now INFER, not "annotate-or-ambiguous"). The
+> Pass-4 concreteness gate §9.3 STANDS as a backstop — it now fires only for a
+> **genuinely** unpinned clause param (no sibling self-call reaches it), the true
+> §3.11 ambiguity. The new back-flow design is **§11**; read it as the current
+> intent where it disagrees with §9.
+
 **Sprint 90, /arch Phase-2 R2(a)** — pulled in as a Pillar-3 prerequisite
 (`design/arch/repl-embedded-agent.md §11.3`, `sprints/SPRINT.md` §"Architecture
 review" Q4). The agentic-REPL's importable-symbol indexer (Pillar 3) typechecks
@@ -995,15 +1006,13 @@ residual var reaching the mangler is a **clean type error, never a panic**).
   owned by `/design (backend)` + `/dev (src/)`. This typecheck fix addresses Face B
   only. The two faces have different owners; the repros disambiguate (0432 §"Proposed
   resolution").
-- **NOT a multi-clause inference change.** The fix does **not** attempt to make the
-  unannotated cross-variant self-call *infer* (that would require propagating the
-  first variant's call-shape into the second variant's param types — a real inference
-  extension, out of scope and arguably undesirable: the spec's favour-annotation
-  posture means a public-entry/private-accumulator split *should* annotate). The fix
-  makes the *currently-ambiguous* program **fail cleanly** instead of panicking — it
-  converts a robustness defect into a correct, located type error. The combined
-  multi-sig + tail-recursive idiom compiles once the user annotates (the primer's
-  separated forms, 0432 §"Operational implication").
+- ~~**NOT a multi-clause inference change.**~~ **[S112 REVERSED — see §11.]** Under
+  the drifted §5.1.2 this bullet held that the cross-variant self-call must NOT infer
+  (propagating the first clause's call-shape into the second clause's params was
+  "out of scope and arguably undesirable"). The S111-settled §5.1.2 makes that
+  propagation **required**: `sum-to`/`rp4` type-check by exactly the back-flow this
+  bullet declined. §11 designs it. The Pass-4 gate below (§9.3) is unchanged but now
+  fires only when a clause param is *genuinely* unpinned after the self-call drain.
 - **NOT the §3.11.1 backstop's job.** §4's position-complete scanner is unchanged;
   this gate is additive and Pass-4-interior. The two coexist — different positions,
   same predicate family (`is_concrete` here / `is_representation_undetermined` in §4;
@@ -1074,3 +1083,432 @@ baseline movement. It is a **behaviour fix inside an existing crate**.
   lands here, /arch-owned, §6).
 - `crates/cranelisp-typecheck/src/{program,traits}.rs` — the gate sites (§2.2) + the
   enumeration spine (§3.1).
+
+---
+
+## 11. Multi-signature `defn` = separate mutually-recursive functions (S112 leg a, FIXME 0642)
+
+**Status:** DESIGN + AS-BUILT AMENDMENTS. Phase-3 DESIGN (S112), then the W2 leg-(a)
+change-set landed (uncommitted) and the W2 /review returned a BLOCK; the **W2.1
+remediation** amendments below record what implementation legitimately discovered and
+pin the fix for the Blocker: §11.3.1 (the as-built two-pass drain + self-call tag,
+review deviation (ii)), §11.3.2 (the B1 self-call-`SigDispatch` fix shape), the
+§5.1.1 paragraph (MS-6 definition-site check landed + M1 timing flag), §11.4 step 3
+(review deviation (i) — filter retained, drain-driven), and §11.5 (M3 double-mangle
+note). Supersedes §9's drifted posture (banner atop §9). The binding spec is `spec/05-definitions.md` §5.1.2 +
+§5.1.1 + §5.13.1 and §3.3 (annotations descriptive, no added rigidity), S111
+commit `c9f05b64`. /arch directive (A2): **one inference path** — clause inference
+rides the EXISTING §5.13.1 two-pass register-then-check machinery; do NOT keep a
+bespoke multi-sig routine with the no-back-flow barrier "locally patched out."
+
+### 11.1 The settled rule and the anchor
+
+A multi-signature `defn` is **inference-equivalent to its clauses written as
+separate, mutually-recursive top-level functions** that share one dispatched name.
+A self-call from one clause to a sibling is an **ordinary call**: it resolves (by
+arity, then same-arity by argument types, §7.4.4) to a specific sibling clause and
+unifies the argument types with that clause's parameter types — pinning them, just
+as a call to any separate function would. There is no independence barrier.
+
+Anchor (0642), un-annotated:
+
+```lisp
+(defn rp4
+  ([p rot]     (let [q (rp4 p rot 0)] p))        ; MUST infer (Fn [Int Int] Int)
+  ([p rot idx] (add-i64 p (add-i64 rot idx))))   ; (Fn [Int Int Int] Int)
+```
+
+`add-i64` pins the 3-arg clause to `(Fn [Int Int Int] Int)` from its own body; the
+2-arg clause's `(rp4 p rot 0)` resolves to that clause and pins `p`, `rot : Int`.
+Identical to two separate mutually-recursive functions. The "multi-arity
+memory-safety saga" dissolves: the earlier UAF was an artifact of the drift +
+monomorphise-by-sibling, not a real defect — once the back-flow pins the 2-arg
+clause's params to `Int`, a `(rp4 "x" "y")` call is a plain type error (String ≠
+Int), never a wrong-accept.
+
+### 11.2 The mechanism already exists — the barrier and the ordering are the bugs
+
+The `{name}__v{i}` internal variant `Def`s ARE the "separate mutually-recursive
+functions": Pass 1 (`check_form_register_multi_sig`) registers each clause's
+signature via the SAME `register_defn_signature` a single-sig defn uses; Pass 2
+(`check_form_body_multi_sig`) checks each clause body. A self-call to an overloaded
+base is deferred at `infer.rs` as a `pending_overload_resolution` and drained by
+`resolve_pending_overloads` (`register.rs:471`), which unifies the call's args with
+the selected variant's params — **this unification IS the back-flow.** Two things
+block it today:
+
+1. **The barrier: LEG-1 `AmbiguityScanPhase::ClauseIndependence`**
+   (`finalize.rs:1158`, `find_ambiguous_top_level_form`) runs the ambiguity scan
+   PRE-drain over multi-arity defns with each clause's own param free-vars
+   *subtracted* from `allowed_vars` (the CS-4.1 "clause params are non-polymorphic"
+   structural subtraction, `finalize.rs:560–571`). It errors on `rp4`'s unpinned
+   `p`/`rot` **before** the drain can pin them. This is the no-back-flow barrier.
+
+2. **The ordering: concrete mangling precedes the drain.**
+   `resolve_multi_sig_overloads` (Pass 2.5, `finalize.rs:1092`) runs BEFORE
+   `resolve_pending_overloads` (Pass 5, `finalize.rs:1179`). It calls
+   `resolve_variant_types` → `apply_subst`, reads the still-`Var` clause params,
+   mangles `rp4$Var`, and installs a `Concrete{got_slot}` entry with a non-concrete
+   body — a codegen leak waiting for a call. `refresh_multi_sig_variant_ret_types`
+   (`register.rs:234`) already refreshes RETURN types post-drain but not params or
+   the mangled NAME.
+
+### 11.3 The design — collapse the scan, order the drain before concrete mangling
+
+Two coordinated changes; both are "route through the existing machinery," not new
+routines.
+
+**(A) Collapse the ambiguity scan to ONE post-drain pass.** Delete
+`AmbiguityScanPhase::ClauseIndependence` and its pre-drain call site, the
+`collect_pending_overload_result_vars` benign-var scan, and the per-clause
+param-free-var subtraction (`finalize.rs:560–571`). Multi-arity defns are scanned
+by the SAME post-drain pass single-clause defns use (the former
+`AmbiguityScanPhase::ValueScan`, now the only phase), with per-clause `allowed_vars`
+computed the SAME way as a single-clause defn: the free vars of that clause's
+**settled** (`apply_subst`-applied, post-drain) signature from
+`accumulator.defn_type_vars[__vN]`. Consequences, each matching the spec:
+
+- A clause param pinned by a sibling self-call (`rp4`'s `p`/`rot`) is concrete
+  post-drain → not flagged. **(back-flow admitted)**
+- A clause left **genuinely polymorphic** (`([:a x] x)`) has a non-empty
+  `allowed_vars` from its own scheme → `defn_is_polymorphic` skip → admissible
+  (§5.1.2 "a genuinely-polymorphic clause is admissible"), exactly as a single-sig
+  polymorphic defn is.
+- A clause param that is **genuinely** unpinned at a codegen-reaching position
+  (neither its own body nor any sibling self-call pins it) → the §3.11 ambiguity
+  error — the same disposition the equivalent standalone function would get. The
+  `AmbiguousForm` message keeps its per-clause form (names the arity clause + param)
+  but drops the false "each arity clause is type-checked independently (§5.1.2)"
+  rationale (`finalize.rs:45–48`) — the settled reason is "the equivalent standalone
+  function would also fail to infer it (§3.11)."
+
+**(B) Order the concrete mangling to observe post-drain types.** The dispatch
+selection during the drain needs only the `__vN` signatures (arity +
+`types_compatible` shape) and a STABLE per-clause name to record in `SigDispatch` —
+`select_unique_overload_variant` already tolerates a `Var` param (`types_compatible(Var,_)
+= true`), so a call selects the right *clause* pre-concretisation. The **concrete
+mangled name, the `Concrete` entry, the `OverloadVariant.{param_types,ret_type,
+mangled_name}`, and the `SigDispatch` record for each self-call MUST all derive
+from ONE `mangle_sig` over the FINALISED (post-drain, subst-applied) clause param
+types** (Principle 7 — one mangle source, so entry-name and dispatch-name agree by
+construction). Mechanically /dev picks either: (i) move
+`resolve_multi_sig_overloads`'s concrete-variant registration to run after
+`resolve_pending_overloads`, keeping only the dispatch table (`register_overloaded_base`,
+selectable on `Var`-carrying params) before the drain and recording each
+`SigDispatch` from the post-drain concrete mangle; or (ii) extend the existing
+post-drain `refresh_multi_sig_variant_ret_types` to also refresh param types,
+re-mangle, migrate the `$Var`→`$Int` entry, and patch the recorded `SigDispatch`
+spans. (i) is the cleaner "resolve once"; (ii) is smaller-diff. Design intent: the
+persisted concrete mangle reflects the back-flow; no `$Var` concrete entry survives.
+
+### 11.3.1 As-built — the two-pass drain + the `is_self_call` tag (review deviation (ii): SOUND)
+
+Implementation found the (A)/(B) sketch under-specified in one structural respect the
+W2 /review accepted as SOUND (deviation (ii)): **concreteness of a call's arguments
+alone does not classify how a self-call must be resolved.** The drain
+(`resolve_pending_overloads`, `register.rs:665`) is therefore **two passes** over
+`pending_overload_resolutions`, keyed on a new per-call `is_self_call` tag (added to
+the pending tuple in `checker.rs` `CheckState` ~`:186`, set at the `infer.rs`
+overload gate ~`:605`):
+
+- **Pass 1 — self-calls UNIFY (monomorphic recursion).** A call to overloaded base
+  `name` from inside one of `name`'s own `{name}__vN` clause bodies is a sibling
+  self-call within the **letrec group** the §5.1.2 "separate mutually-recursive
+  functions" equivalence names. It **unifies** the selected clause's params with the
+  call args — pinning whichever side is unbound (the back-flow). It MUST NOT
+  monomorphise: a fresh instantiation would discard the pin, leaving `rp4`/`rp15`'s
+  poly clause forever unpinned and the whole §5.1.2 back-flow inert. Pass 1 runs FIRST
+  so every clause's params are settled before any external dispatch selects.
+- **Pass 2 — external calls dispatch-concrete or monomorphise.** An external call to a
+  now-CONCRETE clause (own-annotated, or pinned concrete by a pass-1 self-call) unifies
+  + dispatches to the concrete mangle; an external call to a genuinely-poly / trait-
+  constrained TEMPLATE clause monomorphises at THIS call's args (fresh instantiation)
+  so two external calls at distinct concrete types never conflict by globally pinning
+  one template — the MS-2 two-instantiation cell.
+
+**Why concreteness-alone was insufficient (the Phase-3 gap).** The same surface call
+`(f …)` needs opposite treatment: a self-call must UNIFY (pin the sibling clause's
+params in place), an external call must INSTANTIATE (leave the template unpinned).
+Concrete args are present in both cases, so args-concreteness cannot distinguish them;
+the monomorphic-recursion-vs-fresh-instantiation distinction is load-bearing and
+orthogonal to concreteness. Hence a *tag*, not a concreteness test. (The pass-2
+bifurcation is then keyed on the *clause's* concreteness, which is a different, sound
+test — a pinned-concrete clause is a single callable; a `$Var` template is a mono
+source.)
+
+**The tag's three caveats (recorded; do not silently rely on).**
+
+- **(a) Classification is textual.** `d == name || d.starts_with("{name}__v")` over
+  `state.current_defn`. A user defn literally named `f__v1` calling overloaded `f`
+  would false-positive as a self-call. Obscure; documented limitation, not fixed here.
+- **(b) Mono-recheck blind spot (intertwined with review finding I1).** During a
+  template clause's mono recheck `current_defn` is the template's mangled name
+  (`g$Var…`), not `g` or `g__vN`, so an inner self-call classifies as *external* and
+  monomorphises rather than unifying — the seam of I1 (a genuinely-poly recursive
+  clause wrong-rejects with an internal-name leak). Noted here; the I1 fix is /dev's
+  W2.1 remediation, to be designed only if it falls out of the B1 fix naturally, not
+  pre-designed here.
+- **(c) Shadowing-blind (inherited, review M2).** The gate keys on
+  `state.overloads.contains_key(name)` and does not account for a local binding
+  shadowing `name`. Pre-existing single-sig blindness, **inherited** by the multi-sig
+  path — not introduced by leg (a).
+
+### 11.3.2 The B1 Blocker — the self-call `SigDispatch` MUST be derived post-drain
+
+**Review Blocker B1.** The as-built self-call branch (`register.rs` ~`:770–780`)
+derives its dispatch name **mid-drain**: immediately after its own `unify` it computes
+`post = apply_subst(selected-clause-params)` and records
+`SigDispatch(mangle_sig(base, post))` when `post` is concrete, else the `$Var`
+template name. This is **order-dependent and B1-defective**. In a ≥2-hop delegation
+chain — a 3-clause `f3` where clause 1's self-call targets clause 2 and clause 2's
+self-call targets clause 3 — when clause 1's self-call is drained, clause 2's params
+may still be `Var` (clause 2 is pinned only when *its* self-call drains later in the
+same pass-1 loop). Clause 1's dispatch then records clause 2's `$Var` template name.
+`finalize_multi_sig_variant_types` Phase A subsequently promotes clause 2 to `Concrete`
+and **removes** the `$Var` template, re-pointing `OverloadVariant` /
+`resolved_overloads` / the re-annotation name map — but **not**
+`method_resolutions.resolved_calls` / the `record_dispatch_target` carrier. The
+recorded `$Var` dispatch dangles → `user/f3$Var+Var` reaches codegen. This already
+violates §11.3(B)'s existing MUST ("SigDispatch for each self-call MUST derive from ONE
+`mangle_sig` over the FINALISED post-drain types") and is exactly the P22/P24
+"resolution recorded against a name a later pass invalidates" recurring class the
+review escalated.
+
+**Fix shape — Option (1), DEFERRAL: derive the self-call `SigDispatch` in the
+post-drain phase, never mid-drain (pinned normative for /dev).** Pass 1 keeps the
+UNIFY (the back-flow must pin *during* the drain) but records **no** `SigDispatch`; it
+defers each self-call site (span + selected clause identity) to a post-drain worklist.
+`finalize_multi_sig_variant_types` — which **already** computes each clause's finalised
+concrete mangle to register its `Concrete` entry (Phase A) — derives each deferred
+self-call's `SigDispatch` from that SAME `mangle_sig` over the finalised post-drain
+concrete params, **once**, and records it (plus `record_dispatch_target`).
+
+**Why (1) over (2) (Principle 24 acid test).** The review named two candidates: (1)
+defer the self-call `SigDispatch` to a post-drain fixup, or (2) have Phase A re-point
+every resolved-call carrier it currently misses. Principle 24's test — *does the
+outcome depend on pending-list order?* — separates them: under (1) the dispatch name is
+a pure function of the finalised subst (confluent, order-independent), computed once,
+after everything settles, with **nothing provisional to invalidate** — order-
+independence *by construction*. Under (2) the name is still recorded provisionally
+mid-drain and then repaired; any carrier the repair forgets re-leaks (the precise
+failure mode B1 already is), and a future carrier added elsewhere is silently missed
+again — order-dependence is *patched*, not eliminated, reproducing the published-
+pointer hazard (Principle 22). **Choose (1)** — it makes order-dependence unrepresentable
+rather than repaired.
+
+**The carrier set that MUST agree** (all derived from ONE `mangle_sig` over the
+finalised post-drain concrete clause params — Principle 7):
+
+1. the `Concrete{got_slot}` symbol-table entry KEY (`concrete_mangled`, Phase A
+   `st.insert`);
+2. the base `DefKind::Overloaded` `OverloadVariant.{param_types, ret_type,
+   mangled_name}` for clause `i` (Phase A re-point);
+3. `state.resolved_overloads[base][i]` (Phase A re-point; also read by a rehydrating
+   REPL cluster);
+4. `multi_sig_mangled_names[base][i]` — the re-annotation name map that drives
+   `finalize_annotations_and_publish` (Phase A re-point);
+5. `state.method_resolutions.resolved_calls[self_call_span]` — the `SigDispatch` for
+   each self-call (**the B1-missed carrier**);
+6. the `record_dispatch_target` S110-0583 sig-dispatch carrier at the same self-call
+   span (**also fed by that resolution; moves post-drain with (5)**).
+
+Carriers 1–4 already agree (Phase A single-sources them). The fix moves the derivation
+of **5–6** into the same post-drain pass and the same `mangle_sig` source, so all six
+agree by construction. **The external-call branch is UNAFFECTED**: it runs in pass 2
+after all self-calls have drained, so its `apply_subst(param_types)` is already fully
+settled and its `mangle_sig` agrees with Phase A — only the pass-1 self-call branch,
+exposed to intra-pass ordering, needs the deferral. /dev must add the u3 unit pin
+(review I3) at the seam in the same change-set.
+
+### 11.3.3 §5.1.1 dispatch coherence — definition-site check LANDED (MS-6), pre-drain timing FLAGGED (M1)
+
+Leg (a) added the same-arity-*unifiable* **definition-site** overlap check the
+Phase-3 note flagged as owed (`register.rs:438–465`, in `resolve_variant_types`):
+two same-arity clauses whose `concrete_params` unify (`types_compatible`) are now a
+dispatch-ambiguity error **reported at the definition** (both clauses named by arity
+index), not deferred to a call-site `Ambiguous`. The strict-equal duplicate case is
+its exact-match subcase at the same site (`[:Int x]` + `[:a x]` now caught at the
+definition, not only via a later `Ambiguous`). The call-site
+`OverloadSelection::Ambiguous` stays as the residual backstop. This satisfies the
+§5.1.2 MUST ("reported at the definition, both colliding clauses named").
+
+**Timing caveat (review M1) — the check runs PRE-drain, on unsettled params.**
+`resolve_variant_types` (Pass 2.5) runs BEFORE `resolve_pending_overloads` (the
+drain), so the overlap verdict reads each clause's params *before* the §5.1.2 back-flow
+has pinned them. A pair that back-flow would settle **disjoint** is therefore
+conservatively rejected. Review probe:
+
+```lisp
+(defn t ([x] x) ([:Int y] y) ([a b] (t "s")))
+```
+
+The 2-arg clause's *internal* self-call `(t "s")` selects the 1-arg `[x]` clause and
+(monomorphic-recursion, §11.3.1 pass 1) pins its param to `String`; post-drain the two
+1-arg clauses are `[String]` and `[Int]`, disjoint, and dispatch is coherent. The
+pre-drain check sees `[Var]` vs `[Int]` (`types_compatible(Var,Int)=true`) and rejects.
+
+**This changes the accept/reject status of a spec-well-formed program — FLAGGED to
+/spec, NOT ruled here.** The pinning call site `(t "s")` is *internal* to the
+definition (a self-call within `t`'s own clause bodies), so the settled clause
+signatures remain a pure function of the definition alone — the "definition-site
+diagnostics must not depend on external call sites" rationale does **not** justify the
+pre-drain timing here (no external site is consulted). Under the §5.1.2 separate-
+mutually-recursive-functions equivalence and the overlap rule's own gloss ("one
+concrete argument tuple could match both"), `t` finalises well-formed and MUST
+type-check; the pre-drain timing over-rejects it. Because this is a spec-visible
+accept/reject boundary, `/design` does **not** decide it "acceptable conservative
+timing" — the pre-drain-vs-post-drain placement of the overlap check needs `/spec`
+framing for the user (see the report's M1 disposition). Leg (a) ships the check
+as-landed (pre-drain); the timing question is orthogonal to B1 and outside the W2.1
+fix scope.
+
+### 11.4 The constrained-poly × multi-sig cell (USER-RULED IMPLEMENT-IN-SPRINT)
+
+A trait-constrained clause is spec-admissible under the equivalence rule — a
+standalone `(defn g [:a x] (+ x x))` (`Num a`) is a constrained fn, so its multi-sig
+twin `([:a x] (+ x x))` must be too. Today it is rejected-by-construction:
+`collect_single_sig_defns` (`finalize.rs:1521`, the former `collect_defns`) filters
+`if defn.is_multi_sig() { None }`, so `detect_constrained_fns` and
+`pass4_monomorphise` never see multi-sig clauses; meanwhile
+`register_mangled_variants` force-installs a bogus `Concrete{got_slot}` over the
+clause's `Var` params. The `ConstrainedFn` single-variant invariant rustdoc
+(`module.rs:2302`) documents the mutual-exclusion.
+
+**Design — each constrained clause rides the standalone constrained-template path;
+`ConstrainedFn` stays single-variant.** The key move: a constrained clause is its
+OWN one-variant `ConstrainedFn` template under its own internal/mangled name, NOT a
+new multi-variant `ConstrainedFn`. So `ConstrainedFn`'s field shape does **not**
+change — only its rustdoc invariant note does (which asserts multi-sig ×
+constrained is impossible). Steps:
+
+1. **Keep the per-clause `Constrained` template.** `check_form_body_multi_sig`
+   already sets a `__vN` to `UserFnState::Constrained(cf)` when its trial scheme has
+   constraints (`body.rs:479–493`) — that stays. What changes is that Pass 2.5 must
+   NOT overwrite it with a `Concrete` entry.
+
+2. **`resolve_variant_types` / `register_mangled_variants` bifurcate on
+   `trial_scheme.constraints.is_empty()`.** A constrained (or genuinely-polymorphic)
+   clause is NOT a single concrete callable: register/keep a `Constrained` template
+   entry under the clause's normalized-var mangle (`mangle_sig` over its
+   `Var`-carrying params, e.g. `g$Var`) and record THAT name in the base's
+   `OverloadVariant.mangled_name`. A concrete clause keeps today's path.
+
+3. **The `is_multi_sig` filter in `collect_single_sig_defns` is RETAINED — the cell
+   is DRAIN-DRIVEN, not filter-removal-driven (as-built, review deviation (i):
+   ACCEPTED).** The Phase-3 sketch prescribed *removing* the filter so multi-sig
+   clauses feed `detect_constrained_fns` / `pass4_monomorphise` as standalone
+   constrained fns. Implementation found that literal removal unsound:
+   `Defn::body()` / `Defn::params()` **assert single-variant**
+   (`cranelisp-types/src/ast.rs:460`) and panic on a multi-sig defn, and the
+   downstream single-sig readers would otherwise scan only variant 0. A constrained /
+   genuinely-poly clause is instead reached through the **DRAIN**, not through
+   `collect_single_sig_defns`: the `infer.rs` overload gate (~`:605`) keys a call to
+   an overloaded base on `state.overloads` and defers it as a
+   `pending_overload_resolution` (same-cluster registration + cross-cluster
+   rehydration of `resolved_overloads`); at **pass 2** of the drain (§11.3.1) an
+   *external* call whose selected clause is a `$Var` TEMPLATE entry — kept slot-less
+   by the §11.4 bifurcation in `resolve_variant_types` (`register.rs`, the
+   `is_template` re-key branch) — routes through `monomorphise_call` at the call's
+   concrete args, producing/reusing concrete instances (`g$Var$Int`, …) via the
+   established constrained-fn machinery, no backend special-case (§3.7 of the
+   typecheck CLAUDE.md). This is the design — a drain-driven cell that rides the
+   existing overload-resolution path — **not** a deviation from intent; only the
+   *mechanism* (route via the drain, keep the filter) differs from the Phase-3
+   filter-removal sketch, which the single-variant `Defn` accessor invariant forbids.
+
+4. **Dispatch to a constrained clause routes through monomorphisation.** At the
+   drain, `select_unique_overload_variant` picks the clause; when the entry at its
+   `OverloadVariant.mangled_name` is `Constrained`, the call monomorphises at the
+   concrete args and records the resolution to the INSTANCE, not the template
+   (reading the entry kind — **no `OverloadVariant` field needed**, Principle 7; the
+   kind already lives on the entry, persisted, rehydrated cross-cluster). The
+   §5.1.2 same-arity-overlap rule keeps a constrained `[:a x]` clause and a concrete
+   `[:Int x]` clause of the same arity a dispatch-ambiguity error — the admissible
+   cell is a constrained clause at a NON-overlapping arity (as in the anchor:
+   1-arg constrained + 2-arg concrete).
+
+**`cranelisp-types` impact — no field change; rustdoc-only.** `ConstrainedFn`
+(single-variant) and `OverloadVariant` (`{param_types, ret_type, mangled_name}`)
+keep their shapes. The `ConstrainedFn` rustdoc invariant note + the "Future-state
+note" (`module.rs:2302–2329`) become stale (they assert the filter makes multi-sig ×
+constrained unconstructable) and must be updated to record that a constrained
+multi-sig clause is now a legal one-variant template feeding the standalone mono
+path. That file is /arch-owned → filed as FIXME `target: /arch` (see the report).
+**`CACHE_SCHEMA_VERSION` 20→21 in the leg-(a) change-set** (settled: /arch ruling
+on FIXME 0644, 2026-07-18, adopting /qa's §7.4 falsification in
+`tests/plan/s112-0628-ic-wave.md`). The earlier "no bump" rationale here rested on
+the premise that a stale schema-20 cache from the old compiler cannot contain leg
+(a)'s state because the old compiler rejected the program — that premise is
+**falsified** by the S111 B-2 wrong-accept family: `lf1`/`lf2`/`rp15`/`rp19`-shaped
+programs WERE accepted by the old compiler, and `register_mangled_variants`
+force-installed bogus `Concrete{got_slot}` entries over `Var` params, so `$Var`-mangled
+`Concrete` state persists in schema-20 `.meta.json`. Under leg (a)'s model (§11.3(B):
+no `$Var` concrete entry survives — a `$Var` mangle must reference a
+`Constrained`/`Polymorphic` template) those same persisted bytes change meaning
+(`cranelisp-types` CLAUDE.md's "meaning change to what an existing field records"),
+and cache-hit typecheck bypass on unchanged source would resurrect the bogus entry
+(the CS-2/P25 cache-trust class; source-hash does not save it). Leg (a) therefore
+rides the sprint's single 20→21 window: it merges before b2 and carries the one bump
+in its own change-set (b2 does NOT re-bump); if leg (a) ever landed alone it would
+take the 20→21 bump itself. **Guard:** the AG-1 leg-(a) stale-cache cell (a cached
+schema-20 module carrying a `$Var`-`Concrete` entry is refused wholesale on load) —
+the failing-not-ignored repro that the bump satisfies.
+
+### 11.5 Determinism obligation on the admitted-polymorphic/constrained mangle
+
+`OverloadVariant.mangled_name` is persisted in `DefKind::Overloaded` in `.meta.json`;
+a fresh-build byte-identity is a /qa gate. For a genuinely-polymorphic or constrained
+clause the mangle must be a **normalized, session-independent var spelling — never a
+`t{id}`**. This is already satisfied by the ONE canonical mangler
+(`support.rs::mangle_type`, FIXME 0519): `Type::Var(_) => "Var"` — a constant, not
+the var's `TypeId`. So a 1-arg poly clause is `f$Var`, a 2-arg is `f$Var+Var`;
+distinct arities are distinct, and any two same-arity clauses that would mangle
+identically necessarily can-unify → the §5.1.1 dispatch-ambiguity error, so no two
+distinct admitted clauses ever collide on `$Var`. The one spelling to keep OUT of a
+persisted overload mangle is `TyConApp(id) => "TyCon{id}"` (session-dependent), but
+`TyConApp` is inference-only and resolved before a variant is finalised — the design
+requires the finalised clause param types feeding `mangle_sig` to be `TyConApp`-free
+(they are, post-substitution). If a future change ever wanted position-sensitive var
+spellings, it MUST be a canonical left-to-right renumbering (`a,b,c…`), never raw
+ids; the constant `"Var"` is sufficient and deterministic today.
+
+**Known grammar wart — template mono instances DOUBLE-mangle (review M3).** When an
+external call monomorphises a `$Var` template clause (§11.3.1 pass 2 / §11.4 step 3),
+`monomorphise_call` builds the instance name over the *already-mangled* template name,
+so a 1-arg poly clause `g$Var` instantiated at `Int` mints `g$Var$Int` (two `$`
+segments), not `g$Int`. This is **deterministic** — a pure function of (template name,
+concrete args) — so the fresh-build byte-identity obligation (§11.5, /qa gate) holds;
+it is not a soundness or collision hazard. But `$Var$Int` **leaks into diagnostics and
+persisted `.meta.json` names**, where it reads oddly. Recorded as a known mangled-name-
+grammar wart under the FIXME-0519 one-canonical-mangler context (§3.5); **no redesign
+this sprint** — a grammar that collapses the template segment for an instance would be
+a §3.5-wide change, out of leg-(a) scope.
+
+### 11.6 Leg (c) framing only — return-type-dispatch codegen (repro-gated)
+
+Leg (c) is repro-gated (SPRINT §Architecture review) and NOT designed here (no
+backend fix). Recorded for fast Phase-5 routing: the well-formed conventional
+return-poly trait (`(deftrait Zeroable (zed [] self))` + Int/Float impls) with a
+RESOLVED use (`:Int (zed)` → selects `Zeroable.zed$Int`) must run end-to-end
+(§7.1.1 note; §3.3.3 MUST (d)). The 0628-tail `undefined function: zed` leak is on
+that resolved path — the backend calls `zed` bare instead of the resolved instance.
+The typecheck-**producer**-side attribution (if the repro lands producer-side inside
+the schema-21 window) is: populate the `resolved_targets` span-keyed sidecar
+(`backend-keyed-consumer.md`; `design/typecheck/return-poly-dispatch-signal.md`) at
+the resolved return-type-dispatch call span with the concrete instance's storage
+key (`Zeroable.zed$Int`), so the backend does a keyed fetch (`entry_at`) rather than
+re-resolving the bare method name (which has no concrete GOT slot). If the repro is
+mode/context-dependent and fires only backend-side, it is `/design(backend)`'s. The
+pinned cross-mode repro comes first (standing dual-path rule); attribution follows
+evidence.
+
+### 11.7 Cross-references
+
+- `spec/05-definitions.md` §5.1.2 (settled back-flow) + §5.1.1 (dispatch coherence)
+  + §5.13.1 (two-pass) + §3.3 (annotations descriptive).
+- `design/arch/fixmes/0642-…` — leg (a) + the superseded-repro unwind list.
+- `crates/cranelisp-typecheck/src/program/{finalize,register,body,support}.rs` — the
+  scan-collapse (finalize), the drain/mangle ordering (register), the per-clause
+  `Constrained` determination (body), the `mangle_type` determinism (support).
+- `crates/cranelisp-types/src/module.rs:2292–2334` — `OverloadVariant` /
+  `ConstrainedFn` (rustdoc update, /arch).

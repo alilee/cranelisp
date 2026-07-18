@@ -1493,3 +1493,71 @@ fn pre_schema_18_cache_rejected_and_warm_18_green() {
         .output()
         .assert_exit(35);
 }
+
+// =============================================================================
+// Sprint 112 (0628/I-C wave) — AG-1 leg-(a) stale-cache cell (plan §4; /arch
+// FIXME 0644 addition). A schema-20 `.meta.json` from the OLD compiler can carry
+// B-2-era multi-sig overload state — `register_mangled_variants` force-installed
+// a bogus `Concrete{got_slot}` entry over a `Var` param (a `$Var` mangle) for a
+// wrong-accept shape like `lf2` (`([:a p] p)`, ACCEPTED by the old compiler in
+// all modes). Under the settled §5.1.2 model no `$Var` concrete entry survives
+// (§11.3(B)); a schema-20 cache-hit typecheck bypass on an unchanged source file
+// would otherwise resurrect it — the CS-2/P25 cache-trust class A4 names. The
+// 20→21 bump (leg (a) carries it, plan §7.4) MUST refuse such a cache WHOLESALE.
+//
+// Stage-1 state: RED at HEAD (schema IS 20, so a schema-20 meta is honoured — a
+// cache hit, no refusal). GREEN once leg (a) bumps `CACHE_SCHEMA_VERSION` 20→21:
+// the patched schema-20 meta then mismatches and the module recompiles (its
+// schema_version is re-stamped away from 20).
+// =============================================================================
+
+// spec: design/backend/module-caching.md §10.2/§10.8 — a pre-current-schema
+// `.meta.json` is refused WHOLESALE (recompiled), never partially deserialized.
+// A cached `$Var`-Concrete multi-sig module (schema-20 era) cannot resurrect via
+// a cache-hit typecheck bypass under schema 21.
+#[test]
+fn stale_schema20_multi_sig_var_concrete_cache_refused_wholesale_neg() {
+    // A B-2-era wrong-accept shape (the `lf2` leaf-poly clause /arch 0644 names)
+    // whose schema-20 cache carries the bogus `$Var` overload state. Compiles at
+    // HEAD (wrong-accept) and post-leg-(a) (legitimate poly) alike; `(lf2 42)` =
+    // 42 ⇒ exit 42.
+    let src = "(import [primitives [Pure]])\n\
+               (defn lf2 ([:a p] p))\n\
+               (defn main [] (Pure (lf2 42)))\n";
+    let warm = project(&[("main.cl", src)])
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+
+    // Doctor the meta to the PRE-BUMP schema (20) — simulating the old-compiler
+    // cache. Under the 20→21 bump this MUST be refused wholesale.
+    let meta_path = warm.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let text = fs::read_to_string(&meta_path).expect("meta exists after successful compile");
+    let stale = set_json_u32(&text, "\"schema_version\":", 20);
+    fs::write(&meta_path, &stale).expect("write schema-20 meta");
+
+    let rerun = warm
+        .run_again()
+        .run("main.cl")
+        .output()
+        // Correctness preserved: whether via honoured hit (HEAD) or recompile
+        // (post-bump), the result is still 42.
+        .assert_exit(42);
+
+    // The load-bearing REFUSAL facet: a schema-20 cache MUST be refused wholesale
+    // — the module recompiles and its schema_version is re-stamped to the
+    // current (bumped) value, NOT left at the honoured stale 20. RED at HEAD
+    // (schema IS 20 ⇒ the patched meta is a cache HIT ⇒ stays 20); GREEN once
+    // leg (a) bumps 20→21.
+    let after_path = rerun.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let after_text = fs::read_to_string(&after_path).expect("meta after rerun");
+    let after_schema = extract_schema_version(&after_text)
+        .unwrap_or_else(|| panic!("meta must carry schema_version:\n{after_text}"));
+    assert_ne!(
+        after_schema, 20,
+        "a schema-20 cache carrying the `$Var`-Concrete multi-sig wrong-accept \
+         state MUST be refused WHOLESALE and recompiled (schema re-stamped away \
+         from 20), NOT honoured via a cache-hit typecheck bypass (the CS-2/P25 \
+         class; §11.3(B) 'no $Var concrete entry survives'). schema stayed {after_schema}."
+    );
+}

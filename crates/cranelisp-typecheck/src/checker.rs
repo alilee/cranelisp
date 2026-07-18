@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, FQTraitName, MethodResolutions, ModuleAliases,
+    CranelispError, FQSymbol, FQTraitName, JitSymbol, MethodResolutions, ModuleAliases,
     ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
     Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
     Warning, apply,
@@ -182,8 +182,44 @@ pub struct CheckState {
     /// Built during overload resolution after pass 2.
     pub(crate) resolved_overloads: HashMap<Symbol, Vec<(Vec<Type>, Type, Symbol)>>,
     /// Pending overload dispatch resolutions from call sites.
-    /// (call_span, base_name, arg_types, ret_type_var)
-    pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type)>,
+    /// `(call_span, base_name, arg_types, ret_type_var, is_self_call)`.
+    ///
+    /// `is_self_call` (S112 leg a §5.1.2) is `true` when the call site lies
+    /// inside one of the SAME multi-signature `defn`'s own clause bodies — a
+    /// cross-clause sibling self-call. Such a call is MONOMORPHIC recursion within
+    /// the mutually-recursive group: the drain UNIFIES the selected clause's params
+    /// with the args (pinning whichever side is unbound — the back-flow), rather
+    /// than instantiating a fresh copy. An EXTERNAL call (`false`) to a genuinely-
+    /// polymorphic or constrained clause instead monomorphises (fresh
+    /// instantiation), so distinct external calls at distinct types never conflict.
+    pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type, bool)>,
+    /// Deferred self-call dispatch worklist (S112 leg a §11.3.2, the B1 fix).
+    /// `(self_call_span, base_name, selected_variant_index)`.
+    ///
+    /// A pass-1 self-call in the drain UNIFIES (the §5.1.2 back-flow) but records
+    /// **no** `SigDispatch` — its dispatch name is order-dependent mid-drain (a
+    /// ≥2-hop delegation chain leaves a later clause's params still `Var` when an
+    /// earlier clause's self-call drains). Each self-call site is deferred here and
+    /// its `SigDispatch` is derived ONCE, post-drain, in
+    /// `finalize_multi_sig_variant_types` from the SAME `mangle_sig` over the
+    /// finalised (subst-applied) clause params that keys the clause's `Concrete`
+    /// entry — order-independence by construction (Principle 24).
+    pub(crate) deferred_self_call_dispatch: Vec<(Span, Symbol, usize)>,
+    /// Monomorphic-recursion context active during a multi-sig template clause's
+    /// mono recheck (S112 leg a §11.3.1 caveat (b), the I1 fix).
+    /// `(base_name, instance_mangled, instance_params, instance_ret)`.
+    ///
+    /// During the recheck of a `$Var` template clause instantiated at concrete
+    /// args, an inner self-call to the overloaded base (`(g x)` inside `g`'s poly
+    /// clause) classifies as *external* under the textual `current_defn` tag
+    /// (which is the template mangle `g$Var`, not `g`/`g__vN`), so it would defer a
+    /// pending entry the sole drain has already taken — never resolved. When the
+    /// call's args match `instance_params`, `infer_apply` resolves it inline as
+    /// monomorphic recursion to THIS instance (unify + dispatch to
+    /// `instance_mangled`), exactly as the standalone-function twin's self-call
+    /// resolves. `None` outside a multi-sig template recheck. Stack-saved/restored.
+    pub(crate) mono_recheck_self:
+        Option<(Symbol, JitSymbol, Vec<Type>, Type)>,
     /// Field-accessor synthesis collisions with a NON-accessor binding
     /// (a user `defn`, a ctor, …) — `(accessor_name, owning_type_name)`.
     /// Surfaced as a non-fatal `ShadowedName` warning at finalize: the accessor
@@ -278,6 +314,8 @@ impl CheckState {
             overloads: HashMap::new(),
             resolved_overloads: HashMap::new(),
             pending_overload_resolutions: Vec::new(),
+            deferred_self_call_dispatch: Vec::new(),
+            mono_recheck_self: None,
             deferred_accessor_collisions: Vec::new(),
             synthesised_accessor_names: std::collections::HashSet::new(),
             current_defn: None,

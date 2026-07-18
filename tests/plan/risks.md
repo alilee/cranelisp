@@ -1,5 +1,27 @@
 # QA Risk Review
 
+## S112 risk read (2026-07-18, /qa — shapes the depth of `plan/s112-0628-ic-wave.md`; the USER-MANDATED quality-risk assessment is §8 there)
+
+S112 is pure implementation against settled spec, but both legs rewrite
+high-blast-radius typecheck seams (the finalize ambiguity/mangle pipeline; the
+trait registration/impl gate), and the wave RETIRES a family of rejection
+guards — so the profile is dominated by *wrong-accept inversions the suite is
+structurally weakest at* and *persisted-state reinterpretation*.
+
+| # | Risk | Severity | Why silent | Guard (s112 plan rows) |
+|---|---|---|---|---|
+| S112-1 | **Wrong-accept inversion at the collapsed scan** — deleting `ClauseIndependence` leaves the post-drain ValueScan as the ONLY §3.11 guard for multi-sig; a mis-computed per-clause `allowed_vars` classifies a genuinely-unpinned param as admissibly-polymorphic and publishes a free-var scheme (the S110/S111 `wrong-accept` class; downstream face can be a non-output-perturbing wrong-type read the suite is ~97% blind to) | HIGH | The accept looks like the intended liberalisation; the unsafe read may not perturb output | Boundary pinned from BOTH sides at closest shapes (MS-2/UW-5/UW-6 admissible vs MS-7 twin unpinned); memory observables retained through the unwind (UW-3/UW-4) |
+| S112-2 | **Leg-(a) persisted-state hole in the 0644 no-bump rationale** — the B-2 wrong-accept family (lf1/lf2/rp15/rp19) WAS accepted by the old compiler and persisted bogus `$Var` `Concrete` entries; a schema-20 cache can contain multi-sig state the new model reinterprets, resurrected via cache-hit typecheck bypass on unchanged source | HIGH | Cache hit bypasses typecheck — no fresh-compile test can see it | §7.4 position: leg (a) rides the 20→21 window (recommendation to /arch); AG-1 stale-cache wholesale refusal (+ leg-(a) fixture if /arch keeps no-bump) |
+| S112-3 | **Mangle/dispatch split-brain** — entry-name vs `SigDispatch` name from two mangle derivations (pre- vs post-drain) → `undefined function` (loud) or dispatch to a stale `$Var` entry (silent wrong code) | MEDIUM-HIGH | The stale-entry arm produces plausible values | AG-3 `.meta.json` byte-identity ×2 cold builds; units u2/u3 (one `mangle_sig` source, no surviving `$Var` Concrete); AG-5 before/after corpus run |
+| S112-4 | **Trait-gate re-land regressing the green HKT corpus** — the S111 CS-4 naive gate regressed 5 e2e and was reverted; the A2 re-land is not verbatim | MEDIUM | A silently-narrowed migrated fixture keeps the suite green while coverage shrinks | §9 per-asset preservation table + `/review` mapping criterion; TB must-holds; AG-5 |
+| S112-5 | **Newly-reachable shapes × ownership blindness (S113 carry)** — no new ownership mechanism, but poly/constrained/back-flow-pinned shapes now reach the ownership walk + RC insertion; a false-`Fresh`/RC-miscount on a NEW shape with a non-output-perturbing face is invisible until the S113 oracle lane | MEDIUM (accepted by scope ruling) | The named ~97% blindness | Cheap fences only, no S113 pull-forward: MS-1b `--link` sustained-repetition on rp4; CP-1b serial RC-trace balance on constrained dispatch |
+| S112-6 | **Mode divergence on new diagnostics** — every new rejection class is a fresh REPL/`--run`/`--link` split opportunity (standing dual-path rule) | MEDIUM | Suites habitually sample one mode per rejection | AG-2: one mode-uniformity guard PER CLASS (extract-and-compare diagnostic core) |
+| S112-7 | **Traceability drop during the unwind** — retiring/rewriting rejection assets orphans spec rows or silently loses negative facets (no-panic, session-alive, `<invalid:` absence, diagnostic-quality) | MEDIUM | A deleted assertion fails nothing | §2 preserved-facet column (binding); §9 band audit + `spec_coverage_reconcile.py` at Phase 6 |
+
+Depth allocation: conversions (§2) and boundary twins first — they are
+simultaneously the QA-first REDs and the fences; then the b2 rejection matrix;
+AG gates ride their change-sets.
+
 ## S111 risk read (2026-07-17, /qa — shapes the depth of the S111 plan in `PLAN.md` §"Sprint 111")
 
 S111 pairs an emission-affecting schema-window centrepiece (the §3.7 vec-COW

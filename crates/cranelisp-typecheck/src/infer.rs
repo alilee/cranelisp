@@ -605,11 +605,72 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Var { name, .. } = callee
             && state.overloads.contains_key(name)
         {
+            // I1 fix (§11.3.1 caveat (b)): during a multi-sig template clause's
+            // mono recheck, an inner self-call to the overloaded base (`(g x)`
+            // inside `g`'s genuinely-poly clause) is monomorphic recursion to THIS
+            // instance. The textual `current_defn` tag classifies it as *external*
+            // (current_defn is the template mangle `g$Var`, not `g`/`g__vN`), so
+            // absent this it would defer a pending entry the sole drain has already
+            // taken — never resolved, leaving a residual var that wrong-rejects with
+            // the internal `g$Var$Int` mangle leaking into the diagnostic. When the
+            // recheck ctx names this base and the call's args EQUAL the instance's
+            // concrete params (same arity + same instantiation), resolve inline:
+            // unify + dispatch to the instance mangle, exactly as the standalone
+            // twin's self-call resolves. A call at DIFFERENT args (a distinct
+            // instance / sibling clause) falls through to the ordinary defer.
+            if state
+                .mono_recheck_self
+                .as_ref()
+                .is_some_and(|(base, _, ip, _)| base == name && ip.len() == arg_types.len())
+            {
+                let (instance, inst_params, inst_ret) = {
+                    let (_, instance, ip, ir) = state.mono_recheck_self.as_ref().unwrap();
+                    (instance.clone(), ip.clone(), ir.clone())
+                };
+                let resolved_args: Vec<Type> =
+                    arg_types.iter().map(|a| self.apply_subst(state, a)).collect();
+                if inst_params.iter().zip(resolved_args.iter()).all(|(p, a)| p == a) {
+                    for (p, a) in inst_params.iter().zip(arg_types.iter()) {
+                        self.unify(state, p, a, span)?;
+                    }
+                    self.unify(state, &inst_ret, &ret_ty, span)?;
+                    let resolution = ResolvedCall::SigDispatch { mangled_name: instance };
+                    self.record_dispatch_target(state, span, &resolution);
+                    state.method_resolutions.resolved_calls.insert(span, resolution);
+                    for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                        self.record_expr_type(state, arg.span(), self.apply_subst(state, arg_ty));
+                    }
+                    // The callee (the overloaded base `Var`) is typed to the
+                    // instance's concrete signature — the mono codegen view
+                    // (`from_expr`, hard-error) requires every node concrete, and an
+                    // overloaded base otherwise carries the polymorphic union type.
+                    self.record_expr_type(
+                        state,
+                        callee.span(),
+                        Type::Fn(inst_params.clone(), Box::new(inst_ret.clone())),
+                    );
+                    self.record_expr_type(state, span, self.apply_subst(state, &ret_ty));
+                    return Ok(ret_ty);
+                }
+            }
+            // §5.1.2 self-call tag: a call to overloaded base `name` from inside
+            // one of `name`'s OWN clause bodies (the current defn is `name` or a
+            // `name__vN` clause) is a monomorphic-recursion sibling self-call — the
+            // drain unifies it (back-flow), not monomorphises it.
+            let is_self_call = state
+                .current_defn
+                .as_ref()
+                .map(|d| {
+                    let d = d.as_ref();
+                    d == name.as_ref() || d.starts_with(&format!("{}__v", name))
+                })
+                .unwrap_or(false);
             state.pending_overload_resolutions.push((
                 span,
                 name.clone(),
                 arg_types.clone(),
                 ret_ty.clone(),
+                is_self_call,
             ));
             // Record arg types in expr_types for each arg
             for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {

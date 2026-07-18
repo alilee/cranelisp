@@ -240,10 +240,21 @@ fn search_burndown_neg_indexed_symbol_not_in_session() {
 // A.5 — CF.2 containment (the hard ship-gate)
 // ===========================================================================
 
-/// A search session whose reachable set includes a 0432-shaped module (an
-/// unannotated multi-clause `defn` with a cross-variant self-call that trips the
-/// monomorphiser) ALONGSIDE a well-formed module. The indexer must skip the
-/// bad module gracefully and still index the good one.
+/// A search session whose reachable set includes a GENUINELY-unindexable module
+/// (an unresolved-symbol module — it fails typecheck under every settled rule, so
+/// no `.meta` is ever written for it) ALONGSIDE a well-formed module. The indexer
+/// must skip the bad module gracefully and still index the good one.
+///
+/// UNWIND note (S112 W2.1, review I2): this helper previously used the 0432
+/// `sum-to` shape (unannotated multi-clause self-call) as its "fails to
+/// typecheck" module. Leg (a) — §5.1.2 back-flow — makes that shape COMPILE
+/// (the delegating self-call pins its params), so a `.meta` gets written for it
+/// and the CF.2 negatives that assert its absence are voided (and race the
+/// background `.meta` write: the write now happens, and whether it lands before
+/// the assertion is timing-dependent — the source of the observed 13-vs-14 RED
+/// discrepancy). An UNRESOLVED-SYMBOL module can never typecheck under any
+/// settled rule, so its `.meta` write never occurs — the negative is race-free
+/// by construction (the event it asserts absent simply never happens).
 fn search_session_with_unindexable(cmds: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .repl()
@@ -254,13 +265,13 @@ fn search_session_with_unindexable(cmds: &str) -> helpers::e2e::CrOutput {
             "(import [primitives [add-i64]])\n\
              (defn good-fn [x] (add-i64 x 2))\n",
         )
-        // 0432-shaped reachable module: unannotated multi-clause self-call.
+        // Genuinely-unindexable reachable module: a reference to a symbol no rule
+        // resolves → `undefined variable` at typecheck → CF.2 branch-(c) Err skip,
+        // NO `.meta`, and the failure is permanent (never becomes valid).
         .file(
             "lib/bad.cl",
-            "(import [primitives [eq-i64 sub-i64 add-i64]])\n\
-             (defn sum-to ([n] (sum-to n 0)) \
-                          ([n acc] (if (eq-i64 n 0) acc \
-                                       (sum-to (sub-i64 n 1) (add-i64 acc n)))))\n",
+            "(import [primitives [add-i64]])\n\
+             (defn bad-fn [x] (undefined-symbol-zzz x))\n",
         )
         .lib_dir("lib")
         .stdin(cmds)
@@ -268,9 +279,9 @@ fn search_session_with_unindexable(cmds: &str) -> helpers::e2e::CrOutput {
 }
 
 // spec: repl/spec.md §17.19.5 — searching the library MUST NEVER crash the REPL.
-// A 0432-shaped reachable module on the lib-path is skipped per-module (CF.2
-// catch_unwind), the REPL stays alive, and `/search` over the rest still returns
-// results.
+// A genuinely-unindexable reachable module on the lib-path (unresolved-symbol —
+// fails typecheck) is skipped per-module (CF.2 catch_unwind / branch-(c) Err
+// skip), the REPL stays alive, and `/search` over the rest still returns results.
 #[test]
 fn search_cf2_unindexable_module_skipped_no_crash() {
     let out = search_session_with_unindexable("/search good-fn\n");
@@ -286,13 +297,36 @@ fn search_cf2_unindexable_module_skipped_no_crash() {
     out.assert_stdout_contains("good-fn");
 }
 
-// spec: repl/spec.md §17.19.5 — NEG: the failed (0432-shaped) module produces NO
-// `.meta` and does NOT kill the nice worker — a subsequent `/search` of OTHER
-// modules still succeeds (background capacity intact).
+// spec: repl/spec.md §17.19.5 — NEG: the failed (unresolved-symbol) module
+// produces NO `.meta` and does NOT kill the nice worker — a subsequent `/search`
+// of OTHER modules still succeeds (background capacity intact).
+//
+// DETERMINISM (S112 W2.1, review I2): the negative is anchored on a settle proof
+// so it cannot race the background indexer. `/search` calls
+// `wait_for_index_settled` (poll to `pending_count == 0`) BEFORE serving, and a
+// skipped module (`mark_skipped`) is counted into `indexed`, so `pending_count`
+// reaches 0 only after the bad module has been ATTEMPTED. The good module's
+// `.meta` EXISTING is the race-free settle anchor: it proves the file feed
+// enumerated and drained (arm ran, good indexed), so the bad module was likewise
+// attempted-and-skipped by serve time. The bad `.meta` absence is then not merely
+// "not yet written" — it is "never written" (the unresolved-symbol module fails
+// typecheck under every settled rule, so branch-(c) takes the Err skip and the
+// write never occurs).
 #[test]
 fn search_cf2_neg_no_killed_worker_no_meta() {
     let out = search_session_with_unindexable("/search good-fn\n/search good-fn\n");
-    // No `.meta` is written for the module that failed to typecheck.
+    // Settle anchor (race-free): the good module IS indexed — its `.meta` exists.
+    // This proves the file feed enumerated + drained through the reachable set,
+    // so the bad sibling was attempted-and-skipped (not merely un-reached).
+    assert!(
+        out.tmp_exists(".cranelisp-cache/good.meta.json"),
+        "the well-formed sibling MUST be indexed (its `.meta` written) — the \
+         settle anchor proving the file feed drained; cache dir={:?}",
+        out.tmpdir
+    );
+    // The failed module produces NO `.meta`: the unresolved-symbol module can
+    // never typecheck, so the branch-(c) `.meta` write never occurs (race-free —
+    // the event asserted-absent simply never happens).
     assert!(
         !out.tmp_exists(".cranelisp-cache/bad.meta.json"),
         "a module that fails to typecheck MUST NOT get a `.meta` written (CF.2 — \

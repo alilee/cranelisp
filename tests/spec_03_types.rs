@@ -2146,8 +2146,9 @@ fn unpinned_vec_in_main_calling_overload_rejected_run_neg() {
 // var is still fresh, producing a spurious "ambiguous type" at the `(h 7)`
 // span. `h` is a concrete defined multi-arity fn, so `(h 7)` resolves to a
 // concrete arity — `r` is `Int`, NOT polymorphic — and MUST compile. Distinct
-// from the INTENDED §5.1.2 rejection of an unconstrained-param let-binding
-// (OA-3 q). Mode-uniform. Flips at CS-4 (typecheck adjacent carries).
+// from the §5.1.2 twin-equality re-grounding of the unconstrained-param
+// let-binding (OA-3 q — see below). Mode-uniform. Flips GREEN at S112 leg (a)
+// (the finalize-pipeline reorder; plan §10 "Flips GREEN at leg (a): OA-1a/1b").
 // spec: spec/03-types.md §3.11 — resolved-overload return typing.
 // =============================================================================
 
@@ -2187,14 +2188,32 @@ fn multi_clause_unconstrained_direct_bodies_accepted() {
         .assert_stdout_contains(":primitives/Int 5");
 }
 
-// OA-3 — `q` — an unconstrained param let-bound in a 1-arg clause IS rejected
-// with the purpose-built per-clause message (the §5.1.2 intended reject; the
-// inverse boundary of OA-1, where the bound value IS resolved).
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
+// OA-3 — UW-10 RE-GROUND (S112 plan §2): the OLD asset asserted `q`'s
+// unconstrained let-bound param was rejected "per-clause independently". Under
+// the SETTLED §5.1.2 the invariant is the standalone-equivalence: `q`'s 1-arg
+// clause `([x] (let [v x] v))` MUST have the SAME disposition as the standalone
+// twin `(defn q1 [x] (let [v x] v))`. RECORDED on HEAD (verified 2026-07-18): the
+// standalone twin ACCEPTS (`; defn`, `∀a. (Fn [a] a)`), while the multi-sig `q`
+// REJECTS — they DIVERGE, so this row is RED at HEAD and flips GREEN when leg (a)
+// makes `q` match its standalone twin. Per UW-10 discipline (twin accepts ⇒
+// convert), the target is both-accept.
+// spec: spec/05-definitions.md §5.1.2 — clause inference-equivalent to the
+// standalone function.
 #[test]
-fn multi_clause_unconstrained_let_bound_param_rejected_per_clause() {
-    repl_prims("(defn q ([x] (let [v x] v)) ([x y] x))\n")
-        .assert_stdout_contains_all(&["1-arg arity clause of", "q"]);
+fn multi_clause_unconstrained_let_bound_param_matches_standalone_twin() {
+    let multi = repl_prims("(defn q ([x] (let [v x] v)) ([x y] x))\n");
+    let solo = repl_prims("(defn q1 [x] (let [v x] v))\n");
+    let mc = format!("{}{}", multi.stdout, multi.stderr);
+    let sc = format!("{}{}", solo.stdout, solo.stderr);
+    let multi_accepted = mc.contains("; defn");
+    let solo_accepted = sc.contains("; defn");
+    assert_eq!(
+        multi_accepted, solo_accepted,
+        "the multi-signature clause `([x] (let [v x] v))` and the standalone \
+         twin `(defn q1 [x] (let [v x] v))` MUST have the SAME disposition \
+         (clause-equivalent to the standalone function, §5.1.2). They DIVERGE:\n\
+         multi accepted={multi_accepted}\n{mc}\nsolo accepted={solo_accepted}\n{sc}"
+    );
 }
 
 // =============================================================================

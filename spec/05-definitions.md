@@ -46,7 +46,7 @@ A function definition binds a name to a function value. The parameter list uses 
 (fn [acc _ _] acc)                         ; multiple discards -- each is independent
 ```
 
-### 5.1.2 Multi-Signature [Tested tests/spec_05_definitions::defn_multi_clause_arity]
+### 5.1.2 Multi-Signature [Tested tests/spec_05_definitions::defn_multi_clause_arity] [S112 — Inference/back-flow block + rp4 anchor + definition-site overlap MUST: plan/s112-0628-ic-wave.md §1]
 
 ```ebnf
 defn_multi_form = '(' ('defn' | 'defn-') name docstring? variant+ ')'

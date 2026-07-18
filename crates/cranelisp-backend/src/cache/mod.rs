@@ -337,7 +337,21 @@ pub mod linker;
 /// written between two separate bumps would carry schema-20 with alias
 /// `callees`). Both are content-meaning changes ⇒ the bump invalidates every
 /// schema-19 `.o` wholesale.
-pub const CACHE_SCHEMA_VERSION: u32 = 20;
+///
+/// **20 -> 21 (S112 leg a, §5.1.2 multi-sig back-flow; 0644 ruling).** The
+/// meaning of a multi-sig `defn`'s persisted overload state changes: under the
+/// new §11.3(B) invariant no `$Var`-mangled `Concrete` entry survives finalize —
+/// a `$Var` mangle now references a `Constrained`/`Polymorphic` template, and a
+/// back-flow-pinned clause persists as a `Concrete` entry under its CONCRETE
+/// mangle. A stale schema-20 cache from the OLD compiler CAN carry the falsified
+/// state: the S111 B-2 wrong-accept family (`lf1`/`lf2`/`rp15`/`rp19`-shaped
+/// programs) was accepted, and `register_mangled_variants` force-installed bogus
+/// `Concrete{got_slot}` entries over `Var` params (`$Var` mangles) into
+/// `.meta.json`. A cache-hit typecheck bypass on unchanged source would resurrect
+/// that bogus state (the CS-2/P25 cache-trust class; source-hash does not save
+/// it). The bump refuses every schema-20 `.o` wholesale. One bump covers the
+/// sprint window (leg (a) rides it; b2 does NOT re-bump).
+pub const CACHE_SCHEMA_VERSION: u32 = 21;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

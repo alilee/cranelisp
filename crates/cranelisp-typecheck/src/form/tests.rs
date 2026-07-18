@@ -782,29 +782,37 @@
         }
 
         // Cluster 2 (a FRESH `CheckState`): a caller body `(f 5)`. The
-        // arity-1 variant has an untyped param (mangles to `f$Var`); `5`
-        // matches it (Var is compatible with Int).
-        let call_span = Span::SYNTHETIC;
+        // arity-1 variant is a genuinely-polymorphic clause `([x] x)` — a
+        // slot-less `Polymorphic` TEMPLATE under `f$Var` (§11.4). `5` selects it
+        // (arity 1), and the drain routes the template clause through
+        // monomorphisation (§11.4 step 4), minting the concrete instance
+        // `f$Var$Int` and dispatching to it — NOT to the slot-less template.
+        //
+        // Distinct (non-synthetic) spans: `monomorphise_call` pins the CALL
+        // span's return type, which under all-`SYNTHETIC` spans collides with the
+        // caller's own recorded `(Fn ..)` type (a harness artefact, not a real
+        // program shape).
+        let call_span = Span::new(100, 110);
         let caller = ParsedEntry::Def {
             name: Symbol::from("caller"),
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::var(Symbol::from("f"), Span::SYNTHETIC)),
+                    callee: Box::new(Expr::var(Symbol::from("f"), Span::new(101, 102))),
                     args: vec![Expr::IntLit {
                         value: 5,
-                        span: Span::SYNTHETIC,
+                        span: Span::new(103, 104),
                         inferred_type: None,
                     }],
                     span: call_span,
                     resolved_call: None,
                     inferred_type: None,
                 },
-                span: Span::SYNTHETIC,
+                span: Span::new(90, 120),
             }],
             visibility: Visibility::Private,
             docstring: None,
-            span: Span::SYNTHETIC,
+            span: Span::new(85, 121),
         };
         {
             let mut ctx: SymbolTableAccess<'_, (), ()> =
@@ -813,8 +821,10 @@
                 .expect("cluster 2 (caller body) checks clean across clusters");
         }
 
-        // The caller's annotated AST must carry a `SigDispatch` to `f$Var` on
-        // the `(f 5)` Apply — pre-fix this resolved to the bodyless base.
+        // The caller's annotated AST must carry a `SigDispatch` to the MONO
+        // INSTANCE of the arity-1 poly clause (`…/f$Var$Int`) on the `(f 5)`
+        // Apply — pre-S112 this resolved to the bodyless base; pre-§11.4 to the
+        // slot-less `f$Var` template.
         let guard = modules.get(&module_path()).expect("module exists");
         let caller_entry = guard.get("caller").expect("caller registered");
         let ast = match caller_entry {
@@ -827,10 +837,11 @@
         };
         match resolved {
             ResolvedCall::SigDispatch { mangled_name } => {
-                assert_eq!(
-                    mangled_name.as_ref(),
-                    "f$Var",
-                    "cross-cluster (f 5) must dispatch to the arity-1 variant"
+                let m = mangled_name.as_ref();
+                assert!(
+                    m.contains("f$Var") && m.contains("Int"),
+                    "cross-cluster (f 5) must dispatch to the mono INSTANCE of the \
+                     arity-1 poly clause (`…/f$Var$Int`), got {m}"
                 );
             }
             other => panic!("expected SigDispatch across clusters, got {other:?}"),

@@ -209,105 +209,185 @@ After computing `hkt_param_index` for each method, update the `TraitDecl` stored
 
 ## 5. HKT Trait Implementation Handling
 
-### 5.1 Impl target validation
+> **S112 SETTLED-MODEL RECONCILIATION (leg b, FIXMEs 0628+0639; /arch A2).** §5.1
+> and §5.4 below are rewritten to the S111-settled spec (`spec/07-traits.md`
+> §7.1.1/§7.2.1/§7.3.4–§7.3.6, commits `c9f05b64`/`b37d77e6`). Two model changes
+> supersede the prior text: (1) **kind is derived ONCE at declaration
+> registration**, and a parenthesized head whose con_var is **never applied** is
+> **rejected at `deftrait` as malformed** (§7.2.1) — it is *not* "still kind
+> `* -> *`" as the old §5.1 claimed; (2) the **impl form** echoes the declared head
+> in slot 1 and names a **trait-constructor pairing** `(Trait Constructor)` in slot 2
+> (§7.3.4), and the kind-check is the ONE §7.3.5 Case-3 seam — no second "is this a
+> trait or a type-constructor?" classifier. The former "reject the bare-con_var
+> impl-on-primitive at impl time" framing (old §5.4) is superseded: that shape is now
+> a *declaration*-time reject.
 
-When `register_trait_impl` processes an impl for an HKT trait:
+### 5.1 Kind derivation at declaration; consumers read `type_params`
 
-1. **Detect HKT trait**: Look up the trait declaration. **HKT-ness comes from the DECLARATION
-   FORM, not from method-body usage**: a trait declared `(Name var …)` (parenthesized head with
-   a type parameter) makes `var` a type-constructor variable of kind `* -> *` — higher-kinded —
-   **regardless of whether any method uses `var` applied (`(f a)`) or bare (`:a`)**. So
-   `decl.type_params` non-empty ⟺ HKT (grammar §7 L12; a `*`-kind return-poly trait uses the
-   bare head `Name` + `self` and carries NO type_params — spec §7.1.1). See §5.4 for the 0628
-   correction to a former usage-derived gate.
+**Kind is a property of the DECLARATION, derived ONCE at trait registration, and
+recorded on `TraitDeclInfo.type_params`.** Three declaration shapes, three kinds
+(spec §7.1/§7.2.1):
 
-2. **Compute expected arity**: Scan method signatures for the first `Applied` use of each
-   constructor variable name (`con_var_arity`). The number of args in that `Applied` node is the
-   expected arity. **A con_var used only BARE (`:a`, never `(f a)`) yields no applied use, so
-   `con_var_arity` returns `None` — but the declaration still asserts kind `* -> *` (arity ≥ 1).**
-   The arity is used only to check a *matching-arity ADT* target; it is NOT needed to reject a
-   *non-constructor* (primitive) target (§5.4).
+| `deftrait` head | con_var applied `(f a)` anywhere? | kind | `type_params` |
+|---|---|---|---|
+| bare `Name` (+ `self`) | — (no con_var) | `*` (conventional) | **empty** |
+| `(Name f)`, `f` applied ≥ once | yes | `* -> *` (higher-kinded) | `["f"]` |
+| `(Name f)`, `f` never applied | no | **malformed — rejected at `deftrait`** | (never registers) |
 
-3. **Validate target arity**: Look up the impl target type (e.g., `Option`). If it's a known ADT,
-   check that its `type_params.len()` matches the expected arity (when known). **If the target is
-   not a type constructor at all — a primitive scalar (`Int`/`Bool`/`String`/`Float`) or a
-   nullary/0-param type — reject with "not a type constructor", INDEPENDENT of the exact expected
-   arity** (a scalar can never satisfy a `* -> *` con_var). This rejection is the §7.2 gate and
-   MUST fire for every con_var-use shape (applied and bare — §5.4).
+1. **The malformed case is rejected at DECLARATION time, not at impl.** A
+   parenthesized head whose con_var is never applied in any method signature
+   (`(deftrait (Zeroable a) (zed [] :a))`, `a` bare-only) is malformed per §7.2.1
+   ("A parenthesized head whose variable is never applied is malformed … there is
+   no kind-`*` trait with a head type variable; conventional traits use the bare
+   head and `self`"). `register_trait_decl` MUST reject it with a diagnostic that
+   names the fix — *"trait `Zeroable`'s type parameter `a` is never applied
+   `(a …)`; a trait that returns the implementing type uses the bare head and
+   `self`: `(deftrait Zeroable (zed [] self))`."* This subsumes the old §5.4
+   "bare-con_var impl-on-primitive leak": the `(impl Zeroable Int)` question never
+   arises because the *declaration* is already rejected.
 
-4. **Register impl**: Store in `ImplRegistry` under the bare constructor name (e.g., `"Option"`, not `"(Option a)"`).
+2. **`type_params` non-empty ⟺ HKT is then EXACT.** Because the malformed
+   never-applied case is rejected at declaration, any trait that successfully
+   registers with non-empty `type_params` is genuinely higher-kinded. Every
+   downstream consumer (impl-target validation §5.4, dispatch §6, the REPL
+   trait-classification display) reads `TraitDeclInfo.type_params` — non-empty ⟺
+   HKT — and **never re-scans method-body usage** (Principle 24 "Resolve once":
+   the two divergent usage-derived kind derivations at `registry.rs:117–126` and
+   `impl_check.rs:39–92` collapse onto this single declaration-time fact).
 
-### 5.4 The bare-con_var impl-on-primitive leak (FIXME 0628, S111)
+3. **`register_trait_decl` guard fix (roots the `:a 7` display defect, FIXME 0628
+   body).** The current guard (`registry.rs:117–124`) routes to `register_hkt_trait`
+   only when `!type_params.is_empty()` **AND** a method uses the con_var applied —
+   the usage scan. A bare-con_var trait therefore registered via the *regular*
+   `register_trait_method` path, so `(unwrap 7)` displayed `:a 7` instead of
+   `:primitives/Int 7`. Fix: drop the usage scan; register via `register_hkt_trait`
+   whenever `!decl.type_params.is_empty()` — matching the (now sole) declaration-
+   derived kind. The declaration-time malformed reject (step 1) runs first, so
+   `register_hkt_trait` only ever sees a genuinely-HKT (applied-con_var) decl.
 
-**Defect.** An HKT trait implemented on a **primitive** is silently accepted, then leaks an
-opaque backend `undefined function` at first use, when the constructor var appears **bare**
-(`:a`) in a method type rather than **applied** (`(f a)`) — violating the self-documenting-REPL
-principle (an ill-formed program must be rejected check-side with an actionable message, not a
-codegen leak). Repro:
+4. **Expected constructor arity** is the con_var's usage-derived arity (§7.2.1):
+   the number of args in its first `Applied` occurrence (`con_var_arity`). For a
+   genuinely-HKT trait this is always `Some(n≥1)` (step 1 guarantees at least one
+   applied use). It is used to kind-check a matching-arity ADT target (§5.4 Case 2).
 
-```
-(deftrait (Zeroable a) (zed [] :a))   ; (Name var) ⇒ higher-kinded; `a` : *->*
-(impl Zeroable Int (defn zed [] 0))   ; MUST reject "Int is not a type constructor"; today ACCEPTED
-:Int (zed)                            ; today → codegen error: undefined function: zed
-```
+### 5.4 The settled impl form + the §7.3.5 Case-3 kind-check seam (leg b)
 
-A sibling type-display defect: `(deftrait (Container a) (unwrap [:a x] :a))` + `(impl Container
-Int …)` is accepted and `(unwrap 7)` prints `:a 7` instead of `:primitives/Int 7`. One root, two
-symptoms.
+The impl form and its kind-check are settled (spec §7.3–§7.3.6). `register_trait_impl`
+consumes the new frontend carrier and interprets slot 2 at **one** seam.
 
-**Root cause (source-verified).** The impl-target validation gate (`traits/impl_check.rs:39–92`)
-derives HKT-ness from **method-body usage**, not the declaration:
+**The impl form (spec §7.3, §7.3.4).** `(impl impl_head impl_target method_def+)`:
 
-```rust
-let is_hkt = decl.methods.iter().any(|m|
-    m.params.iter().any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
-        || type_expr_uses_con_var(&m.ret_type, &decl.type_params));
-```
+- **Conventional trait** — slot 1 is the bare trait name (as declared, §7.1); slot 2
+  is a **type**: `(impl Display Int …)`, `(impl Display (Option Int) …)`,
+  `(impl Display (Option :Display a) …)`.
+- **Higher-kinded trait** — slot 1 **echoes the parenthesized head verbatim**
+  `(Functor f)`; slot 2 is a **trait-constructor pairing** `(Functor Option)` — the
+  trait applied to the constructor it is implemented *about*:
+  `(impl (Functor f) (Functor Option) …)`.
 
-and `type_expr_uses_con_var` / `con_var_arity` / `find_applied_arity`
-(`traits/type_resolve.rs:165–226`) match ONLY `TypeExpr::Applied` (recursing into `FnType`),
-with a `_ => false` / `_ => None` arm — so a **bare** con_var (a `TypeVar`/`Named` leaf) is
-invisible to all three. Consequence for `(Zeroable a)` with `(zed [] :a)`: `is_hkt = false` ⇒
-the whole con_var loop (incl. the primitive rejection) is skipped; and even if reached,
-`con_var_arity` returns `None` and `if expected_arity > 0` (`:50`) gates the primitive-reject out.
+**Frontend carrier (/arch A1 pinned diff, landed b0).** The b0 `parse_impl` change
+admits the echoed head at slot 1 and records the written head shape on
+`TraitImpl.head_con_var: Option<Symbol>` (`#[serde(default)]`): `Some("f")` for an
+HK head `(Functor f)`, `None` for a bare conventional head. Slot 2 continues to ride
+the existing `target: TypeExpr` — for the HK case it parses as
+`Applied("Functor", [Named("Option")])` (the pairing), kind-interpreted here at the
+ONE §7.3.5 Case-3 seam. **No second classifier.**
 
-**The fix — the HKT gate is the declaration; the primitive-reject is arity-independent.**
+**The Case-3 seam (spec §7.3.5) — one deterministic path in `register_trait_impl`:**
 
-1. **HKT-ness from the declaration.** The outer guard `if !decl.type_params.is_empty()` (`:39`)
-   IS the correct HKT condition; the inner usage-derived `is_hkt` is exactly the buggy narrowing
-   — **remove it and run the con_var validation for every trait with type parameters**. (Confirm
-   the premise "`(Name var)` ⇒ HKT" against spec §7.1.1 / grammar §7 L12 — the FIXME grounds it
-   there; if a future non-HKT parametric-trait form is ever added, this gate revisits. No `/spec`
-   change is requested; the premise is asserted, cited, and the "Not this" `self`-spelled *-kind
-   case confirms *-kind traits carry no type_params.)
+1. **Resolve the trait by name** from slot 1 (`impl_.trait_name.name`) — the existing
+   `resolve_trait_decl` scope-resolve, prelude-fallback-aware (`impl_check.rs:30`).
+2. **The trait's DECLARATION is authoritative on its kind** — read
+   `TraitDeclInfo.type_params`: non-empty ⟺ HK (§5.1); this is the sole kind source.
+3. **Slot-1 echo validation — shape AND con_var spelling.** Slot 1 MUST echo the
+   declared head **verbatim** (§7.3, "Slot 1 is fixed, not inferable": for a higher-
+   kinded impl slot 1 "reproduces the `deftrait` head **verbatim as declared** — the
+   same constructor-variable spelling `(Functor f)`; it is neither renamed nor
+   omitted"). This is **two** bits, and BOTH are validated **here** against the
+   declaration read at step 2 — checking only the shape bit is a fidelity gap, because
+   a parenthesized head with the *wrong* con_var spelling still carries `Some(_)`:
+   - **Shape.** An HK trait requires `head_con_var: Some(_)` (a parenthesized echoed
+     head); a conventional trait requires `head_con_var: None` (a bare name). A shape
+     mismatch is rejected — *"trait `Functor` is higher-kinded; its impl head must echo
+     the declared form `(Functor f)`"* / *"trait `Display` is a conventional (kind-`*`)
+     trait; its impl head is the bare name `Display`."*
+   - **Spelling (HK only).** When the trait is HK and the shape bit passes, the symbol
+     inside `head_con_var: Some(name)` MUST equal the declaration's con_var —
+     `TraitDeclInfo.type_params[0]` (§9.2: a single con_var). `(impl (Functor g) …)`
+     against `(deftrait (Functor f) …)` passes the shape check (`Some(_)`) but its
+     spelling `g` ≠ the declared `f`, so it is rejected **here** with a **located**
+     diagnostic (on the impl form's slot 1 — the same span the shape-mismatch diagnostic
+     uses) that names **both** spellings and the expected form — *"impl head `(Functor g)`
+     does not echo trait `Functor`'s declared head `(Functor f)`: the constructor variable
+     is spelled `g` but was declared `f`; reproduce the declared head verbatim as
+     `(Functor f)`."* (Conventional traits carry no binder to vary, so there is no spelling
+     bit to check for them — the shape check `head_con_var: None` is total.)
+4. **Slot-2 interpretation strictly per the known kind** — no "is slot-2 a trait or a
+   type-constructor?" classifier (§7.3.5 Case 3 forbids it as pure redundancy):
+   - **Conventional (Case 1):** slot 2 (`target`) MUST be kind `*` (a type). A
+     bare/under-applied constructor (`(impl Display Option)`) is the sole rejection —
+     *"`Option` is a constructor, not a type; apply it: `(Option a)` or `(Option Int)`."*
+   - **Higher-kinded (Case 2):** slot 2 is the pairing `(Trait Constructor)`; the
+     kind-check lands on `Constructor` (the arg of the pairing), which MUST be a
+     **bare constructor whose arity matches** the con_var's usage-derived kind (§5.1
+     step 4). Three rejections, each with the correct §7.3.5 diagnostic:
+     - primitive → *"`Int` is not a type constructor"* (§7.2.3);
+     - fully-applied type (`(Functor (Option Int))`) → *"kind-mismatch: slot 2 names
+       the bare constructor `Option`, not an applied type"*;
+     - wrong arity (`(Functor Pair)`, `Pair : * -> * -> *`) → *"`Pair` has 2 type
+       parameters; trait `Functor` expects a constructor of arity 1."*
 
-2. **Reject any non-type-constructor target, arity-independent.** For an HKT trait, resolve the
-   impl target once (through the scope — the `:71` `scope_resolve` + `type_def_view_of` already
-   present, prelude-fallback-aware) and reject when it is **not a type constructor**: a primitive
-   scalar, OR a resolved type with 0 `type_params`. This subsumes and hardens the hardcoded
-   `"Int"|"Bool"|"String"|"Float"` list (a Principle-19 module-by-name smell) into a structural
-   "is this a `* -> *`-kinded constructor?" check, and it fires for bare-con_var traits because
-   it no longer depends on `expected_arity > 0`. The matching-arity ADT check (`:76`,
-   `td.type_params.len() != expected_arity`) stays as the additional precision for applied
-   con_vars where `con_var_arity` is `Some`.
+**Consequence (§7.3.5 "the two forms never collide for the same trait").** Because slot
+2 is interpreted in the single mode the trait's declared kind dictates, `(Functor Option)`
+(a trait-constructor pairing) and `(Option a)` (a type application) never contend — the
+surface parallelism is resolved *before* slot 2 is inspected. This is Principle 24
+("Resolve once") applied to the impl gate: the two former usage-derived kind derivations
+(`registry.rs:117–126`, `impl_check.rs:39–92`) both collapse onto the one declaration
+fact read at step 2.
 
-**Target diagnostic** (ideal, per the FIXME): name the higher-kinded trait and point at `self`
-for `*`-kind intent — e.g. *"`Int` is not a type constructor; trait `Zeroable` is higher-kinded
-(kind `* -> *`). For a trait whose method returns the implementing type, declare it `*`-kind:
-`(deftrait Zeroable (zed [] self))`."* Minimal acceptable: the existing "not a type constructor
-(trait `T` expects arity `n`)" message, made reachable for the bare shape.
+**Where the old §5.4 defect went.** The prior "bare-con_var impl-on-primitive silently
+accepted → backend `undefined function` leak" is closed by construction: that shape
+(`(deftrait (Zeroable a) (zed [] :a))`, `a` never applied) is now rejected at the
+`deftrait` (§5.1 step 1), so the impl never registers and no codegen leak can arise. A
+**genuinely** HK trait (`Functor`, `f` applied) impl'd on a primitive is rejected at this
+Case-2 seam with the clean §7.2.3 diagnostic. The two rejections carry **distinct
+reasons** and must not be conflated (§7.1.1 occurrence rule vs §7.2.3 kind-check): a
+no-occurrence method is *"nothing to dispatch on"*; a primitive HK target is *"not a type
+constructor."*
 
-**Coverage (routed `/qa`, FIXME 0628 / SPRINT.md §5).** The §7.2 rejection needs a
-**con_var-use × impl-target matrix**: {applied `:(f a)`, bare-ret `:a`, bare-arg `:a`} ×
-{primitive target, arity-mismatched ADT, well-kinded ADT}. `tests/spec_07_traits.rs::
-hkt_impl_on_primitive_type_is_rejected_neg` covers only the applied×primitive cell (GREEN); the
-bare rows are the hole. Repro class: `check-gate-leak` (a source fault typecheck must decide,
-that today leaks past the check boundary as a backend codegen error — sibling of S108 0571 D1).
+**Diagnostic-uniqueness note (matrix input for /qa).** The 0628 repro's THREE symptoms
+(silent-accept + codegen leak; `:a 7` display; accepted `(unwrap 7)`) all trace to the
+single declaration-time reject + the `register_hkt_trait` guard fix (§5.1 step 3) — once a
+bare-con_var trait cannot register, none of the three states is reachable. The §7.3.5
+rejection matrix `/qa` owns: slot-1 echo {`None`, `Some`-matching-spelling,
+`Some`-mismatched-spelling} × trait-declared-kind {conv, HK} ×
+slot-2 {type, bad-applied, pairing-correct, pairing-primitive, pairing-wrong-arity} — the
+declaration-reject row, the echo-shape-mismatch row, and the echo-spelling-mismatch row
+(`(impl (Functor g) …)` vs declared `(Functor f)`, step 3 "Spelling") are new; the
+diagnostic MUST name the new form. Class: `check-gate-leak` (S108 0571 D1 sibling).
 
-**Scope.** Typecheck-only (`traits/impl_check.rs` gate + optionally the `type_expr_uses_con_var`
-family if a reviewer prefers the detector-level fix; the gate-level fix above is sufficient and
-narrower). No `cranelisp-types` edit, no schema bump — rides the typecheck adjacent-carries
-track (SPRINT.md §5), serial after the centrepiece.
+**Fixture migration constraint (not designed here; /dev + /testing).** The ~24 typecheck
+unit fixtures and ~7 e2e that model the old `(X a)`-head-as-`*`-kind-parametric mismodel
+migrate to the settled form. Two grades (from the resolved FIXME 0639): **dispatch-only**
+fixtures move to the bare head + empty `type_params`; **constraint-carrying** fixtures
+(`register_num_trait_inline`, `register_num_for_int`, the inline `Double` decl) REQUIRE
+`SelfType` methods (not merely empty `type_params`) so the `Num self` constraint rides
+`self` for constrained-fn detection. The mechanics were prototyped + green-verified in
+S111 CS-4 and reverted with the gate; git history is the reference. The e2e that REGRESS
+under the naive gate (and so must migrate to the `self` / bare-head form, /testing):
+`spec_05_definitions::deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch`,
+`spec_07_traits::trait_deftrait_impl_in_child_module_imported_dispatch_from_parent`,
+`spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected`
+(message drift), `repl_introspection::bare_user_trait_lookup_impl_section_lists_type_not_others`,
+`repl_introspection::impl_form_display_result_is_exactly_impl_trait_for_type`.
+
+**Scope + cross-crate.** Typecheck-side: the `register_trait_decl` declaration-reject +
+guard fix (`registry.rs`), and the `register_trait_impl` Case-3 seam (`impl_check.rs`)
+consuming `TraitImpl.head_con_var`. The `head_con_var` field + the b0 `parse_impl` change
+are **/arch + /dev(frontend)** — not designed here. The `CACHE_SCHEMA_VERSION` 20→21 bump
+(pinned to b2, /arch A4) covers the `TraitDeclInfo.type_params` meaning change (a never-
+applied `(X a)` no longer registers, so a stale schema-20 cache could resurrect a now-
+rejected trait via cache-hit typecheck bypass).
 
 ### 5.2 Self-type construction for HKT impls
 

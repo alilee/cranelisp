@@ -1,6 +1,6 @@
 # Sprint 110: Backend pure keyed-lookup consumer — the resolution-boundary centrepiece
 
-**Status**: PHASE 7 CLOSE (outcome authored — awaiting user close approval; NOT yet archived)
+**Status**: CLOSED (user-approved 2026-07-16 — archived to `sprints/archive/sprint-110.md`)
 
 **Goal**: Land the user-directed S110 **centrepiece (0583)** — make the backend a
 **pure keyed-lookup consumer**: typecheck emits fully-qualified SYMBOLS *and*
@@ -42,7 +42,7 @@ disposed S111 Phase 1.
 
 ### Findings
 
-- **Principle 24 ratification is this close's act** — authored Phase 3, consumed by BC/interfaces/overview, verified by `/audit`'s grep-zero. Ratify at close (an `/arch` status-flip in `principles/24-resolve-once.md`).
+- **Principle 24 "Resolve once" — RATIFIED at close, strengthened (user-approved 2026-07-16, `d3ba245b`).** Authored Phase 3, consumed by BC/interfaces/overview, verified by `/audit`'s grep-zero. At the ratification gate the user strengthened it (`/arch` confirmed from intent, `44feb7a3`): resolution is a keyed-lookup *chain*, not a search; the no-ambient-scan-for-identity invariant is **compiler-wide**, not backend-scoped; two carve-outs (enumeration complete-by-construction — a tie is an ambiguity error, never iteration-order-broken; `/search` = human-facing REPL discovery, never identity). Acid test: *does the answer depend on incidental order (hash/insertion/directory)? then it is a scan → defect.* **Enforcement consequence → S111:** a compiler-wide sweep classifying every unindexed iteration as enumeration (legit) or identity-scan (defect) is now a well-defined audit/verification task (the `/audit`-found 4 backend `symbol_tables.iter()` trace/utilization/JIT walks are legit enumerations under carve-out 1).
 - **AUDIT CALIBRATION — process lapse:** `/audit` found the **backend-s107 assessment was never disposed** (its §4 trail empty), so four of its recommendations hit their 4th consecutive audit. **S111 Phase 1 MUST dispose BOTH `backend-s107` and `backend-s110`.** The typecheck-s108 and src-s109 assessments WERE disposed correctly — s107 is the sole lapse, on the protocol's inaugural application.
 - **Escalation review:** zero model-tier escalations; the sprint's difficulty was absorbed by iteration + `/review` at default tier. `/review` caught every hard spot (W0 ×2 Blockers, 0620, narrow vec-assoc, 0622, B1/B2) — the review discipline, not model escalation, was the mechanism. The default allocation held; frontmatter-vs-§II.3 audit CLEAN (14/14).
 - **Phase-6 coordination wrinkle (caught + fixed in-sprint):** `/examples` 6b added a file that broke the examples e2e guard (owns `examples/`, not `tests/`); I dispatched `/testing` to pin the row immediately rather than defer — the baseline never shipped RED. A standing note that user-proxy file-set additions need the paired `tests/` guard row in the same logical step.

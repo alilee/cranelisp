@@ -1,51 +1,41 @@
-// multi_arity_clause_param_51_2.rs — §5.1.2 clause-param independence repro
-// matrix (Sprint 111 Phase 5).
+// multi_arity_clause_param_51_2.rs — §5.1.2 multi-signature back-flow ACCEPTING
+// suite (Sprint 112 Phase 5, the 0628/I-C wave).
 //
-// Covers `spec/05-definitions.md §5.1.2` — "Each variant is type-checked
-// independently. … each variant MUST carry its own annotations wherever
-// inference cannot pin its parameters from that variant's own body. A variant
-// whose parameters stay polymorphic after checking its own body is an
-// ambiguous-type compile-time error."
+// Covers `spec/05-definitions.md §5.1.2` — the SETTLED inference rule (S111
+// `c9f05b64`): a multi-signature `defn` is inference-equivalent to its clauses
+// written as separate, mutually-recursive top-level functions. A self-call to a
+// sibling clause is an ordinary call that pins the caller-clause's parameters
+// through the callee clause's signature. Annotations are DESCRIPTIVE (§3.3 — a
+// written type variable adds no rigidity); a genuinely-polymorphic clause is
+// admissible whenever it does not overlap a same-arity sibling (§5.1.1).
 //
-// This file is the durable record for two coupled facts:
+// UNWIND note (S112, plan §2): this file previously asserted the DRIFTED §5.1.2
+// (clause independence / no back-flow / "cannot stay polymorphic"). Every asset
+// below is a CONVERSION of a superseded rejection guard into the accepting test
+// the corrected rule demands — never a deletion. The B-1/B-2 history lives in
+// git; the "memory-safety saga" it encoded dissolved (FIXME 0642): the UAF was
+// an artifact of the drift + monomorphise-by-sibling, not a real defect. The
+// durable memory-safety observables (a wrong-TYPE call is a clean type error,
+// never a heap-ptr-as-Int read / `<invalid:` leak) are PRESERVED — now
+// guaranteed by the type error at the call site rather than a definition reject.
 //
-//   1. GREEN regression guards (rp4, rp2) — CS-4.1 CLOSED the B-1 memory-safety
-//      wrong-accept (a clause param acquiring its sibling's concrete types via a
-//      delegating self-call / body ascription). These two vectors REJECT today;
-//      the guards fail if that fix ever regresses. Before this file there was NO
-//      guard on the two closed vectors (`grep rp2|rp4 tests/` was empty).
-//
-//   2. RED defect guards (rp15, rp19, lf1, lf2) — BLOCKER B-2, still OPEN. A
-//      LEAF-body clause (bare `Var` or a literal body) escapes the §5.1.2
-//      param-pinned scan entirely: `find_ambiguous_value_position` verdicts only
-//      CHILD positions (`for_each_child_expr`), so a clause whose whole body is a
-//      leaf has no child to scan and the unpinned param is never caught. These
-//      defns WRONG-ACCEPT today (publish a scheme with free-var params); §5.1.2
-//      requires rejection. The guards assert rejection, so they are RED now and
-//      flip GREEN when CS-4.2 (the direct-param-verdict structural fix, /dev
-//      typecheck) lands. CS-4.2 is CARRIED (coupled to the pending I-C normative
-//      ruling on whether multi-arity clause-param polymorphism is legal); these
-//      failing tests are the record + trigger — no numbered FIXME.
-//
-// REPL/`--run` divergence note (per tests/CLAUDE.md): the DEFN-level wrong-accept
-// happens in ALL modes (lf1/lf2 accept under `--run` too). The memory-UNSAFE
-// wrong-type READ is REPL-cross-batch-only — under `--run` the single shared
-// substitution pins the delegating call's param types, so the read is rejected
-// there (itself a REPL/`--run` divergence). The primary RED signal pinned below
-// is therefore the deterministic all-mode DEFN wrong-accept; the deterministic
-// cross-batch read is captured where the garbage value is stable (rp19's
-// Int-read-as-String → `<invalid:N>`) and only narrated where it is a
-// nondeterministic heap pointer (rp15's String-read-as-Int).
+// Stage-1 state (QA-first, before leg (a) lands): the back-flow rows are RED
+// (HEAD still rejects the un-annotated delegating clauses with the pre-drain
+// "each arity clause is type-checked independently (§5.1.2)" scan); they flip
+// GREEN when leg (a) removes the independence block. MS-2 (plain poly+concrete)
+// is already GREEN at HEAD (see its note).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use std::time::Duration;
 
-// A defn that the REPL accepts and publishes ends its echo with `; defn`; a
-// rejected defn prints `Error:` instead and never publishes. `; defn` present
-// therefore means "accepted" — the deterministic, message-wording-independent
-// accept marker used by every should-reject guard below.
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+
+// A defn the REPL accepts and publishes ends its echo with `; defn`; a rejected
+// defn prints `Error:` instead and never publishes. `; defn` present therefore
+// means "accepted" — the deterministic, message-wording-independent accept
+// marker used throughout.
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .repl()
@@ -62,204 +52,439 @@ fn run_prims(user: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+// The 0642 anchor program, verbatim (spec §5.1.2 worked example). The 2-arg
+// clause's delegating self-call `(rp4 p rot 0)` pins `p, rot : Int` through the
+// 3-arg sibling (whose `add-i64` fixes it to `(Fn [Int Int Int] Int)`); the
+// 2-arg clause returns `p`, so `(rp4 3 4)` = 3 and the clause is `(Fn [Int Int]
+// Int)`.
+const RP4: &str = "(defn rp4 ([p rot] (let [q (rp4 p rot 0)] p)) \
+                             ([p rot idx] (add-i64 p (add-i64 rot idx))))";
+
 // =============================================================================
-// GREEN regression guards — B-1 (CLOSED by CS-4.1). These REJECT today; they
-// guard against regression of the clause-param-acquires-sibling-types fix.
+// MS-1 / MS-1b / MS-2 / MS-4 — the leg-(a) anchors (plan §1).
 // =============================================================================
 
-// rp4 — the ORIGINAL B-1 vector: a clause returns its own param (`p`) but binds
-// a delegating self-call `(rp4 p rot 0)` in a `let`; before CS-4.1 the drain
-// let `p`/`rot` acquire the 3-arg sibling's `:Int` types through that call, then
-// published a scheme claiming genericity over the Int-specialised body —
-// `(rp4 "x" "y")` returned a String heap pointer typed Int. CS-4.1 reverted the
-// AP-1 acceptance term; §5.1.2 clause independence now rejects the unpinned `p`.
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// MS-1 — the rp4 anchor: un-annotated delegating self-call compiles + runs; the
+// 2-arg clause's TYPE is `(Fn [Int Int] Int)` (back-flow pinned, not
+// re-generalized — the load-bearing TYPE assertion). RED at HEAD (rejected with
+// the pre-drain independence scan); GREEN at leg (a).
+// spec: spec/05-definitions.md §5.1.2 — inference-equivalent to separate
+// mutually-recursive functions (back-flow through the sibling self-call).
 #[test]
-fn rp4_delegating_let_body_multi_arity_param_not_pinned_rejected() {
-    let out = repl_prims(
-        "(defn rp4 ([:a p :a rot] (let [q (rp4 p rot 0)] p)) \
-                   ([:Int p :Int rot :Int idx] idx))\n",
-    );
+fn rp4_unannotated_backflow_accepted_and_runs() {
+    // Run facet ×3 (REPL + --run + --link): the 2-arg clause returns `p`, so
+    // `(rp4 3 4)` = 3. Mode-equivalent exit/value across all six permutations.
+    run_through_all_modes(
+        &format!("{RP4}\n(defn main [] (Pure (rp4 3 4)))\n"),
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(3);
+
+    // TYPE facet (load-bearing, REPL): `/sig rp4` shows the 2-arg clause pinned
+    // to `(Fn [Int Int] Int)` — back-flow pinned it, it was NOT re-generalized.
+    let out = repl_prims(&format!("{RP4}\n/sig rp4\n"));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("; defn"),
-        "rp4's 2-arg clause leaves `:a p`/`:a rot` unpinned — the delegating \
-         self-call MUST NOT back-flow the 3-arg sibling's `:Int` types (§5.1.2 \
-         clause independence). It MUST be REJECTED, not accepted/published \
-         (B-1, closed by CS-4.1; this guards regression); got:\n{c}"
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "rp4 MUST be ACCEPTED per the settled §5.1.2 (the 2-arg clause's \
+         delegating `(rp4 p rot 0)` pins `p, rot : Int` through the 3-arg \
+         sibling); MUST NOT be an independence/ambiguity reject; got:\n{c}"
     );
     assert!(
-        c.contains("not pinned") && c.contains("5.1.2") && c.contains("rp4"),
-        "rp4 rejection MUST name the unpinned param and cite §5.1.2 clause \
-         independence; got:\n{c}"
+        out.stdout.contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
+        "`/sig rp4` MUST show the 2-arg clause as `(Fn [Int Int] Int)` — the \
+         back-flow pin, not a re-generalized free-var scheme; got:\n{}",
+        out.stdout
     );
 }
 
-// rp2 — the SECOND B-1 vector CS-4.1 closed: a body TYPE ASCRIPTION `:a (rp2 …)`
-// unifies the self-call's return var with a PARAM var, so the benign-overload
-// exemption used to spare it → same memory-unsafe accept. CS-4.1 subtracts each
-// clause's own param-type free vars from the benign set. Rejects today.
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// MS-1b — [oracle] heap-integrity fence on the flagship new shape: rp4 driven
+// K× under `--link` (the sustained-repetition pattern, tests/CLAUDE.md). Assert
+// exit 0. RED at HEAD (rp4 rejected ⇒ link fails); GREEN at leg (a). Graduates
+// into the S113 oracle lane.
+// spec: spec/05-definitions.md §5.1.2 — back-flow-pinned recursion reaches
+// codegen; the sustained-repetition heap-integrity guard (tests/CLAUDE.md).
 #[test]
-fn rp2_body_ascription_self_call_multi_arity_param_not_pinned_rejected() {
+fn rp4_link_repeated_dispatch_does_not_corrupt_heap() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(&format!(
+            "{RP4}\n\
+             (defn drive [:primitives/Int n :primitives/Int acc] \
+               (if (eq-i64 n 0) acc (drive (sub-i64 n 1) (add-i64 acc (rp4 n n)))))\n\
+             (defn main [] (let [r (drive 1000 0)] (Pure 0)))\n"
+        ))
+        .timeout(Duration::from_secs(60))
+        .output();
+    out.assert_exit(0);
+}
+
+// MS-2 — poly + concrete non-overlapping multi-sig (the §5.1.2 admissible-poly
+// example): `([:a x] x)` alongside `([:Int x :Int y] ...)`. Both clauses
+// exercised at two instantiations. NOTE: already GREEN at HEAD (plain
+// unconstrained poly clauses were never the rejected-by-construction case — that
+// is the CONSTRAINED cell, CP-1); kept as a must-hold acceptance guard so the
+// leg-(a) rework does not regress it.
+// spec: spec/05-definitions.md §5.1.2 — a genuinely-polymorphic clause is
+// admissible when it does not overlap a same-arity sibling.
+#[test]
+fn poly_clause_nonoverlapping_arity_accepted_both_dispatch() {
     let out = repl_prims(
-        "(defn rp2 ([:a p :a rot] :a (rp2 p rot 0)) \
-                   ([:Int p :Int rot :Int idx] idx))\n",
+        "(defn f ([:a x] x) ([:Int x :Int y] (add-i64 x y)))\n\
+         (f 5)\n(f \"s\")\n(f 2 3)\n",
     );
+    out.assert_stdout_contains_all(&[
+        ":primitives/Int 5",      // poly clause at Int
+        ":primitives/String \"s\"", // poly clause at String — second instantiation
+        ":primitives/Int 5",      // concrete 2-arg clause: 2+3
+    ]);
+}
+
+// MS-4 — sibling-call type MISMATCH is a plain type error (the durable
+// memory-safety negative the dissolved "multi-arity UAF saga" leaves behind):
+// rp4 is accepted, then `(rp4 "x" "y")` is a clean String≠Int type error —
+// NEVER a wrong-accept and NEVER a `<invalid:`/heap-garbage read. RED at HEAD
+// (rp4 rejected up front); pairs with MS-1.
+// spec: spec/05-definitions.md §5.1.2 — a wrong-type call against a
+// back-flow-pinned clause is an ordinary type error, not memory-unsafe.
+#[test]
+fn backflow_pinned_param_call_with_wrong_type_rejected_neg() {
+    // REPL facet.
+    let out = repl_prims(&format!("{RP4}\n(rp4 \"x\" \"y\")\n"));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("; defn"),
-        "rp2's `:a`-ascribed body over a delegating self-call MUST NOT let the \
-         clause params acquire the sibling's `:Int` types (§5.1.2). It MUST be \
-         REJECTED (B-1 vector 2, closed by CS-4.1); got:\n{c}"
+        c.contains("; defn"),
+        "rp4 MUST first be ACCEPTED (back-flow pins the 2-arg clause to \
+         `(Fn [Int Int] Int)`); got:\n{c}"
     );
     assert!(
-        c.contains("ambiguous") && c.contains("arity clause") && c.contains("rp2"),
-        "rp2 rejection MUST flag the unpinned polymorphic value in the arity \
-         clause; got:\n{c}"
+        c.to_lowercase().contains("type") && (c.contains("String") || c.contains("string")),
+        "`(rp4 \"x\" \"y\")` MUST be a clean String≠Int type error at the call \
+         site; got:\n{c}"
+    );
+    // Memory-safety: the wrong-type call must NEVER produce a heap-ptr-as-Int
+    // read (`<invalid:` leak). The type error at the call site guarantees it.
+    assert!(
+        !c.contains("<invalid"),
+        "a wrong-type call MUST be rejected at the type level, NEVER read a \
+         String pointer as an Int (`<invalid:`); got:\n{c}"
+    );
+    // `--run` facet: the same program must be a compile error, not exit-with-value.
+    let run = run_prims(&format!("{RP4}\n(defn main [] (Pure (rp4 \"x\" \"y\")))\n"));
+    let rc = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.status.success() && !rc.contains("<invalid"),
+        "under `--run` the wrong-type `(rp4 \"x\" \"y\")` MUST be a clean compile \
+         error, never a memory-unsafe run; got exit {:?}:\n{rc}",
+        run.status.code()
     );
 }
 
 // =============================================================================
-// RED defect guards — B-2 (OPEN, LATENT/pre-existing, predates CS-4). A LEAF
-// body escapes the §5.1.2 child-position scan → param never pinned → wrong-
-// accept. Assert rejection; RED today, flip GREEN when CS-4.2 lands.
+// UW-1..UW-6 — the unwind conversions (plan §2). Each was a rejection guard;
+// each is now the accepting test the corrected §5.1.2 demands. Preserved facets
+// noted per row.
 // =============================================================================
 
-// rp15 (forward) — the B-2 exemplar. The FIRST clause `([:a p :a rot] p)` is a
-// leaf body (bare `Var p`): no child expr, so `find_ambiguous_value_position`
-// never scans it and the unpinned `:a p`/`:a rot` sail through. The defn
-// WRONG-ACCEPTS, publishing `(Fn [a a] primitives/Int)` — free-var params.
-// §5.1.2 requires rejection.
-//
-// Memory-safety (REPL cross-batch, narrated — value is a nondeterministic heap
-// pointer, so it is NOT asserted per tests/CLAUDE.md no-flaky rule): with the
-// `(a,a)` params persisted, a later-batch `(rp15 "x" "y")` matches and returns
-// the String pointer `p` typed `:primitives/Int` — a memory-unsafe wrong-type
-// read. Under `--run` (single batch) the delegating sibling's shared subst pins
-// the params, so the read is rejected there (REPL/`--run` divergence). The
-// deterministic all-mode signal pinned here is the DEFN wrong-accept itself.
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// UW-2 — rp2: a body TYPE ASCRIPTION over the delegating self-call. Under the
+// corrected rule the self-call return is pinned to `Int` by the 3-arg sibling,
+// and the `:Int` ascription is a CHECK (§3.3.3), not an abstraction — it
+// compiles and runs. Preserved facet: the body-ascription × self-call shape.
+// `(rp2 3 4)` = `(rp2 3 4 0)` = 3+4+0 = 7. RED at HEAD (rejected); GREEN at leg (a).
+// spec: spec/05-definitions.md §5.1.2 — back-flow through the delegating
+// self-call; the ascription checks the pinned return (§3.3.3).
 #[test]
-fn rp15_leaf_body_var_clause_escapes_param_scan_defn_accepted_should_reject() {
-    // REPL transcript: define, then cross-batch call with String args. The
-    // load-bearing assertion is the deterministic DEFN accept marker.
+fn rp2_body_ascription_self_call_accepted_and_runs() {
+    let out = repl_prims(
+        "(defn rp2 ([p rot] :primitives/Int (rp2 p rot 0)) \
+                   ([p rot idx] (add-i64 p (add-i64 rot idx))))\n\
+         (rp2 3 4)\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "rp2's `:Int`-ascribed delegating self-call MUST be ACCEPTED — the \
+         ascription is a CHECK over the back-flow-pinned return (§3.3.3), not an \
+         ambiguity; got:\n{c}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "`(rp2 3 4)` = `(rp2 3 4 0)` = 3+4+0 = 7; got:\n{}",
+        out.stdout
+    );
+}
+
+// UW-3 — rp15: a LEAF-body clause `([:a p :a rot] p)` whose params are pinned
+// to `Int` by the 3-arg sibling's delegating call `(rp15 p rot)`. Accepts as
+// `(Fn [Int Int] Int)`; `(rp15 "x" "y")` is a clean type error. Preserved
+// facet: the cross-batch memory-safety observable — no heap-ptr-as-Int read;
+// now guaranteed by the call-site type error, its ABSENCE asserted.
+// RED at HEAD (rejected up front); GREEN at leg (a).
+// spec: spec/05-definitions.md §5.1.2 — leaf-clause params pinned by a sibling's
+// delegating self-call.
+#[test]
+fn rp15_leaf_var_clause_backflow_accepted_wrong_type_call_rejected_neg() {
     let out = repl_prims(
         "(defn rp15 ([:a p :a rot] p) ([:Int p :Int rot :Int idx] (rp15 p rot)))\n\
          (rp15 \"x\" \"y\")\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("; defn"),
-        "rp15's leaf-body clause `([:a p :a rot] p)` leaves `p`/`rot` unpinned \
-         but escapes the §5.1.2 child-position scan (B-2). The defn MUST be \
-         REJECTED, not accepted with a `(Fn [a a] …)` free-var-param scheme — \
-         that scheme lets a later-batch `(rp15 \"x\" \"y\")` read a String \
-         pointer as `:primitives/Int` (memory-unsafe wrong-type read); got:\n{c}"
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "rp15's leaf-body clause `([:a p :a rot] p)` is pinned to `(Fn [Int Int] \
+         Int)` by the 3-arg sibling's `(rp15 p rot)` call — MUST be ACCEPTED, not \
+         an independence reject; got:\n{c}"
+    );
+    // Memory-safety: with the 2-arg clause pinned to `(Fn [Int Int] Int)`, the
+    // String call MUST be a clean type error — NOT a String-pointer-read-as-Int
+    // (at HEAD rp15 wrong-accepts as `(Fn [a a] a)`, so `(rp15 "x" "y")` reads a
+    // heap pointer as a garbage Int with NO error — the exact memory-unsafe read
+    // the type error must replace). This is the load-bearing RED at HEAD.
+    assert!(
+        c.contains("type") && (c.contains("mismatch") || c.contains("expected")),
+        "`(rp15 \"x\" \"y\")` MUST be a clean String≠Int type error at the call \
+         site (the back-flow pin makes the wrong-type read impossible), NEVER a \
+         silent heap-ptr-as-Int garbage read; got:\n{c}"
+    );
+    assert!(
+        !c.contains("<invalid"),
+        "`(rp15 \"x\" \"y\")` MUST NOT surface a `<invalid:` pointer read; got:\n{c}"
     );
 }
 
-// rp19 (reverse mirror) — the SAME leaf-body escape with a concrete `:String`
-// sibling delegating INTO the leaf clause. The wrong-type read direction flips:
-// `(rp19 1 2)` reads the Int `1` as a String pointer → address 0x1 →
-// `<invalid:1>`, which (unlike rp15's heap pointer) is DETERMINISTIC. So this
-// guard pins BOTH facets deterministically: the DEFN wrong-accept AND the
-// downstream memory-unsafe read.
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// UW-4 — rp19 (mirror): the leaf clause is pinned to `String` by a `:String`
+// sibling's delegating call. Accepts as `(Fn [String String] String)`;
+// `(rp19 1 2)` is a clean type error AND still no `<invalid`. Preserved facet:
+// the DETERMINISTIC `<invalid:` negative (an Int read as a String pointer →
+// address 0x1 → `<invalid:1>`), asserted verbatim. RED at HEAD; GREEN at leg (a).
+// spec: spec/05-definitions.md §5.1.2 — leaf-clause params pinned by a sibling's
+// delegating self-call (String direction).
 #[test]
-fn rp19_mirror_int_read_as_string_cross_batch_should_reject() {
+fn rp19_mirror_backflow_accepted_wrong_type_call_no_invalid_neg() {
     let out = repl_prims(
         "(defn rp19 ([:a p :a rot] p) ([:String p :String rot :String idx] (rp19 p rot)))\n\
          (rp19 1 2)\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
-    // Facet 1 (DEFN, deterministic, all-mode): the wrong-accept itself.
     assert!(
-        !c.contains("; defn"),
-        "rp19's leaf-body clause `([:a p :a rot] p)` leaves params unpinned and \
-         escapes the §5.1.2 scan (B-2 mirror). The defn MUST be REJECTED, not \
-         accepted with a `(Fn [a a] primitives/String)` free-var-param scheme; \
-         got:\n{c}"
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "rp19's leaf clause is pinned to `(Fn [String String] String)` by the \
+         3-arg `:String` sibling — MUST be ACCEPTED; got:\n{c}"
     );
-    // Facet 2 (READ, deterministic): with `(a,a)` params persisted, the
-    // cross-batch `(rp19 1 2)` reads Int `1` as a String pointer → `<invalid:1>`.
-    // When the defn is correctly rejected this read cannot occur.
     assert!(
         !c.contains("<invalid"),
-        "rp19's wrong-accept lets a later-batch `(rp19 1 2)` read the Int `1` as \
-         a String pointer (`<invalid:1>`) — a memory-unsafe wrong-type read. \
-         §5.1.2 MUST reject the defn so this read never happens; got:\n{c}"
+        "`(rp19 1 2)` MUST be a clean type error (Int≠String), NEVER read the Int \
+         `1` as a String pointer (`<invalid:1>`) — the deterministic \
+         memory-safety negative the unwind preserves verbatim; got:\n{c}"
     );
 }
 
-// lf1 — the MINIMAL leaf-body escape (single clause), UNUSED `:a` param, literal
-// body. Memory-CONSISTENT (`p` is never read, so no wrong-type read is possible)
-// but still a §5.1.2 violation: written in the multi-signature clause form
-// `([:a p] 42)`, the clause param `p` stays a free type var after checking its
-// own body. §5.1.2 requires the param be pinned REGARDLESS of read-safety, so
-// this MUST be rejected. All-mode wrong-accept (REPL publishes `(Fn [a] Int)`;
-// `--run` computes the body → exit 42).
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// UW-5 — lf1: a genuinely-polymorphic single clause `([:a p] 42)` with an
+// UNUSED poly param and a literal leaf body. This is exactly the §5.1.2
+// admissible-poly example class: a genuinely-poly clause standing alone is a
+// valid standalone function, hence admissible. Preserved facet: the unused-param
+// + literal-leaf shape; the `--run` exit 42 is now the POSITIVE. RED at HEAD
+// (rejected as unpinned); GREEN at leg (a) — but see note: HEAD already
+// wrong-ACCEPTS lf1, so the REPL accept facet may already hold; the load-bearing
+// flip is that acceptance becomes CORRECT (poly), not a wrong-accept.
+// spec: spec/05-definitions.md §5.1.2 — a genuinely-polymorphic clause is
+// admissible (§3.11.3 named-poly-definition soundness).
 #[test]
-fn lf1_leaf_literal_body_unused_free_var_param_should_reject() {
-    // REPL facet.
-    let out = repl_prims("(defn lf1 ([:a p] 42))\n");
+fn lf1_leaf_literal_poly_clause_admissible_runs() {
+    let out = repl_prims("(defn lf1 ([:a p] 42))\nlf1\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("; defn"),
-        "lf1 `([:a p] 42)` leaves the clause param `:a p` a free type var after \
-         checking its (literal, leaf) body — §5.1.2 requires it be pinned even \
-         though the memory read is consistent (`p` is unused). MUST be REJECTED, \
-         not accepted as `(Fn [a] primitives/Int)`; got:\n{c}"
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "lf1 `([:a p] 42)` is a genuinely-polymorphic admissible clause \
+         (§5.1.2 / §3.11.3) — MUST be ACCEPTED, not an ambiguity reject; got:\n{c}"
     );
-    // All-mode facet: `--run` accepts and COMPUTES the body → exit 42. Correct
-    // §5.1.2 rejection is a compile error → main never runs → not exit 42.
+    // Positive: `--run` computes the body → exit 42 (the clause is admissible
+    // and reaches codegen at a concrete use).
     let run = run_prims("(defn lf1 ([:a p] 42))\n(defn main [] (Pure (lf1 7)))\n");
     assert!(
-        run.status.code() != Some(42),
-        "lf1 wrong-accepts under `--run` too (all modes): it computes `(lf1 7)` \
-         = 42 and exits 42 instead of failing §5.1.2 at compile time; got exit \
-         {:?}:\n{}{}",
+        run.status.code() == Some(42),
+        "`(lf1 7)` = 42 ⇒ `--run` exits 42 (the admissible poly clause \
+         monomorphises at the concrete use); got exit {:?}:\n{}{}",
         run.status.code(),
         run.stdout,
         run.stderr
     );
 }
 
-// lf2 — leaf-body escape, single clause, body RETURNS the param (`p`). This is
-// the memory-CONSISTENT shape at the far end of the family: ret var ≡ param var,
-// so at any call site the return is pinned to the argument type — no wrong-type
-// read is ever produced (contrast rp15/rp19). It is STILL a §5.1.2 violation:
-// checked in isolation the clause param `:a p` stays a free type var, and
-// §5.1.2 requires it be pinned regardless of read-safety. MUST be rejected.
-// (The pair lf1/lf2 pins the "read-safety is irrelevant to the §5.1.2 verdict"
-// boundary: neither is memory-unsafe, both must reject.)
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs found=S111 owner=/dev
+// UW-6 — lf2: the leaf-IDENTITY clause `([:a p] p)` — the spec's own admissible
+// example `([:a x] x)`. A valid standalone identity function, hence admissible
+// in a multi-signature `defn`. Preserved facet: the leaf-identity shape.
+// `(lf2 7)` = 7 ⇒ `--run` exit 7. RED at HEAD (rejected as unpinned); GREEN at
+// leg (a) — as with UW-5, HEAD wrong-accepts, so the flip is accept-becomes-
+// CORRECT-poly.
+// spec: spec/05-definitions.md §5.1.2 — the admissible-poly example `([:a x] x)`.
 #[test]
-fn lf2_leaf_body_returns_free_var_param_should_reject() {
-    let out = repl_prims("(defn lf2 ([:a p] p))\n");
+fn lf2_leaf_identity_poly_clause_admissible() {
+    let out = repl_prims("(defn lf2 ([:a p] p))\nlf2\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !c.contains("; defn"),
-        "lf2 `([:a p] p)` leaves the clause param `:a p` a free type var after \
-         checking its (bare-Var, leaf) body — §5.1.2 requires it be pinned even \
-         though ret ≡ param keeps it memory-consistent. MUST be REJECTED, not \
-         accepted as `(Fn [a] a)`; got:\n{c}"
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "lf2 `([:a p] p)` is the spec's admissible identity example `([:a x] x)` \
+         — MUST be ACCEPTED; got:\n{c}"
     );
     let run = run_prims("(defn lf2 ([:a p] p))\n(defn main [] (Pure (lf2 7)))\n");
     assert!(
-        run.status.code() != Some(7),
-        "lf2 wrong-accepts under `--run` too (all modes): it computes `(lf2 7)` \
-         = 7 and exits 7 instead of failing §5.1.2 at compile time; got exit \
-         {:?}:\n{}{}",
+        run.status.code() == Some(7),
+        "`(lf2 7)` = 7 ⇒ `--run` exits 7; got exit {:?}:\n{}{}",
         run.status.code(),
         run.stdout,
         run.stderr
+    );
+}
+
+// =============================================================================
+// B1 / I1 — W2.1 remediation repros (the W2 /review BLOCK). Both are §5.1.2
+// equivalence cells that the leg-(a) working tree gets wrong: a ≥2-hop self-call
+// delegation chain (B1) and a self-recursive genuinely-poly clause (I1). Both
+// are pinned against the standalone-mutually-recursive-functions oracle the
+// settled rule names — the multi-signature program MUST behave exactly as its
+// equivalent separate functions do.
+// =============================================================================
+
+// The 3-clause delegation chain (review's live B1 repro). Clause `[a]` delegates
+// to the 2-arg clause `(f3 a 0)`; the 2-arg clause delegates to the 3-arg clause
+// `(f3 a b 1)`; the 3-arg leaf `(add-i64 a (add-i64 b c))` pins its params to
+// `Int`. The back-flow pins every clause's params up the chain, so
+// `(f3 5)` = `(f3 5 0)` = `(f3 5 0 1)` = 5 + (0 + 1) = 6.
+const F3: &str = "(defn f3 ([a] (f3 a 0)) ([a b] (f3 a b 1)) \
+                            ([a b c] (add-i64 a (add-i64 b c))))";
+
+// B1 — a ≥2-hop self-call delegation chain leaks a dangling `$Var` dispatch to
+// codegen. On the leg-(a) working tree the self-call `SigDispatch` is derived
+// MID-drain (`resolve_pending_overloads`): when clause 1's self-call to clause 2
+// is drained, clause 2's params are still `Var` (clause 2 is pinned only when
+// ITS own self-call drains later in the same pass), so clause 1 records clause
+// 2's `$Var` template name — which `finalize_multi_sig_variant_types` then
+// removes. The dangling `user/f3$Var+Var` dispatch reaches codegen:
+//   `resolved_target 'user/f3$Var+Var' … fetched no symbol-table entry`.
+// Spec-correct outcome (design §11.3.2 fix shape — derive the self-call
+// `SigDispatch` post-drain): compiles clean, `(f3 5)` = 6, the 1-arg clause is
+// `(Fn [Int] Int)`. RED until the B1 fix lands.
+// spec: spec/05-definitions.md §5.1.2 — inference-equivalent to separate
+// mutually-recursive functions; the self-call dispatch resolves to a real entry.
+// defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_pending_overloads (self-call SigDispatch derived mid-drain, design §11.3.2) found=S112 owner=/dev
+#[test]
+fn f3_delegation_chain_backflow_accepted_and_runs() {
+    // Run facet ×3 modes (REPL + --run + --link, fresh + cached): the chain
+    // resolves to 6 with no dangling `$Var` dispatch reaching codegen. RED at
+    // HEAD (the `user/f3$Var+Var` codegen leak fails every mode).
+    run_through_all_modes(
+        &format!("{F3}\n(defn main [] (Pure (f3 5)))\n"),
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(6);
+
+    // REPL accept + value + no-leak facet.
+    let out = repl_prims(&format!("{F3}\n(f3 5)\n"));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "f3 MUST be ACCEPTED (the delegation chain pins every clause to Int via \
+         back-flow, §5.1.2); got:\n{c}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 6"),
+        "`(f3 5)` = `(f3 5 0)` = `(f3 5 0 1)` = 5 + (0 + 1) = 6; got:\n{}",
+        out.stdout
+    );
+    // The load-bearing RED: NO dangling `$Var` dispatch may reach codegen — the
+    // B1 leak. The self-call dispatch names MUST resolve to real entries.
+    assert!(
+        !c.contains("$Var") && !c.contains("resolved_target") && !c.contains("codegen error"),
+        "f3's ≥2-hop delegation chain MUST NOT leak a dangling `$Var` dispatch \
+         (e.g. `user/f3$Var+Var`) to codegen — every self-call `SigDispatch` \
+         MUST derive from the finalised post-drain mangle (design §11.3.2); \
+         got:\n{c}"
+    );
+
+    // TYPE facet (REPL /sig): the 1-arg clause is pinned to `(Fn [Int] Int)` by
+    // the back-flow, not re-generalized.
+    let sig = repl_prims(&format!("{F3}\n/sig f3\n"));
+    assert!(
+        sig.stdout.contains("(Fn [primitives/Int] primitives/Int)"),
+        "`/sig f3` MUST show the 1-arg clause as `(Fn [Int] Int)` — the back-flow \
+         pin through the chain; got:\n{}",
+        sig.stdout
+    );
+}
+
+// B1 oracle fence — the standalone twin: the SAME chain written as three
+// separate, mutually-recursive top-level functions compiles fine and runs to 6
+// (batch `--run`, where forward references between top-level defns resolve).
+// §5.1.2 names this equivalence explicitly: the multi-signature `f3` MUST behave
+// identically. This twin is GREEN on the leg-(a) tree — it is the fence that
+// isolates B1 to the multi-signature codegen path, not the inference model.
+// spec: spec/05-definitions.md §5.1.2 — separate mutually-recursive functions
+// are the oracle the multi-signature defn is inference-equivalent to.
+#[test]
+fn f3_delegation_chain_standalone_twin_compiles_and_runs() {
+    let run = run_prims(
+        "(defn f3a [a] (f3b a 0))\n\
+         (defn f3b [a b] (f3c a b 1))\n\
+         (defn f3c [a b c] (add-i64 a (add-i64 b c)))\n\
+         (defn main [] (Pure (f3a 5)))\n",
+    );
+    assert!(
+        run.status.code() == Some(6),
+        "the three-separate-mutually-recursive-functions twin MUST compile + run \
+         to 6 (the §5.1.2 oracle for the multi-signature f3); got exit {:?}:\n{}{}",
+        run.status.code(),
+        run.stdout,
+        run.stderr
+    );
+}
+
+// I1 — a self-recursive genuinely-polymorphic clause wrong-REJECTS. The 1-arg
+// clause `([x] (if true x (g x)))` is an identity function whose (dead) recursive
+// branch calls the overloaded base; standing alone it is `(defn g1 [x] (if true
+// x (g1 x)))`, which accepts and runs. In the multi-signature `g` the leg-(a)
+// mono-recheck sets `current_defn` to the template mangle (`g$Var…`), so the
+// inner self-call classifies as EXTERNAL and monomorphises instead of unifying —
+// leaving a residual var that wrong-rejects `(g 5)` with an INTERNAL mangle
+// leaking into the user-facing diagnostic:
+//   `ambiguous type … monomorphised in 'user/g$Var$Int' …`.
+// Spec-correct: `g` accepts, `(g 5)` = 5, no internal `$`-mangle in any
+// diagnostic (design §11.3.1 caveat (b)). RED until the I1 fix lands.
+// spec: spec/05-definitions.md §5.1.2 — a genuinely-polymorphic clause is
+// inference-equivalent to the standalone function (which accepts + runs).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_pending_overloads (mono-recheck current_defn shadows self-call classification, design §11.3.1 caveat (b)) found=S112 owner=/dev
+#[test]
+fn recursive_poly_clause_accepted_matches_standalone_twin() {
+    // Multi-signature half: g accepts, `(g 5)` = 5, no internal mangle leak.
+    let out = repl_prims("(defn g ([x] (if true x (g x))) ([a b] a))\n(g 5)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "g's genuinely-poly recursive clause `([x] (if true x (g x)))` is \
+         inference-equivalent to the standalone `g1` (which accepts) — MUST be \
+         accepted, not wrong-rejected (§5.1.2); got:\n{c}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "`(g 5)` = 5 (the identity clause at Int); got:\n{}",
+        out.stdout
+    );
+    // The internal monomorphisation mangle MUST NOT surface in a user diagnostic
+    // (the `user/g$Var$Int` leak). The load-bearing RED.
+    assert!(
+        !c.contains("$Var") && !c.contains("$Int") && !c.contains("monomorphised in"),
+        "no INTERNAL `$`-mangle (e.g. `user/g$Var$Int`) may appear in a \
+         user-facing diagnostic; got:\n{c}"
+    );
+
+    // Standalone twin fence: g1 accepts and `(g1 5)` = 5 (GREEN on the leg-(a)
+    // tree — the equivalence the multi-sig half MUST match).
+    let solo = repl_prims("(defn g1 [x] (if true x (g1 x)))\n(g1 5)\n");
+    let sc = format!("{}{}", solo.stdout, solo.stderr);
+    assert!(
+        sc.contains("; defn") && solo.stdout.contains(":primitives/Int 5"),
+        "the standalone twin `(defn g1 [x] (if true x (g1 x)))` MUST accept and \
+         `(g1 5)` = 5 — the §5.1.2 oracle for g's poly clause; got:\n{sc}"
     );
 }

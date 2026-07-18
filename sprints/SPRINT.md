@@ -1,0 +1,169 @@
+# Sprint 112: The 0628/I-C Compiler Wave — corrected §5.1.2 multi-sig inference + the settled trait/impl form
+
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — waves organized 2026-07-18; W1 dispatch pending /arch 0644 return (serial-editor rule)
+
+**Goal**: Implement the two S111-settled normative resolutions — I-C (multi-sig `defn` inference-equivalent to separate mutually-recursive functions, §5.1.2) and the 0628 trait/impl redesign (kind-by-usage traits, `self` as the implementing type, echo-the-head impl form, §7.3.5 kind-matching) — as one coordinated typecheck + backend + test-migration wave, unwinding every superseded asset.
+
+**Audit**: — (user declined the rotation at Phase-1 scope selection 2026-07-18; `cranelisp-frontend` rotation debt persists — longest-unassessed since s87, declined S111 Phase 6 and again here; re-present at S113 Phase 1.)
+
+## Scope
+
+All normative questions are ALREADY RULED — the spec landed in S111 (`c9f05b64`: §5.1.2 back-flow correction; §7.1.1 param-or-return dispatch; §7.2/§7.3.4–6 trait kind-by-usage + impl form + kind-matching table; DRAFT amendments ratified `b37d77e6`). This sprint is pure implementation against settled spec; no user arbitration is expected mid-sprint (any new normative question found is a stop-and-ask, per standing rule).
+
+**Surfaces (post-Phase-2): `cranelisp-frontend` (b0 `parse_impl` + types carrier), `cranelisp-typecheck` (legs a+b), `cranelisp-backend` (leg c, repro-gated), `cranelisp-types` (/arch pinned diff), tests/ + examples/ + repl/ (corpus migration A3).** Schema bump 20→21 at b2. See §Architecture review for the binding adjustments A1–A4 and the b0→b1→b2 ordering.
+
+Three legs (per FIXMEs 0642, 0628, 0639 and the S111 close record):
+
+**(a) §5.1.2 multi-sig back-flow — `cranelisp-typecheck` (FIXME 0642).**
+Clause inference flows exactly as separate mutually-recursive top-level functions: remove the artificial independence/no-back-flow block and the "cannot be left polymorphic" restriction; keep §5.1.1 same-arity-unifiable ambiguity + dispatch-coherence checks. Anchor: un-annotated `rp4` compiles clean as `(Fn [Int Int] Int)`.
+
+**(b) Trait/impl form — `cranelisp-typecheck` + registry (FIXMEs 0628 + 0639).**
+The 0639 arbitration question is RESOLVED by the settled spec — `/design` actions against §7.1.1/§7.2/§7.3.4–6 and deletes both FIXMEs. Re-land the impl-target gate per the settled kind model; fix the `registry.rs::register_trait_decl` usage-derived HKT guard (the companion `:a 7` display defect's root); migrate ~7 e2e + ~24 typecheck unit fixtures off the `(X a)`-head mismodel to the `self` form (mechanics prototyped + green-verified in S111 CS-4, then reverted; constraint-carrying fixtures REQUIRE `SelfType`, not just empty `type_params`).
+
+**(c) Return-type-dispatch codegen fix — `cranelisp-backend` (0628 tail).**
+The `undefined function` codegen leak on the ill-formed HKT-on-primitive path closes check-side via (b); the admitted return-type dispatch (§7.1.1 param-or-return) must work end-to-end — the S111 close record names a backend return-type-dispatch fix as leg (c) of the wave.
+
+**Test unwind + new coverage — `/testing` to `/qa`'s plan.**
+- UNWIND superseded rejection assets: `multi_arity_clause_param_51_2` + CS-4.1 param-subtraction + carried CS-4.2 assets → the `rp4`-shaped program becomes an ACCEPTING test; poly+concrete non-overlapping multi-sig positive coverage; same-arity-unifiable still errors (§5.1.1). FIXME 0642's superseded-repro list is the checklist.
+- 0628 rejection matrix (the variant×polarity lens): con_var {applied, bare-return, bare-arg} × target {primitive, wrong-arity ADT, well-kinded ADT}, routed per the settled §7.3.5 kind-matching table; the check-gate-leak guard flips (clean §7.2-class diagnostic, no backend leak).
+- Expected suite delta: several of the 16 attributed REDs flip green (the multi-arity/I-C-coupled family: B-2/CS-4.2, `rp4`); no new REDs without owner+trigger attribution.
+
+**Out of scope (explicit deferrals):**
+- **Memory-safety-soundness infrastructure** (the S111 NEW TRACK: `/qa` oracle lane + generative harness, `/arch` safety-invariants cascade; FIXMEs 0641/0638/0633/0637/0632 ride it) — S111 close directed it to S112; the user re-scoped at S112 Phase-1 selection (2026-07-18) to keep this sprint focused. **Deferral count 1 → S113.** 0641 stays held behind the mechanism (no instance-patching).
+- **`cranelisp-frontend` audit rotation** — declined (see Audit line). Debt recorded, twice-declined; escalate the presentation at S113 Phase 1.
+- **SROA / `--release` frontier** — standing next track, untouched.
+- Attribution carries not in this wave: 0604 (index-feed race, `/qa`), R2 entry-`main` IO-teardown leak, I-3 renamed-import (§8.3.5 — needs `/arch` scoping, own increment), 0553.
+- Spec-open §7.3.6 sub-q1 (non-`self` type parameter) — parked; a quick user confirm may ride this sprint opportunistically but is not a gate.
+
+## FIXME debt
+
+| FIXME | Target skill | Status | Notes |
+|---|---|---|---|
+| 0642 | /design | open | Leg (a) — §5.1.2 back-flow + unwind list. In scope. |
+| 0628 | /design | open | Leg (b)+(c) — trait form + codegen leak. In scope; deletes on landing. |
+| 0639 | /design | open | Leg (b) — arbitration RESOLVED by settled spec; `/design` actions + deletes. In scope. |
+| 0621 | /sprint | **resolved** | Reaped at S112 Phase 1 — `storage_fq()` flip + unit pin verified landed in S111 CS-5. |
+| others (18) | various | open | Out of scope this sprint; memory-safety family (0641/0638/0633/0637/0632) rides the S113 track. |
+
+## Architecture review (Phase 2)
+
+**Verdict: APPROVED-WITH-ADJUSTMENTS** (/arch, 2026-07-18). Three-leg scope coherent, faithful to the settled spec, no interim-architecture risk (P8). Four required adjustments (folded into §Scope):
+
+- **A1 — `cranelisp-frontend` is a missing fourth surface.** The settled echo-the-head impl form is a hard parse error today (`parse_impl`, `ast_builder.rs:954` expects a bare symbol at slot 1). Needs a narrow frontend change-set (b0) + the pinned types carrier. Slot 2 rides existing `target: TypeExpr` (as `Applied`), kind-interpreted at the ONE §7.3.5 Case-3 seam — no second classifier.
+- **A2 — rejection moves to DECLARATION time.** Settled §7.1/§7.2.1 rejects a never-applied `(X a)` head at `deftrait` (malformed), not at impl. The CS-4 gate prototype is NOT a verbatim re-land; `hkt.md` §5.1/§5.4 must be reconciled by /design(typecheck). Downstream consumers read `TraitDeclInfo.type_params` (non-empty ⟺ HKT), never scan usage — Principle-24-shaped collapse of the two divergent kind derivations (`registry.rs:117–126`, `impl_check.rs:39–92`).
+- **A3 — user-facing corpus migration joins the wave**: `examples/26-functor.cl:47` + `30-parallel-map-reduce.cl:123` (old HKT impl form → echo-the-head, in b2); `repl/spec.md:432` + `repl/demos/05-traits.demo:31` (never-applied `(X a)` → bare-head+`self`, in b1). Otherwise the examples gate goes red at b2.
+- **A4 — `CACHE_SCHEMA_VERSION` 20→21 REQUIRED, pinned to b2** (meaning change to persisted `TraitDeclInfo.type_params`; stale schema-20 cache could silently resurrect a now-rejected trait via cache-hit typecheck bypass — the CS-2/P25 cache-trust class). Leg (a) alone needs NO bump. One bump covers the sprint window (S110 precedent).
+
+**Pinned types diff** (/arch lands at b0 + `public-api.txt` regen): additive `TraitImpl.head_con_var: Option<Symbol>` with `#[serde(default)]` — carries the written slot-1 head shape for echo validation. No other types change.
+
+**Ordering edges (Phase-4 input):** (a) ⊥ (b) semantically — serialize only for the one-agent-edits rule, either order. (b) internal: **b0** (frontend+types, additive, green) → **b1** (conventional-half corpus migration to self-form, green→green — old compiler fully supports self-form, CS-4-verified) → **b2** (atomic: declaration reject + echo validation + §7.3.5 matching + registry guard fix + HKT-form corpus swap + schema bump + matrix flips green). **(c) is REPRO-GATED**: 0628's own "Not this" section shows the admitted form working at the REPL while S111 asserts a leak — contradiction ⇒ mode/context-dependent; pinned cross-mode repro FIRST (standing dual-path rule); attribution (backend vs typecheck-producer) follows evidence; if producer-side it lands inside the schema-21 window after b2; if no repro fires, (c) collapses to cross-mode e2e coverage of the admitted form.
+
+**New completeness hole (a) opens — constrained-poly × multi-sig cell**: a constrained clause (`([:a x] (+ x x))`) is spec-admissible under the equivalence rule but rejected-by-construction today (`collect_defns` filters multi-sig out of `detect_constrained_fns`; `ConstrainedFn` single-variant invariant, `module.rs:2302`). **DISPOSITION (user, 2026-07-18): IMPLEMENT IN-SPRINT** — the `ConstrainedFn` single-variant invariant + `collect_defns` filter rework joins leg (a); `/design`(typecheck) designs the cell; `ConstrainedFn` rustdoc invariant note updates via FIXME `target: /arch` when the filter changes.
+
+**Determinism obligation on (a):** admitted polymorphic clause's `OverloadVariant.mangled_name` must be deterministic (normalized var spelling, never session-dependent `t{id}`); /qa checks fresh-build `.meta.json` byte-identity.
+
+**Notes for /qa** (feeds the mandated quality-risk assessment): blast-radius argument for (a) — previously-accepted multi-sig programs keep identical schemes/mangles/dispatch (back-flow only adds pins where none existed; polymorphic clauses were rejected outright before), residual verification is an empirical before/after acceptance run over the green multi-sig corpus. Matrix additions: declaration-reject + echo-mismatch rows (diagnostic names the new form); stale-cache wholesale refusal e2e; diagnostic mode-uniformity REPL/`--run`/`--link` on every new rejection; constrained-cell row; `.meta.json` byte-identity; return-type dispatch end-to-end ×3 modes ×{annotation, argument-context}. Unwind traceability: §5.1.2/§7.x `[Tested …]` bands re-pointed, never dropped; re-verify `tests/fixtures/preludes` clean of `(X a)` at b1. The ~7 green e2e were the authority that made the wrong form look right — the matrix is the structural cure.
+
+## Skill plans (Phase 3)
+
+{Pending — expected invocations: /design (typecheck), /design (backend, narrow — leg (c)), /qa, /arch (Phase 2 + any interface touch). No /spec invocation expected — semantics settled S111.}
+
+**/qa mandate (user, S112 Phase-1 approval): beyond the test plan (unwind list + rejection matrix), /qa MUST assess (1) the QUALITY RISK of this wave — the §5.1.2 inference change and the trait-form gate re-land both touch high-blast-radius typecheck seams, and the S111 finding says the suite is structurally blind to some defect classes — and (2) the TEST-COVERAGE IMPACT of the unwind: retiring rejection assets must not orphan spec rows (§5.1.2/§7.2/§7.3.5 traceability re-pointed, not dropped), and the fixture migration must not silently narrow what the ~24 unit fixtures exercised.**
+
+## Waves (Phase 4)
+
+Ordering constraints honored: (1) source-editing agents STRICTLY SERIAL (worktree isolation broken — S81); (2) Stage-1 QA-first precedes implementation; (3) b0→b1→b2 staging per /arch (no intermediate red gate); (4) leg (a) lands before b2 so the 20→21 bump covers it regardless of the 0644 ruling ("before-or-with the bump" satisfied either way); (5) leg (c) repro-gated, last.
+
+### W1 — Stage 1: QA-first failing e2e (leg-a families + everything authorable pre-b0)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /testing | tests/ (sprint-wide) | Author failing e2e per `tests/plan/s112-0628-ic-wave.md`: MS family (rp4 accepting, poly+concrete, constrained cell CP, MS-6 definition-site ambiguity, §3.11 negatives), UW conversions incl. UW-7 (0432 Face-B trio), oracle fences MS-1b/CP-1b, AG-1 stale-cache. §3.5/matrix/RT rows deferred to their gated waves per plan. | **done** (2026-07-18: 20 intended REDs, 0 regressions; suite 4702/4670/32/1; live carry baseline = 12 not 8; 5 plan under-specs flagged → /qa reconciliation batched with Phase-5 coverage pass — MS-2/UW-5/UW-6/UW-9/UW-12 already-green must-holds; MS-7/UW-10 re-grounded to disposition-equality) |
+
+### W2 — Leg (a): §5.1.2 back-flow + constrained cell (typecheck)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-typecheck | `monomorphisation.md` §11: delete `ClauseIndependence` + param-subtraction, one post-drain scan, mangle post-drain; constrained-cell rework (`collect_single_sig_defns` filter, per-clause one-variant `ConstrainedFn`, dispatch routing); **`CACHE_SCHEMA_VERSION` 20→21 in THIS change-set** (0644 ruling: leg (a) merges first ⇒ carries the bump; W5 does NOT re-bump); MS-8 message re-grounding + `program/tests.rs:27` pin update same change-set; MS-6 definition-site check (in-sprint, not gate); unit tests at the inference seam (METHOD §2.2). W1 leg-a rows flip green. **GATED on FIXME 0645** (§11.4 no-bump paragraph amendment by /design). | **done** (2026-07-18: 19/20 leg-a REDs GREEN, 0 regressions; suite 4704/4691/13/1 — 12 attributed carries + MS-8 which stays RED as a /testing fixture defect, fixture is admissible-poly under settled §5.1.2. Bump 20→21 landed; no public-API change; 6 unit tests at inference seam, typecheck lib 721/721. Two flagged deviations for /review+/design: (i) `collect_single_sig_defns` is_multi_sig filter LEFT IN — cell is drain-driven, literal removal risks variant-0-only body scan; (ii) NEW `is_self_call` tagging — self-call unify vs external monomorphise; §11.3's concreteness-only split was insufficient, monomorphic-recursion distinction is load-bearing → §11.3 amendment owed. Uncommitted, awaiting review.) |
+| /review | cranelisp-typecheck | Change-set review vs §11 design + the wrong-accept-inversion risk (twin-assertion discipline honored; preserved-facet column). Adjudicate the two /dev deviations (filter left in; is_self_call addition). | **done — BLOCK** (2026-07-18. B1 Blocker: self-call `SigDispatch` derived mid-drain → ≥2-hop delegation chain (`f3`) leaks dangling `$Var` dispatch to codegen, violates §11.3(B)'s own MUST; lives exactly in the un-honored u3 unit deferral (I3). I1: self-recursive genuinely-poly clause wrong-rejects w/ internal-name leak (post-drain re-entry pushes unresolved pending entry). I2: `search_cf2_neg` fixture uses the 0432 `sum-to` shape leg (a) now compiles — unwind-checklist miss, + timing race (explains 13-vs-14 RED discrepancy). M1 pre-drain §5.1.1 timing undocumented; M2 overload gate shadowing-blind (+ pre-existing single-sig shadowing HANG found); M3 double-mangled template instance names. Deviations: (i) ACCEPTED w/ §11.4 amendment (`Defn::body()` single-variant assert verified — literal removal would panic); (ii) SOUND, §11.3 amendment owed. MS-8 fixture-defect classification CONFIRMED. No wrong-accept inversion; cache-trust/AG-1/determinism verified; ONE `mangle_sig`. Recurring-class note → /arch: B1+I1 = "resolution recorded against a name a later pass invalidates" (P22/P24 published-pointer shape), escalate on 3rd instance. Probes in scratchpad/probe/.) |
+
+### W2.1 — Remediation (BLOCK disposition: fix-in-wave; strictly serial)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design | cranelisp-typecheck | §11.3 amendment (two-pass drain, self-call tag semantics + its 3 caveats, post-drain SigDispatch derivation as the B1 fix shape) + §11.4 step-3 rewrite (filter retained, drain-driven cell) + M1 pre-drain §5.1.1 timing recorded (flag /spec ONLY if judged normative) + M3 mangled-name-grammar note. Design docs only. | **done** (2026-07-18: §11.3.1 two-pass drain + tag caveats; §11.3.2 B1 fix = DEFERRAL — pass 1 records NO SigDispatch, ONE post-drain `mangle_sig` in `finalize_multi_sig_variant_types` feeds all 6 carriers (Concrete key, OverloadVariant, resolved_overloads, multi_sig_mangled_names, method_resolutions.resolved_calls, record_dispatch_target) — order-independence by construction (P24), rejected carrier-repair option as the P22/P24 patched-not-eliminated shape; §11.3.3 MS-6 landed + **M1 FLAGGED NORMATIVE, not ruled** — probe `t` finalises disjoint `[String]`/`[Int]` via INTERNAL pin, pre-drain check wrong-rejects a spec-well-formed program; §11.4 step 3 rewritten (filter retained, drain-driven); §11.5 M3 wart + 0519 pointer. No spec contradiction.) |
+| /testing | tests/ | Failing e2e: B1 (`f3` 3-clause delegation chain, cross-mode), I1 (recursive-poly-clause twin divergence vs standalone `g1`). Fixture repairs: I2 (`search_cf2_neg` → genuinely-unindexable fixture, no timing race), MS-8 re-point (concrete-sig internally-unpinned clause). | **done** (2026-07-18: T1 `f3_delegation_chain_backflow_accepted_and_runs` RED + standalone-twin GREEN fence; T2 `recursive_poly_clause_accepted_matches_standalone_twin` RED + `g1` in-test fence; T3 both search_cf2 tests GREEN race-free — unresolved-symbol fixture makes the asserted-absent write never occur, + `good.meta.json` settle anchor; the racy search test WAS the 13-vs-14 source AND one of the counted "carries"; T4 MS-8 flipped GREEN on `qq` concrete-sig fixture. Suite 4707/4694/13/1 = 11 durable carries + T1 + T2, zero unattributed. Carry baseline now 11, not 12.) |
+| /dev | cranelisp-typecheck | B1 fix (post-drain self-call dispatch derivation or Phase-A carrier re-point) + I3 u3 unit pin SAME change-set; I1 fix (or attributed carry w/ failing-not-ignored repro + rationale if it balloons). B1/I1 e2e + MS-8 flip green. | **done** (2026-07-18: B1 = §11.3.2 DEFERRAL as pinned — pass 1 records NO SigDispatch, defers (span, base, variant-idx); Phase A drives carriers 5–6 from the LITERAL same `concrete_mangled` binding as the entry key (flagged strengthening: variant-index payload, tighter single-sourcing than the doc's params-vector phrasing). I1 = FIXED, design candidate 1 — `mono_recheck_self` context set only at the pass-2 template-monomorphise site; inner self-call with args ≡ instance params unifies inline to the instance mangle; PLUS load-bearing extra: callee base Var node retyped to the instance's concrete Fn (else `from_expr` NotConcrete::Var hard-error) — flagged for /review adjudication as outside strict B1 scope but within §11.3.1(b) authorization. I3 pin + I1 seam unit test landed same change-set. Both e2e GREEN all modes; MS-2 two-instantiation cell verified green. Suite 4709/4698/11/1 — exactly the 11 durable carries, zero unattributed. Typecheck lib 723/723, zero warnings, no public-API drift. Uncommitted.) |
+| /review | cranelisp-typecheck | Re-review (same reviewer context): B1/I1/I3 closure verified; commit-safety verdict. | pending |
+
+### W3 — b0: additive form support (types + frontend)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /arch | cranelisp-types | Land pinned `TraitImpl.head_con_var` diff + `public-api.txt` regen (may already be landed with the 0644 change-set — verify). | pending |
+| /dev | cranelisp-frontend | `parse_impl` both slot-1 shapes per `design/frontend/trait-impl-head-parse.md`; shared head-shape helper with `build_trait_head` (P7); malformed-slot-1 diagnostic table; lowercase con_var enforcement row (/qa ruling — rides b0, ONE seam); parse-shape unit matrix. Additive-green: old corpus byte-identical. | pending |
+| /review | cranelisp-frontend | b0 review: additive-green verified, one-classifier line held (no kind logic parser-side). | pending |
+
+### W4 — b1: conventional-half corpus migration (green→green on OLD compiler)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /testing | tests/ | Migrate the conventional-half e2e + `tests/fixtures/preludes` re-verify clean of `(X a)`; TB/§3.5 rows now authorable; per-fixture old→new mapping table in change-set. | pending |
+| /repl | repl/ | Migrate `repl/spec.md:432` + `demos/05-traits.demo:31` off never-applied `(X a)` → bare-head+`self`. `runs/` historical, untouched. | pending |
+
+### W5 — b2: the atomic kind-model change-set (typecheck + corpus swap)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-typecheck | Atomic: declaration-time never-applied reject + `register_trait_decl` guard fix (HKT → `register_hkt_trait`) + Case-3 seam (shape + SPELLING echo vs `type_params[0]`) + §7.3.5 kind-matching + ~24 unit-fixture migration (constraint trio REQUIRES `SelfType`; old-model positives → declaration-reject negatives, never delete) + HKT e2e swap + `CACHE_SCHEMA_VERSION` 20→21. Matrix + RT rows flip green. | pending |
+| /examples | examples/ | Migrate `26-functor.cl:47` + `30-parallel-map-reduce.cl:123` to echo-the-head (same wave as b2 — examples gate must not go red). | pending |
+| /dev | src/ (int) | `format_trait_display`/`impls_for_type_in_view` reconciliation to the settled kind model (the two `repl_introspection` e2e). | pending |
+| /review | cranelisp-typecheck + src/ | b2 review vs hkt.md §5.1/§5.4 + duplication lens (one classifier, one seam). | pending |
+
+### W6 — Leg (c): return-type-dispatch repro → attributed fix
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /testing | tests/ | Pinned CROSS-MODE repro (REPL/`--run`/`--link` × annotation/argument-context) of the 0628 leak claim — the contradiction (FIXME "Not this" shows it working) resolves by evidence. | pending |
+| /dev or /design | per attribution | If producer-side (typecheck `resolved_targets` for return-type-dispatch sites, §11.6): /dev(typecheck) inside schema-21 window. If backend-side: /design(backend) narrow then /dev(backend). If no repro fires: (c) collapses to cross-mode e2e coverage (already in RT rows). | pending |
+| /review | per attribution | Change-set review. | pending |
+
+**Wave-gate note:** FIXMEs 0642/0628 remain `status: open` targeting /design as WAVE TRACKERS — their /design portions are actioned (Phase 3); the open status records the /testing+/dev remainder. Gate satisfied by this rationale; they retire at leg-(a) landing (0642) and leg-(c)+matrix landing (0628). 0644 RESOLVED+deleted (2026-07-18): /qa position ADOPTED — whichever of {leg-(a), b2} merges first carries the ONE 20→21 bump; `TraitImpl.head_con_var` b0 timing confirmed; ConstrainedFn+ParametricFn rustdoc landed (uncommitted, rides the sprint change-sets). **NEW: 0645 (target /design, typecheck) GATES W2** — §11.4 no-bump paragraph reversed, one-paragraph amendment before /dev implements. /arch also recommends AG-1 gains the leg-(a) stale-cache cell (cached `$Var`-Concrete module refused wholesale).
+
+## Dispatch log
+
+| Wave | Agent | Surface | Model | Effort | Non-default reason |
+|---|---|---|---|---|---|
+| P2 | /arch | design/arch + scope review | shim default | default | — |
+| P3 | /design | cranelisp-typecheck | shim default | default | — |
+| P3 | /design | cranelisp-frontend | shim default | default | — |
+| P3 | /design | cranelisp-typecheck (echo-spelling amendment) | shim default | default | — |
+| P3 | /qa | sprint-wide (plan + user-mandated risk/coverage assessment) | shim default | default | — |
+| P3 | /arch | FIXME 0644 ruling + ConstrainedFn rustdoc + exit gate | shim default | default | — |
+| W1 | /testing | tests/ (Stage-1 QA-first, leg-a + UW + fences + AG) | shim default | default | — |
+| W2-gate | /design | cranelisp-typecheck (0645 §11.4 amendment) | shim default | default | — |
+| W2 | /dev | cranelisp-typecheck (leg a + constrained cell + bump) | shim default | default | — |
+| W2 | /review | cranelisp-typecheck (leg-a change-set) | shim default | default | — |
+| W2.1 | /design | cranelisp-typecheck (§11.3/§11.4 amendments + M1/M3) | shim default | default | — |
+| W2.1 | /testing | tests/ (B1/I1 failing e2e + I2/MS-8 fixture repairs) | shim default | default | — |
+| W2.1 | /dev | cranelisp-typecheck (B1 fix + I3 u3 pin + I1) | shim default | default | — |
+| W2.1 | /review | cranelisp-typecheck (re-review, same reviewer context) | shim default | default | — |
+
+## Notes
+
+- 2026-07-18 Phase 1: FIXME 0621 verified landed (checker.rs:1472 `storage_fq()`; `callees_records_renamed_import_by_storage_key` pin) and reaped by /sprint (target skill).
+- 2026-07-18 Phase 1: user scope selection — 0628/I-C wave ONLY; memory-safety track deferred to S113 (count 1); frontend audit declined again.
+- 2026-07-18 Phase 5: W1 DONE (see wave table). 0645 amended+deleted (untracked file, plain rm). W2 gate CLEAR; /dev(typecheck) dispatched — leg (a) + constrained cell + 20→21 bump.
+- 2026-07-18 Phase 5: W2 /dev DONE (see wave table). QUEUED post-review: (1) /testing re-points MS-8 fixture (admissible-poly under settled rule — needs concrete-sig internally-unpinned clause); (2) /design(typecheck) §11.3 amendment recording the self-call-unify vs external-monomorphise distinction. /review(typecheck) dispatched on the uncommitted change-set.
+- 2026-07-18 Phase 5: W2.1 /dev DONE — B1 + I1 both FIXED (see wave table), suite at exactly the 11 durable carries. Re-review dispatched to the SAME reviewer (context intact) for B1/I1/I3 closure + adjudication of the two flagged /dev items (variant-index payload; I1 mechanism scope) + commit-safety verdict.
+- 2026-07-18 Phase 5: W2.1 /testing DONE (see wave table). Live RED baseline corrected again: 11 durable carries (the retired "12th" was the racy search test T3 fixed). /dev(typecheck) dispatched — B1 deferral fix per §11.3.2 + I3 u3 unit pin same change-set + I1 (fix preferred; attributed carry w/ rationale if it balloons).
+- 2026-07-18 Phase 5: W2.1 /design DONE (see wave table). **OPEN NORMATIVE QUESTION (M1) → user via /sprint report**: is §5.1.1 "can unify" judged on settled (post-inference) or written (pre-inference) clause signatures when the pinning site is INTERNAL to the defn? Pre-drain check as-landed wrong-rejects the review's probe `t`, which finalises disjoint under §5.1.2. Orthogonal to W2.1 — leg (a) ships the check pre-drain; placement not treated as settled until user rules (/spec scribes after). /testing dispatched next (serial).
+- 2026-07-18 Phase 5: W2 /review BLOCK (B1 + I1/I2/I3 + M1–M3; see wave table). /sprint disposition: FIX-IN-WAVE (W2.1) — B1 is bounded, the change-set stays uncommitted through remediation. Serial chain: /design amendments → /testing failing e2e + fixture repairs → /dev fix (B1+I3 same change-set; I1 fix-or-attributed-carry) → /review re-verdict. FOR /qa BATCH (with the W1 5-item reconciliation): coverage rows for delegation-chain + recursive-poly cells; I2 unwind-completeness note (S112-7 class); M2 shadowing-blind gate + the pre-existing single-sig shadowing HANG (`(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))` runtime loop — separate defect, needs attribution row). FOR /arch (watch, no action yet): B1+I1 recurring-class candidate "resolution recorded against a name a later pass invalidates" — escalate on 3rd instance per standing rule.
+- 2026-07-18 Phase 3: /qa COMPLETE — plan `tests/plan/s112-0628-ic-wave.md` (families MS/UW/TB/AG/CP/RT, unit-deferrals u1–u9) + risks.md S112-1..7 + PLAN.md index + `[S112]` bands on §5.1.2/§7.3.5. QUALITY-RISK verdict: wrong-accept inversion is the dominant hazard (twin-assertion cure; 2 cheap `[oracle]` fences MS-1b/CP-1b close the highest-signal gap w/o pulling S113 forward; no new ownership mechanism but widened reachable set — residual rides to S113). COVERAGE verdict: unwind narrows nothing IF preserved-facet column honored; **0642 checklist INCOMPLETE — 0432 Face-B trio (`sum-to`) caught + rowed (UW-7)**. Rulings: MS-6 §5.1.1 definition-site check owed (in-sprint, not gate); lowercase con_var row rides b0; tests.rs:27 same change-set; 0644 no-bump rationale FALSIFIED (B-2 wrong-accepts persisted bogus schema-20 entries) → recommend leg (a) rides 20→21 window. /arch dispatched to rule 0644 before wave freeze.
+- 2026-07-18 Phase 3: echo-spelling amendment LANDED (hkt.md §5.4 step 3 = shape + spelling bits at the one seam; /qa matrix axis widened to 3-valued echo). /qa dispatched (last Phase-3 invocation).
+- 2026-07-18 Phase 3: /design(frontend) COMPLETE — b0 designed (`design/frontend/trait-impl-head-parse.md`): both slot-1 shapes, shared head-shape helper with `build_trait_head` (P7), NO kind classification parser-side, slot-2/`build_impl_target` unchanged, serializers form-agnostic by construction (round-trip e2e owed at b1/b2). Flags: (i) echo-SPELLING validation missing from hkt.md §5.4 Case-3 → amendment dispatched (spec §7.3 settles it, no user question); (ii) con_var lowercase enforcement = pre-existing shared gap → /qa matrix candidate, out of b0; (iii) int `format_trait_display` output drift under b2 kind model → int-surface reconciliation joins b2 (two e2e already in §5.4 migration list).
+- 2026-07-18 Phase 3: /design(typecheck) COMPLETE — leg (a) = finalize-pipeline reordering (`monomorphisation.md` §11: delete `ClauseIndependence` scan, mangle post-drain); constrained cell rides standalone `ConstrainedFn` path, NO types reshape; mangle already deterministic (`Var` constant spelling); hkt.md §5.1/§5.4 rewritten to declaration-time reject. FIXME 0639 actioned+deleted; 0642/0628 stay open as wave trackers; **FIXME 0644 filed → /arch** (ConstrainedFn rustdoc + no-bump-for-leg-(a) confirmation; if /arch disagrees, leg (a) folds into the b2 20→21 window). /qa flags: §5.1.1 unifiable-overlap definition-site check owed?; `program/tests.rs:27` message-text assertion churn.
+
+## Outcome (Phase 7)
+
+{Pending.}

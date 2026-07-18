@@ -6,14 +6,19 @@
         TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
 
-    // spec: spec/05-definitions.md §5.1.2 (0576) — the multi-arity ambiguity
-    // diagnostic NAMES the offending arity clause + unpinned param (not just the
-    // fn name), and NEVER leaks a synthetic `__` binder (0568). Message-
+    // spec: spec/05-definitions.md §5.1.2 (0576, MS-8 re-grounding) — the
+    // multi-arity ambiguity diagnostic NAMES the offending arity clause + unpinned
+    // param (not just the fn name), and NEVER leaks a synthetic `__` binder (0568).
+    // S112 re-grounding: it cites §3.11 / the standalone-equivalence rationale (a
+    // multi-sig defn is inference-equivalent to separate mutually-recursive
+    // functions, so a genuinely-unpinned clause is the §3.11 ambiguity the
+    // equivalent standalone function would also raise) — NOT the retired "each
+    // arity clause is type-checked independently (§5.1.2)" framing. Message-
     // construction seam test.
     #[test]
     fn ambiguous_form_message_names_clause_and_param() {
         let sp = cranelisp_types::Span::new(0, 0);
-        // Multi-arity clause + a named param → names both + cites §5.1.2.
+        // Multi-arity clause + a named param → names both + cites §3.11.
         let m = AmbiguousForm {
             name: Symbol::from("rp"),
             span: sp,
@@ -24,7 +29,12 @@
         assert!(m.contains("2-arg"), "names the offending clause by arity: {m}");
         assert!(m.contains("clause"), "says 'clause': {m}");
         assert!(m.contains("rot"), "names the unpinned param: {m}");
-        assert!(m.contains("§5.1.2"), "cites the independent-clause rule: {m}");
+        assert!(m.contains("§3.11"), "cites the §3.11 standalone-equivalence rule: {m}");
+        assert!(
+            !m.contains("independently"),
+            "MS-8: drops the retired 'each arity clause is type-checked \
+             independently' framing: {m}"
+        );
         assert!(!m.contains("__"), "never leaks a synthetic binder (0568): {m}");
 
         // Single-sig (no clause arity) + no bound param → the plain fn-level
@@ -5993,57 +6003,344 @@
         }
     }
 
-    // spec: spec/05-definitions.md §5.1.2 — multi-clause `defn` self-call (FIXME
-    //   0432 Face B). An UNannotated multi-clause `defn` whose body recursively
-    //   self-calls across variants cannot pin the cross-variant param types; the
-    //   result is a residual `Type::Var` in a codegen-reaching position. This
-    //   MUST be a clean `Err(TypeError{ "ambiguous type" })` — NEVER a monomorphiser
-    //   panic (`s84-concrete-types-ambiguity-ruling`: a residual `Var` at a
-    //   codegen position is a clean type error, never a `build_mangled_name`
-    //   debug panic).
-    //
-    //   0432.U — unit-tier reachability guard. REACHABILITY FINDING: the
-    //   `monomorphise.rs:1016` `debug_assert!` is NOT reachable for this shape at
-    //   unit tier on HEAD. Two independent mechanisms catch the residual `Var`
-    //   first: (1) the S84 slot gate leaves the multi-clause `defn` registered as
-    //   `Overloaded` with per-clause mangled variants (`sum-to$Var`/`sum-to$Int+Int`)
-    //   via the multi-sig variant mangler (`program.rs:627`, which tolerates a
-    //   `Var` param), NOT a single `[Int, Var(N)]` mono instance through
-    //   `build_mangled_name`; (2) the §3.11.1 backstop
-    //   (`find_ambiguous_top_level_form`) rejects the residual var at finalisation.
-    //   So this is a GREEN-today guard, and the §9 concreteness gate at
-    //   `monomorphise_call` P1 is pure defence-in-depth (Principle 18) — it makes
-    //   the `:1016` assert provably unreachable-for-0432 rather than incidentally so.
-    //   The e2e convergence guards 0432.E1/E2/E3 (`tests/spec_05_definitions.rs`)
-    //   are the cross-mode (REPL == `--run`) siblings; both stay green.
+    // spec: spec/05-definitions.md §5.1.2 — multi-clause `defn` self-call
+    //   (S112 leg a back-flow; UW-7 unit counterpart, was FIXME 0432 Face B).
+    //   A multi-signature `defn` is inference-equivalent to its clauses written
+    //   as separate mutually-recursive functions, so an UNannotated `sum-to`
+    //   whose 1-arg clause delegates `(sum-to n 0)` to the 2-arg clause — whose
+    //   own `add-i64`/`sub-i64`/`eq-i64` pin it to `(Fn [Int Int] Int)` — now
+    //   INFERS: the delegation pins `n : Int`. It MUST type-check cleanly (no
+    //   `ambiguous` error, no monomorphiser panic — the residual `Var` the old
+    //   drifted §5.1.2 left is dissolved by the back-flow).
     #[test]
-    fn multi_clause_defn_self_call_is_ambiguous_not_panic() {
+    fn multi_clause_defn_self_call_backflow_infers_not_ambiguous() {
         let mut tc = tc_with_prims();
-        // FIXME 0432 Face B verbatim: unannotated multi-clause `sum-to` whose
-        // 1-arg clause delegates to the 2-arg clause and the 2-arg clause
-        // self-recurses. Qualified `primitives/eq-i64`/`sub-i64`/`add-i64` so the
-        // arithmetic is concrete; the ambiguity is solely the un-pinnable
-        // cross-variant param.
+        // The 0642/0432 shape verbatim: 1-arg clause delegates to the 2-arg
+        // clause, which self-recurses; all arithmetic qualified/concrete.
         let src = "\
             (defn sum-to ([n] (sum-to n 0))\n\
                          ([n acc] (if (primitives/eq-i64 n 0) acc\n\
                                       (sum-to (primitives/sub-i64 n 1) (primitives/add-i64 acc n)))))";
         let sexps = cranelisp_frontend::parse(src).expect("parse");
         let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
-
-        // MUST be a clean Err, NEVER a panic. `check_program_self` drives the full
-        // `check_via_forms`/`pass4_monomorphise` pipeline in a debug build (the
-        // build in which the `:1016` `debug_assert!` is live), so this directly
-        // guards the FIXME's debug-panic divergence.
-        let err = tc
-            .check_program_self(&program)
-            .expect_err("multi-clause self-call with an un-pinnable param must be a clean type error");
-        let msg = format!("{err}").to_lowercase();
-        assert!(
-            msg.contains("ambiguous"),
-            "the residual-var rejection must name 'ambiguous' (the §3.11.1 / §9 \
-             wording), got: {msg}",
+        // MUST be Ok — NEVER a panic and NEVER an ambiguity error. Drives the
+        // full pipeline in a debug build (the build the old `:1016`
+        // `debug_assert!` was live in), so it also guards the no-panic property.
+        tc.check_program_self(&program).expect(
+            "the delegating 1-arg clause pins `n : Int` through the 2-arg sibling \
+             (§5.1.2 back-flow) — `sum-to` MUST infer, not be ambiguous",
         );
+    }
+
+    // spec: spec/05-definitions.md §5.1.2 (u2/u3, §11.3(B)) — a clause pinned
+    //   concrete by a sibling self-call (the back-flow) is registered `Concrete`
+    //   under its CONCRETE mangle; NO `$Var`-mangled entry survives finalize, and
+    //   the drain's `SigDispatch` name is that same concrete mangle (one
+    //   `mangle_sig` source ⇒ entry-name and dispatch-name agree, Principle 7).
+    #[test]
+    fn multi_sig_backflow_pins_clause_concrete_no_var_entry_survives() {
+        let mut tc = tc_with_prims();
+        // rp4: the 2-arg clause delegates to the concrete 3-arg sibling, which
+        // pins its params to Int (back-flow). Pre-drain the 2-arg clause is a
+        // `$Var` Polymorphic template; post-drain it is a `Concrete` `rp4$Int+Int`.
+        let src = "(defn rp4 ([p rot] (let [q (rp4 p rot 0)] p)) \
+                             ([p rot idx] (primitives/add-i64 p (primitives/add-i64 rot idx))))";
+        let program =
+            cranelisp_frontend::build_forms(&cranelisp_frontend::parse(src).unwrap()).unwrap();
+        tc.check_program_self(&program).expect("rp4 back-flow infers");
+        let st = tc.symbol_table();
+        match st.get("rp4$Int+Int") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "the back-flow-pinned 2-arg clause must be Concrete, got {kind:?}"
+                );
+                assert!(
+                    scheme.ty.is_concrete(),
+                    "rp4$Int+Int scheme must be fully concrete, got {:?}",
+                    scheme.ty
+                );
+            }
+            other => panic!("rp4$Int+Int concrete sibling not registered: {other:?}"),
+        }
+        // §11.3(B): the stale `$Var` template must NOT survive.
+        assert!(
+            st.get("rp4$Var+Var").is_none(),
+            "no `$Var` entry may survive for a back-flow-pinned clause (§11.3(B))"
+        );
+        // The concrete 3-arg clause is its own concrete callable.
+        assert!(
+            matches!(
+                st.get("rp4$Int+Int+Int"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } })
+            ),
+            "the 3-arg clause must be Concrete rp4$Int+Int+Int"
+        );
+    }
+
+    // spec: spec/05-definitions.md §5.1.2 (u3, §11.3.2) — the B1 fix + I3 pin:
+    //   in a ≥2-hop self-call delegation chain (`f3`), every self-call's recorded
+    //   `SigDispatch` MUST name an entry that EXISTS in the final symbol table —
+    //   i.e. recorded-dispatch-name ≡ registered-entry-name over the FINALISED
+    //   post-drain types. This is the case that escaped W2: the pass-1 self-call
+    //   dispatch was derived MID-drain, when clause 2's params were still `Var`, so
+    //   clause 1 recorded a `$Var` template name that finalize later removed →
+    //   `f3$Var+Var` reached codegen. Deferring the derivation post-drain (one
+    //   `mangle_sig` over the finalised params) makes every recorded dispatch name a
+    //   live entry (no `$Var` residue), order-independent (Principle 24).
+    #[test]
+    fn multi_sig_delegation_chain_self_call_dispatches_name_live_entries_no_var_residue() {
+        let mut tc = tc_with_prims();
+        // f3: clause [a] delegates to [a b]; [a b] delegates to [a b c]; the 3-arg
+        // leaf pins every clause to Int through the chain (the review's B1 repro).
+        let src = "(defn f3 ([a] (f3 a 0)) ([a b] (f3 a b 1)) \
+                             ([a b c] (primitives/add-i64 a (primitives/add-i64 b c))))";
+        let program =
+            cranelisp_frontend::build_forms(&cranelisp_frontend::parse(src).unwrap()).unwrap();
+        tc.check_program_self(&program)
+            .expect("the delegation chain back-flow-pins every clause to Int (§5.1.2)");
+
+        let st = tc.symbol_table();
+        // Every clause is a live Concrete entry under its finalised concrete mangle;
+        // NO `$Var` template survives any clause of a fully back-flow-pinned chain.
+        for concrete in ["f3$Int", "f3$Int+Int", "f3$Int+Int+Int"] {
+            assert!(
+                matches!(
+                    st.get(concrete),
+                    Some(ModuleEntry::Def { kind, .. })
+                        if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } })
+                ),
+                "clause entry `{concrete}` must be a live Concrete entry",
+            );
+        }
+        for var_key in ["f3$Var", "f3$Var+Var", "f3$Var+Var+Var"] {
+            assert!(
+                st.get(var_key).is_none(),
+                "no `$Var` template (`{var_key}`) may survive a fully pinned chain (§11.3.2)",
+            );
+        }
+
+        // The I3 invariant: walk each mangled clause body; every `SigDispatch`
+        // mangled name MUST resolve to an existing symbol-table entry (no dangling
+        // `$Var` dispatch), and none may contain `$Var`.
+        fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
+            let rc = match expr {
+                Expr::Apply { callee, args, resolved_call, .. } => {
+                    collect_sig_dispatch(callee, out);
+                    for a in args {
+                        collect_sig_dispatch(a, out);
+                    }
+                    resolved_call.as_deref()
+                }
+                Expr::Var { resolved_call, .. } => resolved_call.as_deref(),
+                Expr::If { cond, then_branch, else_branch, .. } => {
+                    collect_sig_dispatch(cond, out);
+                    collect_sig_dispatch(then_branch, out);
+                    collect_sig_dispatch(else_branch, out);
+                    None
+                }
+                Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                    for (_, b) in bindings {
+                        collect_sig_dispatch(b, out);
+                    }
+                    collect_sig_dispatch(body, out);
+                    None
+                }
+                Expr::Lambda { body, .. }
+                | Expr::Annotate { expr: body, .. }
+                | Expr::Trace { body, .. } => {
+                    collect_sig_dispatch(body, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
+                out.push(mangled_name.as_ref().to_string());
+            }
+        }
+
+        let mut all_dispatches = Vec::new();
+        for concrete in ["f3$Int", "f3$Int+Int", "f3$Int+Int+Int"] {
+            if let Some(ModuleEntry::Def { ast: Some(variant), .. }) = st.get(concrete) {
+                collect_sig_dispatch(&variant.body, &mut all_dispatches);
+            }
+        }
+        // The chain's two hops must be recorded (proving the deferral fired), and
+        // every recorded dispatch names a live bare-keyed entry with no `$Var`.
+        assert!(
+            all_dispatches.iter().any(|d| d == "f3$Int+Int"),
+            "clause [a]'s self-call `(f3 a 0)` must dispatch to the live f3$Int+Int \
+             (not a dangling `$Var`); found: {all_dispatches:?}",
+        );
+        assert!(
+            all_dispatches.iter().any(|d| d == "f3$Int+Int+Int"),
+            "clause [a b]'s self-call `(f3 a b 1)` must dispatch to f3$Int+Int+Int; \
+             found: {all_dispatches:?}",
+        );
+        for d in &all_dispatches {
+            assert!(
+                !d.contains("$Var"),
+                "no self-call `SigDispatch` may name a `$Var` template ({d}) — every \
+                 recorded dispatch must name a finalised concrete entry (§11.3.2)",
+            );
+            assert!(
+                st.get(d).is_some(),
+                "the recorded dispatch name `{d}` must resolve to a live symbol-table \
+                 entry (recorded-dispatch-name ≡ registered-entry-name, Principle 7)",
+            );
+        }
+    }
+
+    // spec: spec/05-definitions.md §5.1.2 (§11.3.1 caveat (b), the I1 fix) — a
+    //   genuinely-polymorphic RECURSIVE clause of a multi-sig defn is inference-
+    //   equivalent to the standalone recursive function (which accepts + runs). The
+    //   1-arg clause `([x] (if true x (g x)))` monomorphises at an external `(g 5)`;
+    //   during the template's mono recheck the inner self-call `(g x)` is
+    //   monomorphic recursion to THIS instance, resolved inline against the origin
+    //   base — NOT deferred to a pending entry the sole drain has already taken (the
+    //   residual-var wrong-reject with the internal `g$Var$Int` mangle leak).
+    #[test]
+    fn recursive_poly_multi_sig_clause_monomorphises_inline_no_residual() {
+        let mut tc = tc_with_prims();
+        let src = "(defn g ([x] (if true x (g x))) ([a b] a))\n\
+                   (defn use-g [] :primitives/Int (g 5))";
+        let program =
+            cranelisp_frontend::build_forms(&cranelisp_frontend::parse(src).unwrap()).unwrap();
+        // MUST accept: P7 `finalize_mono_codegen_view` hard-errors on a residual
+        // `Var` in the mono body, so a clean accept proves the inner self-call was
+        // resolved (the instance body is fully concrete).
+        tc.check_program_self(&program).expect(
+            "g's recursive poly clause is inference-equivalent to the standalone \
+             recursive fn — MUST accept, not wrong-reject with an internal mangle leak",
+        );
+        // The concrete instance is a live, fully-concrete Concrete entry.
+        let st = tc.symbol_table();
+        match st.get("test/g$Var$Int") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "the mono instance `g$Var$Int` must be Concrete, got {kind:?}",
+                );
+                assert!(
+                    scheme.ty.is_concrete(),
+                    "the mono instance's stored type must be fully concrete \
+                     (the inner self-call left no residual `Var`), got {:?}",
+                    scheme.ty,
+                );
+            }
+            other => panic!("the `(g 5)` mono instance `test/g$Var$Int` is missing: {other:?}"),
+        }
+    }
+
+    // spec: spec/05-definitions.md §5.1.2 (u1) — the post-drain per-clause
+    //   ambiguity classification: a genuinely-polymorphic clause is ADMISSIBLE
+    //   (skipped); a concrete-signature clause with an internally-unpinned var
+    //   reaching a codegen position is the §3.11 ambiguity — the same disposition
+    //   the equivalent standalone function would get.
+    #[test]
+    fn multi_sig_clause_admissible_poly_vs_genuinely_unpinned() {
+        // Admissible: `([:a x] x)` is genuinely polymorphic → accepted.
+        let mut tc = tc_with_prims();
+        let ok = "(defn f ([:a x] x) ([:Int x :Int y] (primitives/add-i64 x y)))";
+        let p = cranelisp_frontend::build_forms(&cranelisp_frontend::parse(ok).unwrap()).unwrap();
+        tc.check_program_self(&p)
+            .expect("a genuinely-polymorphic clause is admissible (§5.1.2)");
+
+        // Ambiguous: a concrete-signature clause `([:Int n] (let [u []] n))` whose
+        // internal `u = []` carries a free `(Vec a)` into a codegen position. The
+        // sibling `([a b] a)` is admissibly poly (skipped); the defn errors on the
+        // unpinned clause.
+        let mut tc2 = tc_with_prims();
+        let bad = "(defn f ([:primitives/Int n] (let [u []] n)) ([a b] a))";
+        let p2 = cranelisp_frontend::build_forms(&cranelisp_frontend::parse(bad).unwrap()).unwrap();
+        let err = tc2
+            .check_program_self(&p2)
+            .expect_err("an internally-unpinned concrete clause is §3.11 ambiguous");
+        assert!(
+            format!("{err}").to_lowercase().contains("ambiguous"),
+            "the unpinned-clause rejection must be a §3.11 ambiguity, got: {err}"
+        );
+    }
+
+    // spec: spec/05-definitions.md §5.1.2 (u7/u8/u9, §11.4) — a trait-constrained
+    //   clause of a multi-sig defn is a single-variant `Constrained` TEMPLATE under
+    //   its normalized `$Var` mangle (never a bogus `Concrete{got_slot}`); dispatch
+    //   to it routes through per-call-site monomorphisation, minting a concrete
+    //   instance — exactly as a standalone constrained fn.
+    #[test]
+    fn constrained_multi_sig_clause_is_template_and_dispatches_via_mono() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        // g: a constrained 1-arg clause `([:a x] (+ x x))` (Num a) + a concrete
+        // 2-arg clause; a use `(g 3)` at Int.
+        let src = "(defn g ([:a x] (+ x x)) ([:primitives/Int x :primitives/Int y] (primitives/add-i64 x y)))\n\
+                   (defn use-g [] :primitives/Int (g 3))";
+        let p = cranelisp_frontend::build_forms(&cranelisp_frontend::parse(src).unwrap()).unwrap();
+        tc.check_program_self(&p)
+            .expect("the constrained clause is admissible at a non-overlapping arity (§11.4)");
+        let st = tc.symbol_table();
+        // u7: the non-concrete-param clause is a SLOT-LESS TEMPLATE under its
+        // normalized `$Var` mangle (`Constrained` with a real Num prelude, or
+        // `Polymorphic` in this reduced fixture where `+`'s constraint does not
+        // accrue) — never a bogus `Concrete{got_slot}` over the `Var` param
+        // (§11.4 step 2 / §11.3(B); the constrained-specific path is exercised
+        // end-to-end by `spec_05_definitions::constrained_clause_*` with the real
+        // TestStandard Num).
+        match st.get("g$Var") {
+            Some(ModuleEntry::Def { kind, .. }) => assert!(
+                matches!(
+                    kind.as_ref(),
+                    DefKind::UserFn {
+                        fn_state:
+                            UserFnState::Constrained(_) | UserFnState::Polymorphic(_)
+                    }
+                ),
+                "g$Var must be a slot-less template (never Concrete over Var), got {kind:?}"
+            ),
+            other => panic!("the clause template `g$Var` is missing: {other:?}"),
+        }
+        // u8/u9: `(g 3)` monomorphised the clause template at Int — a concrete
+        // instance of `g$Var` at Int exists.
+        assert!(
+            st.all_symbols()
+                .any(|(n, e)| n.as_ref().contains("g$Var")
+                    && n.as_ref().contains("Int")
+                    && matches!(e, ModuleEntry::Def { kind, .. }
+                        if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }))),
+            "`(g 3)` must monomorphise the constrained clause template to a concrete \
+             Int instance (§11.4 step 4)"
+        );
+    }
+
+    // spec: spec/05-definitions.md §5.1.1 (MS-6/CP-2) — two SAME-ARITY clauses
+    //   whose signatures can UNIFY are a dispatch-ambiguity reported AT the
+    //   DEFINITION (no call required), naming both clauses; distinct-arity and
+    //   distinct-concrete pairs are fine.
+    #[test]
+    fn multi_sig_same_arity_unifiable_clauses_rejected_at_definition() {
+        // `[:Int x]` + `[:a x]` — same arity, can unify → definition-site error.
+        let mut tc = tc_with_prims();
+        let overlap = "(defn f ([:primitives/Int x] x) ([:a x] x))";
+        let p = cranelisp_frontend::build_forms(&cranelisp_frontend::parse(overlap).unwrap()).unwrap();
+        let err = tc
+            .check_program_self(&p)
+            .expect_err("same-arity-unifiable clauses are a §5.1.1 definition-site ambiguity");
+        let m = format!("{err}").to_lowercase();
+        assert!(m.contains("ambiguous") && m.contains("clause"), "got: {err}");
+
+        // Distinct concrete types at the same arity are NOT an overlap.
+        let mut tc2 = tc_with_prims();
+        let ok = "(defn f ([:primitives/Int x] x) ([:primitives/String x] x))";
+        let p2 = cranelisp_frontend::build_forms(&cranelisp_frontend::parse(ok).unwrap()).unwrap();
+        tc2.check_program_self(&p2)
+            .expect("distinct-concrete same-arity clauses dispatch cleanly");
     }
 
     // spec: spec/03-types.md §3.11 — Ambiguous Types: a generic *definition*
@@ -9115,95 +9412,5 @@
             "the minted `{mono_name}` mono entry's registered scheme must be fully \
              concrete (no residual result var); got {:?} (FIXME 0488 sig c secondary)",
             scheme.ty,
-        );
-    }
-
-    // spec: spec/05-definitions.md §5.1.2 (OA-1 / I-A, CS-4.1, METHOD §2.2) — pin
-    // the resolved-overload benign-var exemption at the `finalize` seam.
-    // `collect_pending_overload_result_vars` is the pre-drain analogue of the
-    // ValueScan `SigDispatch` exemption: a pending multi-sig/overload call whose
-    // UNIQUE variant has a CONCRETE return contributes that call's return var as
-    // benign — the drain (`resolve_pending_overloads`) will pin it concrete, so a
-    // `(let [r (h 7)] r)` binding inside a multi-arity clause is not spuriously
-    // flagged. This is the finalize-seam coverage that was ABSENT when CS-4 landed
-    // OA-1/AP-1 — the gap that let the B-1 wrong-accept slip (I-A). It also guards
-    // the ONE shared `select_unique_overload_variant` predicate (I-B) from the
-    // exemption side.
-    //
-    // POSITIVE: a unique concrete-return match exempts the call's return var.
-    #[test]
-    fn collect_pending_overload_result_vars_exempts_unique_concrete_return() {
-        let mut tc = tc_with_prims();
-        // Overload `h` with one Int-arg variant returning a CONCRETE Int.
-        tc.state.resolved_overloads.insert(
-            Symbol::from("h"),
-            vec![(vec![Type::Int], Type::Int, Symbol::from("h$Int"))],
-        );
-        // A pending `(h 7)` whose return sits in fresh var 100.
-        tc.state.pending_overload_resolutions.push((
-            span(0, 0),
-            Symbol::from("h"),
-            vec![Type::Int],
-            Type::Var(100),
-        ));
-
-        let env = tc.env();
-        let benign = env.collect_pending_overload_result_vars(&tc.state);
-        assert!(
-            benign.contains(&100),
-            "a unique concrete-return overload match exempts its return var: {benign:?}"
-        );
-    }
-
-    // NEGATIVE: neither a genuine ambiguity (multiple matching variants — the
-    // drain resolves to NEITHER) nor a unique-but-NON-concrete return exempts the
-    // var. This is the guard that keeps a sibling-forced / genuinely-free var
-    // FLAGGED (the §5.1.2 ambiguity the author must pin) — the discrimination the
-    // memory-unsafe B-1 term erased.
-    #[test]
-    fn collect_pending_overload_result_vars_does_not_exempt_ambiguous_or_nonconcrete() {
-        // (a) Genuine ambiguity — two variants match the Int arg, so no unique
-        // winner and no benign var.
-        let mut tc = tc_with_prims();
-        tc.state.resolved_overloads.insert(
-            Symbol::from("h"),
-            vec![
-                (vec![Type::Int], Type::Int, Symbol::from("h$a")),
-                (vec![Type::Int], Type::Bool, Symbol::from("h$b")),
-            ],
-        );
-        tc.state.pending_overload_resolutions.push((
-            span(0, 0),
-            Symbol::from("h"),
-            vec![Type::Int],
-            Type::Var(100),
-        ));
-        {
-            let env = tc.env();
-            let benign = env.collect_pending_overload_result_vars(&tc.state);
-            assert!(
-                !benign.contains(&100),
-                "an ambiguous overload (two matching variants) exempts nothing: {benign:?}"
-            );
-        }
-
-        // (b) Unique match but a NON-concrete (still-`Var`) return — the drain
-        // would not concretize it, so it is NOT benign.
-        let mut tc = tc_with_prims();
-        tc.state.resolved_overloads.insert(
-            Symbol::from("g"),
-            vec![(vec![Type::Int], Type::Var(7), Symbol::from("g$poly"))],
-        );
-        tc.state.pending_overload_resolutions.push((
-            span(0, 0),
-            Symbol::from("g"),
-            vec![Type::Int],
-            Type::Var(100),
-        ));
-        let env = tc.env();
-        let benign = env.collect_pending_overload_result_vars(&tc.state);
-        assert!(
-            !benign.contains(&100),
-            "a unique match with a non-concrete return is NOT benign: {benign:?}"
         );
     }

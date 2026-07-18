@@ -322,6 +322,7 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | S66 slice (overall) | `design/frontend/implementation-slice-s66.md` | **Partially superseded.** Rows 5 + 6 (per-form `build_ast` / `build_expr` pair) are SUPERSEDED by `design/frontend/wave-3a-build-form.md` — collapsed into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156 resolution + Decision 44. Rows 3, 4, 7, 16 remain authoritative |
 | S66 Wave 3a-β (`build_form` + `expand`) | `design/frontend/wave-3a-build-form.md` | **Current.** Authored 2026-05-12 for FIXME 0156 + FIXME 0098 Phase 2 under Decision 44 (amended 0167, 0168) — `/dev` implementation target |
 | Quasiquote/quote desugar fold | `design/frontend/quasiquote-fold.md` | **Current (authored S111 Phase 3).** The FIXME 0613 fold of `expand_quasiquotes` into `build_forms`/`build_form`: fold point + chokepoint set, idempotence/fixpoint contract, backstop invariant, family coverage, `lib.rs:48` currency fix, and the named int quote-shield seam. `/dev` Phase-5 target. Makes `s76-syntactic-only.md:74`'s aspirational "quasiquote desugaring runs before `build_form`" literally accurate |
+| Trait/impl head parse (S112 b0) | `design/frontend/trait-impl-head-parse.md` | **Current (authored S112 Phase 3, leg b0).** The echo-the-head `impl` slot-1 change: `parse_impl` accepts bare `Display` (`head_con_var: None`) OR `(Functor f)` (`head_con_var: Some`), slot 2 rides the existing `build_impl_target`; NO kind classification / echo validation in the parser (typecheck's §7.3.5 Case-3 seam — Principle 24). Single-sources the head-shape grammar with `build_trait_head` (Principle 7); malformed-slot-1 diagnostics; additive-green at b0; pretty/​save form-agnostic round-trip (no change). `/dev`(frontend) + `/review` target. Consumer: `design/typecheck/hkt.md` §5.4 |
 
 Refresh order, in priority of audit blast radius:
 
@@ -347,7 +348,7 @@ The audit's recommended-remediation item 5 ("refresh or replace stale design doc
 - `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md` — multi-crate migration covering `extract_module_declarations`/`parse_import_sexp` signatures (Phase 2) and `expand`/`ExpansionError`/`ResolutionGap` placement (Phase 1 types → Phase 2 frontend)
 - `audits/frontend-20260423.md` — current-state ground truth (point-in-time; supersession-marked)
 - `audits/frontend-20260423-current-state.mmd`, `audits/frontend-20260423-target-state.mmd` — current and target diagrams
-- `design/frontend/{ast-builder,reader,comment-preservation,module-preamble,macro-plan,macro-resolver-trait,modules,quasiquote-fold}.md` — subordinate topic docs (staleness register §9)
+- `design/frontend/{ast-builder,reader,comment-preservation,module-preamble,macro-plan,macro-resolver-trait,modules,quasiquote-fold,trait-impl-head-parse}.md` — subordinate topic docs (staleness register §9)
 - `crates/cranelisp-frontend/src/{lib,reader,ast_builder,module_extract,quasiquote,defmacro}.rs` — implementation
 - `crates/cranelisp-frontend/plan-frontend.md` — pre-Ring-0 plan (architectural drift; staleness register item 1)
 - `src/expander.rs` — current home of `expand_sexp_recursive`; migrates per FIXME 0098 Phase 2

@@ -87,6 +87,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         arg_types: &[Type],
         call_span: Span,
         home: Option<&ModuleFullPath>,
+        origin_base: Option<&Symbol>,
     ) -> Result<Option<MonoDefn>, CranelispError> {
         // === P0 — lookup ===
         // Look up the constrained fn (in its defining module when imported).
@@ -173,13 +174,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility: Visibility::Public,
             span: defn.span,
         };
-        let (mut resolutions, mono_expr_types) = self.recheck_and_resolve_inner(
+        // I1 fix (§11.3.1 caveat (b)): when this mono is a multi-sig template
+        // clause instantiation (`origin_base` names the overloaded base), set the
+        // monomorphic-recursion context so an inner self-call to that base at these
+        // concrete args resolves inline against THIS instance during the recheck
+        // (`infer_apply`), rather than deferring a pending entry the drain has taken.
+        // Scoped to the recheck and restored unconditionally (nesting-safe: an inner
+        // hop's `monomorphise_call` passes `origin_base: None`, so its own recheck
+        // runs with the ctx cleared).
+        let saved_mono_recheck_self = state.mono_recheck_self.take();
+        if let Some(base) = origin_base {
+            state.mono_recheck_self = Some((
+                base.clone(),
+                JitSymbol::from(mangled_name.as_str()),
+                concrete_param_types.clone(),
+                concrete_ret_ty.clone(),
+            ));
+        }
+        let recheck_result = self.recheck_and_resolve_inner(
             state,
             &mut wrap_defn,
             &concrete_param_types,
             &concrete_ret_ty,
             home,
-        )?;
+        );
+        state.mono_recheck_self = saved_mono_recheck_self;
+        let (mut resolutions, mono_expr_types) = recheck_result?;
 
         // === P5 — self-recursion dispatch (0374) ===
         self.record_self_recursion_dispatch(
@@ -988,6 +1008,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &inner_arg_types,
                 *inner_span,
                 inner_home.as_ref(),
+                None,
             );
             state.subst = saved_subst;
             if let Some(mono) = inner_mono? {

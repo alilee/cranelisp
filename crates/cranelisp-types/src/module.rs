@@ -2299,18 +2299,30 @@ pub struct OverloadVariant {
 
 /// A constrained polymorphic function awaiting monomorphisation (Ring 2).
 ///
-/// **Single-variant invariant — structurally enforced.** The `variant:
-/// DefnVariant` field carries the body of a single-signature constrained
-/// fn. Multi-sig × constrained-poly combination is currently *rejected* by
-/// construction: `cranelisp-typecheck::program::collect_defns` filters out
-/// multi-sig defns with `if defn.is_multi_sig() { None }` (see
-/// `program.rs:2148`), and `detect_constrained_fns` (program.rs:1069) only
-/// sees the filtered single-sig set. The constrained-fn construction path
-/// and the multi-sig decomposition path are mutually-exclusive code paths
-/// — when `ConstrainedFn` is constructed, `variants.len() == 1` is a
-/// structural guarantee (`Defn::is_multi_sig()` returns
-/// `self.variants.len() > 1`, so single-sig defns have exactly one
-/// `DefnVariant`).
+/// **Single-variant invariant — one clause, one template.** The `variant:
+/// DefnVariant` field carries the body of exactly ONE constrained clause.
+/// This holds for multi-sig defns too — multi-sig × constrained-poly is
+/// SUPPORTED (S112, user-ruled 2026-07-18): each trait-constrained (or
+/// genuinely-polymorphic) clause of a multi-sig defn is registered as its
+/// OWN one-variant template under the clause's normalized mangle (e.g.
+/// `g$Var`), referenced from the base entry's
+/// `OverloadVariant.mangled_name`; dispatch reads the referenced entry's
+/// *kind* and routes a `Constrained` clause through per-call-site
+/// monomorphisation exactly as a standalone constrained fn (no
+/// `OverloadVariant` field addition — the kind lives on the entry,
+/// Principle 7). A multi-variant `ConstrainedFn` is never constructed,
+/// because the multi-sig decomposition into per-clause `__vN` entries
+/// (`cranelisp-typecheck::program::finalize`, the
+/// `collect_single_sig_defns` seam) happens BEFORE template detection —
+/// `detect_constrained_fns` only ever sees single-clause bodies. See
+/// `design/typecheck/monomorphisation.md` §11.4.
+///
+/// (History: pre-S112 the invariant held on different grounds — an
+/// `is_multi_sig` filter made the constrained and multi-sig paths
+/// mutually exclusive, rejecting the combination outright. The former
+/// "Future-state note" here anticipated a `Vec<DefnVariant>` expansion if
+/// the cell became supported; it did NOT materialize — per-clause
+/// templates preserve the single-variant shape.)
 ///
 /// **Symmetry with `ModuleEntry::Def.ast`.** S69 Submission 35 narrowed
 /// `ModuleEntry::Def.ast: Option<Defn>` → `Option<DefnVariant>` on the
@@ -2321,12 +2333,6 @@ pub struct OverloadVariant {
 /// sites holding "function body" payload narrowed; the other didn't. S70
 /// Phase 3 closes the asymmetry — `ConstrainedFn.variant: DefnVariant`
 /// matches `Def.ast: Option<DefnVariant>` in shape and Decision-grounding.
-///
-/// **Future-state note.** If multi-sig × constrained-poly combination
-/// becomes supported (currently rejected by the filter at
-/// `program.rs:2148`), this field may need to expand to `Vec<DefnVariant>`
-/// at that time. No decision pending; tracked only here as a forward
-/// pointer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstrainedFn {
     pub variant: DefnVariant,
@@ -2350,9 +2356,11 @@ pub struct ConstrainedFn {
 /// **no** trait bounds at all (`scheme.constraints` is empty). Reusing the
 /// `Constrained`-named struct as the `Polymorphic` payload would re-conflate the
 /// distinction the new variant exists to make explicit (Principle 20; BC §7).
-/// The single-variant invariant `ConstrainedFn` documents holds here for the
-/// same reason: multi-sig defns are filtered before this construction path
-/// (`program.rs` `collect_defns`), so `variant` is the one `DefnVariant`.
+/// The single-variant invariant `ConstrainedFn` documents holds here on the
+/// same grounds (S112): a multi-sig defn is decomposed into per-clause
+/// `__vN` entries before template detection, and a genuinely-polymorphic
+/// clause becomes its OWN one-variant template — `variant` is always the
+/// one `DefnVariant`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParametricFn {
     pub variant: DefnVariant,
