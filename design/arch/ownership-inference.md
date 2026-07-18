@@ -185,8 +185,10 @@ construction. The one place widening is NOT free is the ABI-bearing mode vector,
 must widen together* — which is precisely why it is classed ABI-bearing (§3.1) and why R3 exists
 (§5). **Enforcement arm (S111 assessment): this property protects the widening direction only —
 every optimization is a NARROWING that elides a safety operation, and each narrowing must carry a
-mechanical check against the conservative reference (`design/arch/safety-invariants.md`; candidate
-Principle 25, ratification pending S111 Phase 7). The §6.2 oracle is thereby elevated from test
+mechanical check against the conservative reference (`design/arch/safety-invariants.md`;
+Principle 25 "Narrowing carries its check",
+`principles/25-narrowing-carries-its-check.md`, ratified at S111 Phase-7 close
+2026-07-18). The §6.2 oracle is thereby elevated from test
 technique to reference semantics: an elision is correct iff equivalent to the conservative
 lowering, and an elision whose conservative twin is unreachable is inadmissible.**
 

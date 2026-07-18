@@ -1,10 +1,12 @@
 # Foundational safety invariants and their assertion mechanisms
 
 **ASSESSMENT + REGISTER (S111 `/arch`, 2026-07-17).** The register (§4) is canonical and
-maintained ongoing. The candidate Principle (§5) is drafted here for **user ratification at
-S111 Phase 7** (principles change only at sprint close); on ratification it files as
-`principles/25-*.md` per `principles/CLAUDE.md`. The `/design` cascade (§6) is the scoped
-task list for the follow-up increment.
+maintained ongoing. The Principle framed in §5 was **RATIFIED by the user at the S111
+Phase-7 close (2026-07-18) as a single principle** and now lives canonically at
+`principles/25-narrowing-carries-its-check.md` (indexed in `principles.md`); §5 records
+the ratification. This document remains the **binding frame** for the S112
+memory-safety-soundness mechanism — the mechanism builds to it. The `/design` cascade
+(§6) is the scoped task list for the follow-up increment.
 
 **Motivating systemic finding (S111, user-directed).** Every memory-safety defect in the
 S111 ledger was found *incidentally* — adversarial review, a stdlib migration tripping a
@@ -196,54 +198,24 @@ new safety-eliding surface (a new analysis, a new mangle family, a new persisted
 a new trust boundary) adds its row **in the change-set that introduces it** — arriving
 unregistered is the defect.
 
-## §5. Candidate Principle 25 (drafted for user ratification at S111 Phase 7)
+## §5. Principle 25 — RATIFIED (user-approved S111 Phase-7 close, 2026-07-18)
 
 > **Principle 25 — Narrowing carries its check: a safety elision is defined against, and
 > checkable against, its conservative fallback.**
->
-> **Statement.**
-> 1. **Reference semantics.** Wherever a static judgment licenses eliding a safety
->    operation (an RC protect/inc, an atomic op, a distinct glue symbol, a bounds or
->    validity check), the conservative behavior at the monotone ⊤ — performing the
->    operation unconditionally — is the *reference semantics*. The optimized artifact is
->    correct **by definition** iff observationally equivalent (behavior + heap balance) to
->    the conservative one. An elision whose conservative fallback is not reachable has
->    nothing to be checked against and is architecturally inadmissible.
-> 2. **Every narrowing is a deliberate, checked act.** Widening is free (monotone
->    soundness, `ownership-inference.md` §2.1); narrowing is never free. Each narrowing
->    names its **justification** (a truthful, reachable leaf fact; an enumerated monotone
->    rule of the analysis; a structural witness) and its **check** at the strongest
->    applicable tier of the assertion ladder (`safety-invariants.md` §2): unconstructable
->    representation → by-construction witness → seam assertion (always-on `assert!` for
->    in-process breach; diagnosed error at trust boundaries) → standing differential
->    equivalence against the conservative fallback. Green example suites and adversarial
->    review are discovery, not checks.
-> 3. **A foundational safety invariant is asserted at its seam, not merely tested.** An
->    invariant the safety argument relies on (register: `safety-invariants.md` §4) either
->    has no representation for its violation or is asserted where it could break, so a
->    violation names its seam the moment it happens. A register row at example-tested or
->    unasserted status is an open item against `/arch`.
->
-> **Relationship to existing principles.** This is the **enforcement arm of monotone
-> soundness**: §2.1 makes the conservative point permanently safe; P25 makes it the
-> reference every departure is measured against. It is P18's genus applied to the
-> *dynamic-judgment* case (where no dep-ban or visibility rule can bite), P20's producer
-> discipline extended from data shape to analysis claims, and the public-API discipline's
-> "every `pub` is a deliberate act" mirrored onto elisions.
->
-> **Motivating context (S111).** The sprint's memory-safety ledger — 0641 false-`Fresh`
-> family, 0633/0640 glue-keying collisions, CS-4 wrong-accepts, 0604's ~320-run
-> unlocatable phantom write — was found entirely by adversarial review and incident; the
-> two fixes that closed their classes did so by assertion mechanism (CS-2's seam asserts;
-> CS-1.2's decoder witness), and the instance-patches each needed an adversarial follow-up
-> to find the next layer.
 
-Framing note for the user: this can ratify as ONE principle (recommended — the three
-clauses are one idea: elision is measured against the conservative reference) or split
-into the differential-checkability principle (clauses 1–2) and the assert-at-seam
-principle (clause 3). On ratification: file `principles/25-{slug}.md`, index in
-`principles.md`, add to all four import blocks (`arch`/`design`/`dev`/`review`) per
-`principles/CLAUDE.md`.
+**Ratified as a SINGLE principle** — the split alternative (the differential-checkability
+principle, clauses 1–2, separate from the assert-at-seam principle, clause 3) was offered
+and declined; the three clauses are one idea: elision is measured against the conservative
+reference. The canonical text — the three parts as framed here (conservative-at-⊤ as
+reference semantics / an elision without a reachable conservative fallback is
+inadmissible; widening free while narrowing names its justification + check tier, with
+green suites + adversarial review as discovery not checks; a foundational safety invariant
+asserted at its seam, not merely tested) plus the relationship statement (the enforcement
+arm of monotone soundness — P18 for dynamic judgments, P20 extended to analysis claims) —
+lives at **`principles/25-narrowing-carries-its-check.md`**, indexed in `principles.md`.
+Cite it from there; this section is the ratification record, not a second home
+(Principle 7). This document (§§2–4, §6) remains the **binding frame** the ratified
+principle governs: the S112 memory-safety-soundness mechanism builds to it.
 
 ## §6. Cascade — the `/design` task list for the follow-up increment
 
@@ -286,9 +258,12 @@ Scoped so `/sprint` can dispatch each as one narrow deployment. Ordering: task 1
 ## §7. Manifestation sites on ratification
 
 Per the manifestation-site question: this file is the register's permanent home (canonical
-set; `design/arch/CLAUDE.md` row added S111). On Phase-7 ratification: the Principle files
-as `principles/25-*.md` (+ index + four import blocks); the §3 walk model manifests in
-`design/typecheck/ownership-inference.md` §15 (its owner's home) with this doc citing it;
-the trust-boundary taxonomy is already carried by the CS-2 ruling record (SPRINT archive)
-and lives durably in §2 here + `GotTable` rustdoc. If ratification is declined, the
-register (§4) stands as an `/arch` working audit artifact and §5 is struck.
+set; `design/arch/CLAUDE.md` row added S111). Ratification LANDED (2026-07-18): the
+Principle is filed as `principles/25-narrowing-carries-its-check.md` + indexed in
+`principles.md`; the four import-block additions (`arch`/`design`/`dev`/`review` per
+`principles/CLAUDE.md`) are tracked by FIXME 0643 (the skill-def files sit outside
+`design/arch/`, so the ratifying fire could not edit them directly). Still pending by
+design: the §3 walk model manifests in `design/typecheck/ownership-inference.md` §15 (its
+owner's home) with this doc citing it — the S112 `/design`(typecheck) increment (§6 task
+1); the trust-boundary taxonomy is already carried by the CS-2 ruling record (SPRINT
+archive) and lives durably in §2 here + `GotTable` rustdoc.
