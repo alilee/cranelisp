@@ -86,12 +86,6 @@ position routes through the splitter (`build_impl_target`). See RED defects belo
   non-docstring form (S107 item 1), but `(deftype Box (Box [:Int n] extra))` still
   silently drops `extra`. Guard: `tests/spec_05_definitions.rs::
   deftype_ctor_trailing_form_after_field_bracket_rejected_neg` (RED, `// FIXME(/frontend)`).
-- **Qualified impl targets re-root despite the §8.5 splitter.** `build_impl_target`
-  already calls `type_ref_from_name`, yet `(impl Num2 primitives/Int …)` /
-  `(impl Tagger user/Widget …)` still register a phantom re-rooted target. Guards:
-  `tests/spec_07_traits.rs::impl_qualified_{primitive,user}_type_target_resolves_to_canonical`
-  (RED, `// FIXME(/frontend)`). Do not assume the splitter closed this — the RED
-  says the fix is incomplete or the re-root happens on a path the splitter misses.
 
 ## Intentional NYI gates in `build_expr` — not bugs
 

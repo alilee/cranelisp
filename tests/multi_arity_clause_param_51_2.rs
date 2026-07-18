@@ -488,3 +488,81 @@ fn recursive_poly_clause_accepted_matches_standalone_twin() {
          `(g1 5)` = 5 — the §5.1.2 oracle for g's poly clause; got:\n{sc}"
     );
 }
+
+// =============================================================================
+// R1 — W2.1 /review residual (Important; design record: monomorphisation.md
+// §11.3.4 "The R1 boundary — a KNOWN LIMIT of the as-built gate"). The I1 fix's
+// mono-recheck inline gate (§11.3.4) fires ONLY for a same-instantiation
+// self-call (same arity, args ≡ the instance's concrete params). A CROSS-ARITY
+// sibling self-call from a genuinely-poly template clause is NOT covered: its
+// args differ in arity from the instance params, the inline gate skips, the call
+// re-defers a pending entry the drain has already taken, and it orphans — the
+// same wrong-reject-with-internal-name-leak shape I1 fixed for the same-arity
+// case. Natural fix direction (§11.3.4, NOT designed this wave): widen the
+// `mono_recheck_self` match set from "this instance" to "the base's post-drain-
+// settled overload clauses".
+// =============================================================================
+
+// The cross-arity probe (design §11.3.4 verbatim). The 1-arg genuinely-poly
+// clause `([:a x] (g2 1 2))` self-calls the 2-arg CONCRETE sibling `(g2 1 2)`;
+// the 2-arg clause `([:Int a :Int b] (add-i64 a b))` returns 1+2 = 3. So under
+// the §5.1.2 separate-mutually-recursive-functions equivalence `(g2 5)` = 3
+// (the 1-arg poly clause delegates to the concrete 2-arg sibling and returns
+// its result).
+const G2: &str = "(defn g2 ([:a x] (g2 1 2)) ([:Int a :Int b] (add-i64 a b)))";
+
+// R1 — cross-arity sibling self-call from a genuinely-poly template clause
+// wrong-REJECTS at the CALL with an internal-mangle leak. The defn `g2` is
+// accepted (`; defn`), but `(g2 5)` — which monomorphises the 1-arg poly clause
+// at Int — wrong-rejects:
+//   `ambiguous type … monomorphised in 'user/g2$Var$Int' (a residual unbound
+//    type variable reached a codegen position)`.
+// Spec-correct: `g2` accepts, `(g2 5)` = 3 (the 1-arg poly clause delegates to
+// the concrete 2-arg sibling), no internal `$`-mangle in any diagnostic. The
+// standalone twin (a poly 1-arg fn delegating to a concrete 2-arg fn) accepts
+// and runs → 3, the §5.1.2 oracle. RED until the R1 fix lands.
+// spec: spec/05-definitions.md §5.1.2 — inference-equivalent to separate
+// mutually-recursive functions (the standalone twin accepts + runs).
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::mono_recheck_self-inline-gate (cross-arity sibling self-call not covered, design §11.3.4 R1 boundary) found=S112 owner=/dev
+#[test]
+fn cross_arity_sibling_self_call_from_poly_clause_accepted_matches_standalone_twin() {
+    // Multi-signature half: g2 accepts, `(g2 5)` = 3, no internal mangle leak.
+    let out = repl_prims(&format!("{G2}\n(g2 5)\n"));
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("; defn") && !c.contains("ambiguous"),
+        "g2's 1-arg genuinely-poly clause `([:a x] (g2 1 2))` delegating to the \
+         concrete 2-arg sibling is inference-equivalent to the standalone twin \
+         (which accepts) — MUST be accepted, not wrong-rejected (§5.1.2); got:\n{c}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "`(g2 5)` = `(g2 1 2)` = 1 + 2 = 3 (the poly clause delegates to the \
+         concrete 2-arg sibling); got:\n{}",
+        out.stdout
+    );
+    // The internal monomorphisation mangle MUST NOT surface in a user diagnostic
+    // (the `user/g2$Var$Int` leak). The load-bearing RED (design §11.3.4).
+    assert!(
+        !c.contains("$Var") && !c.contains("$Int") && !c.contains("monomorphised in"),
+        "no INTERNAL `$`-mangle (e.g. `user/g2$Var$Int`) may appear in a \
+         user-facing diagnostic; got:\n{c}"
+    );
+
+    // Standalone twin fence: the SAME shape as two separate mutually-recursive
+    // top-level functions — a poly 1-arg fn `g2a` delegating to a concrete 2-arg
+    // fn `g2b`. This is GREEN today (§5.1.2 oracle); the multi-sig half MUST
+    // match it. Its acceptance is what makes g2's rejection a wrong-reject.
+    let solo = repl_prims(
+        "(defn g2b [:Int a :Int b] (add-i64 a b))\n\
+         (defn g2a [:a x] (g2b 1 2))\n\
+         (g2a 5)\n",
+    );
+    let sc = format!("{}{}", solo.stdout, solo.stderr);
+    assert!(
+        sc.contains("; defn") && solo.stdout.contains(":primitives/Int 3"),
+        "the standalone twin `(defn g2a [:a x] (g2b 1 2))` + `(defn g2b [:Int a \
+         :Int b] (add-i64 a b))` MUST accept and `(g2a 5)` = 3 — the §5.1.2 \
+         oracle for g2's cross-arity poly clause; got:\n{sc}"
+    );
+}

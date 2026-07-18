@@ -471,9 +471,15 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
              (import [types [Classify classify Color Red Green Blue]])\n\
              (defn main [] (Pure (classify Green)))",
         )
+        // b1-migration (S112): the conventional (kind-`*`) trait moves off the
+        // never-applied `(Classify a)`-head mismodel to the settled bare-head +
+        // `self` form — `(deftrait Classify (classify [self] Int))`. Assertion
+        // subject UNCHANGED: cross-module deftrait/impl/import/dispatch (exit 2).
+        // `a` was only ever a bare method-param type (never applied `(a …)`), so
+        // it IS the implementing type → `self`; the impl body is untouched.
         .file(
             "types.cl",
-            "(deftrait (Classify a) (classify [a] Int))\n\
+            "(deftrait Classify (classify [self] Int))\n\
              (deftype Color Red Green Blue)\n\
              (impl Classify Color (defn classify [c] (match c [Red 1 Green 2 Blue 3])))",
         )
@@ -1314,4 +1320,91 @@ fn trait_path_resolution_unaffected_by_mint_fence() {
          (add2 3 4)\n",
     )
     .assert_stdout_contains(":a 7");
+}
+
+// =============================================================================
+// §7.2 / §7.3 — b0 echo-the-head parse support: malformed slot-1 diagnostics
+// (plan §3.5) + con_var lowercase enforcement (plan §7.2). The b0 parse change
+// (`c08e68fc`) admits the parenthesized higher-kinded impl head `(Functor f)`
+// and surfaces a LOCATED per-shape `parse error` for each malformed slot 1,
+// naming the fix (design `design/frontend/trait-impl-head-parse.md` §4). These
+// exercise the b0 support end-to-end and are GREEN on the current compiler.
+// =============================================================================
+
+// spec: spec/07-traits.md §7.3 — a structurally-malformed impl slot-1 head is
+// rejected at parse with a LOCATED, per-shape diagnostic that names the fix
+// (design §4 table, six rows). One test, six sub-asserts (plan §3.5).
+#[test]
+fn impl_head_malformed_variants_located_parse_errors_neg() {
+    // Each row: (source, distinctive substring the located diagnostic must carry).
+    let cases: &[(&str, &str)] = &[
+        // 1-element head: HK head missing its constructor variable.
+        (
+            "(impl (Functor) Int (defn f [x] x))\n",
+            "missing its constructor variable",
+        ),
+        // 3+-element head: too many elements.
+        (
+            "(impl (Functor f g) Int (defn f [x] x))\n",
+            "too many elements in trait head",
+        ),
+        // empty head.
+        ("(impl () Int (defn f [x] x))\n", "empty trait head"),
+        // head element itself a list (`((Functor f))`) — the non-symbol-head
+        // fault is named BEFORE any arity conclusion (design §4 dispatch order).
+        (
+            "(impl ((Functor f)) Int (defn f [x] x))\n",
+            "trait name must be a bare symbol",
+        ),
+        // lowercase trait name.
+        (
+            "(impl (functor f) Int (defn f [x] x))\n",
+            "trait name must start with uppercase",
+        ),
+        // non-symbol con_var.
+        (
+            "(impl (Functor 3) Int (defn f [x] x))\n",
+            "constructor variable must be a symbol",
+        ),
+    ];
+    for (src, needle) in cases {
+        let out = repl_prims(src);
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            c.contains("parse error"),
+            "malformed impl head `{src}` MUST be a located parse error; got:\n{c}"
+        );
+        assert!(
+            c.contains(needle),
+            "malformed impl head `{src}` MUST name the fix (expected substring \
+             {needle:?}); got:\n{c}"
+        );
+    }
+}
+
+// spec: spec/07-traits.md §7.2 — the constructor variable is a lowercase symbol
+// (`con_var = lowercase_symbol`). An uppercase con_var is malformed and rejected
+// at parse in BOTH the deftrait head AND the impl echoed head — the single b0
+// shared seam (`parse_trait_head_shape`) enforces it once for both forms
+// (plan §7.2, design §4/§8.2). The two-form assertion pins the single-source
+// (Principle 7) guarantee: neither parser accepts what the other rejects.
+#[test]
+fn trait_head_uppercase_convar_rejected_both_forms_neg() {
+    // deftrait head.
+    let dt = repl_prims("(deftrait (Functor F) (fmap [:(F a) x] Int))\n");
+    let dc = format!("{}{}", dt.stdout, dt.stderr);
+    assert!(
+        dc.contains("parse error") && dc.contains("must start with lowercase"),
+        "an uppercase con_var in a `deftrait` head `(Functor F)` MUST be a located \
+         parse error naming the lowercase rule; got:\n{dc}"
+    );
+    // impl echoed head — same seam, same rule.
+    let im = repl_prims("(impl (Functor F) Int (defn f [x] x))\n");
+    let ic = format!("{}{}", im.stdout, im.stderr);
+    assert!(
+        ic.contains("parse error") && ic.contains("must start with lowercase"),
+        "an uppercase con_var in an `impl` echoed head `(Functor F)` MUST be a \
+         located parse error naming the lowercase rule (same shared seam as \
+         deftrait); got:\n{ic}"
+    );
 }

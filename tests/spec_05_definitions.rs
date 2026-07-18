@@ -971,8 +971,13 @@ fn deftype_with_docstring_does_not_affect_construct_or_match() {
 // (carry: legacy/ring2.rs::docstring_on_deftrait)
 #[test]
 fn deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch() {
+    // b1-migration (S112): off the never-applied `(Sizeable a)` head to the
+    // settled bare-head + `self` form. Assertion subject UNCHANGED: BOTH
+    // docstring positions (trait + method) survive and neither affects dispatch
+    // — `(size 42)` = 42. `a` was a bare method-param type (the implementing
+    // type) → `self`.
     repl_prims(
-        "(deftrait (Sizeable a) \"Types that have a size\"\n  (size \"Get the size\" [a] Int))\n\
+        "(deftrait Sizeable \"Types that have a size\"\n  (size \"Get the size\" [self] Int))\n\
          (impl Sizeable Int (defn size [x] x))\n\
          (size 42)\n",
     )

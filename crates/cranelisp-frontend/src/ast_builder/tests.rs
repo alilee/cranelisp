@@ -1836,23 +1836,56 @@
         }
     }
 
+    /// Assert a parse error's located span points EXACTLY at `expected` (the
+    /// offending head substring), located as the `nth` (0-based) occurrence of
+    /// `expected` in `src`. Guards the design §4/§7 requirement — "every
+    /// rejection is located at the head" — so a regression relocating a
+    /// diagnostic to the whole-form `(impl …)` span fails here (the whole-form
+    /// slice never equals the head substring).
+    fn assert_err_span_at(src: &str, err: &CranelispError, expected: &str, nth: usize) {
+        let byte_off = src
+            .match_indices(expected)
+            .nth(nth)
+            .unwrap_or_else(|| panic!("`{expected}` occurrence {nth} not found in `{src}`"))
+            .0;
+        let want = Span::new(byte_off as u32, (byte_off + expected.len()) as u32);
+        let got = err.location().span;
+        assert_eq!(
+            got, want,
+            "span for `{src}`: expected to point at `{expected}` ({want}), got {got} \
+             (source slice `{}`)",
+            &src[got.start as usize..got.end as usize]
+        );
+    }
+
     // spec: spec/07-traits.md §7.2/§7.3 — malformed impl slot-1 head shapes are
     // rejected with a LOCATED, fix-naming diagnostic (design §4 table). Each row
     // dies in `parse_trait_head_shape`, the ONE head-shape grammar shared with
     // `deftrait` (Principle 7). Pre-fix they all died on a generic `expected
-    // symbol`; each row now asserts its per-shape message names the fix.
+    // symbol`; each row now asserts its per-shape message names the fix AND that
+    // the diagnostic is located at the offending head — the per-arm span:
+    // whole slot-1 list (empty/1-elem/3+), inner head-element list (non-symbol
+    // head), the head-name symbol (lowercase head), or the con_var element
+    // (non-symbol con_var). See `parse_trait_head_shape` (`ast_builder.rs` ~855)
+    // for which arm produces which span (design §4/§7 — "located at the head").
     #[test]
     fn build_impl_malformed_head_shapes_rejected_with_fix_naming_errors() {
-        let cases: &[(&str, &str)] = &[
-            // (source, expected message substring naming the fix)
-            ("(impl (Functor) Int (defn m [x] x))", "missing its constructor variable"),
-            ("(impl (Functor f g) Int (defn m [x] x))", "too many elements"),
-            ("(impl () Int (defn m [x] x))", "empty trait head"),
-            ("(impl ((Functor f)) Int (defn m [x] x))", "trait name must be a bare symbol"),
-            ("(impl (functor f) Int (defn m [x] x))", "must start with uppercase"),
-            ("(impl (Functor 3) Int (defn m [x] x))", "constructor variable must be a symbol"),
+        // (source, expected message substring, located head substring, occurrence)
+        let cases: &[(&str, &str, &str, usize)] = &[
+            // len==1 arm → whole slot-1 list span `(Functor)`.
+            ("(impl (Functor) Int (defn m [x] x))", "missing its constructor variable", "(Functor)", 0),
+            // 3+ arm → whole slot-1 list span `(Functor f g)`.
+            ("(impl (Functor f g) Int (defn m [x] x))", "too many elements", "(Functor f g)", 0),
+            // empty arm → whole slot-1 list span `()`.
+            ("(impl () Int (defn m [x] x))", "empty trait head", "()", 0),
+            // non-symbol head → `children[0].span()`, the inner list `(Functor f)`.
+            ("(impl ((Functor f)) Int (defn m [x] x))", "trait name must be a bare symbol", "(Functor f)", 0),
+            // lowercase head → `name_span`, the head-name symbol `functor`.
+            ("(impl (functor f) Int (defn m [x] x))", "must start with uppercase", "functor", 0),
+            // non-symbol con_var → `children[1].span()`, the con_var element `3`.
+            ("(impl (Functor 3) Int (defn m [x] x))", "constructor variable must be a symbol", "3", 0),
         ];
-        for (src, needle) in cases {
+        for (src, needle, span_snippet, nth) in cases {
             let err = parse_and_build_program(src)
                 .expect_err(&format!("expected `{src}` to be rejected"));
             let msg = err.message();
@@ -1860,6 +1893,7 @@
                 msg.contains(needle),
                 "for `{src}` expected message containing `{needle}`, got: {msg}"
             );
+            assert_err_span_at(src, &err, span_snippet, *nth);
         }
     }
 
@@ -1870,22 +1904,28 @@
     // window). The diagnostic names the lowercase rule.
     #[test]
     fn trait_head_uppercase_con_var_rejected_in_both_impl_and_deftrait() {
-        let impl_err = parse_and_build_program(
-            "(impl (Functor F) (Functor Option) (defn fmap [g x] x))",
-        ).expect_err("uppercase con_var in an impl head is rejected");
+        // The `var_span` arm of `parse_trait_head_shape` locates at the con_var
+        // element itself (`F`), not the whole head or form (design §4/§7). In
+        // both sources `F` first appears inside `Functor` (occurrence 0); the
+        // standalone con_var is occurrence 1.
+        let impl_src = "(impl (Functor F) (Functor Option) (defn fmap [g x] x))";
+        let impl_err = parse_and_build_program(impl_src)
+            .expect_err("uppercase con_var in an impl head is rejected");
         assert!(
             impl_err.message().contains("must start with lowercase"),
             "impl head lowercase-rule message; got: {}",
             impl_err.message()
         );
-        let deftrait_err = parse_and_build_program(
-            "(deftrait (Functor F) (fmap [g] g))",
-        ).expect_err("uppercase con_var in a deftrait head is rejected");
+        assert_err_span_at(impl_src, &impl_err, "F", 1);
+        let deftrait_src = "(deftrait (Functor F) (fmap [g] g))";
+        let deftrait_err = parse_and_build_program(deftrait_src)
+            .expect_err("uppercase con_var in a deftrait head is rejected");
         assert!(
             deftrait_err.message().contains("must start with lowercase"),
             "deftrait head lowercase-rule message; got: {}",
             deftrait_err.message()
         );
+        assert_err_span_at(deftrait_src, &deftrait_err, "F", 1);
     }
 
     // spec: spec/07-traits.md §7.3 — grammar-parity pin (Principle 7): the slot-1

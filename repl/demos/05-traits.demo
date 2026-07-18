@@ -28,7 +28,7 @@
 ; Define your own trait. A method signature names its receiver position:
 
 (deftype Box (MkBox [:Int w :Int h]))
-(deftrait (Sizeable a) (size [:a x] :Int))
+(deftrait Sizeable (size [x] Int))
 
 ; impl supplies the method body for one type:
 

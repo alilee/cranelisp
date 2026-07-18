@@ -37,7 +37,7 @@
 ; Define your own traits
 
 deftrait
-(deftrait (Sizeable a) (size [:a x] :Int))
+(deftrait Sizeable (size [x] Int))
 (deftype Box (MkBox [:Int width :Int height]))
 impl
 (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])))

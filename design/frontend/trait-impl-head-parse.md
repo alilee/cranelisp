@@ -129,7 +129,7 @@ Every rejection is a `parse_err` with the **span of the offending head**
 | `(impl (Functor) …)` | HK impl head is missing its constructor variable | write `(Functor f)` |
 | `(impl (Functor f g) …)` | too many elements in the impl head | a higher-kinded head is `(Trait con_var)` |
 | `(impl () …)` | empty impl head | write the bare trait name, or `(Trait con_var)` |
-| `(impl ((Functor f)) …)` | head element is not a symbol | trait name must be a bare symbol |
+| `(impl ((Functor f)) …)` | head element is not a symbol | trait name must be a bare symbol (see dispatch-order note) |
 | `(impl (functor f) …)` | trait name must start with uppercase | reuse existing check (`build_trait_head`:848) |
 | `(impl (Functor 3) …)` | constructor variable must be a symbol | write a name, e.g. `(Functor f)` |
 
@@ -141,14 +141,42 @@ Notes:
   ("impl head"), which is a caller-side wrapping of the shared shape error, OR a
   message the shared helper phrases neutrally ("trait head must be `(Trait
   con_var)`") that reads correctly for both callers. `/dev` picks; the neutral
-  phrasing keeps it single-sourced.
-- **con_var lowercase is NOT enforced at parse**, matching `build_trait_head`
-  today (it `expect_symbol`s the var without a case check). Spec §7.2 grammar
-  says `con_var = lowercase_symbol`, so an uppercase con_var is technically
-  malformed — but that is a *pre-existing, shared* deftrait gap, not opened by
-  this sprint. Keeping the two in lockstep (both non-enforcing) is correct for
-  b0; tightening it (in the shared helper, for both forms at once) is a separate,
-  spec-clear completeness item, not a language question. Flagged in §8.
+  phrasing keeps it single-sourced. **As-built:** `/dev` chose the neutral
+  "trait head" phrasing — one message reads correctly for both callers
+  (`parse_trait_head_shape`, `ast_builder.rs`).
+- **Dispatch order is head-symbol-BEFORE-arity (as-built, this is the design).**
+  The `(impl ((Functor f)) …)` row is subtle: its slot 1 is structurally a
+  **1-element list whose sole element is itself a list** (`((Functor f))`), not
+  the "2-element with a non-symbol head" the row's plain reading suggests. A
+  naive arity-first dispatch would hit the `len == 1` arm and emit the
+  missing-con_var message ("HK head is missing its constructor variable") —
+  misleading, since the real fault is that the head element is not a bare symbol.
+  The shared helper therefore checks **head-element-is-a-bare-uppercase-symbol
+  first** (`children[0]` must be an uppercase `Sexp::Symbol`), and only then
+  dispatches on `children.len()`. This ordering produces the table-intended
+  diagnostic on all six rows — the non-symbol-head fault is named before any
+  arity conclusion is drawn.
+- **con_var lowercase IS enforced at parse (b0, as-built).** Spec §7.2 grammar
+  says `con_var = lowercase_symbol`; an uppercase con_var is malformed. The
+  earlier b0-scope framing kept the parser non-enforcing "in lockstep with the
+  pre-existing `build_trait_head` gap" — that was **superseded** by a /qa ruling
+  during Phase 3 (`tests/plan/s112-0628-ic-wave.md` §7.2): b0 creates the ONE
+  shared seam (`parse_trait_head_shape`) where a single check covers `deftrait`
+  AND `impl`, so enforcing it here *closes* the two-parser drift window rather
+  than deferring into it — deferral would re-open exactly what the shared helper
+  exists to prevent. The as-built helper rejects an uppercase con_var in **both**
+  forms, located, naming the lowercase rule. **Honesty note:** this deliberately
+  *narrows* acceptance — `(deftrait (Functor F) …)` and `(impl (Functor F) …)`
+  were previously parse-accepted and now reject. Verified corpus-clean at
+  landing (no existing deftrait/impl anywhere writes an uppercase con_var), so
+  the narrowing breaks nothing. See §8.2.
+- **Known-open tightening (F3, routed to /qa's matrix — not a b0 fix).** The
+  case check is `is_uppercase_start` (`ast_builder.rs`:120), which tests only the
+  segment **after the final `/`**. So a slash-bearing con_var like
+  `(Functor prim/x)` currently passes the lowercase gate (bare part `x` is
+  lowercase), whereas spec §7.2 intends a bare lowercase *identifier* (no
+  qualifier). This is a narrow residual tightening candidate pending the /qa
+  coverage-matrix row; it is not designed here.
 
 ## 5. Additive-green at b0 (the /arch staging requirement)
 
@@ -254,7 +282,9 @@ b0).
 ## 8. Open questions (routed to /sprint; frontend does not rule)
 
 None are language-normative *for the frontend parse* — the parser only records
-the written shape — but two touch the seam and should be routed:
+the written shape — but two touched the seam. Item 1 (spelling match) is routed
+and open; item 2 (con_var lowercase) was **resolved during b0** by /qa's ruling
+and is recorded here for history:
 
 1. **Slot-1 con_var spelling match (→ /design typecheck / possibly user).** Spec
    §7.3 says slot 1 reproduces the head "verbatim as declared… the same
@@ -267,12 +297,20 @@ the written shape — but two touch the seam and should be routed:
    /sprint: is spelling-match enforcement intended? If yes, it lands at the
    typecheck seam reading `head_con_var`, not in the parser.
 
-2. **con_var lowercase enforcement (→ /qa completeness, not user).** §4 keeps the
-   parser non-enforcing, in lockstep with `build_trait_head`. Spec §7.2 is clear
-   (`con_var = lowercase_symbol`), so this is a spec-settled completeness gap
-   shared by both head parsers, not a normative question. If tightened, it lands
-   once in the shared shape helper (covering deftrait and impl together). Noted
-   for /qa's coverage matrix; out of scope for b0 unless /qa pulls it in.
+2. **con_var lowercase enforcement — RESOLVED, rides b0 (was: → /qa
+   completeness).** This originally proposed keeping the parser non-enforcing in
+   lockstep with `build_trait_head`, deferring the tightening. **Superseded by
+   /qa's Phase-3 ruling** (`tests/plan/s112-0628-ic-wave.md` §7.2): enforcement
+   is a matrix row NOW, not a deferred gap — spec §7.2 is clear
+   (`con_var = lowercase_symbol`) and b0 creates the ONE shared seam where a
+   single check covers `deftrait` AND `impl`, so deferring re-opens exactly the
+   two-parser drift window the shared helper exists to close. **As-built:**
+   `parse_trait_head_shape` rejects an uppercase con_var in both forms (located,
+   naming the lowercase rule); this narrows previously-accepted
+   `(deftrait (Functor F) …)` / `(impl (Functor F) …)`, verified corpus-clean at
+   landing. Detail and honesty note in §4. **Residual (open):** the check keys on
+   the after-slash segment, so a slash-bearing con_var `(Functor prim/x)` still
+   passes — a narrow tightening candidate on /qa's matrix (§4 F3 note), out of b0.
 
 ## 9. Principles cited
 

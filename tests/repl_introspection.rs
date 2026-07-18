@@ -1783,7 +1783,10 @@ fn deftype_display_match_section_header() {
 // (carry: legacy/e2e.rs::e2e_s1_3_deftrait_defn_section)
 #[test]
 fn deftrait_display_defn_section_lists_methods() {
-    let out = repl("(deftrait (Sizeable a) (size [a] Int))\n");
+    // b1-migration (S112): `(Sizeable a)` never-applied head → bare-head + `self`.
+    // Assertion subject UNCHANGED: `; deftrait` classification + `; defn:`
+    // section listing method `size`.
+    let out = repl("(deftrait Sizeable (size [self] Int))\n");
     assert!(
         out.stdout.contains("; deftrait"),
         "deftrait display MUST include '; deftrait' classification; got:\n{}",
@@ -1886,7 +1889,9 @@ fn seeded_option_bare_lookup_includes_match_section() {
 // (carry: legacy/e2e.rs::e2e_s4_1_bare_trait_defn_section)
 #[test]
 fn bare_trait_lookup_includes_defn_section() {
-    let out = repl("(deftrait (Sizeable a) (size [a] Int))
+    // b1-migration (S112): `(Sizeable a)` never-applied head → bare-head + `self`.
+    // Assertion subject UNCHANGED: bare-lookup `; deftrait` + `; defn:` section.
+    let out = repl("(deftrait Sizeable (size [self] Int))
 Sizeable
 ");
     assert!(
@@ -2618,9 +2623,12 @@ fn impl_form_display_result_is_exactly_impl_trait_for_type() {
     // spec/03-types.md §3.1: bare type refs (`Int`) MUST be imported or
     // fully-qualified — import the `Int` type so the trait return-type and
     // deftype field annotations resolve (RT1 fixture fix, S77 W-Fix).
+    // b1-migration (S112): `(Sizeable a)` never-applied head → bare-head + `self`.
+    // Assertion subject UNCHANGED: the impl form's display result is exactly
+    // `impl user/Sizeable for user/MyType` (independent of the trait head form).
     let out = repl(
         "(import [primitives [Int]])\n\
-         (deftrait (Sizeable a) (size [a] Int))\n\
+         (deftrait Sizeable (size [self] Int))\n\
          (deftype MyType [:Int val])\n\
          (impl Sizeable MyType (defn size [self] 42))\n",
     );
@@ -3876,7 +3884,10 @@ fn ls1_bare_type_display_invariant_to_session_history() {
 // omits `; impl:` entirely when there are no impls.
 #[test]
 fn bare_user_trait_lookup_shows_impl_section() {
-    let out = repl_prims("(deftrait (Display a) (show [a] String))\nDisplay\n");
+    // b1-migration (S112): `(Display a)` never-applied head → bare-head + `self`.
+    // Assertion subject UNCHANGED: `; deftrait` + `; defn:` (method `show`) +
+    // `; impl:` section present even with no impls.
+    let out = repl_prims("(deftrait Display (show [self] String))\nDisplay\n");
     assert!(
         out.stdout.contains("; deftrait"),
         "bare trait 'Display' MUST surface '; deftrait'; got:\n{}",
@@ -3900,8 +3911,11 @@ fn bare_user_trait_lookup_shows_impl_section() {
 // impl exists (the section appears with impls); pins the +neg boundary.
 #[test]
 fn bare_user_trait_lookup_impl_section_lists_type_not_others() {
+    // b1-migration (S112): `(Display a)` never-applied head → bare-head + `self`.
+    // Assertion subject UNCHANGED: `; impl:` lists the implementing type `Int`
+    // (+neg: does NOT leak an unrelated `Bool`).
     let out = repl_prims(
-        "(deftrait (Display a) (show [a] String))\n\
+        "(deftrait Display (show [self] String))\n\
          (impl Display Int (defn show [x] \"i\"))\n\
          Display\n",
     );

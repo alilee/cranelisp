@@ -1176,8 +1176,12 @@ fn persist_trait_decl_regen_preserves_source() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
+        // b1-migration (S112): off the never-applied `(Sizeable a)` head to the
+        // settled bare-head + `self` form. Assertion subject UNCHANGED: RT-3 —
+        // a REPL-defined `deftrait` (non-canonical spacing) survives backing-file
+        // regeneration faithfully (`deftrait`/`Sizeable`/`size` all present).
         // A trait with non-canonical spacing; then a defn triggers regen.
-        .stdin("(deftrait (Sizeable a) (size [a] Int))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .stdin("(deftrait Sizeable  (size [self]  Int))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
     assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
     let regenerated = out.read_tmp("user.cl");

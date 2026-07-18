@@ -429,7 +429,7 @@ user> (deftype Color Red Green Blue)
 ; match:
 ;  Red Green Blue
 
-user> (deftrait (Sizeable a) (size [:a] :Int))
+user> (deftrait Sizeable (size [x] Int))
 :user/Sizeable ; deftrait
 ; defn:
 ;  size
