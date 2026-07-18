@@ -61,13 +61,14 @@ A multi-signature function definition provides multiple variants with different 
   ([:(List Int) l] (list-len l)))
 ```
 
-Each clause annotates its parameter with a **concrete** type. A parametric type
-such as `Vec` or `List` MUST supply its type argument (`:(Vec Int)`, not bare
-`:Vec` — §5.2, §3), and because each clause is type-checked independently (see
-below) a clause parameter cannot be left polymorphic — `:(Vec a)` would leave
-`a` unpinned in that clause's own body, an ambiguous-type error. A concrete
-element type (here `Int`) is what pins the parameter and lets the clause
-compile.
+Each clause's parameters are inferred exactly as for a single-signature `defn`
+(§5.1.1). A parametric type still MUST supply its type argument where the
+grammar requires it (`:(Vec Int)`, not bare `:Vec` — §5.2, §3). A clause
+parameter MAY be left polymorphic on the same terms as a single-signature
+`defn`: it is an ambiguous-type error **only when the equivalent standalone
+function would also fail to infer it** (§3.11), never merely because it belongs
+to a multi-signature form. Type flows across clauses through ordinary call
+resolution — see **Inference** below.
 
 **Semantics:**
 
@@ -78,21 +79,63 @@ compile.
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 - **The multi-variant form is available only for `defn`/`defn-`.** The anonymous `fn` ([§4.5](04-expressions.md#45-lambda-expression)) is single-arity — a lambda takes exactly one `[params] body`, and the parenthesised multi-arity clause form is a parse error for `fn`.
-- **Each variant is type-checked independently.** A variant carries no type information into or out of its sibling variants: matching parameter identifiers across clauses (e.g. `p` and `rot` appearing in two clauses) are **not** evidence that the parameters share a type, and a delegating call from one clause to another (`([p rot] (rp p rot 0))` calling the 3-arg clause) does **not** back-flow the callee clause's parameter types into the caller clause's parameters. Consequently, **each variant MUST carry its own annotations wherever inference cannot pin its parameters from that variant's own body.** A variant whose parameters stay polymorphic after checking its own body is an ambiguous-type compile-time error, exactly as for a single-signature `defn` (§5.1.1) — the sibling variant's annotations do not rescue it.
+- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). The rule for two same-arity clauses whose parameter types **overlap** — such that one concrete argument tuple could match both — is an **open normative question (DRAFT — pending ratification)**; see the framed question below. Provisionally, such an overlap is a dispatch-ambiguity compile-time error, reported at the definition (both colliding clauses named), not silently resolved by clause order.
+
+**Inference — clause-equivalent to separate mutually-recursive functions.**
+
+A multi-signature `defn` is **inference-equivalent to its clauses written as
+separate, mutually-recursive functions that happen to share one dispatched
+name.** Each clause is type-checked per §5.1.1, under the two-pass
+registration/checking discipline of §5.13.1 (all clause signatures register
+first, then all bodies are checked). Type annotations on a clause parameter are
+**descriptive, not rigidity-adding** — a written type variable does not add
+rigidity of its own ([§3.3](03-types.md#33-type-variables); written ≡ unwritten,
+[§3.3.1](03-types.md#331-a-bare-type-variable-is-an-inference-variable-with-a-name));
+a parameter's type comes from usage.
+
+A **self-call from one clause to a sibling clause is an ordinary call.** It
+resolves (by arity, then — among same-arity clauses — by argument types,
+§7.4.4) to a specific sibling clause and unifies the argument types with that
+clause's parameter types, **exactly as a call to any other function does.**
+There is no independence barrier: matching parameter identifiers across clauses
+carry types across clauses precisely because a sibling self-call pins them
+through the callee clause's signature, just as calling a separate function would.
 
 ```clojure
-;; ERROR: the 2-arg variant's p / rot are unpinned — the annotated
-;; 3-arg sibling is NOT consulted, and the delegating call does not
-;; back-flow types.
-(defn rp
-  ([p rot]                               (rp p rot 0))
-  ([:Position p :Rotation rot :Int idx]  (match rot …)))
-
-;; CORRECT: annotate the 2-arg variant too.
-(defn rp
-  ([:Position p :Rotation rot]           (rp p rot 0))
-  ([:Position p :Rotation rot :Int idx]  (match rot …)))
+;; The 2-arg clause's self-call to the 3-arg clause pins p, rot : Int through
+;; the 3-arg clause's inferred signature — exactly as calling a separate
+;; function would. This MUST type-check.
+(defn rp4
+  ([p rot]     (let [q (rp4 p rot 0)] p))        ; => (Fn [Int Int] Int)
+  ([p rot idx] (add-i64 p (add-i64 rot idx))))   ; => (Fn [Int Int Int] Int)
 ```
+
+`add-i64` pins the 3-arg clause to `(Fn [Int Int Int] Int)`; the 2-arg clause's
+`(rp4 p rot 0)` resolves to that clause and pins `p` and `rot` to `Int`. The
+definition type-checks identically to the same logic written as two separate
+mutually-recursive functions `rp4a`/`rp4b`.
+
+A clause parameter is an **ambiguous-type compile-time error only when the
+equivalent standalone function would also fail to infer it** — i.e. neither the
+clause's own body nor any sibling self-call that reaches it pins the parameter's
+type at a codegen-reaching position (genuine §5.1.1 / §3.11 ambiguity). A
+parameter is **not** an error merely because a sibling clause was "not
+consulted": no such barrier exists.
+
+> **Open (DRAFT — pending user ratification).** Two sub-questions the equivalence
+> principle raises but does not itself settle:
+> 1. **Same-arity dispatch ambiguity.** State precisely when two same-arity
+>    clauses have "overlapping" parameter types (both admit some common concrete
+>    argument tuple) and are therefore a dispatch-ambiguity error. Candidate
+>    rule: reject at definition when the concrete instantiations of two
+>    same-arity clauses can unify, since no call site could then select one
+>    deterministically.
+> 2. **Genuinely-polymorphic clause.** Confirm that a clause left fully
+>    polymorphic — e.g. `([:a x] x)` returning its argument — is admissible in a
+>    multi-signature `defn`, as the separate-mutually-recursive-functions
+>    equivalence implies (such a clause is a valid standalone function). If
+>    admitted, its dispatch interaction with a more specific same-arity sibling
+>    (a polymorphic catch-all vs. a concrete clause) folds into sub-question 1.
 
 ### 5.1.3 Auto-Currying [Tested tests/spec_05_definitions::defn_auto_curry_call_with_fewer_args]
 
@@ -303,6 +346,7 @@ When the trait head includes type parameters, the trait operates on type constru
 - The type parameter `f` represents a type constructor (e.g., `Option`, `List`).
 - Method signatures MAY use the type parameter applied to type variables: `(f a)`.
 - HKT method parameters do not use bare names for `self`; instead, all parameters have explicit type annotations.
+- **Kind is determined by usage (DRAFT — Amendment 2).** A parenthesized head `(deftrait (X a) …)` is the higher-kinded form **only if** its head variable is **applied** (`(a b)`) somewhere in the method signatures. A parenthesized head whose variable is never applied is **malformed**; a conventional (kind-`*`) trait uses the bare-head form `(deftrait X …)` with `self`. See [§7.1](07-traits.md#71-trait-declaration) and [§7.2.1](07-traits.md#721-constructor-variables).
 
 ### 5.3.3 Trait Semantics [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch, tests/spec_07_traits::trait_method_no_impl_then_recovery]
 
@@ -323,6 +367,18 @@ method_defn    = '(' 'defn' name params body ')' (* follows defn syntax *)
 ```
 
 A trait implementation provides method bodies for a specific type.
+
+> **Amendment 2 (DRAFT — pending ratification) revises this form.** The grammar
+> above is the pre-amendment shape. Amendment 2 makes slot 1 **echo the
+> `deftrait` head as declared** (bare `Trait` for a conventional trait,
+> `(Trait con_var)` for a higher-kinded trait) and slot 2 name the target — a
+> **type** for a conventional trait, a **trait-constructor pairing**
+> `(Trait Constructor)` for a higher-kinded trait — with kind-checking to
+> disambiguate. The authoritative amended grammar, examples, and rationale live
+> in [§7.3](07-traits.md#73-trait-implementation); this section is synced on
+> ratification. Conventional concrete/applied impls (`(impl Display Int …)`,
+> `(impl Display (Option :Display a) …)`) are unchanged by the amendment; only
+> the higher-kinded form and the kind-checking rules change.
 
 ### 5.4.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_impl_on_enum_adt_with_match_over_all_constructors, tests/spec_07_traits::trait_multiple_impls]
 
@@ -366,14 +422,14 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 
 ### 5.4.4 Higher-Kinded Implementation [Tested tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form]
 
-For HKT traits, the target is a bare type constructor name (not an applied type):
+For HKT traits, Amendment 2 (DRAFT) echoes the declared head `(Functor f)` in slot 1 and names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor named in the pairing is bare, never an applied type — see [§7.3.4](07-traits.md#734-higher-kinded-implementation)):
 
 ```clojure
-(impl Functor Option
-  (defn fmap [f opt]
-    (match opt
+(impl (Functor f) (Functor Option)
+  (defn fmap [g x]
+    (match x
       [None None
-       (Some x) (Some (f x))])))
+       (Some v) (Some (g v))])))
 ```
 
 ### 5.4.5 Implementation Semantics [Tested tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_method_no_impl_then_recovery]
