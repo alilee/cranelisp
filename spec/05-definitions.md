@@ -79,7 +79,7 @@ resolution — see **Inference** below.
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 - **The multi-variant form is available only for `defn`/`defn-`.** The anonymous `fn` ([§4.5](04-expressions.md#45-lambda-expression)) is single-arity — a lambda takes exactly one `[params] body`, and the parenthesised multi-arity clause form is a parse error for `fn`.
-- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). The rule for two same-arity clauses whose parameter types **overlap** — such that one concrete argument tuple could match both — is an **open normative question (DRAFT — pending ratification)**; see the framed question below. Provisionally, such an overlap is a dispatch-ambiguity compile-time error, reported at the definition (both colliding clauses named), not silently resolved by clause order.
+- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). Two same-arity clauses whose signatures **can unify** — such that one concrete argument tuple could match both — are a **dispatch-ambiguity compile-time error**, reported at the definition (both colliding clauses named), not silently resolved by clause order. This is precisely what §5.1.2 constrains: dispatch *ambiguity*, **not** the presence of polymorphism. A **genuinely-polymorphic** clause is admissible whenever it does not overlap a same-arity sibling (see **Inference** below).
 
 **Inference — clause-equivalent to separate mutually-recursive functions.**
 
@@ -122,20 +122,15 @@ type at a codegen-reaching position (genuine §5.1.1 / §3.11 ambiguity). A
 parameter is **not** an error merely because a sibling clause was "not
 consulted": no such barrier exists.
 
-> **Open (DRAFT — pending user ratification).** Two sub-questions the equivalence
-> principle raises but does not itself settle:
-> 1. **Same-arity dispatch ambiguity.** State precisely when two same-arity
->    clauses have "overlapping" parameter types (both admit some common concrete
->    argument tuple) and are therefore a dispatch-ambiguity error. Candidate
->    rule: reject at definition when the concrete instantiations of two
->    same-arity clauses can unify, since no call site could then select one
->    deterministically.
-> 2. **Genuinely-polymorphic clause.** Confirm that a clause left fully
->    polymorphic — e.g. `([:a x] x)` returning its argument — is admissible in a
->    multi-signature `defn`, as the separate-mutually-recursive-functions
->    equivalence implies (such a clause is a valid standalone function). If
->    admitted, its dispatch interaction with a more specific same-arity sibling
->    (a polymorphic catch-all vs. a concrete clause) folds into sub-question 1.
+A clause left **genuinely polymorphic** — e.g. `([:a x] x)`, itself a valid
+standalone function — is **admissible** in a multi-signature `defn`. The
+separate-mutually-recursive-functions equivalence implies it directly, and
+§5.1.2 constrains dispatch *ambiguity*, not the presence of polymorphism. Its
+coexistence with a same-arity sibling is governed by the overlap rule above: it
+is admitted when the two clauses' signatures **cannot** unify (both clauses
+compile and dispatch), and is a dispatch-ambiguity error, reported at the
+definition, when they **can** — the same rule that governs any two same-arity
+clauses.
 
 ### 5.1.3 Auto-Currying [Tested tests/spec_05_definitions::defn_auto_curry_call_with_fewer_args]
 
@@ -306,7 +301,7 @@ deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig
 trait_head     = name                         (* simple trait *)
                | '(' name type_var+ ')'       (* higher-kinded trait *)
 method_sig     = required_method | default_method
-required_method = '(' name docstring? '[' param+ ']' type_expr ')'
+required_method = '(' name docstring? '[' param* ']' type_expr ')'  (* param* — a return-type-dispatched method may take zero params, §7.1.1 *)
 default_method  = '(' name docstring? '[' param+ ']' body ')'
 param          = ':' type_expr symbol          (* typed parameter *)
                | symbol                        (* bare -- implementing type *)
@@ -346,7 +341,7 @@ When the trait head includes type parameters, the trait operates on type constru
 - The type parameter `f` represents a type constructor (e.g., `Option`, `List`).
 - Method signatures MAY use the type parameter applied to type variables: `(f a)`.
 - HKT method parameters do not use bare names for `self`; instead, all parameters have explicit type annotations.
-- **Kind is determined by usage (DRAFT — Amendment 2).** A parenthesized head `(deftrait (X a) …)` is the higher-kinded form **only if** its head variable is **applied** (`(a b)`) somewhere in the method signatures. A parenthesized head whose variable is never applied is **malformed**; a conventional (kind-`*`) trait uses the bare-head form `(deftrait X …)` with `self`. See [§7.1](07-traits.md#71-trait-declaration) and [§7.2.1](07-traits.md#721-constructor-variables).
+- **Kind is determined by usage.** A parenthesized head `(deftrait (X a) …)` is the higher-kinded form **only if** its head variable is **applied** (`(a b)`) somewhere in the method signatures. A parenthesized head whose variable is never applied is **malformed**; a conventional (kind-`*`) trait uses the bare-head form `(deftrait X …)` with `self`. See [§7.1](07-traits.md#71-trait-declaration) and [§7.2.1](07-traits.md#721-constructor-variables).
 
 ### 5.3.3 Trait Semantics [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch, tests/spec_07_traits::trait_method_no_impl_then_recovery]
 
@@ -357,28 +352,36 @@ When the trait head includes type parameters, the trait operates on type constru
 ## 5.4 Trait Implementation (`impl`) [Tested]
 
 ```ebnf
-impl_form      = '(' 'impl' trait_name target_type method_defn+ ')'
-trait_name     = symbol
-target_type    = symbol                          (* monomorphic or bare constructor *)
-               | '(' symbol type_arg+ ')'        (* applied type *)
-type_arg       = symbol                          (* concrete type or type var *)
-               | colon_prefix symbol             (* constrained type var *)
-method_defn    = '(' 'defn' name params body ')' (* follows defn syntax *)
+impl_form      = '(' 'impl' impl_head impl_target method_defn+ ')'
+impl_head      = trait_name                       (* conventional trait — bare, as declared *)
+               | '(' trait_name con_var ')'       (* higher-kinded trait head — echoed as declared *)
+impl_target    = type_name                        (* conventional concrete:  Int *)
+               | '(' type_name type_arg+ ')'      (* conventional applied:    (Option Int), (Option :Display a) *)
+               | '(' trait_name con_target ')'    (* HK trait-constructor pairing: (Functor Option) *)
+type_arg       = type_name                        (* concrete type or type var *)
+               | colon_prefix symbol              (* inline constraint: :Display a *)
+method_defn    = '(' 'defn' name params body ')'  (* follows defn syntax *)
 ```
 
-A trait implementation provides method bodies for a specific type.
+A trait implementation provides method bodies for a specific type. Slot 1
+**echoes the `deftrait` head as declared** — the bare trait name for a
+conventional trait, the parenthesized `(Trait con_var)` head for a higher-kinded
+trait — and slot 2 **names the target**: a **type** for a conventional trait
+(`(impl Display Int …)`, `(impl Display (Option :Display a) …)`), a
+**trait-constructor pairing** `(Trait Constructor)` for a higher-kinded trait
+(`(impl (Functor f) (Functor Option) …)`). The authoritative grammar, examples,
+and rationale live in [§7.3](07-traits.md#73-trait-implementation).
 
-> **Amendment 2 (DRAFT — pending ratification) revises this form.** The grammar
-> above is the pre-amendment shape. Amendment 2 makes slot 1 **echo the
-> `deftrait` head as declared** (bare `Trait` for a conventional trait,
-> `(Trait con_var)` for a higher-kinded trait) and slot 2 name the target — a
-> **type** for a conventional trait, a **trait-constructor pairing**
-> `(Trait Constructor)` for a higher-kinded trait — with kind-checking to
-> disambiguate. The authoritative amended grammar, examples, and rationale live
-> in [§7.3](07-traits.md#73-trait-implementation); this section is synced on
-> ratification. Conventional concrete/applied impls (`(impl Display Int …)`,
-> `(impl Display (Option :Display a) …)`) are unchanged by the amendment; only
-> the higher-kinded form and the kind-checking rules change.
+> **Kind-matching (settled).** The precise **impl-target kind-matching
+> table** — exactly which targets are well-kinded for a given trait head, and
+> which are rejected and with what diagnostic — is settled in
+> [§7.3.5](07-traits.md#735-kind-checking-of-impl-targets): a conventional
+> (kind-`*`) trait target MUST be a **type** (a bare/under-applied constructor
+> is a kind-mismatch), and a higher-kinded trait target MUST be a bare
+> constructor whose arity matches the con_var's usage-derived kind (a
+> fully-applied type, a primitive, or a wrong-arity constructor is rejected).
+> The `impl` *syntax* above (echo-the-head, slot-2 target shape) is likewise
+> settled.
 
 ### 5.4.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_impl_on_enum_adt_with_match_over_all_constructors, tests/spec_07_traits::trait_multiple_impls]
 
@@ -422,7 +425,7 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 
 ### 5.4.4 Higher-Kinded Implementation [Tested tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form]
 
-For HKT traits, Amendment 2 (DRAFT) echoes the declared head `(Functor f)` in slot 1 and names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor named in the pairing is bare, never an applied type — see [§7.3.4](07-traits.md#734-higher-kinded-implementation)):
+For HKT traits, the impl echoes the declared head `(Functor f)` in slot 1 and names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor named in the pairing is bare, never an applied type — see [§7.3.4](07-traits.md#734-higher-kinded-implementation)):
 
 ```clojure
 (impl (Functor f) (Functor Option)
