@@ -239,6 +239,7 @@
 
         // impl Num for Int: + → add-i64
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -3909,6 +3910,7 @@
 
         // Now impl Eq for Int
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -4142,6 +4144,7 @@
 
         // Then register TraitImpl(Eq for Int) — should succeed because decl was registered first
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -4616,6 +4619,7 @@
 
         // TraitImpl referencing undeclared trait
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("NonexistentTrait")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -5237,6 +5241,7 @@
 
         // Impl Double for Int: (defn double [x] (+ x x))
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Double")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -6808,6 +6813,7 @@
         tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(name)),
             target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
@@ -8453,6 +8459,7 @@
         seed_specific_import(&mut tc, &ModuleFullPath::from("primitives"), &["Int"]);
 
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Foo")),
             target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
@@ -8883,6 +8890,7 @@
         // module-level user fn `helper`. Distinct spans: the recorder is
         // span-keyed, so synthetic-span collisions would mask the reference.
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Sizey")),
             target: TypeExpr::Named(cranelisp_types::TypeRef::new(
                 None,
@@ -8978,6 +8986,7 @@
         // (impl Doubly Int (defn req [a] a)) — omits `dbl`, forcing default
         // synthesis + body check through the same writeback seam.
         let impl_ = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Doubly")),
             target: TypeExpr::Named(cranelisp_types::TypeRef::new(
                 None,

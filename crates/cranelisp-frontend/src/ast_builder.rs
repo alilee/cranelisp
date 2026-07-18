@@ -829,28 +829,114 @@ pub(crate) fn parse_deftrait(
     })
 }
 
-/// Parse a trait head: either `TraitName` or `(TraitName var)`.
-/// Returns (trait_name, type_params, optional_hkt_param_name).
-fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
+/// Parse the STRUCTURAL shape of a trait head — the `deftrait` head (spec §7.2)
+/// AND the `impl` slot-1 echoed head (spec §7.3). Single-sourced so
+/// `build_trait_head` and `parse_impl` cannot drift on what a legal head *looks
+/// like* (Principle 7): spec §7.3 states the `impl` slot-1 shape **is** the
+/// `deftrait` head shape, so one grammar governs both.
+///
+/// Accepts exactly two shapes:
+///   - bare `Symbol` (uppercase)         → `(name, None)`            — kind `*`
+///   - 2-element `(UpperSymbol con_var)` → `(name, Some((var,span)))` — HK head
+///
+/// Structural ONLY — it enforces the shape, the uppercase-head rule, and the
+/// lowercase-con_var rule (spec §7.2 `con_var = lowercase_symbol`; /qa F2
+/// ruling S112, `tests/plan/s112-0628-ic-wave.md` §7.2 — the ONE seam covering
+/// BOTH head parsers, closing the two-parser drift window). It does NO
+/// name-resolution and NO kind classification: it returns the raw head name
+/// **unsplit**, and each caller applies its own §8.5 policy (`build_trait_head`
+/// keeps the name in its home module; `parse_impl` applies the D-qual splitter).
+///
+/// Diagnostics are phrased **neutrally** ("trait head") rather than
+/// caller-specific ("impl head") so the one message reads correctly for both
+/// callers and stays single-sourced (design/frontend/trait-impl-head-parse.md §4
+/// note — the explicitly-sanctioned option). Every rejection is located and
+/// names the fix.
+fn parse_trait_head_shape(
+    sexp: &Sexp,
+) -> Result<(&str, Option<(Symbol, Span)>), CranelispError> {
     match sexp {
-        Sexp::Symbol(name, _) if is_uppercase_start(name) => {
-            Ok((TraitName::from(name.as_str()), vec![], None))
+        Sexp::Symbol(name, span) => {
+            if !is_uppercase_start(name) {
+                return Err(parse_err("trait name must start with uppercase", *span));
+            }
+            Ok((name.as_str(), None))
         }
         Sexp::List(children, span) => {
-            if children.len() != 2 {
+            if children.is_empty() {
                 return Err(parse_err(
-                    "HKT trait head must be (TraitName var)",
+                    "empty trait head — write the bare trait name, or `(Trait con_var)`",
                     *span,
                 ));
             }
-            let (name, _) = expect_symbol(&children[0])?;
+            // The head element must be a bare uppercase symbol — checked BEFORE
+            // arity so a non-symbol head (`((Functor f))`) names that fault
+            // rather than an arity one (design §4 table).
+            let (name, name_span) = match &children[0] {
+                Sexp::Symbol(n, sp) => (n.as_str(), *sp),
+                _ => {
+                    return Err(parse_err(
+                        "trait name must be a bare symbol",
+                        children[0].span(),
+                    ));
+                }
+            };
             if !is_uppercase_start(name) {
-                return Err(parse_err("trait name must start with uppercase", children[0].span()));
+                return Err(parse_err(
+                    "trait name must start with uppercase",
+                    name_span,
+                ));
             }
-            let (var, _) = expect_symbol(&children[1])?;
-            Ok((TraitName::from(name), vec![var.into()], Some(var.into())))
+            match children.len() {
+                1 => Err(parse_err(
+                    "higher-kinded trait head is missing its constructor variable — write `(Trait con_var)`, e.g. `(Functor f)`",
+                    *span,
+                )),
+                2 => {
+                    // con_var: a lowercase symbol (spec §7.2 `con_var =
+                    // lowercase_symbol`).
+                    let (var, var_span) = match &children[1] {
+                        Sexp::Symbol(v, sp) => (v.as_str(), *sp),
+                        _ => {
+                            return Err(parse_err(
+                                "constructor variable must be a symbol — write a name, e.g. `(Functor f)`",
+                                children[1].span(),
+                            ));
+                        }
+                    };
+                    if is_uppercase_start(var) {
+                        return Err(parse_err(
+                            "constructor variable must start with lowercase — write `(Trait con_var)`, e.g. `(Functor f)`",
+                            var_span,
+                        ));
+                    }
+                    Ok((name, Some((Symbol::from(var), var_span))))
+                }
+                _ => Err(parse_err(
+                    "too many elements in trait head — a higher-kinded head is `(Trait con_var)`",
+                    *span,
+                )),
+            }
         }
-        _ => Err(parse_err("expected trait name or (TraitName var)", sexp.span())),
+        _ => Err(parse_err(
+            "expected trait name or `(Trait con_var)`",
+            sexp.span(),
+        )),
+    }
+}
+
+/// Parse a trait head: either `TraitName` or `(TraitName var)`.
+/// Returns (trait_name, type_params, optional_hkt_param_name).
+///
+/// Shares the head-shape grammar with `parse_impl` via
+/// [`parse_trait_head_shape`] (Principle 7); the deftrait-specific name policy —
+/// keep the name in its home module (`TraitName::from`, no §8.5 split) and fold
+/// the con_var into `type_params` + `hkt_param_name` — stays here.
+fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
+    let (name, con_var) = parse_trait_head_shape(sexp)?;
+    match con_var {
+        None => Ok((TraitName::from(name), vec![], None)),
+        Some((var, _span)) => Ok((TraitName::from(name), vec![var.clone()], Some(var))),
     }
 }
 
@@ -942,8 +1028,21 @@ pub(crate) fn parse_impl(
     children: &[Sexp],
     span: Span,
 ) -> Result<ParsedEntry, CranelispError> {
-    // (impl TraitName impl_target method_def+)
-    // impl_target = Type | (Type :Constraint var ...)
+    // (impl <head> impl_target method_def+)
+    //   <head>      = TraitName | (TraitName con_var)   -- spec §7.2/§7.3
+    //   impl_target = Type | (Type :Constraint var ...) -- slot 2, unchanged
+    //
+    // Slot 1 admits BOTH head shapes (S112 b0): the bare conventional head
+    // (kind `*`, `head_con_var: None`) and the higher-kinded echo-the-head form
+    // `(Functor f)` (`head_con_var: Some("f")` — the written con_var recorded
+    // VERBATIM as a shape bit only). The parser does NO kind classification and
+    // NO echo validation against the trait declaration — whether slot 1's shape
+    // matches the trait's declared kind is checked at typecheck's ONE §7.3.5
+    // Case-3 seam, the single site holding the trait declaration (a second
+    // parser-side classifier could only ever agree with it — spec §7.3.5,
+    // Principle 24 "resolve once"). Slot 2 rides the existing `build_impl_target`
+    // path untouched; `(Functor Option)` parses to `Applied` like any type
+    // application and is kind-interpreted only at that same Case-3 seam.
     if children.len() < 4 {
         return Err(parse_err(
             "impl requires trait name, target type, and at least one method",
@@ -951,10 +1050,13 @@ pub(crate) fn parse_impl(
         ));
     }
 
-    let (trait_name, _) = expect_symbol(&children[1])?;
-    if !is_uppercase_start(trait_name) {
-        return Err(parse_err("trait name must start with uppercase", children[1].span()));
-    }
+    // Slot 1: the echoed head shape (single-sourced with `deftrait` via
+    // `parse_trait_head_shape`, Principle 7). The impl-side name policy — apply
+    // the §8.5 D-qual splitter to a qualified echoed head (`(fmt/Functor f)`) —
+    // stays here, mirroring the deftrait side's home-module policy.
+    let (head_name, con_var) = parse_trait_head_shape(&children[1])?;
+    let trait_name = trait_ref_from_name(head_name);
+    let head_con_var = con_var.map(|(var, _span)| var);
 
     let (target, type_constraints) = build_impl_target(&children[2])?;
 
@@ -965,7 +1067,8 @@ pub(crate) fn parse_impl(
 
     Ok(ParsedEntry::TraitImpl {
         impl_: TraitImpl {
-            trait_name: trait_ref_from_name(trait_name),
+            head_con_var,
+            trait_name,
             target,
             type_constraints,
             methods,

@@ -651,9 +651,28 @@ pub struct TraitDecl {
 /// type-variable bindings live structurally inside `target` (any
 /// `TypeExpr::TypeVar` reachable from `target` is a polymorphic-impl
 /// type-var introduced by this impl).
+///
+/// `head_con_var: Option<Symbol>` (S112 b0) carries the **written slot-1 head
+/// shape** of the settled echo-the-head impl form (spec §7.3/§7.3.4): `None`
+/// for the bare-head form `(impl Display …)`; `Some(con_var)` when slot 1
+/// echoes the parenthesized `deftrait` head — `(impl (Functor f) …)` records
+/// `Some("f")`, spelling verbatim as written. The parser only records the
+/// shape bit; it performs NO kind classification or echo validation
+/// (Principle 24 — one classifier). The sole consumer is typecheck's §7.3.5
+/// Case-3 seam (`design/typecheck/hkt.md` §5.4 step 3), which validates shape
+/// AND con_var spelling against the trait's declaration. `#[serde(default)]`:
+/// a pre-b0 serialized form deserializes as `None`, which equals the
+/// fresh-parse value for the bare-head form — the schema-bump-exempt class
+/// (`crates/cranelisp-types/CLAUDE.md` §serde-shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
     pub trait_name: TraitRef,
+    /// Written slot-1 head shape: `None` = bare head (`(impl Display …)`);
+    /// `Some(con_var)` = parenthesized echoed head (`(impl (Functor f) …)`).
+    /// See the struct-level rustdoc; consumed only at typecheck's §7.3.5
+    /// Case-3 seam.
+    #[serde(default)]
+    pub head_con_var: Option<Symbol>,
     pub target: TypeExpr,
     pub type_constraints: Vec<(Symbol, TraitRef)>,
     pub methods: Vec<Defn>,

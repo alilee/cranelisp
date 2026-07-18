@@ -1865,6 +1865,7 @@
 
         // impl Num for Int
         let int_impl = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -1896,6 +1897,7 @@
 
         // impl Num for Float
         let float_impl = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Float")),
@@ -1949,6 +1951,7 @@
 
         // impl Ord for Int
         let int_ord_impl = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Ord")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
@@ -2202,6 +2205,7 @@
         // body is irrelevant for resolution (primitive_for_trait_method short-
         // circuits to BuiltinFn), but a valid Defn must be registered.
         let mk_eq_impl = |target: &str, prim: &str| TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from(target)),
@@ -2251,6 +2255,7 @@
         };
         tc.register_trait_decl_self(&display_decl).unwrap();
         let show_int_impl = TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Display")),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),

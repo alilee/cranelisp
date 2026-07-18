@@ -664,6 +664,7 @@
     /// Make a concrete `(impl T Int (defn op [lhs rhs] (add-i64 lhs rhs)))`.
     fn make_int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
         TraitImpl {
+            head_con_var: None,
             trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(trait_name)),
             target: cranelisp_types::TypeExpr::Named(
                 cranelisp_types::TypeRef::new(None, TypeName::from("Int")),

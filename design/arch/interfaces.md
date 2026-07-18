@@ -480,13 +480,26 @@ pub struct TraitDecl {
     pub span: Span,
 }
 
-/// Trait implementation. spec: §5.4
+/// Trait implementation. spec: §5.4; impl-form grammar §7.3/§7.3.4.
+///
+/// As-built shape (S69 Submission 27 unified `target: TypeExpr`, replacing
+/// the 6-field `target_type + type_args`; S112 b0 added `head_con_var`):
+/// `head_con_var` carries the WRITTEN slot-1 head shape of the settled
+/// echo-the-head impl form — `None` = bare head `(impl Display …)`,
+/// `Some(con_var)` = parenthesized echoed head `(impl (Functor f) …)`,
+/// spelling verbatim. The parser records the shape bit only (no kind
+/// classification — Principle 24, one classifier); the sole consumer is
+/// typecheck's §7.3.5 Case-3 seam (`design/typecheck/hkt.md` §5.4 step 3),
+/// which validates shape + spelling against the trait's declaration.
+/// `#[serde(default)]` — pre-b0 serialized forms deserialize as `None`,
+/// equal to the fresh-parse bare-head value (schema-bump-exempt class).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
-    pub trait_name: TraitName,
-    pub target_type: TypeName,
-    pub type_args: Vec<Symbol>,
-    pub type_constraints: Vec<(Symbol, TraitName)>,
+    pub trait_name: TraitRef,
+    #[serde(default)]
+    pub head_con_var: Option<Symbol>,
+    pub target: TypeExpr,
+    pub type_constraints: Vec<(Symbol, TraitRef)>,
     pub methods: Vec<Defn>,
     pub span: Span,
 }

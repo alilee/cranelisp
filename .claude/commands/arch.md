@@ -31,6 +31,7 @@ effort: xhigh
 @design/arch/principles/23-tests-mirror-module-composition.md
 @design/arch/principles/24-resolve-once.md
 @design/arch/principles/25-narrowing-carries-its-check.md
+@design/arch/principles/26-record-from-settled-state.md
 
 # /arch — Compiler Architect
 

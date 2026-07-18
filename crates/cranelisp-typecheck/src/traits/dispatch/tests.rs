@@ -107,6 +107,7 @@ fn test_try_resolve_trait_method_success() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -392,6 +393,7 @@ fn test_try_resolve_with_inline_trait() {
 
     // Register impl Num for Int
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -541,6 +543,7 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],

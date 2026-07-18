@@ -1737,6 +1737,191 @@
         }
     }
 
+    // -- S112 b0: echo-the-head impl slot-1 (spec §7.2/§7.3) ----------------
+    // Both slot-1 head shapes parse; the parser records ONLY the written shape
+    // bit (`head_con_var`) and does NO kind classification or echo validation
+    // against the trait declaration — that is typecheck's ONE §7.3.5 Case-3
+    // seam. Slot 2 rides the unchanged `build_impl_target` `Applied` path. See
+    // design/frontend/trait-impl-head-parse.md.
+
+    // spec: spec/07-traits.md §7.3 — a BARE conventional impl head keeps
+    // `head_con_var: None`, byte-identical to the pre-S112 path (additive-green
+    // regression pin: every existing bare-head impl is unaffected).
+    #[test]
+    fn build_impl_bare_head_records_no_con_var() {
+        let prog = parse_and_build_program(
+            "(impl Display Int (defn show [x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.head_con_var, None);
+                assert_eq!(imp.trait_name.module, None);
+                assert_eq!(imp.trait_name.name.as_ref(), "Display");
+                match &imp.target {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                    other => panic!("expected Named(Int), got {other:?}"),
+                }
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/07-traits.md §7.3 — the higher-kinded echo-the-head form
+    // `(Functor f)` records `head_con_var: Some("f")`; slot 2 `(Functor Option)`
+    // STILL parses through the existing `build_impl_target` `Applied` machinery
+    // (the parser assigns it no special meaning — kind-interpreted only at the
+    // typecheck Case-3 seam).
+    #[test]
+    fn build_impl_hk_head_records_con_var_and_keeps_slot2_applied() {
+        let prog = parse_and_build_program(
+            "(impl (Functor f) (Functor Option) (defn fmap [g x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                let cv = imp.head_con_var.as_ref().expect("expected head_con_var Some");
+                assert_eq!(cv.as_ref(), "f");
+                assert_eq!(imp.trait_name.module, None);
+                assert_eq!(imp.trait_name.name.as_ref(), "Functor");
+                match &imp.target {
+                    TypeExpr::Applied(head, args) => {
+                        assert_eq!(head.name.as_ref(), "Functor");
+                        assert_eq!(args.len(), 1);
+                        match &args[0] {
+                            TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Option"),
+                            other => panic!("expected Named(Option) arg, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Applied slot-2 target, got {other:?}"),
+                }
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/07-traits.md §7.3 — the con_var is recorded VERBATIM (the exact
+    // spelling written), NOT normalised: `(Functor g)` records "g". Typecheck's
+    // Case-3 echo check needs the written spelling, so the datum must survive.
+    #[test]
+    fn build_impl_hk_head_records_con_var_verbatim() {
+        let prog = parse_and_build_program(
+            "(impl (Functor g) (Functor Option) (defn fmap [h x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                let cv = imp.head_con_var.as_ref().expect("expected head_con_var Some");
+                assert_eq!(cv.as_ref(), "g");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 + spec/07-traits.md §7.3 — a QUALIFIED echoed
+    // head `(fmt/Functor f)` applies the D-qual splitter caller-side, exactly as
+    // the bare-head trait-name position does: the head splits to
+    // `TraitRef { module: Some("fmt"), name: "Functor" }` and the con_var is
+    // still recorded (the split does not disturb the shape bit).
+    #[test]
+    fn build_impl_hk_qualified_head_splits_traitref_and_records_con_var() {
+        let prog = parse_and_build_program(
+            "(impl (fmt/Functor f) (Functor Option) (defn fmap [g x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name.module.as_deref(), Some("fmt"));
+                assert_eq!(imp.trait_name.name.as_ref(), "Functor");
+                let cv = imp.head_con_var.as_ref().expect("expected head_con_var Some");
+                assert_eq!(cv.as_ref(), "f");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/07-traits.md §7.2/§7.3 — malformed impl slot-1 head shapes are
+    // rejected with a LOCATED, fix-naming diagnostic (design §4 table). Each row
+    // dies in `parse_trait_head_shape`, the ONE head-shape grammar shared with
+    // `deftrait` (Principle 7). Pre-fix they all died on a generic `expected
+    // symbol`; each row now asserts its per-shape message names the fix.
+    #[test]
+    fn build_impl_malformed_head_shapes_rejected_with_fix_naming_errors() {
+        let cases: &[(&str, &str)] = &[
+            // (source, expected message substring naming the fix)
+            ("(impl (Functor) Int (defn m [x] x))", "missing its constructor variable"),
+            ("(impl (Functor f g) Int (defn m [x] x))", "too many elements"),
+            ("(impl () Int (defn m [x] x))", "empty trait head"),
+            ("(impl ((Functor f)) Int (defn m [x] x))", "trait name must be a bare symbol"),
+            ("(impl (functor f) Int (defn m [x] x))", "must start with uppercase"),
+            ("(impl (Functor 3) Int (defn m [x] x))", "constructor variable must be a symbol"),
+        ];
+        for (src, needle) in cases {
+            let err = parse_and_build_program(src)
+                .expect_err(&format!("expected `{src}` to be rejected"));
+            let msg = err.message();
+            assert!(
+                msg.contains(needle),
+                "for `{src}` expected message containing `{needle}`, got: {msg}"
+            );
+        }
+    }
+
+    // spec: spec/07-traits.md §7.2 (`con_var = lowercase_symbol`) — an UPPERCASE
+    // con_var is rejected at parse for BOTH the `impl` echoed head and the
+    // `deftrait` head, via the ONE shared head-shape helper (/qa F2 ruling S112,
+    // tests/plan/s112-0628-ic-wave.md §7.2 — one fix closes the two-parser drift
+    // window). The diagnostic names the lowercase rule.
+    #[test]
+    fn trait_head_uppercase_con_var_rejected_in_both_impl_and_deftrait() {
+        let impl_err = parse_and_build_program(
+            "(impl (Functor F) (Functor Option) (defn fmap [g x] x))",
+        ).expect_err("uppercase con_var in an impl head is rejected");
+        assert!(
+            impl_err.message().contains("must start with lowercase"),
+            "impl head lowercase-rule message; got: {}",
+            impl_err.message()
+        );
+        let deftrait_err = parse_and_build_program(
+            "(deftrait (Functor F) (fmap [g] g))",
+        ).expect_err("uppercase con_var in a deftrait head is rejected");
+        assert!(
+            deftrait_err.message().contains("must start with lowercase"),
+            "deftrait head lowercase-rule message; got: {}",
+            deftrait_err.message()
+        );
+    }
+
+    // spec: spec/07-traits.md §7.3 — grammar-parity pin (Principle 7): the slot-1
+    // head grammar is SINGLE-SOURCED (`parse_trait_head_shape`), so a head shape
+    // `deftrait` accepts, `impl` accepts identically — and one it rejects, the
+    // other rejects. Directly guards that the two parsers cannot drift on what a
+    // legal head looks like (design §3/§7).
+    #[test]
+    fn trait_head_grammar_parity_deftrait_and_impl_agree() {
+        // Only the head shape varies; it is spliced into a well-formed deftrait
+        // and a well-formed impl. Acceptance MUST agree row by row.
+        let heads: &[&str] = &[
+            "Foo",           // bare uppercase        — accepted
+            "(Foo f)",       // HK head               — accepted
+            "(fmt/Foo f)",   // qualified HK head     — accepted
+            "(Foo)",         // missing con_var       — rejected
+            "(Foo f g)",     // too many elements     — rejected
+            "()",            // empty head            — rejected
+            "((Foo f))",     // non-symbol head       — rejected
+            "(foo f)",       // lowercase head        — rejected
+            "(Foo 3)",       // non-symbol con_var    — rejected
+            "(Foo F)",       // uppercase con_var     — rejected
+        ];
+        for head in heads {
+            let deftrait_ok =
+                parse_and_build_program(&format!("(deftrait {head} (m [self] self))")).is_ok();
+            let impl_ok =
+                parse_and_build_program(&format!("(impl {head} Int (defn m [self] self))")).is_ok();
+            assert_eq!(
+                deftrait_ok, impl_ok,
+                "head `{head}`: deftrait accepted={deftrait_ok} but impl accepted={impl_ok} \
+                 — the shared head grammar drifted"
+            );
+        }
+    }
+
     // spec: spec/08-modules.md §8.5 — a qualified type reference in a `deftrait`
     // method signature (both param-annotation and return-type position) is
     // canonical: `:primitives/Int` MUST split to

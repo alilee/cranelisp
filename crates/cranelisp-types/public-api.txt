@@ -1601,6 +1601,7 @@ impl core::marker::UnsafeUnpin for cranelisp_types::TraitDeclInfo
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitDeclInfo
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitDeclInfo
 pub struct cranelisp_types::TraitImpl
+pub cranelisp_types::TraitImpl::head_con_var: core::option::Option<cranelisp_types::Symbol>
 pub cranelisp_types::TraitImpl::methods: alloc::vec::Vec<cranelisp_types::Defn>
 pub cranelisp_types::TraitImpl::span: cranelisp_types::Span
 pub cranelisp_types::TraitImpl::target: cranelisp_types::TypeExpr

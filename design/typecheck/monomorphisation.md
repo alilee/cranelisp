@@ -1241,13 +1241,13 @@ source.)
 - **(a) Classification is textual.** `d == name || d.starts_with("{name}__v")` over
   `state.current_defn`. A user defn literally named `f__v1` calling overloaded `f`
   would false-positive as a self-call. Obscure; documented limitation, not fixed here.
-- **(b) Mono-recheck blind spot (intertwined with review finding I1).** During a
+- **(b) Mono-recheck blind spot (review finding I1) — FIXED, see §11.3.4.** During a
   template clause's mono recheck `current_defn` is the template's mangled name
   (`g$Var…`), not `g` or `g__vN`, so an inner self-call classifies as *external* and
   monomorphises rather than unifying — the seam of I1 (a genuinely-poly recursive
-  clause wrong-rejects with an internal-name leak). Noted here; the I1 fix is /dev's
-  W2.1 remediation, to be designed only if it falls out of the B1 fix naturally, not
-  pre-designed here.
+  clause wrong-rejects with an internal-name leak). **§11.3.4 records the as-built I1
+  fix** (a mono-recheck monomorphic-recursion context) and its residual **R1**
+  cross-arity boundary.
 - **(c) Shadowing-blind (inherited, review M2).** The gate keys on
   `state.overloads.contains_key(name)` and does not account for a local binding
   shadowing `name`. Pre-existing single-sig blindness, **inherited** by the multi-sig
@@ -1361,6 +1361,85 @@ timing" — the pre-drain-vs-post-drain placement of the overlap check needs `/s
 framing for the user (see the report's M1 disposition). Leg (a) ships the check
 as-landed (pre-drain); the timing question is orthogonal to B1 and outside the W2.1
 fix scope.
+
+### 11.3.4 As-built — the I1 fix: a mono-recheck monomorphic-recursion context (review SOUND) + the R1 boundary
+
+Caveat (b) of §11.3.1 (the mono-recheck blind spot) is the I1 defect: a genuinely-poly
+recursive clause — e.g. the 1-arg clause of `(defn g ([x] (if true x (g x))) ([a b]
+a))`, whose standalone twin `(defn g1 [x] (if true x (g1 x)))` accepts and runs — was
+wrong-rejected, with the internal `user/g$Var$Int` mangle leaking into the diagnostic.
+Root cause: during the mono recheck of the `$Var` template clause instantiated at
+`Int`, the inner self-call `(g x)` classifies as *external* under the textual
+`current_defn` tag (which is the template mangle `g$Var`, not `g`/`g__vN`), so it
+pushes a `pending_overload_resolution` **after** the sole drain has already been taken
+— an entry nothing ever resolves, leaving a residual var.
+
+**The fix — design candidate 1, adjudicated SOUND by W2 /review.** A
+monomorphic-recursion *context* threaded through the recheck, so an inner self-call to
+the base at the same instantiation resolves **inline** as monomorphic recursion,
+exactly as the standalone twin's self-call does:
+
+- **The context.** `CheckState.mono_recheck_self: Option<(base, instance_mangled,
+  instance_params, instance_ret)>` (`checker.rs:208–222`). Set ONLY at the drain's
+  pass-2 template-instantiation site, via a new `origin_base: Option<&Symbol>` param on
+  `monomorphise_call` (`traits/monomorphise.rs:185–201`). It is **stack-saved and
+  restored** around the recheck; an inner hop's `monomorphise_call` passes `origin_base:
+  None`, so a nested recheck runs with the context cleared — **nesting-safe** by
+  construction (the §5 `saved_subst` isolation discipline, extended to this context).
+- **The inline gate** (`infer.rs:608–655`). When `mono_recheck_self` names the called
+  base AND the call's arity matches AND the call's `apply_subst`-resolved args **equal**
+  the instance's concrete params (`ip == resolved_args`, same instantiation), the call
+  resolves inline: unify the instance's params/return with the call, record
+  `SigDispatch` to `instance_mangled`, and return — no pending entry pushed. A call at
+  *different* args (a distinct instance or a sibling clause) falls through to the
+  ordinary defer.
+- **The load-bearing callee-`Var` retype** (`infer.rs:647–651`). The callee node — the
+  overloaded base `Var`, which otherwise carries the polymorphic union type — is
+  recorded (`record_expr_type` on `callee.span()`) as the instance's concrete
+  `Fn(instance_params, instance_ret)`. This is **semantically exact**: at a
+  monomorphic-recursion site the base occurrence *is* the instance. It is **correctly
+  scoped**: `recheck_body_for_mono` save/restores `expr_types`, so the concrete typing
+  lands only in the mono harvest, never in the outer program's type map. Without it,
+  `finalize_mono_codegen_view::from_expr` hard-errors `NotConcrete::Var` on the still-
+  polymorphic callee node (the from_expr gate requires every harvested node concrete).
+
+Guarded green by `multi_arity_clause_param_51_2::recursive_poly_clause_accepted_
+matches_standalone_twin` (the same-arity probe + its standalone-twin oracle fence).
+
+**The R1 boundary — a KNOWN LIMIT of the as-built gate (review residual, Important).**
+The inline gate fires only for a **same-instantiation** self-call (same arity, args ≡
+the instance's concrete params). A **cross-arity** sibling self-call from a
+genuinely-poly template clause is NOT covered: its args differ from the instance
+params (different arity), so the gate does not fire, the call re-defers a pending entry
+the drain has taken, and it orphans — the same wrong-reject-with-internal-name-leak
+shape I1 fixed for the same-arity case. Probe:
+
+```lisp
+(defn g2 ([:a x] (g2 1 2)) ([:Int a :Int b] (add-i64 a b)))
+;; (g2 5)  — the standalone twin (a poly 1-arg fn calling a concrete 2-arg fn)
+;;           accepts and returns 3; the multi-sig g2 wrong-rejects.
+```
+
+Here the 1-arg poly clause's body self-calls the **2-arg** sibling `(g2 1 2)`; during
+the 1-arg clause's mono recheck (`instance_params` = `[Int]`, arity 1) the arity guard
+(`ip.len() == arg_types.len()` → `1 != 2`) skips the inline path.
+
+- **Spec status:** wrong-reject under the §5.1.2 separate-mutually-recursive-functions
+  equivalence (the standalone twin — a poly 1-arg fn delegating to a concrete 2-arg fn
+  — accepts and runs `(g2 5)` = 3). **No regression:** this shape was *also* rejected
+  pre-leg-(a) (it needed the same back-flow that did not exist); leg (a) narrows the
+  rejected set, it does not widen it.
+- **Natural fix direction (recorded, NOT designed now).** The inline gate could extend
+  to a cross-arity sibling by resolving the self-call against the **post-drain-settled
+  overload set** for the base (the `resolved_overloads`/`OverloadVariant` clauses,
+  already concrete at Phase A) rather than only the single active instance: select the
+  sibling clause by arity+args from that settled set and dispatch to its concrete
+  mangle, exactly as the standalone twin's ordinary call would. This is a one-mechanism
+  extension of the existing `mono_recheck_self` inline path (widen its match set from
+  "this instance" to "the base's settled clauses"), not a new machinery — but it needs
+  the settled overload set reachable at the recheck seam, which the current context
+  does not carry. /testing pins the failing e2e (W4); **fix-or-carry is /sprint's later
+  call** — this doc records the boundary and the direction, no full design this wave.
 
 ### 11.4 The constrained-poly × multi-sig cell (USER-RULED IMPLEMENT-IN-SPRINT)
 

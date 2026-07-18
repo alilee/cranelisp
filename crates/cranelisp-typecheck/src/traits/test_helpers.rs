@@ -131,6 +131,7 @@ pub(crate) fn register_nullary_rp_int_impl(tc: &mut TestFixture) {
     tc.register_trait_decl_self(&make_nullary_return_poly_trait_decl())
         .unwrap();
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("NullaryRP")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -209,6 +210,7 @@ pub(crate) fn register_num_for_int(tc: &mut TestFixture) {
     tc.register_trait_decl_self(&num_decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -245,6 +247,7 @@ pub(crate) fn register_num_for_int(tc: &mut TestFixture) {
 /// second, distinct mono instance alongside `add$Int+Int`.
 pub(crate) fn register_num_impl_for_float(tc: &mut TestFixture) {
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float"))),
         type_constraints: vec![],

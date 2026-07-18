@@ -81,6 +81,7 @@
     fn empty_traitimpl(trait_name: &str, type_name: &str) -> ParsedEntry {
         ParsedEntry::TraitImpl {
             impl_: TraitImpl {
+                head_con_var: None,
                 trait_name: cranelisp_types::TraitRef::new(None, cranelisp_types::TraitName::from(trait_name)),
                 target: cranelisp_types::TypeExpr::Named(
                     cranelisp_types::TypeRef::new(None, TypeName::from(type_name)),

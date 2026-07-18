@@ -1203,6 +1203,7 @@
     fn collide_impl(target: &str, method: &str) -> cranelisp_types::TraitImpl {
         use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitRef, TypeExpr, TypeRef};
         TraitImpl {
+            head_con_var: None,
             trait_name: TraitRef::new(None, TraitName::from("HasV")),
             target: TypeExpr::Named(TypeRef::new(None, TypeName::from(target))),
             type_constraints: vec![],

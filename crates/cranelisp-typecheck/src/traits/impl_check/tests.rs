@@ -37,6 +37,7 @@ fn unary_trait_decl(name: &str, method: &str) -> TraitDecl {
 /// Build `(impl <trait> Int (defn <method> [lhs rhs] (add-i64 lhs rhs)))`.
 fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
     TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(trait_name)),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -174,6 +175,7 @@ fn test_register_trait_impl() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -213,6 +215,7 @@ fn test_has_impl_via_symbol_table() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
@@ -305,6 +308,7 @@ fn test_generate_default_methods_produces_real_bodies() {
     tc.register_trait_decl_self(&eq_decl).unwrap();
 
     let impl_ = TraitImpl {
+        head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
         type_constraints: vec![],
