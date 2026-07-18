@@ -359,13 +359,30 @@ ONE §7.3.5 Case-3 seam. **No second classifier.**
        fails as a bad pairing"). **Comparison point.** The seam has ALREADY resolved
        slot-1's trait (into `decl`, `impl_check.rs:30`; its home-qualified identity
        is minted at `impl_check.rs:238–241` as `fq_trait_name: FQTraitName`). The
-       pairing head is resolved as a `trait_name` reference **the same way slot 1
-       was** (`resolve_trait_decl` / `resolve_trait`) and its `FQTraitName` is
-       compared for **equality** against slot-1's — this is a comparison against
-       slot-1's **RESOLVED** trait, never its written spelling (see the
-       qualified-spelling note below). A pairing head that resolves to a **different
-       trait**, OR **does not resolve to any trait** (nonexistent name), fails — both
-       collapse to "FQ ≠ slot-1's FQ / no FQ." The diagnostic is **located** (on the
+       pairing head is resolved as a `trait_name` reference **exactly as any §8.5
+       trait reference is** — the **WRITTEN qualifier participates in the resolve**.
+       The `Applied(pairing_head, [Constructor])` head carries a `pairing_head.module`
+       (the written qualifier, `Some` for `fmt/Functor`, `None` for a bare `Functor`);
+       that qualifier MUST be threaded into `resolve_trait_decl` / `resolve_trait`
+       (scope-resolve with prelude fallback), NOT dropped. **Review finding R-1: the
+       current `impl_check.rs` pairing-head handling bare-resolves the head *name* and
+       ignores `pairing_head.module`** — that discards the §8.5 qualifier and is the
+       seam /dev must fix. Once resolved, the head's `FQTraitName` is compared for
+       **equality** against slot-1's — a comparison against slot-1's **RESOLVED** trait,
+       never its written spelling (see the qualified-spelling note below, now settled).
+       Concretely, at the `impl_check.rs` pairing-head resolution seam:
+       - a **qualified** spelling resolves **qualified** — `(nosuchmod/Functor Option)`
+         resolves `nosuchmod/Functor` and, finding no such module/trait, **rejects as
+         unresolvable** (the "does not resolve to any trait" arm);
+       - an **aliased or differently-imported** spelling that nonetheless **resolves to
+         slot-1's trait** (the qualified/bare-same-trait case, `(impl (fmt/Functor f)
+         (Functor Option) …)` and its mirror) **ACCEPTS** — resolved identity, not
+         spelling, governs (§7.3.5 *Pairing-head identity*).
+
+       A pairing head that resolves to a **different
+       trait**, OR **does not resolve to any trait** (nonexistent/unresolvable name,
+       including a bad qualifier), fails — both collapse to "FQ ≠ slot-1's FQ / no FQ."
+       The diagnostic is **located** (on the
        impl form's slot-2 span, or `impl_.span` where a finer pairing-head span is
        unavailable — the same span the sibling Case-2 rejections use) and names what
        was written and what was expected, §7.3.5 family style: *"impl of trait
@@ -387,12 +404,17 @@ ONE §7.3.5 Case-3 seam. **No second classifier.**
      - wrong arity (`(Functor Pair)`, `Pair : * -> * -> *`) → *"`Pair` has 2 type
        parameters; trait `Functor` expects a constructor of arity 1."*
 
-**Qualified-spelling of the pairing head (B1 sub-question — spec-settled: RESOLVED
-identity).** When slot 1 and the pairing head differ in *spelling* yet resolve to the
-SAME trait — `(impl (fmt/Functor f) (Functor Option) …)` (slot 1 module-qualified,
-pairing head bare but import/prelude-resolving to `fmt.Functor`), or the mirror — the
-pairing is **admissible**: the B1 comparison is FQ-identity, not written spelling. The
-spec settles this toward resolved-identity, cited three ways:
+**Qualified-spelling of the pairing head (B1 sub-question — RULED: RESOLVED identity,
+user 2026-07-18, TB-25).** When slot 1 and the pairing head differ in *spelling* yet
+resolve to the SAME trait — `(impl (fmt/Functor f) (Functor Option) …)` (slot 1
+module-qualified, pairing head bare but import/prelude-resolving to `fmt.Functor`), or
+the mirror — the pairing is **admissible**: the B1 comparison is FQ-identity, not
+written spelling. This is now normative — `spec/07-traits.md` §7.3.5 *Pairing-head
+identity* (scribed 2026-07-18, "[settled 2026-07-18, user ruling — TB-25]"): the head
+"is well-formed **iff it resolves to the same trait that slot 1 resolves to** — the
+match is by **resolved identity, not written spelling**. A **qualified** head …, an
+**imported bare** name, and **two different import paths** that all name the one
+`Functor` trait are equally valid." The spec grounds it three ways:
 
 1. **§7.3 EBNF** — both slot-1's head and the pairing head are the SAME nonterminal
    `trait_name` (`impl_head = … '(' trait_name con_var ')'`; `hkt_target = '(' trait_name
@@ -412,14 +434,15 @@ qualification. The internal precedent is slot 1 itself (§5.4 step 3): its trait
 already resolved while only its con_var is spelling-matched — "trait-names resolve,
 binders spell-match."
 
-> **Caveat for /sprint.** The *sole* cell where the two readings diverge is this
-> qualified/bare-same-trait pairing; if the user reads §7.3 "verbatim as declared" as
-> extending to the pairing head's qualification, this one cell flips to spelling-match.
-> The design reads it as **settled toward resolved-identity** per the three citations
-> above (and the dispatch itself names "`trait_name` in both positions resolves under
-> the same rules ⇒ resolved-identity" as a spec-settling argument). The **core** B1
-> rejection — a *different* or *nonexistent* trait head — rejects **identically under
-> both readings** and is not gated by this cell; /dev may implement the core now.
+> **RULED (TB-25, user 2026-07-18).** The one cell where the two readings once
+> diverged — the qualified/bare-same-trait pairing — is **settled toward
+> resolved-identity**, scribed at `spec/07-traits.md` §7.3.5 *Pairing-head identity*
+> and §7.3.4. The contrast with slot 1's con_var is now spec-explicit: the con_var
+> `f` is a **binder** (echo matched by spelling), the pairing head is a **reference**
+> (satisfied by anything resolving to slot-1's trait). /dev implements the full cell:
+> the qualified/bare-same-trait pairing **ACCEPTS**; a *different* or *unresolvable*
+> head **rejects** — one resolve-then-FQ-compare path (R-1 seam above), no
+> spelling-match branch.
 
 **Consequence (§7.3.5 "the two forms never collide for the same trait").** Because slot
 2 is interpreted in the single mode the trait's declared kind dictates, `(Functor Option)`

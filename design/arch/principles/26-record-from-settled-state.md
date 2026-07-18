@@ -5,12 +5,11 @@ title: Record from settled state
 
 # Principle 26 — Record from settled state
 
-> **DRAFT** — authored S112 W3 (2026-07-18) under the standing recurring-class
-> escalation rule (3rd instance across a wave ⇒ `/arch` assessment; instances
-> B1/I1/R1, all at cranelisp-typecheck's multi-sig seam — the W2/W2.1 review
-> record, `sprints/SPRINT.md`). **Pending user ratification at S112 Phase-7
-> close**, per the close-only register rule (the P21/P23/P24/P25 precedent).
-> Cited as DRAFT until then.
+> Authored S112 W3 (2026-07-18) under the standing recurring-class escalation
+> rule (3rd instance across a wave ⇒ `/arch` assessment; instances B1/I1/R1,
+> all at cranelisp-typecheck's multi-sig seam — the W2/W2.1 review record).
+> **RATIFIED at S112 Phase-7 close (user-approved 2026-07-18)**, per the
+> close-only register rule (the P21/P23/P24/P25 precedent).
 
 **Statement.** A resolution — a dispatch target, a mangled name, a recorded
 type, any datum derived from in-flight inference state and consumed later — is
@@ -67,20 +66,27 @@ in cranelisp-typecheck's multi-sig seam:
 - **B1** (review Blocker): the self-call `SigDispatch` derived mid-drain; in a
   ≥2-hop delegation chain the selected clause's params were still `Var`, so
   the recorded dispatch named a `$Var` template the post-drain finalisation
-  removes — `user/f3$Var+Var` reached codegen. Fixed by deferral: pass 1
-  records **no** `SigDispatch`; `finalize_multi_sig_variant_types` derives all
-  six carriers from ONE `mangle_sig` over the finalised post-drain params
-  (§11.3.2).
+  removes — `user/f3$Var+Var` reached codegen. **Fixed (S112, `b5fa3f14`)** by
+  deferral: pass 1 records **no** `SigDispatch`;
+  `finalize_multi_sig_variant_types` derives all six carriers from ONE
+  `mangle_sig` over the finalised post-drain params (§11.3.2).
 - **I1**: the mono-recheck of a `$Var` template clause classified its inner
   self-call as external and pushed a pending entry **after** the drain had
   run — a request posted to a mailbox whose reader exited; the orphaned entry
-  surfaced as a wrong-reject with an internal-mangle leak. Fixed by
-  derive-on-demand: the `mono_recheck_self` inline gate (§11.3.4).
-- **R1** (open known-limit): the cross-arity variant of I1 — the inline gate's
-  same-instantiation guard doesn't cover a cross-arity sibling self-call, so
-  the call re-defers into the taken drain and orphans (§11.3.4). R1 is the
-  defect this principle names, never counter-evidence (the S110 P24
+  surfaced as a wrong-reject with an internal-mangle leak. **Fixed (S112,
+  `b5fa3f14`)** by derive-on-demand: the `mono_recheck_self` inline gate
+  (§11.3.4).
+- **R1** (S113 attributed carry): the cross-arity variant of I1 — the inline
+  gate's same-instantiation guard doesn't cover a cross-arity sibling
+  self-call, so the call re-defers into the taken drain and orphans (§11.3.4).
+  R1 is the defect this principle names, never counter-evidence (the S110 P24
   discipline: intent first; violating code is an instance of the class).
+
+Two further S112 instances confirmed after authoring: the **eval.rs display
+defect** — the REPL echo re-derived its answer from surface syntax instead of
+reading the recorded settled state (fixed S112, `40f19693`) — and **R2** — the
+resolution carrier is never derived for minted mono bodies (S113 carry;
+`/qa`-ruled that the fix take the P26-constrained settled-state shape).
 
 Two of the three closed under one mechanism — the class closes by mechanism,
 not instance-patching (Principle 25's lesson). And the hazard is intrinsic to
@@ -113,8 +119,9 @@ push after its drain has run is a hard invariant failure, not a lost write).
 - `/review` REJECT shapes: a mid-pass provisional resolution record paired
   with a post-hoc carrier repair; a pending-worklist push reachable after its
   owning drain without a hard failure.
-- On ratification, a classification sweep of resolution-recording sites
-  (carrier → owning pass → window; each write in-window or deferred) is a
-  well-defined audit task, analogous to P24's enumeration-vs-scan sweep.
-  Until then, code found writing outside a window is an instance of the
-  defect class, not counter-evidence.
+- **Post-ratification audit task (S113+ candidate; recorded here for Phase-1
+  scope drafting):** a classification sweep of resolution-recording sites —
+  carrier → owning pass → window; each write shown in-window or deferred —
+  analogous to P24's enumeration-vs-scan sweep. Until the sweep runs, code
+  found writing outside a window is an instance of the defect class, not
+  counter-evidence.

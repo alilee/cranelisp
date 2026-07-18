@@ -86,6 +86,36 @@ fn defn_name_without_arrow_control_parses() {
         .assert_stdout_contains("user/chardigit");
 }
 
+// spec: spec/05-definitions.md §5 — "Declaration heads are binders" + §5.1.1 (user
+// ruling 2026-07-18, TB-27 extended to defn): a `defn` head binds a NEW name into
+// the CURRENT module, so it is a binder, NOT a reference, and MUST be a bare
+// (unqualified) symbol. A qualified spelling `(defn fmt/foo [x] x)` is a compile-
+// time error (the dual of the §8.5 reference rules — there is no mechanism for
+// declaring a name into another module).
+//
+// PROBED LIVE (S112 rulings rider): TODAY this SILENTLY ACCEPTS — the REPL binds
+// `user/fmt/foo` and echoes `; defn` with no error; under `--run` the defn accepts
+// and the failure is deferred to the reference site as an incidental `module 'fmt'
+// … not found` (a mode-divergent face). Both violate the binder principle. FAILING-
+// NOT-IGNORED until /dev(frontend) rejects the qualified head at the declaration-
+// head parse seam (`ast_builder.rs::get_defn_name`). [S113]
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::get_defn_name found=S112 owner=/dev
+#[test]
+fn defn_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(defn fmt/foo [x] x)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified defn head `fmt/foo` MUST be a compile-time error (§5 binder \
+         principle); today it silently accepts. got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/foo"),
+        "the qualified head MUST NOT silently bind a `user/fmt/foo` name; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/05-definitions.md §5.1.1 — defn with multiple params
 #[test]
 fn defn_multi_params() {

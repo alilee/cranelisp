@@ -2,6 +2,8 @@
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
+**Declaration heads are binders. [S113]** Every definition form in this section binds a **new** name into the **current** module. A declaration head — the name introduced by `defn`/`defn-` and `deftrait`/`deftrait-` (**user ruling 2026-07-18**), and by the same principle `deftype`/`deftype-`, `defmacro`/`defmacro-`, `const`/`const-`, and `def`/`def-` `[generalized from user ruling 2026-07-18 — veto-visible]` — is therefore a **binder, not a reference**, and MUST be a **bare (unqualified) symbol**. A **qualified** spelling in declaration-head position — `(defn fmt/foo [x] …)`, `(deftrait (fmt/Foo f) …)` — is a **compile-time error**: there is no mechanism for declaring a name into another module; a definition always binds into the module that contains it. This is the dual of the reference rules (§8.5): a **binder** introduces a name where it is written, so it carries no module qualifier; only a **reference** reaches across modules. (`impl` is not an exception — its slot 1 echoes a trait *reference*, not a fresh binder, [§7.3](07-traits.md#73-trait-implementation).)
+
 ## 5.1 Function Definition (`defn` / `defn-`) [Tested]
 
 ### 5.1.1 Single-Signature [Tested tests/spec_05_definitions::defn_define_and_call]
@@ -30,7 +32,7 @@ A function definition binds a name to a function value. The parameter list uses 
 
 **Semantics:**
 
-- The name MUST be a valid symbol.
+- The name MUST be a valid **bare (unqualified)** symbol — a declaration head is a **binder**, not a reference (§5, *Declaration heads are binders*); a qualified spelling (`fmt/square`) is a compile-time error. [S113]
 - Parameters MUST be listed in square brackets.
 - The body MUST be a single expression. Use `do` (a prelude macro) for sequencing multiple expressions.
 - An optional docstring (string literal) MAY appear between the name and the parameter list.
@@ -79,7 +81,7 @@ resolution — see **Inference** below.
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 - **The multi-variant form is available only for `defn`/`defn-`.** The anonymous `fn` ([§4.5](04-expressions.md#45-lambda-expression)) is single-arity — a lambda takes exactly one `[params] body`, and the parenthesised multi-arity clause form is a parse error for `fn`.
-- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). Two same-arity clauses whose signatures **can unify** — such that one concrete argument tuple could match both — are a **dispatch-ambiguity compile-time error**, reported at the definition (both colliding clauses named), not silently resolved by clause order. This is precisely what §5.1.2 constrains: dispatch *ambiguity*, **not** the presence of polymorphism. A **genuinely-polymorphic** clause is admissible whenever it does not overlap a same-arity sibling (see **Inference** below). [Tested+Neg tests/spec_05_definitions::same_arity_unifiable_clauses_definition_site_error_neg, tests/spec_05_definitions::same_arity_unifiable_clauses_call_site_ambiguous_neg] [S112 — OPEN normative question (user, M1): whether "can unify" is judged on WRITTEN (pre-inference) or SETTLED (post-inference) clause signatures when the pinning site is internal to the defn — the as-landed pre-drain check wrong-rejects a program whose same-arity clauses finalize disjoint via an internal pin; timing is NOT settled by this annotation, /qa records coverage only]
+- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). Two same-arity clauses whose signatures **can unify** — such that one concrete argument tuple could match both — are a **dispatch-ambiguity compile-time error**, reported at the definition (both colliding clauses named), not silently resolved by clause order. **The unifiability judgment is made on the clause signatures *as written* — the pre-inference parameter annotations — never on the types inference later settles.** A same-arity pair whose *written* signatures can unify is a definition-time ambiguity error **even if** inference would later settle the two clauses disjoint (for example when an internal sibling self-call pins one clause to a concrete type). The program `(defn t ([x] x) ([:Int y] y) ([a b] (t "s")))` is rejected **by design**: the `[x]` clause's written signature (`x` unannotated) can unify with the `[:Int y]` clause's `[Int]`, so the two same-arity clauses are a definition-site ambiguity — notwithstanding that the internal `(t "s")` self-call would pin the `[x]` clause to `[String]` and thereby settle the two disjoint. The remedy is to **annotate the clause so the written signatures are disjoint** (here, `([:String x] x)`). This is precisely what §5.1.2 constrains: dispatch *ambiguity*, **not** the presence of polymorphism. A **genuinely-polymorphic** clause is admissible whenever it does not overlap a same-arity sibling (see **Inference** below). [Tested+Neg tests/spec_05_definitions::same_arity_unifiable_clauses_definition_site_error_neg, tests/spec_05_definitions::same_arity_unifiable_clauses_call_site_ambiguous_neg] [Settled 2026-07-18 (user ruling, M1): "can unify" is judged on the WRITTEN (pre-inference) clause signatures; the as-landed pre-drain check implements exactly this reading, and its rejection of the internal-pin program above is correct by design]
 
 **Inference — clause-equivalent to separate mutually-recursive functions.**
 
@@ -311,7 +313,7 @@ type_expr      = 'self'                       (* implementing type *)
                | '(' name type_expr+ ')'       (* applied type *)
 ```
 
-A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression.
+A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression. The trait head (`name` in the grammar above) is a **binder** — a **bare (unqualified) uppercase symbol** (§5, *Declaration heads are binders*, and [§7.1](07-traits.md#71-trait-declaration)); a qualified head is a compile-time error. [S113]
 
 ### 5.3.1 Simple Traits [Tested tests/spec_07_traits::user_trait_simple, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 

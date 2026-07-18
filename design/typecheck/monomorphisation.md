@@ -1093,7 +1093,8 @@ change-set landed (uncommitted) and the W2 /review returned a BLOCK; the **W2.1
 remediation** amendments below record what implementation legitimately discovered and
 pin the fix for the Blocker: §11.3.1 (the as-built two-pass drain + self-call tag,
 review deviation (ii)), §11.3.2 (the B1 self-call-`SigDispatch` fix shape), the
-§5.1.1 paragraph (MS-6 definition-site check landed + M1 timing flag), §11.4 step 3
+§11.3.3 paragraph (MS-6 definition-site check landed + M1 RULED — pre-drain check
+is the specified WRITTEN-signature behaviour, user 2026-07-18), §11.4 step 3
 (review deviation (i) — filter retained, drain-driven), and §11.5 (M3 double-mangle
 note). Supersedes §9's drifted posture (banner atop §9). The binding spec is `spec/05-definitions.md` §5.1.2 +
 §5.1.1 + §5.13.1 and §3.3 (annotations descriptive, no added rigidity), S111
@@ -1320,7 +1321,7 @@ settled and its `mangle_sig` agrees with Phase A — only the pass-1 self-call b
 exposed to intra-pass ordering, needs the deferral. /dev must add the u3 unit pin
 (review I3) at the seam in the same change-set.
 
-### 11.3.3 §5.1.1 dispatch coherence — definition-site check LANDED (MS-6), pre-drain timing FLAGGED (M1)
+### 11.3.3 §5.1.2 dispatch coherence — definition-site check on WRITTEN signatures (MS-6 + M1 RULED)
 
 Leg (a) added the same-arity-*unifiable* **definition-site** overlap check the
 Phase-3 note flagged as owed (`register.rs:438–465`, in `resolve_variant_types`):
@@ -1332,35 +1333,31 @@ definition, not only via a later `Ambiguous`). The call-site
 `OverloadSelection::Ambiguous` stays as the residual backstop. This satisfies the
 §5.1.2 MUST ("reported at the definition, both colliding clauses named").
 
-**Timing caveat (review M1) — the check runs PRE-drain, on unsettled params.**
+**The pre-drain placement is the specified behaviour (M1 RULED, user 2026-07-18).**
 `resolve_variant_types` (Pass 2.5) runs BEFORE `resolve_pending_overloads` (the
-drain), so the overlap verdict reads each clause's params *before* the §5.1.2 back-flow
-has pinned them. A pair that back-flow would settle **disjoint** is therefore
-conservatively rejected. Review probe:
+drain), so the overlap verdict reads each clause's params **as written** — the
+pre-inference parameter annotations — not the types the back-flow drain later
+settles. This is exactly what the spec now requires: the unifiability judgment "is
+made on the clause signatures *as written* — the pre-inference parameter
+annotations — never on the types inference later settles" (`spec/05-definitions.md`
+§5.1.2, "[Settled 2026-07-18 (user ruling, M1)]"). The as-landed pre-drain check
+implements precisely this reading; it is **correct as implemented**, not a
+conservative approximation to be revisited.
 
 ```lisp
 (defn t ([x] x) ([:Int y] y) ([a b] (t "s")))
 ```
 
-The 2-arg clause's *internal* self-call `(t "s")` selects the 1-arg `[x]` clause and
-(monomorphic-recursion, §11.3.1 pass 1) pins its param to `String`; post-drain the two
-1-arg clauses are `[String]` and `[Int]`, disjoint, and dispatch is coherent. The
-pre-drain check sees `[Var]` vs `[Int]` (`types_compatible(Var,Int)=true`) and rejects.
-
-**This changes the accept/reject status of a spec-well-formed program — FLAGGED to
-/spec, NOT ruled here.** The pinning call site `(t "s")` is *internal* to the
-definition (a self-call within `t`'s own clause bodies), so the settled clause
-signatures remain a pure function of the definition alone — the "definition-site
-diagnostics must not depend on external call sites" rationale does **not** justify the
-pre-drain timing here (no external site is consulted). Under the §5.1.2 separate-
-mutually-recursive-functions equivalence and the overlap rule's own gloss ("one
-concrete argument tuple could match both"), `t` finalises well-formed and MUST
-type-check; the pre-drain timing over-rejects it. Because this is a spec-visible
-accept/reject boundary, `/design` does **not** decide it "acceptable conservative
-timing" — the pre-drain-vs-post-drain placement of the overlap check needs `/spec`
-framing for the user (see the report's M1 disposition). Leg (a) ships the check
-as-landed (pre-drain); the timing question is orthogonal to B1 and outside the W2.1
-fix scope.
+This probe is **rejected by design**. The `[x]` clause's *written* signature (`x`
+unannotated) can unify with the `[:Int y]` clause's `[Int]`, so the two same-arity
+clauses are a definition-site ambiguity — **notwithstanding** that the internal
+`(t "s")` self-call would pin `[x]` to `[String]` and thereby settle the two
+disjoint post-drain. The spec ratifies exactly this outcome for exactly this
+program (`spec/05-definitions.md` §5.1.2: the `(defn t ([x] x) ([:Int y] y) ([a b]
+(t "s")))` worked example, "rejected **by design**"). The remedy is to annotate so
+the written signatures are disjoint — `([:String x] x)`. The pre-drain check's
+verdict (`[Var]` vs `[Int]`, `types_compatible(Var,Int)=true` → reject) is therefore
+the specified verdict, and no /spec framing is owed: M1 is closed.
 
 ### 11.3.4 As-built — the I1 fix: a mono-recheck monomorphic-recursion context (review SOUND) + the R1 boundary
 

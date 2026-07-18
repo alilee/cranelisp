@@ -142,14 +142,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     // Resolve it as a `trait_name` reference the SAME way slot 1
                     // was (`resolve_trait` / `scope_resolve`, prelude-fallback
                     // aware) and compare RESOLVED FQ-identity — never written
-                    // spelling — against slot-1's hoisted `fq_trait_name`. A head
-                    // resolving to a DIFFERENT trait OR to NO trait (nonexistent)
+                    // spelling — against slot-1's hoisted `fq_trait_name`. The
+                    // WRITTEN QUALIFIER PARTICIPATES: the head is a §8.5
+                    // `trait_name` reference, so its `pairing_head.module`
+                    // (`Some` for `fmt/Functor`, `None` for a bare `Functor`) is
+                    // threaded into the resolve, NOT dropped (S112 R-1). The
+                    // canonical written spelling is rendered by `TypeRef`'s own
+                    // Display (`module/name` when qualified) and handed to the ONE
+                    // resolution mechanism (`scope_resolve` splits on `/`) — no
+                    // second qualified-resolution path (Principle 7). Thus a
+                    // qualified spelling resolving to slot-1's trait (`fmt/Functor`
+                    // ≡ imported bare `Functor`) ACCEPTS by resolved identity
+                    // (§7.3.5 *Pairing-head identity*, TB-25); a head resolving to
+                    // a DIFFERENT trait (`other/Functor`), or to NO trait — a bad
+                    // qualifier (`nosuchmod/Functor`) or a nonexistent bare name —
                     // both collapse to "FQ ≠ slot-1's FQ / no FQ" and reject.
                     // Closes the `:98` head-discard the /review B1 probe exercised
                     // (`(impl (Functor f) (NotFunctor Option) …)` silently
                     // accepted + dispatched).
+                    let pairing_written = pairing_head.to_string();
                     let pairing_fq = self
-                        .resolve_trait(state, pairing_head.name.as_ref(), impl_.span)
+                        .resolve_trait(state, &pairing_written, impl_.span)
                         .ok()
                         .map(|home| {
                             FQTraitName::new(home, TraitName::from(pairing_head.name.as_ref()))
@@ -165,8 +178,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                  `{}`: a trait-constructor pairing's head must name \
                                  the trait being implemented — write `({} {})`, not \
                                  `({} {})`.",
-                                decl.name, pairing_head.name, decl.name, con_disp,
-                                pairing_head.name, con_disp
+                                decl.name, pairing_written, decl.name, con_disp,
+                                pairing_written, con_disp
                             ),
                             location: ErrorLocation::from_span(impl_.span),
                         });

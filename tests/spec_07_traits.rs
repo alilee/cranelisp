@@ -1054,12 +1054,15 @@ fn hkt_echo_shape_mismatch_reject_is_mode_uniform_neg() {
 // covered by `hkt_impl_targets_bare_type_constructor_not_applied_form` and
 // `hkt_impl_on_user_well_kinded_adt_dispatches` — referenced, not duplicated.
 //
-// UNPINNED pending user ruling (S112 W5.1): qualified/bare same-trait pairing head
-// — `(impl (fmt/Functor f) (Functor Option) …)` (qualified slot 1, bare pairing
-// head, SAME resolved trait). Left out entirely; NOT a wave blocker — the
-// different/nonexistent-head rejection below rejects under BOTH the resolved-
-// identity and verbatim-spelling readings.
-// Spec: spec/07-traits.md §7.3.5. Design: design/typecheck/hkt.md §5.4.
+// RULED 2026-07-18 (user, TB-25): the pairing-head qualification cell is settled
+// as RESOLVED IDENTITY — a pairing head is a §8.5 trait REFERENCE, well-formed iff
+// it resolves to the SAME trait slot 1 resolves to, whatever spelling it uses
+// (qualified, imported bare, two import paths). /dev landed the R-1 qualifier-
+// resolution fix (the written qualifier now participates in the resolve, no longer
+// dropped). The three TB-25 rows are pinned below (§7.3.5 *Pairing-head identity*),
+// GREEN against the fixed tree, e2e mirrors of the /dev unit scenarios (a)/(b)/(c)
+// in `crates/cranelisp-typecheck/src/traits/impl_check/tests.rs`.
+// Spec: spec/07-traits.md §7.3.5 *Pairing-head identity*. Design: hkt.md §5.4.
 // =============================================================================
 
 // ---- B1: the pairing-head-mismatch axis (§7.3.5 Case-2 4th rejection) ---------
@@ -1155,6 +1158,176 @@ fn hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg() {
         !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
         "the rejected impl MUST NOT register under `Functor` — its `; impl:` section \
          MUST NOT list `Option`; impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
+// ---- TB-25: the pairing-head QUALIFICATION axis (§7.3.5 Pairing-head identity) -
+// User-ruled resolved-identity (2026-07-18); /dev R-1 qualifier-resolution fix in
+// tree. Three cells mirror the /dev unit scenarios at e2e level. All GREEN.
+
+// spec: spec/07-traits.md §7.3.5 Case 3 — Pairing-head identity (settled 2026-07-18,
+// user ruling TB-25), POSITIVE / R-1 scenario (b). A pairing head is a §8.5 trait
+// REFERENCE, well-formed iff it resolves to the SAME trait slot 1 resolves to — by
+// resolved identity, NOT written spelling. `Functor` is declared in module `fmt` and
+// imported bare into `user`; slot 1 echoes the bare `(Functor f)`, the pairing head
+// is the QUALIFIED `(fmt/Functor Option)`. Different spellings, one resolved trait →
+// the impl registers and `fmap` dispatches to `:primitives/Int 100`. The e2e mirror
+// of the /dev unit `hkt_impl_pairing_head_qualified_resolves_to_slot1_accepts`; the
+// accept-coverage that guards R-1 against spuriously rejecting a qualified spelling.
+// (`Option`/`Some`/`None` are primitives-seeded — available under PrimitivesOnly.)
+#[test]
+fn hkt_impl_pairing_head_qualified_resolves_to_slot1_trait_accepts_and_dispatches() {
+    repl_prims(
+        "(mod fmt (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b))))\n\
+         (import [fmt [Functor fmap]])\n\
+         (impl (Functor f) (fmt/Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
+    )
+    .assert_stdout_contains_all(&["impl user/Functor for user/Option", ":primitives/Int 100"]);
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 3 — Pairing-head identity, NEGATIVE / R-1
+// scenario (a). The pairing head's WRITTEN QUALIFIER participates in the resolve
+// (S112 R-1). A qualified head naming a NONEXISTENT module `(nosuchmod/Functor
+// Option)` cannot resolve to slot 1's `Functor`, so the impl is REJECTED and never
+// dispatches. Pre-R-1 the qualifier was DROPPED and bare `Functor` resolved,
+// silently accepting (the /review W5.1 R-1 wrong-accept). REACHABILITY SPLIT: at
+// e2e the module resolver raises `module 'nosuchmod' … not found` BEFORE the
+// impl_check FQ-compare seam (which the /dev unit
+// `hkt_impl_pairing_head_qualified_bad_module_rejected` exercises for the pairing-
+// mismatch WORDING, since `resolve_trait` returns None gracefully there). This row
+// pins the located reject naming the bad qualifier + no dispatch + no backend leak;
+// the pairing-mismatch wording is unit-reachable only (the TX-6-style split, cf.
+// TB-15).
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S112 owner=/dev
+#[test]
+fn hkt_impl_pairing_head_qualified_bad_module_rejected_no_dispatch_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (nosuchmod/Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("nosuchmod"),
+        "the bad-module pairing head MUST be rejected naming the written qualifier \
+         `nosuchmod` (the qualifier participates — R-1); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains(":primitives/Int 100"),
+        "NO dispatch may occur — the rejected impl MUST NOT register + let `fmap` \
+         dispatch to `:primitives/Int 100` (twin-assert absence); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !c.contains("undefined function") && !c.contains("codegen error"),
+        "the reject MUST be clean (no `undefined function` / `codegen error` backend \
+         leak); got:\n{c}"
+    );
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 3 — Pairing-head identity, NEGATIVE / R-1
+// scenario (c), THE LOAD-BEARING CELL. Slot 1 resolves to `user/Functor`; a SECOND,
+// same-named `Functor` trait lives in module `other`. The pairing head is qualified
+// `(other/Functor Option)` — the same bare spelling as slot 1, but the qualifier
+// routes to `other/Functor`, a DIFFERENT resolved trait. Pre-R-1 (the live wrong-
+// accept the W5.1 /review named) the qualifier was dropped, bare `Functor` resolved
+// to slot 1's `user/Functor`, and the impl silently registered + dispatched under
+// the WRONG trait. Now the qualified resolve makes FQ ≠ slot-1's: reject naming both
+// the written `(other/Functor Option)` and the expected `(Functor Option)`. Twin-
+// asserts NO registration under `Functor` (`; impl:` section MUST NOT list `Option`).
+// E2e mirror of the /dev unit
+// `hkt_impl_pairing_head_qualified_different_module_trait_rejected`.
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::register_trait_impl found=S112 owner=/dev
+#[test]
+fn hkt_impl_pairing_head_qualified_different_module_same_named_trait_rejected_not_registered_neg() {
+    let out = repl_prims(
+        "(mod other (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b))))\n\
+         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (other/Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         Functor\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("(other/Functor Option)") && c.contains("(Functor Option)"),
+        "the different-module same-named pairing head MUST be rejected naming BOTH the \
+         written `(other/Functor Option)` and the expected `(Functor Option)` \
+         (resolved identity, not spelling — R-1); got:\n{c}"
+    );
+    // Registration-absence twin: the bare `Functor` lookup's `; impl:` section MUST
+    // NOT list `Option` (the impl was rejected under the wrong trait, never
+    // registered under slot 1). Same extraction as
+    // `hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg`.
+    let impl_body: Vec<String> = out
+        .stdout
+        .lines()
+        .skip_while(|l| l.trim() != "; impl:")
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with(';'))
+        .map(|l| l.trim_start_matches(';').trim().to_string())
+        .collect();
+    assert!(
+        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Option")),
+        "the rejected impl MUST NOT register under `Functor` — its `; impl:` section \
+         MUST NOT list `Option`; impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// TB-27 (§5 binder principle) — QUALIFIED deftrait HEADS are compile-time errors.
+// User ruling 2026-07-18 extended the "declaration heads are binders" rule across
+// the def-form family incl. `deftrait` (and, by "this should also be true for
+// defn", `defn` — pinned in `spec_05_definitions.rs`). A deftrait head is a BINDER,
+// bare symbols only; a qualified spelling is a compile-time error (spec/05 §5).
+//
+// PROBED LIVE (S112 rulings rider): the frontend PARSE-accepts the qualified head
+// (the W3 parity-pin finding). Downstream is context-dependent and BOTH faces are
+// wrong — WITH a matching module present the head SILENTLY BINDS `user/fmt/Foo`
+// (`; deftrait` echo, pure silent-accept); WITHOUT one it dies with an incidental
+// `module 'fmt' … not found` at a degenerate `0..0` span, never the LOCATED binder
+// reject TB-27 calls for. FAILING-NOT-IGNORED until /dev(frontend) rejects the
+// qualified trait head at parse (`parse_deftrait` / `parse_trait_head_shape`). [S113]
+// =============================================================================
+
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (deftrait, bare-
+// qualified head). See the block comment above for the probed dual-face behavior.
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::parse_deftrait found=S112 owner=/dev
+#[test]
+fn deftrait_qualified_bare_head_rejected_binder_neg() {
+    let out = repl_prims("(deftrait fmt/Foo (bar [self] Int))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("not found"),
+        "the qualified deftrait head `fmt/Foo` MUST be a LOCATED binder reject at \
+         parse (§5 binder principle), NOT an incidental `module … not found` \
+         resolution error; got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("; deftrait"),
+        "the qualified head MUST NOT silently bind a trait (no `; deftrait` accept \
+         echo — cf. the WITH-module silent-accept face); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/05-definitions.md §5 + spec/07-traits.md §7.2 — Declaration heads are
+// binders (deftrait, parenthesized-qualified head `(fmt/Foo f)` — TB-27's own cell).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::parse_deftrait found=S112 owner=/dev
+#[test]
+fn deftrait_qualified_parenthesized_head_rejected_binder_neg() {
+    let out = repl_prims("(deftrait (fmt/Foo f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("not found"),
+        "the parenthesized qualified deftrait head `(fmt/Foo f)` MUST be a LOCATED \
+         binder reject at parse (§5 binder principle + §7.2), NOT an incidental \
+         `module … not found` resolution error; got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("; deftrait"),
+        "the qualified head MUST NOT silently bind a trait; got:\n{}",
         out.stdout
     );
 }

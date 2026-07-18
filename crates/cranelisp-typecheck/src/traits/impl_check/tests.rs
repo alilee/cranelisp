@@ -806,6 +806,130 @@ fn hkt_impl_pairing_head_matches_slot1_accepts() {
     assert!(tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
+// ===========================================================================
+// S112 R-1 (TB-25) — the pairing head's WRITTEN QUALIFIER participates in the
+// resolve. `(Trait Constructor)`'s head is a §8.5 trait reference; the B1
+// FQ-identity compare is against the head resolved WITH its `pairing_head.module`,
+// never the bare name. Resolved identity, not spelling, governs (§7.3.5
+// *Pairing-head identity*, spec scribed 2026-07-18). Three cells:
+//   (a) qualified head with a BAD module   → unresolvable → reject;
+//   (b) qualified head resolving to slot-1's trait (differing spelling) → ACCEPT;
+//   (c) qualified head to a DIFFERENT same-named trait in another module → reject.
+// ===========================================================================
+
+/// `(module/Trait Constructor)` — a QUALIFIED pairing head (slot 2 of an HK
+/// impl), carrying `pairing_head.module = Some(module)`.
+fn pairing_qualified(module: &str, trait_name: &str, con: &str) -> TypeExpr {
+    TypeExpr::Applied(
+        cranelisp_types::TypeRef::new(
+            Some(ModuleFullPath::from(module)),
+            TypeName::from(trait_name),
+        ),
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(con)))],
+    )
+}
+
+// spec: 07-traits §7.3.5 Case 2 / *Pairing-head identity* — R-1 NEGATIVE (a).
+// A qualified pairing head naming a NONEXISTENT module `(nosuchmod/Functor
+// Option)` resolves — with its written qualifier — to no trait: FQ ≠ slot-1's
+// `Functor` FQ. Pre-R-1 the qualifier was DROPPED and bare `Functor` resolved,
+// silently ACCEPTING. Now it is a clean located reject naming the written
+// qualified spelling and the expected pairing; the impl MUST NOT register.
+#[test]
+fn hkt_impl_pairing_head_qualified_bad_module_rejected() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing_qualified("nosuchmod", "Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(nosuchmod/Functor Option)` — the qualified head resolves to no trait");
+    let msg = err.message();
+    assert!(
+        msg.contains("(nosuchmod/Functor Option)"),
+        "names the written QUALIFIED pairing (qualifier participates): {msg}"
+    );
+    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 *Pairing-head identity* — R-1 POSITIVE (b). Slot 1 is
+// bare `Functor` IMPORTED from module `fmt`; the pairing head is the QUALIFIED
+// `fmt/Functor`. The two spellings differ but resolve to the SAME trait
+// (`fmt/Functor`), so the resolved-identity compare ACCEPTS (TB-25 — valid
+// references to the same thing are the same thing, whatever the syntax). This is
+// the cell the qualifier-drop bug would still pass (bare `Functor` also resolves
+// to `fmt/Functor` via the import) — kept as the explicit qualified-spelling
+// positive so the resolve honours `Some(module)` rather than ignoring it.
+#[test]
+fn hkt_impl_pairing_head_qualified_resolves_to_slot1_accepts() {
+    let mut tc = tf_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    let user = ModuleFullPath::from("user");
+
+    // `Functor` lives in `fmt`; `user` (the writer) imports it bare.
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+    tc.set_current_module(user.clone());
+    seed_glob_import(&mut tc, &fmt);
+    register_option(&mut tc);
+
+    // Slot 1 bare `Functor` (→ fmt/Functor via import); pairing head qualified
+    // `fmt/Functor` (module: Some("fmt")). Both resolve to fmt/Functor.
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing_qualified("fmt", "Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    tc.register_trait_impl_self(&impl_).expect(
+        "qualified `fmt/Functor` resolves to slot-1's imported `Functor` — must register",
+    );
+    assert!(tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
+// spec: 07-traits §7.3.5 *Pairing-head identity* — R-1 NEGATIVE (c), the cell
+// the qualifier fix is LOAD-BEARING for. Slot 1 resolves to `user/Functor`; a
+// SECOND, same-named `Functor` trait lives in module `other`. The pairing head
+// is qualified `other/Functor`. Same bare spelling as slot 1, but the qualifier
+// routes to `other/Functor` — a DIFFERENT FQ. Pre-R-1 the qualifier was dropped,
+// bare `Functor` resolved to `user/Functor`, and the impl silently ACCEPTED
+// under the wrong trait; now the qualified resolve makes FQ ≠ slot-1's: reject.
+#[test]
+fn hkt_impl_pairing_head_qualified_different_module_trait_rejected() {
+    let mut tc = tf_prims();
+    let other = ModuleFullPath::from("other");
+    let user = ModuleFullPath::from("user");
+
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap(); // user/Functor (slot 1)
+
+    // A DIFFERENT, same-named `Functor` in `other`.
+    tc.set_current_module(other.clone());
+    tc.register_trait_decl_self(&functor_decl()).unwrap(); // other/Functor
+    tc.set_current_module(user.clone());
+
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing_qualified("other", "Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    let err = tc
+        .register_trait_impl_self(&impl_)
+        .expect_err("`(other/Functor Option)` — a different-module same-named trait");
+    let msg = err.message();
+    assert!(
+        msg.contains("(other/Functor Option)"),
+        "names the written QUALIFIED pairing (qualifier routes to `other`): {msg}"
+    );
+    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
+}
+
 // spec: 07-traits §7.3.5 Case 1 — I1 NEGATIVE. An OVER-applied conventional
 // target `(Disp (Option Int Int))` applies `Option` (arity 1) to 2 args. The
 // `!=` arity guard rejects with "takes 1 type parameter but is applied to 2";
