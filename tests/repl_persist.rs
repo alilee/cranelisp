@@ -1166,11 +1166,14 @@ fn persist_bare_expr_then_run_module_clean_e2e() {
 }
 
 // spec: repl/spec.md §15.4 — §5–7 regen fidelity: a `deftrait` authored/defined at
-// the REPL MUST survive backing-file regeneration faithfully. RED on HEAD (FIXME
-// 0538): `save.rs::generate_traits` (§5–7) does not render the trait declaration
-// from a source-first verbatim slice — the trait is lost from the regenerated file.
+// the REPL MUST survive backing-file regeneration faithfully. GREEN (FIXME 0538
+// resolved): `save.rs::generate_traits` (§5–7) renders the trait declaration from
+// a source-first verbatim slice, so the trait survives the regenerated file.
 // (The byte-identical verbatim-slice round-trip is the /dev unit obligation; this
-// e2e is the observable envelope: the declaration MUST be present + faithful.)
+// e2e is the observable envelope: the declaration is present + faithful.)
+// NOTE (S112 RT-4, below): the sibling `impl` form is NOT yet regenerated to
+// `user.cl` — a distinct DEFECT pinned by `impl_regen_written_to_user_cl` /
+// `impl_dispatches_after_restart_without_cache`.
 #[test]
 fn persist_trait_decl_regen_preserves_source() {
     let out = Cranelisp::new()
@@ -1191,6 +1194,114 @@ fn persist_trait_decl_regen_preserves_source() {
             && regenerated.contains("size"),
         "a REPL-defined `deftrait` MUST survive regeneration faithfully (§5–7 \
          source-first regen, FIXME 0538); regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// =============================================================================
+// RT-4 — impl-source-regen data-loss (S112 W6, plan §6 / §11 ruling 12). A
+// DEFECT row (not an accepted mechanism): `impl` forms are NEVER regenerated to
+// `user.cl` (conventional AND HKT). `repl/spec.md` §15.4 lists `impl` EXPLICITLY
+// among persisted module content ("definitions — defn, deftype, deftrait,
+// **impl**, defmacro"), and round-trip invariant 1 requires loading the
+// regenerated FILE to reproduce session state. The failure face: a schema bump
+// (this sprint's 20→21) refuses the stale cache wholesale, the session restores
+// from `user.cl` — and the impls are silently GONE while the traits and defns
+// survive: inconsistent-resurrection data loss (the S109-4/0573 class). The
+// cache-backed persist path is the carrier that masks it (RT-2 stays green
+// because the cache holds the impl); wiping the cache exposes the loss.
+// Confirmed on HEAD (2026-07-18, /testing): the regenerated `user.cl` contains
+// the `deftrait`, `deftype` and `defn` but NOT the `impl`; reloading without the
+// cache reports `no impl of trait user/Disp for type user/W`.
+// =============================================================================
+
+// spec: repl/spec.md §15.4 — RT-4 (i): a REPL-defined `impl` MUST be written to
+// the regenerated backing file (`impl` is listed among persisted module
+// content). RED at HEAD: the regen's persisted-content enumeration omits the
+// impl family, so the impl is absent from `user.cl`.
+// defect: class=enumeration-miss locus=src/int/save.rs (regen persisted-content enumeration omits the `impl` family — deftrait/deftype/defn survive, impl dropped) found=S112 owner=/dev
+#[test]
+fn impl_regen_written_to_user_cl() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftype W Wv)\n\
+             (deftrait Disp (dp [x] :Int))\n\
+             (impl Disp W (defn dp [w] 42))\n\
+             (defn g [x] (add-i64 x 1))\n\
+             /quit\n",
+        )
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    let regenerated = out.read_tmp("user.cl");
+    // Control: the trait, type and defn DO survive — isolating the impl as the
+    // dropped family (inconsistent resurrection).
+    assert!(
+        regenerated.contains("deftrait")
+            && regenerated.contains("deftype")
+            && regenerated.contains("defn g"),
+        "the trait/type/defn MUST survive regen (control for the impl loss); \
+         regenerated user.cl:\n{regenerated}"
+    );
+    assert!(
+        regenerated.contains("impl"),
+        "a REPL-defined `impl` MUST be written to the regenerated `user.cl` \
+         (§15.4 lists `impl` among persisted module content) — it is silently \
+         DROPPED while trait/type/defn survive (enumeration-miss, ruling 12); \
+         regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// spec: repl/spec.md §15.4 (round-trip invariant 1) — the sharper data-loss
+// face: restarting from the regenerated `user.cl` WITHOUT the cache (the
+// schema-bump wholesale-refusal path) MUST reproduce the session — the impl
+// still dispatches. RED at HEAD: the cache masks the loss (dispatch works WITH
+// the cache); once wiped, the impl is gone and `(dp Wv)` fails to dispatch.
+// defect: class=enumeration-miss locus=src/int/save.rs (impl absent from user.cl → schema-bump/no-cache restore loses the impl; dispatch fails while trait/type/defn survive) found=S112 owner=/dev
+#[test]
+fn impl_dispatches_after_restart_without_cache() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftype W Wv)\n\
+             (deftrait Disp (dp [x] :Int))\n\
+             (impl Disp W (defn dp [w] 42))\n\
+             (dp Wv)\n\
+             /quit\n",
+        )
+        .output();
+    assert!(
+        first.stdout.contains(":primitives/Int 42"),
+        "session 1 MUST dispatch `(dp Wv)` → 42; stdout={}",
+        first.stdout
+    );
+
+    // Wipe the cache so session 2 must recompile from user.cl (the schema-bump
+    // wholesale-refusal path, the AG-1 pattern).
+    let cache_dir = first.tmpdir.join(".cranelisp-cache");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).expect("rm .cranelisp-cache");
+    }
+
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+        .stdin("(dp Wv)\n/quit\n")
+        .output();
+    let c = format!("{}{}", second.stdout, second.stderr);
+    assert!(
+        second.stdout.contains(":primitives/Int 42"),
+        "session 2 (cache wiped) MUST reproduce the impl from the regenerated \
+         `user.cl` and dispatch `(dp Wv)` → 42 — the impl MUST NOT be lost while \
+         the trait/type survive (inconsistent-resurrection data loss, ruling 12); \
+         got:\n{c}"
+    );
+    assert!(
+        !c.contains("no impl of trait"),
+        "session 2 MUST NOT report `no impl of trait` — the impl was silently \
+         dropped from `user.cl` (enumeration-miss); got:\n{c}"
     );
 }
 

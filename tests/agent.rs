@@ -19,8 +19,13 @@
 // The tests that assert feature-OFF behaviour are gated `#[cfg(not(feature =
 // "agent"))]`; the feature-ON classifier tests are gated `#[cfg(feature =
 // "agent")]`. The `/refs`/`/tests-for` and `--agent`-accepted tests are
-// unconditional (they hold in both builds). Run the agent lane with:
-//   cargo nextest run --features agent --test agent
+// unconditional (they hold in both builds). Run the agent lane with the
+// ISOLATED launcher (NOT a bare `cargo nextest run --features agent`):
+//   bash tests/scripts/run-agent-lane.sh
+// It sets `CARGO_TARGET_DIR=target/agent` so the agent-featured binary lives at
+// `target/agent/debug/cranelisp` and can never clobber the default
+// `target/debug/cranelisp` mid-suite (FIXME 0615 binary-provenance race);
+// `binary_path()` resolves each lane's own binary from `CARGO_TARGET_DIR`.
 
 #[path = "helpers/mod.rs"]
 mod helpers;

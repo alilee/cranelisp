@@ -805,7 +805,7 @@ Cranelisp is a **rank-1** (prenex, predicative) Hindley-Milner language. Univers
 
 Cranelisp has **no defaulting rule.** There is no Haskell-style numeric defaulting and no implicit selection of a concrete type for an otherwise-unconstrained type variable. An unconstrained type variable is never silently resolved to `Int`, `()`, or any other type.
 
-### 3.11.1 The ambiguity rule is scoped to codegen-reaching value positions [Tested tests/regression::mono_ambiguous_unconstrained_top_level_var_rejected_neg]
+### 3.11.1 The ambiguity rule is scoped to codegen-reaching value positions [Tested+Neg tests/regression::mono_ambiguous_unconstrained_top_level_var_rejected_neg, tests/spec_05_definitions::unpinned_local_in_clause_matches_standalone_twin_neg, tests/spec_05_definitions::ambiguous_clause_diagnostic_cites_standalone_equivalence]
 
 **Typecheck produces only concrete types.** A residual type variable remaining in a **codegen-reaching value form** after inference is a **type error** (ambiguous). The source MUST disambiguate it with a `:Type form` annotation (see [§3.9](#39-type-annotations) and [§4.9](04-expressions.md#49-type-annotation)) for the program to compile. A free type variable is **ambiguous** exactly when a value carrying it must be turned into a runtime value — i.e., when it **reaches code generation** — and no reachable use site pins it to a concrete type. Ambiguity is a property of a *use that forces codegen*, not a property of a type or a definition in isolation.
 

@@ -365,10 +365,10 @@ impl Cranelisp {
 
     /// Materialise the invocation snapshot just before spawn.
     fn materialise(self) -> CrInvocationOwned {
-        let binary = workspace_root()
-            .join("target")
-            .join("debug")
-            .join("cranelisp");
+        // Lane-aware resolution (FIXME 0615): honor CARGO_TARGET_DIR so the
+        // isolated agent lane execs its own binary and can never clobber the
+        // default `target/debug/cranelisp`.
+        let binary = binary_path();
 
         let mut args: Vec<String> = Vec::new();
         let mode_post: Option<(PathBuf, bool)> = match &self.mode {
@@ -886,6 +886,34 @@ impl CrOutput {
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Resolve the compiled `cranelisp` binary, honoring `CARGO_TARGET_DIR`.
+///
+/// FIXME 0615 — agent-lane binary-provenance race. A `--features agent` build
+/// clobbers the shared `target/debug/cranelisp` mid-suite, so a feature-OFF
+/// guard (`agent_flag_errors_on_non_agent_build`) can spawn an agent-capable
+/// binary and mis-assert. The cure is target-dir isolation by construction: the
+/// agent lane runs under `CARGO_TARGET_DIR=target/agent`
+/// (`tests/scripts/run-agent-lane.sh`), and its tests must exec THAT lane's
+/// binary — never the default `target/debug/cranelisp`. Cargo/nextest propagate
+/// the exported `CARGO_TARGET_DIR` into the test process env, so resolving the
+/// binary root from it makes each lane exec its own binary; with the var unset
+/// (the default suite) the path is `target/debug/cranelisp`, byte-identical to
+/// the pre-fix behaviour.
+fn binary_path() -> PathBuf {
+    let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) if !dir.is_empty() => {
+            let p = PathBuf::from(dir);
+            if p.is_absolute() {
+                p
+            } else {
+                workspace_root().join(p)
+            }
+        }
+        _ => workspace_root().join("target"),
+    };
+    target_dir.join("debug").join("cranelisp")
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {

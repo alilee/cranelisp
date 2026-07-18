@@ -3831,3 +3831,22 @@ are working detail). This section is the durable index:
   and §7.3.5 carry `[S112]` markers; Phase-6 re-runs
   `spec_coverage_reconcile.py` after the migrations and re-points bands
   directly.
+- **Phase-5 batch (2026-07-18, /qa — s112 plan §11/§12 + as-built row
+  reconciliation)**: attribution rulings — R2 `carrier-loss` = PRODUCER-side
+  (/dev typecheck; mode-divergence is a face of the same root, evidence-gated);
+  `carrier-loss` ADMITTED to the `// defect:` vocabulary (`tests/CLAUDE.md`);
+  poly-applied impl target = pre-existing wrong-reject (/dev typecheck,
+  TypeExpr-resolution seam; pin directed this sprint, TB-24); single-sig
+  let-shadowing HANG + M2 overload-gate shadowing-blindness = two
+  `wrong-scope-lookup` sibling cells (provisional /dev typecheck, repro-gated);
+  `agent_flag` one-off = the 0615 binary-provenance race (NOT new, NOT
+  "flaky"); PTY Zeroable = non-PTY reproduction BEFORE attribution. Retroactive
+  matrix rows MS-11..13 (call topology), TB-20..27 (pairing-head, over/poly-
+  applied, con_var/head qualification), RT-4 (impl-source-regen = DEFECT row,
+  repl/spec §15.4 lists `impl` as persisted content). Bands updated on
+  §5.1.2/§7.2.x/§7.3.3–5/§3.11.1 (+Neg where earned); TWO OPEN USER cells
+  annotated not resolved (M1 unify-timing; TB-25 pairing-head qualification).
+  Standing definition-variants category S112 synthesis: s112 plan §12 — the
+  under-enumerated axes were RELATIONAL (call topology, pairing-head slot,
+  shadowing, carrier×reaching-context), not form variants; twin rows are the
+  instrument that catches unenumerated topology cells.

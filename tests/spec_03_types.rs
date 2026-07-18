@@ -2179,9 +2179,13 @@ fn multi_clause_body_let_bound_resolved_overload_returned_compiles() {
 }
 
 // OA-3 — M2 asymmetry pins (GREEN, documenting INTENDED §5.1.2 behaviour).
-// `p` — unconstrained multi-arity, direct bodies — is ACCEPTED (no fresh
-// let-bound poly value to pin).
-// spec: spec/05-definitions.md §5.1.2 — per-clause independent type-checking.
+// `p` — unconstrained multi-arity, direct bodies — is ACCEPTED: each clause is
+// inference-equivalent to its standalone function, and a direct-body identity
+// clause has no genuinely-unpinned let-bound poly value to acquire a sibling's
+// type (the settled §5.1.2 rule; NOT the retired "per-clause independent
+// type-checking" framing, which was the false rationale the S112 unwind removed).
+// spec: spec/05-definitions.md §5.1.2 — a clause is inference-equivalent to the
+// standalone function (back-flow through sibling self-calls, no independence).
 #[test]
 fn multi_clause_unconstrained_direct_bodies_accepted() {
     repl_prims("(defn p ([x] x) ([x y] x))\n(p 5)\n")

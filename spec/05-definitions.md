@@ -46,7 +46,7 @@ A function definition binds a name to a function value. The parameter list uses 
 (fn [acc _ _] acc)                         ; multiple discards -- each is independent
 ```
 
-### 5.1.2 Multi-Signature [Tested tests/spec_05_definitions::defn_multi_clause_arity] [S112 — Inference/back-flow block + rp4 anchor + definition-site overlap MUST: plan/s112-0628-ic-wave.md §1]
+### 5.1.2 Multi-Signature [Tested+Neg tests/spec_05_definitions::defn_multi_clause_arity, tests/multi_arity_clause_param_51_2::rp4_unannotated_backflow_accepted_and_runs, tests/multi_arity_clause_param_51_2::poly_clause_nonoverlapping_arity_accepted_both_dispatch, tests/multi_arity_clause_param_51_2::backflow_pinned_param_call_with_wrong_type_rejected_neg, tests/multi_arity_clause_param_51_2::f3_delegation_chain_backflow_accepted_and_runs, tests/multi_arity_clause_param_51_2::recursive_poly_clause_accepted_matches_standalone_twin, tests/spec_05_definitions::constrained_clause_nonoverlapping_arity_dispatches_two_instantiations — full matrix: plan/s112-0628-ic-wave.md §1] [S112 — one attributed-carry cell RED: cross-arity sibling self-call from a poly template clause, tests/multi_arity_clause_param_51_2::cross_arity_sibling_self_call_from_poly_clause_accepted_matches_standalone_twin (wrong-reject, owner /dev typecheck)]
 
 ```ebnf
 defn_multi_form = '(' ('defn' | 'defn-') name docstring? variant+ ')'
@@ -79,7 +79,7 @@ resolution — see **Inference** below.
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 - **The multi-variant form is available only for `defn`/`defn-`.** The anonymous `fn` ([§4.5](04-expressions.md#45-lambda-expression)) is single-arity — a lambda takes exactly one `[params] body`, and the parenthesised multi-arity clause form is a parse error for `fn`.
-- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). Two same-arity clauses whose signatures **can unify** — such that one concrete argument tuple could match both — are a **dispatch-ambiguity compile-time error**, reported at the definition (both colliding clauses named), not silently resolved by clause order. This is precisely what §5.1.2 constrains: dispatch *ambiguity*, **not** the presence of polymorphism. A **genuinely-polymorphic** clause is admissible whenever it does not overlap a same-arity sibling (see **Inference** below).
+- **Clauses must be distinguishable for dispatch.** Two clauses of **different arity** always dispatch by argument count. Two clauses of the **same arity** dispatch by their concrete argument types (after inference, §7.4.4). Two same-arity clauses whose signatures **can unify** — such that one concrete argument tuple could match both — are a **dispatch-ambiguity compile-time error**, reported at the definition (both colliding clauses named), not silently resolved by clause order. This is precisely what §5.1.2 constrains: dispatch *ambiguity*, **not** the presence of polymorphism. A **genuinely-polymorphic** clause is admissible whenever it does not overlap a same-arity sibling (see **Inference** below). [Tested+Neg tests/spec_05_definitions::same_arity_unifiable_clauses_definition_site_error_neg, tests/spec_05_definitions::same_arity_unifiable_clauses_call_site_ambiguous_neg] [S112 — OPEN normative question (user, M1): whether "can unify" is judged on WRITTEN (pre-inference) or SETTLED (post-inference) clause signatures when the pinning site is internal to the defn — the as-landed pre-drain check wrong-rejects a program whose same-arity clauses finalize disjoint via an internal pin; timing is NOT settled by this annotation, /qa records coverage only]
 
 **Inference — clause-equivalent to separate mutually-recursive functions.**
 
@@ -328,7 +328,7 @@ A trait declaration introduces a named interface with one or more method signatu
 - Required methods end with a return type expression; default methods end with a body expression.
 - An optional docstring MAY appear on the trait itself and on each method.
 
-### 5.3.2 Higher-Kinded Traits [Tested tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds]
+### 5.3.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg]
 
 When the trait head includes type parameters, the trait operates on type constructors rather than concrete types.
 
@@ -409,7 +409,7 @@ and rationale live in [§7.3](07-traits.md#73-trait-implementation).
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation [Tested tests/spec_07_traits::polymorphic_impl_on_concrete_adt_instantiation]
+### 5.4.3 Polymorphic Implementation [S112 — pinned repro directed (plan/s112-0628-ic-wave.md §3.3a TB-24): the polymorphic/constrained impl target `(Option :Display a)` is a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck); the previous cite tests/spec_07_traits::polymorphic_impl_on_concrete_adt_instantiation exercises only the CONCRETE instantiation `(MyOpt Int)` — §5.4.2's cell, mis-pointed here; band corrected /qa 2026-07-18]
 
 ```clojure
 (impl Display (Option :Display a)
@@ -423,7 +423,7 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 - The implementation methods become constrained polymorphic functions, monomorphised at each call site.
 - `(show (Some 42))` generates a specialization `show$Option$Int`.
 
-### 5.4.4 Higher-Kinded Implementation [Tested tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form]
+### 5.4.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg]
 
 For HKT traits, the impl echoes the declared head `(Functor f)` in slot 1 and names a trait-constructor pairing `(Functor Option)` in slot 2 (the constructor named in the pairing is bare, never an applied type — see [§7.3.4](07-traits.md#734-higher-kinded-implementation)):
 

@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -1629,20 +1629,13 @@ fn impl_qualified_user_type_target_resolves_to_canonical() {
 // position, no parameter to dispatch on) MUST monomorphise/dispatch to the
 // concrete impl when the call site fixes the return type.
 //
-// DEFECT (D-default, S87 Stage-C.2 /stdlib rollout). Such a nullary
-// return-type-polymorphic method FAILS at codegen even though typecheck pins
-// the return type. With `(add-i64 (z) 5)` the `add-i64` context fixes `(z)`'s
-// return to `Int`, so the form TYPECHECKS — but codegen emits
-//   `codegen error … undefined function: z`
-// because the method is never resolved to the `Int` impl's body. Same shape as
-// the stdlib `default` self-test (`:Int (default)` → `undefined function:
-// default`), reduced to a 3-line self-contained repro. Blocks any nullary
-// return-poly method (`default`, `zero`, `empty`, …).
-//
-// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
-// (codegen error), GREEN when the nullary return-poly method dispatches to its
-// impl body. → /backend (monomorphisation/dispatch at codegen; typecheck
-// already pins the return type, so the defect is on the codegen side).
+// HISTORY (D-default, S87 Stage-C.2 /stdlib rollout — now RESOLVED). This
+// argument-context return-type-dispatch cell once FAILED at codegen
+// (`codegen error … undefined function: z`) even though typecheck pinned the
+// return type. That leak is FIXED: `(add-i64 (z) 5)` — the `add-i64` context
+// fixes `(z)`'s return to `Int` — dispatches to the Int impl and yields 5.
+// GREEN. This is the argument-context REPL cell of the leg-(c) acceptance
+// lattice (S112 W6, AG-4 below covers the full cross-mode/context matrix).
 #[test]
 fn nullary_return_poly_trait_method_dispatches_at_codegen() {
     // `z` has no parameter; its only type info is the `self` return. The
@@ -1654,6 +1647,168 @@ fn nullary_return_poly_trait_method_dispatches_at_codegen() {
          (add-i64 (z) 5)\n",
     )
     .assert_stdout_contains(":primitives/Int 5");
+}
+
+// =============================================================================
+// AG-4 — leg-(c) return-type-dispatch acceptance lattice (S112 W6, plan §4/§11.6)
+// =============================================================================
+//
+// LEG-(c) VERDICT (S112 W6, /testing repro-gated investigation, 2026-07-18):
+// NO cell fires. Return-type dispatch works end-to-end across
+// {REPL, --run, --link} × {annotation-context `:Int (zed)`, argument-context
+// `(add-i64 (zed) 1)`} × {fresh, cached} × {Int impl, Float impl}. The S111
+// close record's asserted "undefined function codegen leak" does NOT reproduce
+// on HEAD — matching FIXME 0628's "Not this" observation (admitted return-type
+// dispatch already worked at the REPL). Per the standing dual-path rule the
+// pinned cross-mode probe is committed as GREEN coverage (these cells ARE the
+// evidence): leg (c) collapses to the acceptance lattice; no defect authored.
+//
+// The `zed`-like conventional method: `(deftrait Zeroable (zed [] self))` — the
+// dispatch position is the RETURN type (`self` in return, no param). Int and
+// Float impls exercise a real two-impl dispatch (not an accidental always-Int).
+
+// spec: spec/07-traits.md §7.4 / §7.1.1 (param-or-return) — the ANNOTATION
+// context: a `:Type` annotation pins the return type of a nullary
+// return-type-polymorphic method, selecting the impl. `:Int (zed)` → 0; the
+// `main` returns `(add-i64 <:Int (zed)> 7)` = 7. Mode-equivalent (exit/value)
+// across REPL + --run + --link, fresh AND cached (run_through_all_modes runs
+// all six permutations). GREEN — the leg-(c) annotation-context lattice.
+#[test]
+fn return_type_dispatch_annotation_context_all_modes() {
+    run_through_all_modes(
+        "(deftrait Zeroable (zed [] self))\n\
+         (impl Zeroable Int (defn zed [] 0))\n\
+         (impl Zeroable Float (defn zed [] 0.0))\n\
+         (defn main [] (Pure (let [a :Int (zed)] (add-i64 a 7))))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(7);
+}
+
+// spec: spec/07-traits.md §7.4 / §7.1.1 (param-or-return) — the ARGUMENT
+// context: an ambient argument type fixes the return type of `(zed)`.
+// `(add-i64 (zed) 7)` fixes `(zed)`'s return to Int → 0 + 7 = 7. Mode-equivalent
+// across all six permutations. GREEN — the leg-(c) argument-context lattice
+// (the cross-mode extension of `nullary_return_poly_trait_method_dispatches_at_codegen`).
+#[test]
+fn return_type_dispatch_argument_context_all_modes() {
+    run_through_all_modes(
+        "(deftrait Zeroable (zed [] self))\n\
+         (impl Zeroable Int (defn zed [] 0))\n\
+         (impl Zeroable Float (defn zed [] 0.0))\n\
+         (defn main [] (Pure (add-i64 (zed) 7)))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(7);
+}
+
+// spec: spec/07-traits.md §7.4 — the SECOND impl (Float) dispatches too, proving
+// the annotation genuinely selects the impl (not an accidental always-first).
+// `:Float (zed)` → 0.0; `(if (lt-f64 a 1.0) 3 9)` = 3. Mode-equivalent ×6.
+// GREEN — the leg-(c) second-impl fence.
+#[test]
+fn return_type_dispatch_float_impl_selected_all_modes() {
+    run_through_all_modes(
+        "(deftrait Zeroable (zed [] self))\n\
+         (impl Zeroable Int (defn zed [] 0))\n\
+         (impl Zeroable Float (defn zed [] 0.0))\n\
+         (defn main [] (Pure (let [a :Float (zed)] (if (lt-f64 a 1.0) 3 9))))\n",
+        PreludeVariant::PrimitivesOnly,
+    )
+    .assert_all_equal(3);
+}
+
+// spec: spec/03-types.md §3.11 — the unresolved-use CONTROL: a bare `(zed)` with
+// two impls and NO context to pin the return type is a clean §3.11
+// return-type-ambiguity error (actionable, names the fix), NEVER a codegen leak
+// (`undefined function`, `codegen error`). The negative half of the leg-(c)
+// lattice: the leak the S111 record feared MUST be absent even in the genuinely
+// unresolvable case. GREEN.
+#[test]
+fn return_type_dispatch_unresolved_bare_call_clean_ambiguity_neg() {
+    let out = repl_prims(
+        "(deftrait Zeroable (zed [] self))\n\
+         (impl Zeroable Int (defn zed [] 0))\n\
+         (impl Zeroable Float (defn zed [] 0.0))\n\
+         (zed)\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains("ambiguous type"),
+        "a bare `(zed)` with no return-type context MUST be a clean §3.11 \
+         return-type-ambiguity error; got:\n{c}"
+    );
+    assert!(
+        !c.contains("undefined function") && !c.contains("codegen error"),
+        "the unresolved return-type-dispatch call MUST NOT leak a backend \
+         `undefined function`/`codegen error` (the S111-record leak that does \
+         NOT reproduce — leg (c) collapses to coverage); got:\n{c}"
+    );
+}
+
+// =============================================================================
+// TB-24 — Case-1 × POLY-applied impl-target wrong-reject (S112 W6, plan §3.3a,
+// /qa ruling 3). The §7.3.5 Case-1 matrix's only `✓` row with no test — and it
+// was BROKEN on HEAD (admissible-untested-broken, the exact hole the matrix
+// discipline exists to close).
+// =============================================================================
+
+// spec: spec/07-traits.md §7.3.5 Case 1 + §7.3.3 + §5.4.3 — a conventional
+// (kind-`*`) trait impl over a POLY-applied target `(Option a)` is admissible
+// (`✓`): it registers a polymorphic impl over every `Option a`, and dispatch on
+// a concrete `(Some 3)` resolves it. Likewise the canonical §7.3.3 constrained
+// form `(Option :Disp a)`.
+//
+// RED at HEAD (pre-existing WRONG-REJECT, /qa ruling 3): both forms die with
+// `unknown type a` BEFORE the arity gate — the impl-target TypeExpr resolution
+// context binds no type variables, so the lowercase var `a` resolves as an
+// unknown NAMED type (the 0590-tightening blast-radius shape landing on a
+// position that legitimately holds a var). Parse accepts (frontend delivers
+// `Applied(Option,[a])`); the error is the typecheck resolve-layer diagnostic;
+// backend never involved. Flips GREEN when the impl-target resolver binds the
+// pairing's lowercase con-vars.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution seam (lowercase con-var in `(Option a)`/`(Option :Disp a)` resolved as an unknown named type before the §7.3.5 arity gate) found=S112 owner=/dev
+#[test]
+fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
+    // Form A — the bare poly-applied target `(Option a)`.
+    let a = repl_prims(
+        "(deftrait Disp (dp [x] :Int))\n\
+         (impl Disp (Option a) (defn dp [x] 7))\n\
+         (dp (Some 3))\n",
+    );
+    let ac = format!("{}{}", a.stdout, a.stderr);
+    assert!(
+        !ac.contains("unknown type"),
+        "`(impl Disp (Option a))` is admissible (§7.3.5 Case 1, poly-applied \
+         target `✓`) — it MUST NOT reject the lowercase con-var `a` as an \
+         `unknown type` before the arity gate (wrong-reject, ruling 3); got:\n{ac}"
+    );
+    assert!(
+        a.stdout.contains(":primitives/Int 7"),
+        "`(dp (Some 3))` MUST dispatch to the poly-applied `(Option a)` impl and \
+         yield 7; got:\n{}",
+        a.stdout
+    );
+
+    // Form B — the canonical §7.3.3 constrained form `(Option :Disp a)`.
+    let b = repl_prims(
+        "(deftrait Disp (dp [x] :Int))\n\
+         (impl Disp (Option :Disp a) (defn dp [x] 7))\n\
+         (dp (Some 3))\n",
+    );
+    let bc = format!("{}{}", b.stdout, b.stderr);
+    assert!(
+        !bc.contains("unknown type"),
+        "the canonical §7.3.3 constrained form `(impl Disp (Option :Disp a))` \
+         MUST NOT reject the con-var `a` as an `unknown type` (wrong-reject, \
+         ruling 3); got:\n{bc}"
+    );
+    assert!(
+        b.stdout.contains(":primitives/Int 7"),
+        "`(dp (Some 3))` MUST dispatch to the constrained `(Option :Disp a)` \
+         impl and yield 7; got:\n{}",
+        b.stdout
+    );
 }
 
 // =============================================================================

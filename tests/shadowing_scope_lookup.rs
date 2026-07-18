@@ -1,0 +1,155 @@
+// shadowing_scope_lookup.rs — S112 W6, /qa rulings 4 & 5 (plan §11, §12).
+//
+// The name-shadowing × callee-kind matrix — a RELATIONAL cell family that
+// NO S112 matrix enumerated (the standing-category finding, plan §12): a
+// let-binding that lexically shadows a same-named top-level definition MUST win
+// at the call site. Two mechanisms, two rows:
+//
+//   Ruling 4 — SINGLE-sig defn shadowed. `(defn s1 [x] (let [s1 (fn [y] y)]
+//   (s1 x)))` + `(s1 5)`: the local `s1` is the identity, so `(s1 x)` MUST call
+//   it → 5. On HEAD the call-head resolves to the OUTER defn instead
+//   (self-recursion → TCO loop, not stack overflow) → the session HANGS. The
+//   /clif lens is blocked by the runtime hang (JIT-on-call never returns; a
+//   codegen trace emits nothing before the loop), so attribution stays
+//   PROVISIONAL: typecheck records `s1`'s type as `(Fn [a] a)` — consistent with
+//   the LOCAL-identity reading, so the TYPE is right; the bug is the call-head's
+//   scope resolution / emission. `class=wrong-scope-lookup owner=/dev`
+//   (typecheck, call-head scope-resolution seam; pending call-chain confirmation
+//   per ruling 4 — if the carrier is correct and the backend emits a top-level
+//   call anyway, attribution moves backend-side).
+//
+//   Ruling 5 — MULTI-sig base shadowed (SIBLING cell, distinct mechanism).
+//   `infer.rs:605` defers ANY Var call whose name is an overload base — even
+//   when let-shadowed — so the local binding is bypassed at the GATE (before
+//   resolution proper). The failure face differs from ruling 4: NOT a hang but a
+//   wrong-REJECT (ambiguity at the enclosing defn, so it never defines). Two
+//   rows because they will not necessarily fix together.
+//
+// Both PRE-EXISTING (found by W2-review probing, not a wave regression).
+//
+// HANG-BUDGET CAVEAT: the ruling-4 call cell HANGS, so it is bounded with an
+// explicit short `.timeout(...)` and driven via `try_output()`; a hang consumes
+// that whole timeout. The value-ref twin and the ruling-5 cell terminate
+// promptly. See the /testing W6 report for the run-duration note.
+
+#[path = "helpers/mod.rs"]
+mod helpers;
+
+use helpers::e2e::{CrError, Cranelisp, PreludeVariant};
+use std::time::Duration;
+
+// Short bound for the hanging cell — long enough to distinguish a genuine loop
+// from a slow-but-terminating run, short enough to not blow the suite budget.
+const HANG_BOUND: Duration = Duration::from_secs(8);
+
+// spec: spec/05-definitions.md §5.1.2 + spec/04-expressions.md §4.6 (let
+// scoping) — a `let`-bound name lexically shadows a same-named top-level defn;
+// a CALL to that name inside the let body MUST resolve to the LOCAL binding.
+// `(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))` makes `s1` the identity, so
+// `(s1 5)` MUST yield 5.
+//
+// RED at HEAD: `(s1 x)` resolves to the OUTER `s1` (self-recursion → TCO loop)
+// → the session HANGS; `(s1 5)` never produces `:primitives/Int 5`. The bound
+// timeout turns the hang into a loud, failing-not-ignored RED.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck call-head scope resolution seam (let-shadowed single-sig defn — call resolves to the outer defn, TCO loop; provisional, /clif blocked by the hang) found=S112 owner=/dev
+#[test]
+fn let_shadowed_single_sig_defn_call_resolves_to_local_not_outer() {
+    let result = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))\n(s1 5)\n")
+        .timeout(HANG_BOUND)
+        .try_output();
+
+    match result {
+        Ok(out) => {
+            let c = format!("{}{}", out.stdout, out.stderr);
+            assert!(
+                out.stdout.contains(":primitives/Int 5"),
+                "`(s1 5)` MUST call the LOCAL identity `(fn [y] y)` (the let \
+                 binding shadows the outer defn) and yield 5 — the call-head \
+                 MUST NOT resolve to the outer `s1`; got:\n{c}"
+            );
+        }
+        Err(CrError::Timeout(d)) => panic!(
+            "`(s1 5)` HUNG (timed out after {d:?}): the let-shadowed `(s1 x)` \
+             call resolved to the OUTER `s1` (self-recursion → TCO loop) instead \
+             of the LOCAL identity binding — it MUST yield `:primitives/Int 5` \
+             (wrong-scope-lookup, ruling 4)"
+        ),
+        Err(e) => panic!("unexpected harness error: {e}"),
+    }
+}
+
+// spec: spec/04-expressions.md §4.6 — the VALUE-REF twin cell (ruling 4, second
+// cell of the §12 shadowing matrix): returning the let-bound `s1` as a VALUE
+// (not calling it) resolves to the LOCAL binding correctly and TERMINATES — the
+// contrast that isolates the CALL-head as the bug. `(defn s2 [x] (let [s1 (fn
+// [y] y)] s1))` echoes `s1`'s type as the inner closure `(Fn [a] (Fn [b] b))`,
+// proving the value-ref position sees the local binding. It MUST NOT hang.
+// GREEN control (terminates); pins that the defect is CALL-position-specific.
+#[test]
+fn let_shadowed_single_sig_value_ref_resolves_to_local_and_terminates() {
+    let result = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(defn s2 [x] (let [s1 (fn [y] y)] s1))\n")
+        .timeout(HANG_BOUND)
+        .try_output();
+
+    match result {
+        Ok(out) => {
+            let c = format!("{}{}", out.stdout, out.stderr);
+            // The value-ref sees the LOCAL `(fn [y] y)` — s2's type carries the
+            // inner closure `(Fn [b] b)` in return position (not the outer s1).
+            assert!(
+                c.contains("(Fn [b] b)") || c.contains("(Fn [a] (Fn [b] b))"),
+                "the value-ref `s1` MUST resolve to the LOCAL closure `(fn [y] \
+                 y)` — s2's scheme carries the inner `(Fn [b] b)` in return \
+                 position (proving the value-ref position sees the local \
+                 binding, unlike the call position which hangs); got:\n{c}"
+            );
+        }
+        Err(CrError::Timeout(d)) => panic!(
+            "the value-ref twin HUNG (timed out after {d:?}) — it MUST terminate \
+             (only the CALL position mis-resolves; this is the isolating control)"
+        ),
+        Err(e) => panic!("unexpected harness error: {e}"),
+    }
+}
+
+// spec: spec/05-definitions.md §5.1.2 + §4.6 — the MULTI-sig-base sibling
+// (ruling 5): `m1` is a multi-signature base; a `let` binding shadows it, and a
+// CALL to the shadowed name inside the let body MUST resolve to the LOCAL
+// binding. `(defn t1 [x] (let [m1 (fn [y] y)] (m1 x)))` + `(t1 5)` MUST yield 5.
+//
+// RED at HEAD (distinct mechanism from ruling 4): the overload gate
+// (`infer.rs:605`) defers ANY Var call whose name is an overload base EVEN when
+// let-shadowed, so the local binding is bypassed at the GATE — `t1` wrong-
+// rejects with a residual-var ambiguity and is never defined (`undefined
+// variable: t1` at the call). Failing-not-ignored.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/infer.rs:605 overload-base gate (let-shadowed multi-sig base bypassed at the gate before resolution) found=S112 owner=/dev
+#[test]
+fn let_shadowed_multi_sig_base_call_resolves_to_local_not_overload() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn m1 ([x] x) ([a b] a))\n\
+             (defn t1 [x] (let [m1 (fn [y] y)] (m1 x)))\n\
+             (t1 5)\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "`(t1 5)` MUST call the LOCAL identity `m1` (the let binding shadows the \
+         multi-sig base) and yield 5 — the overload-base gate MUST NOT bypass \
+         the local binding; got:\n{c}"
+    );
+    assert!(
+        !c.contains("undefined variable: t1"),
+        "`t1` MUST define (the shadowed `(m1 x)` resolves to the local binding, \
+         not the ambiguous overload base); got:\n{c}"
+    );
+}

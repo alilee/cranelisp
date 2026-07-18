@@ -22,6 +22,13 @@ Depth allocation: conversions (§2) and boundary twins first — they are
 simultaneously the QA-first REDs and the fences; then the b2 rejection matrix;
 AG gates ride their change-sets.
 
+### S112 Phase-5 addendum (2026-07-18, /qa batch — two families the sprint surfaced)
+
+| # | Risk | Severity | Why silent | Guard |
+|---|---|---|---|---|
+| S112-8 | **Shadowing-blind call-head resolution** — a let-bound name shadowing a top-level callee is bypassed at ≥2 distinct seams (single-sig resolution: runtime HANG on `(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))`; multi-sig overload gate `infer.rs:605`: defers to the outer base even when shadowed). No shadowing × callee-kind matrix ever existed | MEDIUM-HIGH | The wrong resolution usually still computes SOMETHING (or hangs only on self-named shapes); nothing asserts the local binding won | s112 plan §11 rulings 4–5 (pinned repros directed; provisional /dev typecheck, `wrong-scope-lookup`); §12 axis: {let-shadowed} × {single-sig, multi-sig base} × {call, value-ref} |
+| S112-9 | **Per-carrier producer misses under the keyed-consumer architecture** — each typecheck→backend carrier (6 at the B1 seam alone) × each reaching context (direct call, minted mono body, return-type-dispatch site) is a potential never-written cell; the loud consumer miss is the DESIGNED face, but each miss is a spec-valid program failing at codegen (R2; leg (c) is the same family's next cell) | MEDIUM-HIGH | A missing carrier only fires when its exact context is reached; suites biased to direct calls never mint the context | `carrier-loss` vocabulary (recurrence counting); s112 plan §11 ruling 1 (P26 derive-at-mint fix shape); §12: carrier × reaching-context sweep is the S113 candidate if leg (c) confirms a second producer miss |
+
 ## S111 risk read (2026-07-17, /qa — shapes the depth of the S111 plan in `PLAN.md` §"Sprint 111")
 
 S111 pairs an emission-affecting schema-window centrepiece (the §3.7 vec-COW

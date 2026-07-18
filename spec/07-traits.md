@@ -156,7 +156,7 @@ Bare (unannotated) parameter names always have the implementing type. To give a 
   (convert [:String s] Int))        ;; s is String, not self
 ```
 
-## 7.2 Higher-Kinded Traits [Tested tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds]
+## 7.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::bare_convar_full_0628_repro_no_leak_and_no_unresolved_var_display_neg]
 
 A higher-kinded trait abstracts over type constructors (kind `* -> *`) rather than concrete types (kind `*`).
 
@@ -173,7 +173,7 @@ The trait head is wrapped in parentheses with a lowercase type constructor varia
     [:(Fn [a] b) func :(f a) x] (f b)))
 ```
 
-### 7.2.1 Constructor Variables
+### 7.2.1 Constructor Variables [Tested+Neg tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg, tests/spec_07_traits::never_applied_head_declaration_reject_is_mode_uniform_neg, tests/spec_07_traits::trait_head_uppercase_convar_rejected_both_forms_neg] [S113 — slash-qualified con_var reject row directed (`(Functor prim/x)` passes the after-slash case check today): plan/s112-0628-ic-wave.md §3.3a TB-26]
 
 The lowercase identifier `f` in `(Functor f)` is a **constructor variable** -- it ranges over type constructors that take one or more type arguments. In method signatures, constructor application is written as `(f a)`, meaning "the constructor `f` applied to type `a`".
 
@@ -194,7 +194,7 @@ In an HKT trait, all method parameters use named params with explicit type annot
 
 The method `fmap` takes a function `(Fn [a] b)` named `func` and a value of type `(f a)` named `x`, returning a value of type `(f b)`.
 
-### 7.2.3 Kind Checking
+### 7.2.3 Kind Checking [Tested+Neg tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg, tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg, tests/spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected]
 
 An implementation MUST validate that the impl target's type parameter count matches the expected constructor arity. There is no explicit kind annotation syntax; kind checking is implicit.
 
@@ -291,7 +291,7 @@ An impl MAY target a fully applied parameterized type:
 
 This provides a Display implementation specifically for `(Option Int)`.
 
-### 7.3.3 Polymorphic Implementation with Constraints
+### 7.3.3 Polymorphic Implementation with Constraints [S112 — pinned repro directed: this canonical form `(impl Display (Option :Display a) …)` is a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck, impl-target TypeExpr-resolution seam); plan/s112-0628-ic-wave.md §3.3a TB-24]
 
 An impl MAY target a parameterized type with constrained type variables. Constraints are specified with `:TraitName` prefixes on type variables:
 
@@ -311,7 +311,7 @@ The implementation MUST search for matching impls in the following order:
 1. Concrete impls (exact type match)
 2. Polymorphic impls (with constraint satisfaction)
 
-### 7.3.4 Higher-Kinded Implementation [Tested tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form]
+### 7.3.4 Higher-Kinded Implementation [Tested+Neg tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form, tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match, tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg, tests/repl_persist::hkt_new_form_source_reemits_echoed_head]
 
 A higher-kinded impl echoes the declared head `(Functor f)` in slot 1 and names a **trait-constructor pairing** `(Functor Option)` in slot 2 — the trait applied to the constructor it is being implemented *about*:
 
@@ -337,7 +337,7 @@ A higher-kinded impl echoes the declared head `(Functor f)` in slot 1 and names 
 
 The constructor named in the slot-2 pairing (`Option`, `List`, `Seq`) is a bare type constructor, never an applied type. The implementation MUST validate that this constructor's arity matches the trait's constructor variable (§7.2.3).
 
-### 7.3.5 Kind-Checking of Impl Targets [S112 — rejection matrix: plan/s112-0628-ic-wave.md §3]
+### 7.3.5 Kind-Checking of Impl Targets [Tested+Neg — matrix as-built: plan/s112-0628-ic-wave.md §3 + §3.3a; per-row cites on the worked examples below] [S112 — two cells NOT closed: Case-1 poly-applied ✓ row (pinned repro directed, TB-24) and pairing-head qualification (OPEN user question, TB-25)]
 
 The `impl` **syntax** of §7.3 is settled: a conventional (kind-`*`) trait takes a **type** target, a higher-kinded trait takes a **trait-constructor pairing** `(Trait Constructor)`. This section settles the **impl-target kind-matching table** — exactly which targets are well-kinded for a given trait head, and which are rejected and with what diagnostic.
 
@@ -347,23 +347,23 @@ The `impl` **syntax** of §7.3 is settled: a conventional (kind-`*`) trait takes
 
 For a conventional trait, the slot-2 target MUST be **kind `*`** (a type). Worked:
 
-- `(impl Display Int)` ✓ — a primitive is a type.
-- `(impl Display (Option Int))` ✓ — a concrete applied type.
-- `(impl Display (Option a))` ✓ — polymorphic impl; `a` ranges and is discharged by monomorphisation (§7.3.3).
-- `(impl Display Option)` ✗ — **kind-mismatch.** `Option` is a constructor (`* -> *`), not a type. The diagnostic MUST name the fix: apply the constructor, `(Option a)` or `(Option Int)`.
+- `(impl Display Int)` ✓ — a primitive is a type. [Tested tests/spec_07_traits::user_trait_simple]
+- `(impl Display (Option Int))` ✓ — a concrete applied type. [Tested tests/spec_07_traits::polymorphic_impl_on_concrete_adt_instantiation, tests/spec_07_traits::conventional_impl_exactly_arity_target_accepts_arity_gate_fence]
+- `(impl Display (Option a))` ✓ — polymorphic impl; `a` ranges and is discharged by monomorphisation (§7.3.3). [S112 — pinned repro directed: admissible-per-spec but a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck); plan/s112-0628-ic-wave.md §3.3a TB-24]
+- `(impl Display Option)` ✗ — **kind-mismatch.** `Option` is a constructor (`* -> *`), not a type. The diagnostic MUST name the fix: apply the constructor, `(Option a)` or `(Option Int)`. [Tested tests/spec_07_traits::conventional_impl_bare_constructor_target_rejected_neg]
 
-A bare / under-applied constructor is the **sole** rejection for a conventional target.
+A bare / under-applied constructor is the **sole** rejection for a conventional target. [Tested+Neg — over-APPLIED (`(Option Int Int)`, not a well-formed type: arity `!=`) also rejects, at the type-application arity gate rather than this kind rule: tests/spec_07_traits::conventional_impl_over_applied_target_rejected_no_dispatch_neg]
 
 #### Case 2 — Higher-kinded trait target
 
 Anchor on `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))` — `f` is applied, so its usage-derived kind is `* -> *` (§7.2.1). The impl echoes the head in slot 1 and names a **trait-constructor pairing** `(Functor C)` in slot 2; the kind-check lands on `C`, which MUST be a **bare constructor whose arity matches** `f`'s usage-derived kind. Worked:
 
-- `(impl (Functor f) (Functor Option) …)` ✓ and `(impl (Functor f) (Functor List) …)` ✓ — arity matches (both `* -> *`).
-- `(impl (Functor f) (Functor Int) …)` ✗ — **"not a type constructor"** (`Int` is a primitive, §7.2.3).
-- `(impl (Functor f) (Functor (Option Int)) …)` ✗ — **kind-mismatch.** Slot 2 wants the *bare* constructor `Option`, not a fully-applied type.
-- `(impl (Functor f) (Functor Pair) …)`, where `Pair : * -> * -> *` ✗ — **arity-mismatch** (two args vs. one).
+- `(impl (Functor f) (Functor Option) …)` ✓ and `(impl (Functor f) (Functor List) …)` ✓ — arity matches (both `* -> *`). [Tested tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match]
+- `(impl (Functor f) (Functor Int) …)` ✗ — **"not a type constructor"** (`Int` is a primitive, §7.2.3). [Tested tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg]
+- `(impl (Functor f) (Functor (Option Int)) …)` ✗ — **kind-mismatch.** Slot 2 wants the *bare* constructor `Option`, not a fully-applied type. [Tested tests/spec_07_traits::hkt_impl_applied_type_in_pairing_rejected_neg — reject lands at the parse layer; this rule's kind-mismatch WORDING is unit-tier reachable only]
+- `(impl (Functor f) (Functor Pair) …)`, where `Pair : * -> * -> *` ✗ — **arity-mismatch** (two args vs. one). [Tested tests/spec_07_traits::hkt_impl_wrong_arity_pair_rejected_neg, tests/spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected]
 
-#### Case 3 — The cross-check
+#### Case 3 — The cross-check [Tested+Neg tests/spec_07_traits::old_form_hkt_impl_bare_head_rejected_names_new_form_neg, tests/spec_07_traits::hkt_impl_echo_wrong_convar_spelling_rejected_neg, tests/spec_07_traits::conventional_impl_parenthesized_head_rejected_neg, tests/spec_07_traits::hkt_echo_shape_mismatch_reject_is_mode_uniform_neg, tests/spec_07_traits::hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg, tests/spec_07_traits::hkt_impl_pairing_head_different_real_trait_rejected_not_registered_neg] [S112 — OPEN normative question (user): pairing-head QUALIFICATION — qualified slot-1 + bare pairing head naming the SAME resolved trait (`(impl (fmt/Functor f) (Functor Option) …)`): accept under resolved-identity vs reject under verbatim-spelling; cell deliberately unpinned pending the ruling (plan/s112-0628-ic-wave.md §3.3a TB-25); /qa records coverage only, does not resolve]
 
 `(impl (Functor f) (Functor Option))` and `(impl Display (Option a))` are disambiguated by ONE deterministic path — no ambiguity, and no redundant independent check:
 

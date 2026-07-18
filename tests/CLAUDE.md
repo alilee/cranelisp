@@ -237,6 +237,23 @@ one snapshot, no rlib-vs-bundle skew.
 - `CRANELISP_PLATFORM_PATH` wiring is per-test runtime config (in the harness),
   not a build step.
 
+## The agent lane (`--features agent`) — isolated target dir
+
+The `--features agent` e2e lane MUST be run through the committed launcher, NOT
+a bare `cargo nextest run --features agent --test agent`:
+
+```bash
+bash tests/scripts/run-agent-lane.sh
+```
+
+The launcher sets `CARGO_TARGET_DIR=target/agent` so the agent-featured binary
+lives at `target/agent/debug/cranelisp` and can never clobber the default
+`target/debug/cranelisp` mid-suite. The e2e harness (`helpers/e2e.rs::binary_path`)
+resolves the binary root from `CARGO_TARGET_DIR`, so each lane execs its own
+binary — isolation by construction. This closes FIXME 0615's binary-provenance
+race (a differently-featured build swapping the binary a feature-OFF guard then
+spawns); the race is deterministic in provenance, never a flake.
+
 ## Diagnostic env vars & assertions
 
 Silent by default, controlled by environment variables — set them on the
@@ -338,6 +355,7 @@ evidenced classes):
 | `shared-state-write-race` | A background/concurrent actor writes substrate a foreground consumer reads — correctness resting on undo/cleanup discipline or scheduling luck instead of isolation-by-construction (S109 index-feed phantom-prelude write, FIXME 0604; the S61→S93 heisenbug lineage). Distinct from `mode-divergence` (deterministic per mode) — here one mode's outcome varies by interleaving (added S110, /qa) |
 | `wrong-accept` | A spec-VIOLATING program ACCEPTED by the type judgment — typecheck passes where the spec demands rejection, often with memory-unsafe downstream consequence (S110 vec-instantiation unpinned-`(Vec a)` accept; S111 §5.1.2 multi-arity clause-param pinning vectors B-1/B-2 — String heap ptr read as Int). The judgment-level inverse of `wrong-reject`. Distinct from `silent-accept` (malformed INPUT accepted at the parse/definition boundary — no type judgment involved) (ratified S111, /qa) |
 | `drop-glue-underkey` | A per-INSTANTIATION compiled artifact (ADT drop glue, vec elem-dec fn) cached/deduped under a key that under-determines its body — bare `fqtn.name` dropping module + concrete-args, first-build-wins serving the wrong glue to a colliding instantiation (S111 FIXME 0633: `adt_drop_glue_name` + `build_elem_dec_fn`; symptom face is `uaf`/`rc-miscount` but the MECHANISM is the identity key — a Principle-24 keyed-identity miss, order-dependent). If a non-glue sibling appears, generalize the name to an artifact-underkey class (ratified S111, /qa) |
+| `carrier-loss` | A keyed producer→consumer carrier (the S110 0583 architecture: typecheck-published, backend keyed-read, e.g. `resolved_target`) is NEVER WRITTEN for a reachable consumer site, so the loud keyed-consumer miss surfaces as a backend/codegen error on a spec-VALID program (S112 R2: multi-sig-base dispatch call inside a monomorphised instance body — the minted body's call sites get no carrier derivation). Distinct from `check-gate-leak` (INVALID program raised at the wrong layer — here nothing should be rejected at all) and from the forbidden soft-fallback (the loud miss is the consumer working as designed; the PRODUCER is the owner). Fix shape is P26-constrained: derive from settled state at the site that mints the reaching context, never patch-after-record (added S112, /qa) |
 
 **Rules:**
 
