@@ -212,7 +212,7 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
   bare-name alias, and disambiguating two types that share a constructor name — in
   value and pattern position),
   [`guide/functions.md`](guide/functions.md) (`fn` is single-arity; multi-arity
-  `defn` and its independently-type-checked clauses),
+  `defn` and how its clauses infer like separate mutually-recursive functions),
   [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
   `par-reduce`, `par-map-reduce`),
   [`guide/concurrency.md`](guide/concurrency.md) (the two-halves concurrency model:

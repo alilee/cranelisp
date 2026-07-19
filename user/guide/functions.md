@@ -48,37 +48,48 @@ user> (defn rp ([:Position p :Rotation rot] (rp p rot 0)) ([:Position p :Rotatio
 
 The REPL confirms it by reporting **both** arity signatures.
 
-### Each clause is type-checked independently
+### Clauses infer like separate mutually-recursive functions
 
-This is the subtle rule, and the one that produces a surprising error if you miss
-it. **Each variant is type-checked on its own.** A clause carries no type
-information into or out of its sibling clauses:
+Here is the rule that governs inference across the clauses: **a multi-signature
+`defn` type-checks exactly as if its clauses were written as separate,
+mutually-recursive functions that happen to share one dispatched name.** Type
+flows across clauses through ordinary call resolution, not through a barrier.
 
-- Matching parameter names across clauses (a `p` in two clauses) are **not**
-  evidence that the two `p`s share a type.
-- A delegating call from one clause into another — the 2-arg clause calling the
-  3-arg clause above — does **not** back-flow the callee clause's parameter types
-  into the caller clause's parameters.
-
-So every clause **must carry its own annotations** wherever inference cannot pin
-its parameters from that clause's own body. Drop the annotations from the 2-arg
-clause, expecting the annotated 3-arg sibling to rescue it, and you get an
-ambiguous-type error that names the exact clause and parameter:
+A **self-call from one clause to a sibling is an ordinary call.** It resolves —
+by arity, then among same-arity clauses by argument type — to a specific sibling
+clause, and unifies its argument types with that clause's parameters, exactly as
+a call to any other function would. So types *do* flow across clauses: a
+delegating call from one clause into another carries the callee clause's
+parameter types back into the caller. You do **not** have to re-annotate a
+parameter that a sibling self-call already pins.
 
 ```clojure
-(defn rp
-  ([p rot]                              (rp p rot 0))   ; p, rot unannotated
-  ([:Position p :Rotation rot :Int idx] idx))
+(defn rp4
+  ([p rot]     (let [q (rp4 p rot 0)] p))        ; => (Fn [Int Int] Int)
+  ([p rot idx] (add-i64 p (add-i64 rot idx))))   ; => (Fn [Int Int Int] Int)
 ```
 
-```
-user> (defn rp ([p rot] (rp p rot 0)) ([:Position p :Rotation rot :Int idx] idx))
-Error: type error at 22..23: ambiguous type: the parameter `p` in the 2-arg arity clause of `rp` is not pinned — each arity clause is type-checked independently (spec §5.1.2), so add a `:Type` annotation to `p` in that clause
-```
+`add-i64` fixes the 3-arg clause to `(Fn [Int Int Int] Int)`; the 2-arg clause's
+`(rp4 p rot 0)` resolves to that sibling and pins `p` and `rot` to `Int` — even
+though the 2-arg clause carries no annotations. This type-checks and runs;
+`(rp4 7 4)` is `7`.
 
-The fix is to annotate the under-constrained clause too — the first `rp` above,
-where both clauses are fully annotated, is the correct form. The sibling clause's
-annotations never do the work for you.
+A clause parameter is an ambiguous-type error **only when the same code written
+as a standalone function would also fail to infer it** (genuine [`§3.11`](../../spec/03-types.md)
+ambiguity) — never merely because it belongs to a multi-signature form. A clause
+left genuinely polymorphic — e.g. `([:a x] x)` — is admissible on the same terms
+as any standalone polymorphic function.
+
+### Same-arity clauses must be distinguishable for dispatch
+
+Two clauses of **different arity** always dispatch by argument count. Two clauses
+of the **same arity** dispatch by the concrete argument types. Two same-arity
+clauses whose signatures — **as written**, i.e. their pre-inference parameter
+annotations — *could* both match one concrete argument tuple are a
+**dispatch-ambiguity error, reported at the definition** (both colliding clauses
+named), not silently resolved by clause order. The remedy is to annotate a clause
+so the written signatures no longer overlap. This constrains dispatch
+*ambiguity*, not the presence of polymorphism.
 
 ## See also
 
@@ -86,5 +97,7 @@ annotations never do the work for you.
   single-arity, parameter annotations, capture, and why the multi-arity clause
   form is a parse error for `fn`.
 - [`spec/05-definitions.md §5.1.2`](../../spec/05-definitions.md) — multi-signature
-  `defn`: variant dispatch and the independent-type-checking rule (with the same
-  worked example).
+  `defn`: variant dispatch, and the inference rule (clauses are inference-equivalent
+  to separate mutually-recursive functions — sibling self-calls carry types across
+  clauses; the same-arity dispatch-ambiguity rule is judged on the written
+  signatures).

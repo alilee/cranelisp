@@ -4,11 +4,12 @@
 
 ; Higher-kinded types — traits parameterised by type constructors
 
-(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))
+(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 
-; Implement Functor for Option — fmap over the value inside
+; Implement Functor for Option — the impl echoes the declared head (Functor f)
+; in slot 1 and names the trait-constructor pairing (Functor Option) in slot 2
 
-(impl Functor Option (defn fmap [func opt] (match opt [None None (Some x) (Some (func x))])))
+(impl (Functor f) (Functor Option) (defn fmap [func opt] (match opt [None None (Some x) (Some (func x))])))
 
 ; fmap dispatches through the trait, just like + dispatches through Num
 
@@ -20,6 +21,7 @@
 
 (import [seq.lazy [range-from iterate take seq-map seq-filter]])
 (import [num.int [even?]])
+(import [collections.vec [get]])
 
 ; range-from produces an infinite sequence: 1, 2, 3, ...
 ; take materialises the first N elements into a Vec
@@ -35,17 +37,13 @@
 (take 5 (seq-filter even? (range-from 1)))
 (take 5 (seq-map (* 10) (seq-filter even? (range-from 1))))
 
-; Pretty-printed output — /source shows indented, syntax-highlighted S-expressions
-
-/source fmap
-
 ; Terminal styling: head position bold, types cyan, literals yellow, strings green
 ; Use --no-color or set NO_COLOR=1 to disable
 
 ; Checked division — division by zero panics safely
 
-(div-i64 10 3)
-(div-i64 10 0)
+(/ 10 3)
+(/ 10 0)
 
 ; The REPL recovers — the session is still alive
 
@@ -55,7 +53,11 @@
 
 (defn test-fmap-some [] (if (= (match (fmap (+ 1) (Some 41)) [(Some v) v None 0]) 42) None (Some "fmap Some")))
 (defn test-fmap-none [] (if (= (match (fmap (+ 1) None) [(Some _) false None true]) true) None (Some "fmap None")))
-(defn test-lazy-take [] (if (= (vec-get (take 3 (range-from 10)) 0) 10) None (Some "lazy take")))
-(defn test-lazy-filter [] (if (= (vec-get (take 1 (seq-filter even? (range-from 1))) 0) 2) None (Some "lazy filter")))
+(defn test-lazy-take [] (if (= (get (take 3 (range-from 10)) 0) 10) None (Some "lazy take")))
+(defn test-lazy-filter [] (if (= (get (take 1 (seq-filter even? (range-from 1))) 0) 2) None (Some "lazy filter")))
+
+; Pretty-printed output — /source shows indented, syntax-highlighted S-expressions
+
+/source test-fmap-some
 
 /run-tests

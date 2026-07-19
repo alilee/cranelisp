@@ -83,6 +83,46 @@ module-qualified — so the Phase-H trait method can own the bare name
 without a §8.6.4 collision. (List `first`/`rest` and pair `first` already
 coexist FQ-distinct; promoting either bare would collide.)
 
+**The currently-globbed prelude BOUND set — the §8.6.4 collision surface**
+(FIXME 0646, motivating instance). The prelude is `(import [prelude [*]])`
+in scope of every downstream module (spec §8.6.4: prelude = an implicit
+import, in scope identically to an explicit glob — NOT an outer scope). A
+downstream `def`/`defn`/`defmacro`/`deftype`/`deftrait` of a bare name that
+the prelude already globs is a **§8.6.4 CONFLICT (a compile error), not a
+shadow** — the two bindings coexist in one scope and clash. So every
+name in the glob is reserved against redefinition at the bare-name tier.
+The set the prelude binds today (`stdlib/prelude.cl:27-52`) is:
+
+| Source module | Bound names (bare) |
+|---|---|
+| `compare.eq` | `Eq` `=` `!=` |
+| `compare.ord` | `Ord` `<` `>` `<=` `>=` |
+| `num.num` | `Num` `+` `-` `*` `/` |
+| `text.display` | `Display` `show` |
+| `text.string` | `str` |
+| `fn.option` | `Option` `Some` `None` |
+| `fn.result` | `Result` `Ok` `Err` |
+| `fn.threading` | `->` `->>` |
+| `collections.list` | `List` `Nil` `Cons` `empty?` `list` |
+| `collections.vec` | `vec` |
+| `io.monad` | `pure` `do` `bind!` |
+| `control` | `when` `unless` `cond` `case` |
+| `defs` | `const` `const-` `def` `def-` |
+| `primitives` (types) | `Int` `Bool` `Float` `String` |
+
+**Rule for downstream surfaces** (examples, demos, docs, primers,
+exemplar): pick names that do NOT collide with this set — a bare `def`/
+`deftrait` over a globbed name errors, and (the 0646 trap) an ill-chosen
+teaching name that happens to collide can MASK the actual failure under a
+conflict diagnostic. FIXME 0646's instance: a REPL primer defined a bare
+name colliding with the prelude glob, so the primer's own failure was
+hidden behind the §8.6.4 conflict. When authoring across the prelude
+boundary, either choose a fresh bare name or reach the intended symbol FQ /
+via explicit import. This table decays as the prelude glob changes (e.g. a
+DEF-1-unblocked `conj` promotion, §"de-leak status") — re-derive from
+`stdlib/prelude.cl` when in doubt; the live `(export …)` forms are
+authoritative.
+
 ### S86 de-leak status — LANDED (the raw-primitive half) + one carried defect
 
 **The de-leak LANDED (S86 step 1.5d).** The ~31 raw-primitive bare
@@ -381,7 +421,24 @@ The stdlib's own test infrastructure. Also available to user programs.
 
 **`defs.cl`** — Definition macros: `const` (inline sexp substitution), `def` (named zero-arg fn + macro), `const-` (private const), `def-` (private def). Ring 3.
 
-**`default.cl`** — `(deftrait Default (default [] self))`. Impls for Int (0), Float (0.0), Bool (false), String (""), Option (None). The "zero value" trait. Ring 2.
+**`default.cl`** — `(deftrait Default (default [] self))`. Impls for Int (0), Float (0.0), Bool (false), String (""), Option (None). The "zero value" trait. Ring 2. Backing self-test `default/test.cl` shipped S112 6b (parent declares `(mod- test)`); exercises each impl via the annotation-selected `(let [x :Int (default)] …)` form (return-type dispatch, S112 leg (c)).
+
+> **Prelude-promotion decision (S112 6b, /stdlib): DEFER to S113.** `Default`/
+> `default` are NOT promoted into the prelude glob this sprint; they stay
+> reached by explicit import (`(import [default [Default default]])`) or FQ.
+> Two independent reasons: **(1)** the bare word `default` is high-traffic —
+> adding it to the prelude glob reserves it against every downstream bare
+> `def` at the §8.6.4 collision surface (see §1.5 "currently-globbed BOUND
+> set"), a heavy reservation to bake in for a niche trait. **(2)** D2 — a
+> nullary return-type-dispatch method imported WITHOUT its trait leaks
+> `undefined function` at codegen (pinned failing test, S112 /testing) — is an
+> **open user normative question** (does importing a trait METHOD without its
+> TRAIT suffice for dispatch, or is trait-in-scope required?). Promoting into
+> the prelude glob changes how `default` is brought into scope and would
+> interact with whatever the D2 ruling settles; promoting BEFORE the ruling
+> risks baking in an interaction we would have to unwind. Revisit in S113
+> AFTER the user rules D2. (/stdlib concurs with the /sprint recommendation;
+> no disagreement.)
 
 **`derive.cl`** — The `derive` dispatch macro: `(derive [Eq Ord Display] MyType)` expands to calls to `derive-Eq`, `derive-Ord`, `derive-Display` which live in their respective trait modules. Ring 3.
 

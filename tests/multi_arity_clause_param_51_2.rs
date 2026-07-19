@@ -52,6 +52,16 @@ fn run_prims(user: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+// TestStandard prelude — provides the `Num` trait so `+` is the idiomatic
+// user-facing operator. Used only by the R1 prelude-`+` variant below.
+fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin(lines)
+        .output()
+}
+
 // The 0642 anchor program, verbatim (spec §5.1.2 worked example). The 2-arg
 // clause's delegating self-call `(rp4 p rot 0)` pins `p, rot : Int` through the
 // 3-arg sibling (whose `add-i64` fixes it to `(Fn [Int Int Int] Int)`); the
@@ -564,5 +574,71 @@ fn cross_arity_sibling_self_call_from_poly_clause_accepted_matches_standalone_tw
         "the standalone twin `(defn g2a [:a x] (g2b 1 2))` + `(defn g2b [:Int a \
          :Int b] (add-i64 a b))` MUST accept and `(g2a 5)` = 3 — the §5.1.2 \
          oracle for g2's cross-arity poly clause; got:\n{sc}"
+    );
+}
+
+// R1 — prelude-`+` variant (the user-facing trigger, /repl's S112 Phase-6a
+// evidence). The sibling `cross_arity_sibling_self_call_from_poly_clause_…`
+// (above) reaches R1 through the primitive `add-i64`, which sidesteps the
+// trait-method dispatch path. This variant reaches the SAME R1 wrong-reject
+// through the idiomatic prelude `+` (a `Num` trait method) — the shape a user
+// actually writes. BOTH variants (primitive `add-i64` and trait-method `+`) MUST
+// flip GREEN when R1 is fixed; either surviving RED means the fix missed a
+// dispatch path.
+//
+//   (defn f ([x] (f x x)) ([a b] (+ a b)))
+//   (f 5)   →   ambiguous type … monomorphised in `user/f$Var$Int` …
+//
+// The 1-arg genuinely-poly clause `([x] (f x x))` self-calls the 2-arg sibling
+// with the same var twice; the 2-arg clause `(+ a b)` pins it through `Num`.
+// Spec-correct: `f` accepts, `(f 5)` = `(f 5 5)` = 5 + 5 = 10, and NO internal
+// `$`-mangle leaks into any user diagnostic. RED until R1 is fixed.
+//
+// NOTE (S112 Phase 6b): unlike the primitive G2 case, the standalone twin for
+// THIS shape — `(defn fb [a b] (+ a b))` + `(defn fa [x] (fb x x))` + `(fa 5)`
+// — is NOT itself a clean GREEN oracle at HEAD: it hits the carrier-loss family
+// (`resolved_target 'user/user/fb$Int+Int' … fetched no symbol-table entry`,
+// see tests/multi_sig_base_mono_carrier_loss.rs), because a constrained-poly fn
+// delegating to a `Num` method is exactly the R2-adjacent carrier shape. So no
+// standalone-twin fence is asserted here; the load-bearing R1 signal is the
+// internal-mangle leak on the multi-sig `(f 5)`. If the value-10 assertion
+// survives RED after R1's wrong-reject is removed, the trait-method value path
+// additionally needs the carrier-loss fix — a discovery for /dev, not a defect
+// in this pin.
+// spec: spec/05-definitions.md §5.1.2 — inference-equivalent to separate
+// mutually-recursive functions; the trait-method (`+`) dispatch path must not
+// leak an internal monomorphisation mangle.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::mono_recheck_self-inline-gate (cross-arity sibling self-call not covered — trait-method `+` dispatch path, design §11.3.4 R1 boundary) found=S112 owner=/dev
+#[test]
+fn cross_arity_sibling_self_call_prelude_plus_variant_no_internal_mangle_leak() {
+    let out = repl_std("(defn f ([x] (f x x)) ([a b] (+ a b)))\n(f 5)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+
+    // `f` is accepted (the defn echoes `; defn`).
+    assert!(
+        c.contains("; defn"),
+        "f MUST be ACCEPTED as a defn (the 1-arg poly clause delegating to the \
+         `+`-typed 2-arg sibling is inference-equivalent to a standalone fn); \
+         got:\n{c}"
+    );
+
+    // The load-bearing R1 RED: no INTERNAL `$`-mangle (`user/f$Var$Int`, the
+    // `monomorphised in` phrasing) may leak into the user-facing `(f 5)`
+    // diagnostic. This is the exact R1 signature, reached via the trait-method
+    // `+` path rather than the primitive `add-i64` path.
+    assert!(
+        !c.contains("$Var") && !c.contains("$Int") && !c.contains("monomorphised in"),
+        "no INTERNAL `$`-mangle (e.g. `user/f$Var$Int`) may appear in a \
+         user-facing diagnostic for `(f 5)` — the R1 wrong-reject on the \
+         trait-method `+` dispatch path (design §11.3.4); got:\n{c}"
+    );
+
+    // Value facet: `(f 5)` = `(f 5 5)` = 5 + 5 = 10 (spec-correct once R1 — and,
+    // for the trait-method path, any carrier-loss residual — is resolved).
+    assert!(
+        out.stdout.contains(":primitives/Int 10"),
+        "`(f 5)` = `(f 5 5)` = 5 + 5 = 10 (the 1-arg poly clause delegates to the \
+         `+`-typed 2-arg sibling); got:\n{}",
+        out.stdout
     );
 }

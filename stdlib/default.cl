@@ -25,18 +25,24 @@
 (impl Default String
   (defn default [] ""))
 
-;; ── Self-tests — DEFERRED (compiler limitation, S87 Stage C.2) ─────────
-;; A `(mod test …)` for Default is NOT shipped this sprint because the only
-;; way to exercise an impl is to CALL `(default)`, and a nullary,
-;; return-type-polymorphic trait method does not reach codegen even with a
-;; `:Type` annotation at the call site: `:Int (default)` typechecks but fails
-;; with `codegen error … undefined function: default`. (Verified S87: the
-;; call fails identically in a bare REPL, so this is a language limitation,
-;; not a stdlib bug.) A `(mod test)` that fails CODEGEN would poison the whole
-;; prelude load graph (not just its own run), so it is held until the
-;; nullary-trait-method dispatch is implemented.
+;; ── Self-tests — SHIPPED at S112 6b (return-type dispatch now works) ──
+;; S112 leg (c) landed nullary return-type dispatch. The backing self-test
+;; `default/test.cl` (module `default.test`) exercises each impl via the
+;; annotation-selected form `(let [x :Int (default)] …)`, which dispatches to
+;; the per-type impl and compiles + runs end-to-end — PROVIDED the `Default`
+;; TRAIT is in scope, i.e. imported alongside the method
+;; (`(import [super [Default default]])` in the backing module). The S87
+;; "language limitation" / "poisons the prelude load graph" claim is
+;; SUPERSEDED; the S87 deferral is retired.
 ;;
-;; DEFECT HANDOFF (per CLAUDE.md §Usability Findings and Defects): routed to
-;; /qa for a narrow failing-not-ignored repro → /typecheck/backend. Minimal
-;; shape: `(deftrait T (z [] self)) (impl T Int (defn z [] 0)) (:Int (z))`
-;; ⇒ `undefined function: z` at codegen. See plan-stdlib.md §26.4.
+;; RESIDUAL COMPILER DEFECT (found S112 6a, /stdlib) — D2: a nullary
+;; return-type-dispatch method imported WITHOUT its trait —
+;; `(import [default [default]])` only — passes typecheck then leaks
+;; `codegen error … undefined function: default`, whereas the analogous UNARY
+;; method is caught cleanly at typecheck ("no impl of trait … for type …").
+;; A check-gate leak (dispatch-uniformity), NOT a stdlib bug — the backing
+;; test module sidesteps it by importing the trait (the green fence above).
+;; Pinned as a failing test (S112 /testing batch); open user normative
+;; question on whether method-only import suffices for dispatch.
+
+(mod- test)

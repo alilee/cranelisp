@@ -23,6 +23,7 @@ Environment:
 
 import os
 import pty
+import re
 import select
 import shutil
 import sys
@@ -31,6 +32,58 @@ import time
 import tty
 from datetime import datetime
 from pathlib import Path
+
+
+# The REPL's line editor wraps every primary prompt in bracketed-paste toggles:
+# `\x1b[?2004h` (enable) is emitted immediately BEFORE the prompt frame and
+# nowhere else, and `\x1b[?2004l` (disable) is emitted the instant input is
+# submitted. The prompt frame itself is `{compile_ms}+{eval_ms}ms; {module}> `
+# (repl/spec.md §2.1). Together these give a definitive "REPL is idle, waiting
+# for input" sentinel — far more reliable than scanning for a bare `> `, which
+# also appears in echoed input like `(> 3 2)` and in result values. Matching on
+# the loose `> ` was the leading-chars-dropped race: drain returned while the
+# REPL was still echoing/evaluating, so the next keystrokes landed in a busy
+# process.
+PROMPT_ENABLE = "\x1b[?2004h"
+PROMPT_DISABLE = "\x1b[?2004l"
+# Any CSI escape sequence (line-clear `\x1b[K`, cursor-forward `\x1b[13C`,
+# colour, the bracketed-paste toggles themselves, ...).
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+# The REPL is awaiting input when the stripped tail ends at EITHER a primary
+# prompt frame — digits, `+`, digits, `ms; `, a module name (no space, no `>`),
+# then `> ` (repl/spec.md §2.1) — OR a continuation prompt `...` (§2.2), emitted
+# when a multi-line form has unmatched brackets. Both are quiescent "type the
+# next line" states; a multi-line definition steps through several continuations
+# before the closing line yields the primary frame.
+PROMPT_TAIL_RE = re.compile(r"(?:\d+\+\d+ms;\s+[^\s>]+>|\.\.\.)\s*$")
+
+
+def at_definitive_prompt(buf):
+    """True iff buf ends at a prompt awaiting input (primary OR continuation).
+
+    Requires the last bracketed-paste toggle to be ENABLE (not a submitted
+    line still being evaluated) AND the tail — once the line editor's escape
+    noise is stripped — to end at a fully-rendered prompt frame. This is a
+    real quiescence check: a prompt is the last thing the REPL emits before
+    blocking on input, so a prompt frame at end-of-buffer means it is safe to
+    type again. The continuation prompt (`...`) carries the same ENABLE marker,
+    so multi-line forms advance without stalling on the 15s cap per line.
+
+    The stripping matters: after drawing the prompt the editor emits a cursor
+    reposition (`\\r\\x1b[13C`), so the raw buffer ends with that, never with a
+    bare `> ` or `...`. Removing CSI sequences and carriage returns exposes the
+    frame.
+    """
+    enable = buf.rfind(PROMPT_ENABLE)
+    if enable == -1:
+        return False
+    if buf.rfind(PROMPT_DISABLE) > enable:
+        # A line was submitted after the last prompt appeared — the REPL is
+        # busy evaluating; the next prompt has not yet been rendered.
+        return False
+    tail = buf[enable + len(PROMPT_ENABLE):]
+    clean = ANSI_RE.sub("", tail).replace("\r", "")
+    return bool(PROMPT_TAIL_RE.search(clean))
 
 
 def env_ms(name, default):
@@ -106,30 +159,37 @@ class KeyboardController:
             time.sleep(min(0.05, max(0, remaining)))
 
 
-def drain_output(master_fd, timeout=0.5, wait_for_prompt=False):
-    """Read and display REPL output until no more data arrives.
+def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=15.0):
+    """Read and display REPL output.
 
-    If wait_for_prompt is True, keeps reading until the output ends with
-    the REPL prompt pattern (text ending with '> '). This prevents the
-    prompt from being lost when REPL response arrives in multiple chunks.
+    Two modes:
+
+    - wait_for_prompt=False: read until no data has arrived for `timeout`
+      seconds (idle drain — used after /quit and other non-prompting output).
+    - wait_for_prompt=True: read until the buffer ends at a definitive primary
+      prompt (see at_definitive_prompt). This is the quiescence gate that keeps
+      the caller from typing into a busy REPL. `prompt_timeout` is an absolute
+      safety cap so a wedged REPL cannot hang playback forever.
     """
     output = []
-    deadline = time.monotonic() + timeout
+    idle_deadline = time.monotonic() + timeout
+    hard_deadline = time.monotonic() + prompt_timeout
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 and not wait_for_prompt:
+        if wait_for_prompt and at_definitive_prompt("".join(output)):
             break
-        wait_time = min(remaining, 0.1) if remaining > 0 else 0.1
+        now = time.monotonic()
+        if wait_for_prompt:
+            if now > hard_deadline:
+                break
+            wait_time = 0.1
+        else:
+            remaining = idle_deadline - now
+            if remaining <= 0:
+                break
+            wait_time = min(remaining, 0.1)
         ready, _, _ = select.select([master_fd], [], [], wait_time)
         if not ready:
-            if wait_for_prompt and time.monotonic() < deadline + 5.0:
-                # Check if we already have the prompt.
-                joined = "".join(output)
-                if joined.rstrip().endswith(">") or "> " in joined[joined.rfind("\n") + 1:] if "\n" in joined else "> " in joined:
-                    break
-                # Extend deadline slightly to wait for prompt.
-                continue
-            break
+            continue
         try:
             data = os.read(master_fd, 4096)
         except OSError:
@@ -140,15 +200,13 @@ def drain_output(master_fd, timeout=0.5, wait_for_prompt=False):
         output.append(text)
         sys.stdout.write(text)
         sys.stdout.flush()
-        # Reset deadline after receiving data — more may follow.
-        deadline = time.monotonic() + 0.2
-        if wait_for_prompt:
-            # Check if prompt has appeared.
-            joined = "".join(output)
-            # The REPL prompt ends with "> " (with timing info before it).
-            last_line = joined[joined.rfind("\n") + 1:] if "\n" in joined else joined
-            if "> " in last_line and not last_line.strip().startswith(";"):
-                break
+        # Reset the idle window after receiving data — more may follow. Reset
+        # the hard cap too: as long as the REPL is emitting output it is making
+        # progress (a long solve that prints incrementally must not be capped);
+        # the cap only fires after genuine silence with no prompt in sight.
+        now = time.monotonic()
+        idle_deadline = now + timeout
+        hard_deadline = now + prompt_timeout
     return "".join(output)
 
 
@@ -167,17 +225,29 @@ def type_slowly(text, master_fd, kb):
 
 
 def create_run_dir(demo_path):
-    """Create a timestamped run directory for REPL cache isolation."""
+    """Create a unique run directory for REPL cache isolation.
+
+    The name carries microsecond-resolution timestamp AND pid so that
+    back-to-back runs (a stability sweep replays the same demo many times
+    within the same second) never collide. A counter loop is a final
+    belt-and-suspenders guard against the astronomically-unlikely tie.
+    """
     demos_dir = Path(__file__).parent
     runs_dir = demos_dir / "runs"
     runs_dir.mkdir(exist_ok=True)
 
     demo_name = Path(demo_path).stem
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    run_dir = runs_dir / f"{timestamp}_{demo_name}"
-    run_dir.mkdir()
-
-    return run_dir
+    stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S-%f")
+    pid = os.getpid()
+    counter = 0
+    while True:
+        suffix = f"-{counter}" if counter else ""
+        run_dir = runs_dir / f"{stamp}_{pid}_{demo_name}{suffix}"
+        try:
+            run_dir.mkdir()
+            return run_dir
+        except FileExistsError:
+            counter += 1
 
 
 def start_repl(repl_binary, run_dir):

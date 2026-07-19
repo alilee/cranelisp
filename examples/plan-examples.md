@@ -244,9 +244,14 @@ is the **capability taught**. Exit code is the documented `main` return
   stable over 5 `--run` invocations. **Prelude-surface note:** the `:(Vec Int)`
   clause annotates a parameter with the `Vec` *type*, so the example adds
   `(import [primitives [Vec]])` — the examples prelude re-exports the vec-*
-  *functions* but not the type. Per §5.1.2 clause-independence the element type
-  must be concrete: bare `:Vec` is rejected ("type argument count mismatch")
-  and `:(Vec a)` is rejected (parameter unpinned) — only `:(Vec Int)` pins.
+  *functions* but not the type. The `measure` clauses are same-arity
+  type-dispatch, so each annotates its parameter (the annotation both
+  distinguishes the clause and supplies the type its body does not pin); the
+  element type must be concrete because nothing else pins it (§3.11 ambiguity,
+  not any clause-independence barrier — §5.1.2 back-flow now flows types
+  across clauses via sibling self-calls): bare `:Vec` is rejected ("type
+  argument count mismatch") and `:(Vec a)` is rejected (parameter unpinned) —
+  only `:(Vec Int)` pins.
 
 ## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
 

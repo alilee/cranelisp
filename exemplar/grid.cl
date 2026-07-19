@@ -38,7 +38,7 @@
 ;; to the old arithmetic sim across all 512 masks × 9 digits.
 
 (import [collections.vec [count get assoc conj]])
-(import [primitives [char-at str-len not]])
+(import [primitives [char-at str-len str-concat not]])
 ;; num.bits primitives — imported by name. The position-domain `bit-clear`/
 ;; `bit-set` are NOT imported (they would collide with grid's digit-domain
 ;; `bit-clear`/`bit-set`); grid composes those two from the primitives below.
@@ -228,13 +228,34 @@
      (Solved _) true
      (Candidates _) false]))
 
+;; ── Display Cell (REPL/debug affordance) ────────────────────────────────
+;;
+;; A conventional bare-head `(impl Display Cell …)` so a Cell renders legibly
+;; at the REPL and in debug output — e.g. `(show (Given 5))` => "Given 5". This
+;; satisfies the exemplar's own-type trait-dispatch selection criterion (#4):
+;; the exemplar's own ADT gets a trait impl, and `show` recurses to the
+;; primitive `Display Int` impl for the inner value/mask. `Display` and `show`
+;; are in scope via the implicit prelude glob (grid does not suppress it).
+;;
+;; DELIBERATELY NOT used by the hot `format-board` path in `solver.cl`: that
+;; path stays on direct `str-concat`/digit rendering to keep `show`-dispatch
+;; overhead out of production output (the documented perf decision in
+;; exemplar/CLAUDE.md "String building via str-concat" stands).
+(impl Display Cell
+  (defn show [self]
+    (match self
+      [(Given v)      (str-concat "Given " (show v))
+       (Solved v)     (str-concat "Solved " (show v))
+       (Candidates m) (str-concat "Candidates " (show m))])))
+
 ;; ── Tests ───────────────────────────────────────────────────────────────
 ;;
 ;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1: `None` = pass, `(Some reason)` = fail. They are
-;; discoverable via `(discover-tests)` and runnable via `(run-test ...)` —
-;; Decision 30 safe pattern (c). No `(mod test ...)` wrapper, no
-;; `(import [super [*]])` — the parent↔child deadlock cannot occur.
+;; per repl/spec.md §16.1: `None` = pass, `(Some reason)` = fail. They are run
+;; by the free-standing `tests.cl` runner, which imports and calls them
+;; directly; `discover-tests`/`run-test` are REPL-only and are NOT used here.
+;; No `(mod test ...)` wrapper, no `(import [super [*]])` — the parent↔child
+;; deadlock cannot occur.
 
 ;; --- Bitmask tests ---
 

@@ -25,6 +25,20 @@
 (clamp 15 0 10)
 (clamp -3 0 10)
 
+; Inference isn't limited to one signature. A defn can carry several clauses —
+; a multi-signature function — and each clause is inferred as if the clauses
+; were separate mutually-recursive functions. Types flow ACROSS clauses through
+; ordinary call resolution: the 1-arg clause calls the 2-arg clause, which pins
+; its parameter. No annotation needed anywhere:
+
+(defn grow ([x] (grow x x)) ([a b] (+ (+ a b) 1)))
+
+; A bare name reports every clause's inferred signature:
+
+grow
+(grow 5)
+(grow 3 4)
+
 ; Define your own trait. A method signature names its receiver position:
 
 (deftype Box (MkBox [:Int w :Int h]))
@@ -39,6 +53,19 @@
 
 (defn bigger? [a b] (> (size a) (size b)))
 (bigger? (MkBox 5 5) (MkBox 3 4))
+
+; Traits can also be higher-kinded — parameterised by a type CONSTRUCTOR (like
+; Option or List), not a plain type. (Functor f) abstracts over any f that holds
+; a value; fmap transforms what's inside without touching the shape:
+
+(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))
+
+; A higher-kinded impl ECHOES the declared head (Functor f) in slot 1 and names
+; the trait-constructor pairing (Functor Option) in slot 2:
+
+(impl (Functor f) (Functor Option) (defn fmap [func opt] (match opt [None None (Some x) (Some (func x))])))
+(fmap (+ 1) (Some 41))
+(fmap (* 10) None)
 
 ; Most methods are chosen by their arguments. A few are chosen by their RETURN
 ; type — zed takes no arguments and yields a value of its own type:

@@ -29,8 +29,13 @@ documented in `user/guide/`:
 
 - `constructors.md` / `field-accessors.md` — ambiguous *bare name* (two members
   share a name); remedy = qualify.
-- `functions.md` — an *unpinned multi-arity parameter* (each `defn` clause is
-  checked independently); remedy = annotate the clause's parameter.
+- `functions.md` — a *same-arity dispatch ambiguity* (two clauses whose written
+  signatures could both match one argument tuple); remedy = annotate a clause so
+  the written signatures no longer overlap. (Updated S112: the pre-S112 "each
+  clause checked independently / unpinned-param" framing was a spec drift,
+  corrected by the §5.1.2 back-flow rule — a sibling self-call now pins an
+  unannotated parameter, so the remaining `functions.md` ambiguity family is the
+  same-arity dispatch case.)
 
 Return-type-polymorphic dispatch ambiguity has **no home** in `user/` today.
 

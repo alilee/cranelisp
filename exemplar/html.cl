@@ -169,9 +169,10 @@
 ;; ── Tests ─────────────────────────────────────────────────────────────
 ;;
 ;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1. Discoverable via `(discover-tests)`,
-;; runnable via `(run-test ...)` — Decision 30 safe pattern (c). No
-;; `(mod test ...)` wrapper, no `(import [super [*]])`.
+;; per repl/spec.md §16.1. They are run by the free-standing `tests.cl` runner,
+;; which imports and calls them directly; `discover-tests`/`run-test` are
+;; REPL-only and are NOT used here. No `(mod test ...)` wrapper, no
+;; `(import [super [*]])`.
 
 ;; Test that form-page contains <input elements
 (defn test-form-page-has-inputs []

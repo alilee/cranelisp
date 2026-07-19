@@ -1107,6 +1107,14 @@ user> map
 :(Fn [(Fn [a] b) (user/List a)] (user/List b)) user/map
 ```
 
+A variant that infers a trait bound MUST display that bound inline, exactly as a
+single-signature constrained function does (§1.4) — the per-variant signature is a
+signature and carries its own constraints. A multi-signature `defn` is inference-
+equivalent to its clauses written as separate mutually-recursive functions (spec
+§5.1.2), so a clause such as `([a b] (+ a b))` displays `:(Fn [:core.num/Num a :core.num/Num a] a)`,
+never the constraint-stripped `:(Fn [a a] a)`. Dropping the constraint from a
+variant's display is a §1.4 non-conformance even when the bound is still enforced.
+
 | Requirement | Test |
 |---|---|
 | function shows type + name | [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification] |
