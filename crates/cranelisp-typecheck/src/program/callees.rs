@@ -255,6 +255,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// (FIXME 0616 leg 1) — the ONE-line companion of a
     /// `state.method_resolutions.resolved_calls.insert(span, resolved)` at a
     /// seam that writes through `state`. Keyed at the same (Apply) span.
+    ///
+    /// **Carrier-identity precondition (§11.8.8, W3-review Important-1).** A
+    /// dispatch is recorded ONLY where the callee resolves to its TABLE/carrier
+    /// identity — trait method, overload, or primitive. A callee that is a §4.6
+    /// LOCAL SHADOW (a `let`/`fn`/param binding masking a same-named
+    /// trait/primitive, `(let [+ (fn [a b] 0)] (+ 1 2))`) is an INDIRECT call on
+    /// the local closure's own scheme and records NO dispatch carrier here: its
+    /// `infer_apply` resolution seams gate on
+    /// [`CheckState::resolves_to_carrier_identity`] first, so a shadowed name
+    /// never reaches this recorder (mis-dispatch → the trait method would be a
+    /// spec §4.6 violation).
     pub(crate) fn record_dispatch_target(
         &self,
         state: &mut CheckState,

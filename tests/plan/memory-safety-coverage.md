@@ -272,6 +272,49 @@ Findings route per normal attribution; a surface with NO structural/
 differential argument (example-verified only) is an audit finding even with
 zero known defects — that is the whole point of the category.
 
+### 4.1 Diagnostic-mode capability fences — lifecycle ruling (S114, standing)
+
+Escalated from the S114 cleanup batch (`adb8d3fb`): the `m1_quarantine`
+e2e capability fence was retired when its planted fault — the last live
+free-class double-free (0638) — was fixed, and a re-plant proved
+empirically impossible (MS-P7 is reuse-corruption and runs clean under
+quarantine). The standing question: do MS-P6 e2e capability fences exist
+only opportunistically-while-a-live-fault-exists, or must retirement be
+replaced by unit-only coverage?
+
+**Ruling — neither pole; three prongs, all required:**
+
+1. **Unit-tier synthetic self-test per diagnostic mode: MANDATORY and
+   durable.** The fault is planted at the intrinsics allocator seam —
+   below the language, where a plant is ALWAYS constructible regardless of
+   compiler health — and the test asserts the mode detects it
+   (fail-on-revert of the detection logic). This is the durable capability
+   record; it never depends on a live compiler defect.
+2. **E2e capability fences are opportunistic BY NATURE, not by policy
+   laxity.** An e2e plant requires a source-level program that commits the
+   fault, which exists only while a live compiler defect of the class
+   exists. While one does, the fence is mandatory (free teeth — the MS-P6
+   self-test discipline). When the last live fault of the class drains,
+   the fence RETIRES **with a tombstone** naming (a) the drained fault
+   set, (b) the unit-tier successor (prong 1 — a retirement without one
+   is a coverage regression), and (c) the sibling faces still fencing the
+   env wiring.
+3. **Env-wiring e2e coverage is a per-MODE property, not per-fault.** At
+   least one e2e fence per diagnostic mode keeps exercising the env-var
+   wiring end-to-end (a sibling planted-fault face or a clean-run
+   capability cell) — unit tests are structurally blind to the subprocess
+   env plumbing (§5's unit-tier row).
+
+The m1_quarantine retirement is compliant on all three prongs (intrinsics
+unit seam carries the verification; sibling quarantine faces fence the
+wiring; tombstone recorded in the retiring change-set). The W7 MS-P6 COW
+capability re-plant (s114-test-plan §8 rider) is the worked example of the
+compliant alternative: re-plant on a SYNTHETIC fault when one is
+constructible at the e2e tier. A retirement claiming prong-2 impossibility
+must state WHY a synthetic e2e plant is not constructible (as the m1
+tombstone does: quarantine's detected class cannot be committed from
+source once the compiler is fixed).
+
 ---
 
 ## §5. Current exposure — quantified (S111, post-CS-5)

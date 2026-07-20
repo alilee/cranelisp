@@ -215,7 +215,9 @@ impl TestFixture {
         expr: &cranelisp_types::Expr,
     ) {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
-        env.resolve_value_position_trait_methods(&mut self.state, expr, false);
+        // Test convenience — the no-impl `Err` (F-D2-11) is discarded; the
+        // tests using this helper exercise impl-PRESENT resolvable shapes.
+        let _ = env.resolve_value_position_trait_methods(&mut self.state, expr, false);
     }
 
     /// Clear transient state (test convenience).

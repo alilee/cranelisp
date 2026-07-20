@@ -2148,6 +2148,37 @@
         }
     }
 
+    // spec: 04-expressions §4.6 / §11.8.8 — the Ruling-5 carrier discriminator
+    // (W3-review Important-3 extraction: the ONE predicate the five resolution
+    // seams consult). An unbound name resolves to its TABLE/carrier identity
+    // (trait/overload/primitive dispatch); a `let`/`fn`/param binding that shadows
+    // it is a §4.6 LOCAL that must resolve to the local binding — the mechanism
+    // that makes `(let [+ (fn [a b] 0)] (+ 1 2))` call the closure (0), not the
+    // `Num.+` trait method (3). Pins the extraction at its seam.
+    #[test]
+    fn resolves_to_carrier_identity_discriminates_local_shadow() {
+        let mut tc = tc();
+        // Unbound `+` → carrier identity (dispatch is legitimate).
+        assert!(
+            tc.state.resolves_to_carrier_identity("+"),
+            "an unbound name must resolve to its carrier identity"
+        );
+        // Shadow `+` with a `let`-style local binding.
+        tc.state.env.push_scope(span(0, 1));
+        tc.state.env.bind(Symbol::from("+"), crate::scheme::mono(Type::Int));
+        assert!(
+            !tc.state.resolves_to_carrier_identity("+"),
+            "a local shadow must NOT resolve to the carrier identity (§4.6) — this \
+             is what stops the trait-method mis-dispatch"
+        );
+        // The shadow only masks within its scope.
+        tc.state.env.pop_scope();
+        assert!(
+            tc.state.resolves_to_carrier_identity("+"),
+            "after the shadowing scope pops, the name resolves to its carrier again"
+        );
+    }
+
     // spec: 07-traits §7.4.1 — (+ 1.0 2.0) succeeds: Float has Num impl
     #[test]
     fn test_trait_method_plus_float_succeeds() {

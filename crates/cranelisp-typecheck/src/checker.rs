@@ -367,6 +367,27 @@ impl CheckState {
         self.current_defn.as_deref() == Some(name)
             && self.env.lookup_frame(name) == self.current_defn_frame
     }
+
+    /// The §11.8.7 Ruling-5 / §11.8.8 ("name is TRIGGER, carrier is IDENTITY")
+    /// discriminator — the ONE home (Principle 7 / P24 "resolve once") for the
+    /// five resolution sites that keyed the local-shadow decision (W3-review
+    /// Important-3: the predicate was 3× copy-pasted at the value-position gates
+    /// and the overload gate, and TWO resolution blocks — the post-unify
+    /// trait/primitive resolver and the auto-curry filler — omitted it entirely,
+    /// mis-dispatching a shadowing local through the carrier, Important-1).
+    ///
+    /// TRUE iff `name` must resolve to its TABLE/carrier IDENTITY (trait dispatch,
+    /// overload dispatch, primitive resolution, the value-position base reject):
+    /// it is NOT locally bound at all, OR it is the genuine recursion
+    /// self-reference (whose recursion binding is a local at `current_defn_frame`
+    /// but genuinely refers to the multi-sig/constrained base — the §5.1.2
+    /// back-flow self-call). FALSE iff `name` is a §4.6 LOCAL SHADOW (a
+    /// `let`/`fn`/param binding at a deeper frame) — which MUST resolve to the
+    /// local binding, never the global table: `(let [+ (fn [a b] 0)] (+ 1 2))`
+    /// is the shadowing closure returning 0, NOT the `Num.+` trait method (3).
+    pub(crate) fn resolves_to_carrier_identity(&self, name: &str) -> bool {
+        self.env.lookup(name).is_none() || self.is_recursion_self_ref(name)
+    }
 }
 
 /// Borrowed references to session-owned shared state for type inference.

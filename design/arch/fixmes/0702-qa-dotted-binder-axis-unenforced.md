@@ -1,10 +1,14 @@
 ---
 number: 0702
-target: /qa
+target: /spec (re-targeted by /qa, S114 pre-W7 disposition — the three-way
+  disagreement gates cell polarity; /qa's matrix half is discharged, see the
+  disposition section)
 filed_by: /review
 filed_at: 2026-07-20
 sprint_filed: 114
-refers_to: spec/05-definitions.md §5 binder-positions table; crates/cranelisp-frontend/src/ast_builder.rs::reject_qualified_binder_head; design/frontend/binder-head-reject.md §2 (the `.` de-scope note)
+scheduled: S115 (chain: /spec ruling → /design(frontend) premise correction →
+  /testing M3 cells + /dev(frontend) predicate widening)
+refers_to: spec/05-definitions.md §5 binder-positions table; crates/cranelisp-frontend/src/ast_builder.rs::reject_qualified_binder_head; design/frontend/binder-head-reject.md §2 (the `.` de-scope note); tests/plan/s114-test-plan.md §5.1 M3 (the standing matrix)
 status: open
 ---
 
@@ -55,6 +59,35 @@ routes to /spec for the user to settle; the design's falsified premise routes to
 /design(frontend) either way. The mechanism fix (if ruled) is one predicate
 widening at the shared helper + the `read_dotted_name`-fed head sites —
 /dev(frontend), small.
+
+## /qa disposition (S114 pre-W7, 2026-07-20 — matrix drawn; re-targeted /spec)
+
+Record: `tests/plan/s114-test-plan.md` §11 item 3; the standing matrix is
+**M3 in §5.1 of that plan** (the 0676 audit-R1 pattern — a row per binder
+position × {`/`, `.`} × {reject, bare twin}, plus the deliberate §6.2.1
+dotted ctor-pattern-HEAD positive, plus the never-drawn qualified-type-param
+row from design §3.2).
+
+- **Cell authoring = S115, not this sprint.** The spec three-way
+  disagreement (prose "qualified OR dotted rejects everywhere" vs the
+  table's narrower per-row wording vs the design de-scope) gates cell
+  POLARITY for several rows; pins against a contested reading are
+  wrong-polarity hazards (the S109 verify-example-well-formed lesson). The
+  sharpest face — `(deftype A.B …)` minting ctor `user/B` — is a defect
+  under EVERY reading (silent accept + corrupted minted identity), but its
+  correct assertion (located reject vs coherent accept) differs by ruling,
+  so it pins with the batch, first in the batch.
+- **Routing (this FIXME re-targets down the chain, staying open):**
+  1. **/spec** (now): frame the prose-vs-table disagreement for the user
+     (§5 [S113] prose vs the per-row Rule column); the design's falsified
+     premise is evidence, not authority — derive from the ruling, not the
+     codebase.
+  2. **/design(frontend)**: correct `binder-head-reject.md` §2's de-scope
+     premise (falsified by probe) per the ruling.
+  3. **/testing** (M3 batch) + **/dev(frontend)** (one predicate widening
+     at the shared helper + the `read_dotted_name`-fed head sites; the
+     M1/M2 structural criterion applies — ONE predicate, no per-position
+     copies).
 
 ## Context
 

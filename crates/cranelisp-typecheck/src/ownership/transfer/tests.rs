@@ -801,6 +801,101 @@ fn row3_escape_whole_var_arm_scrutinee_stays_non_escaping_when_consumed_in_frame
 }
 
 #[test]
+fn cow_container_projected_out_records_escape_msp7() {
+    // MS-P7 (§3.6 adjudication; `safety_oracle_lane.rs`) — `(vec-get (cow v) 0)`:
+    // the COW `MayAliasOf(0)` container `(cow v)` is PROJECTED OUT by `vec-get`
+    // (`ProjectionOf(0)`), whose inline lowering drops the container arg-temp
+    // (`emit_vec_drop_if_temporary`) while param `v`'s own scope-dec ALSO fires.
+    // The projection-out arm MUST force the CONTAINER'S escape fact to `Some(true)`
+    // so the backend's escape-gated retain (`vec_codegen::cow_source_ownership` →
+    // `retain_reused`) incs the in-place result → the container drop is balanced
+    // (ONE net dec). Pre-fix it stayed `Some(false)` (Borrowed arg ⇒ non-escaping)
+    // → no protect → the in-place COW arm double-dec'd the aliased param (--link
+    // abort). Arg-position sibling of `row3_escape_whole_var_arm_records_scrutinee_escape`.
+    let env = TestEnv::default()
+        .summary(
+            "vec-get",
+            sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        )
+        .summary(
+            "cow",
+            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+        );
+    let cow_span = Span::new(600, 601);
+    let getv = call(
+        "vec-get",
+        vec![
+            call_sp(cow_span, "cow", vec![var("v")]),
+            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+        ],
+    );
+    let r = run(&[strparam("v")], getv, env);
+    assert_eq!(
+        r.facts.escapes.get(&cow_span),
+        Some(&true),
+        "a COW may-alias container projected-out by vec-get escapes (MS-P7 protect)"
+    );
+}
+
+#[test]
+fn fresh_container_projected_out_stays_non_escaping() {
+    // Precision twin (MS-P7): a FRESH (no param reach) container projected-out
+    // keeps escapes=Some(false) — the container drop is the single accounting, no
+    // param aliasing, no protect needed. Only a may-alias container flips (guards
+    // against over-protecting genuinely-fresh temporaries → leak).
+    let env = TestEnv::default()
+        .summary(
+            "vec-get",
+            sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+        )
+        .summary("mk", sm(vec![], ResultMode::Fresh, vec![]));
+    let mk_span = Span::new(610, 611);
+    let getv = call(
+        "vec-get",
+        vec![
+            call_sp(mk_span, "mk", vec![]),
+            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+        ],
+    );
+    let r = run(&[strparam("v")], getv, env);
+    assert_eq!(
+        r.facts.escapes.get(&mk_span),
+        Some(&false),
+        "a fresh projected-out container (no param reach) needs no protect — stays non-escaping"
+    );
+}
+
+#[test]
+fn cow_container_transferred_to_call_stays_non_escaping_lc3() {
+    // MS-P7 precision fence (the l_c3 regression guard) — `(consume (cow v))`
+    // where the may-alias COW container is TRANSFERRED to a NON-projection callee
+    // (a user fn / recur, the `(churn (vec-set v i 0) …)` shape) rather than
+    // projected-out. It has the IDENTICAL `Arg{Borrowed}` ctx + `Conditional`
+    // origin as the vec-get case above, but is NOT the projection-out consumer, so
+    // its escape fact MUST stay `Some(false)` — forcing it true adds a spurious
+    // in-place inc and reintroduces the per-iteration l_c3 leak. This pins that the
+    // MS-P7 protect is scoped to the PROJECTION arm, not the container's ctx.
+    let env = TestEnv::default()
+        .summary(
+            "consume",
+            sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        )
+        .summary(
+            "cow",
+            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+        );
+    let cow_span = Span::new(620, 621);
+    let body = call("consume", vec![call_sp(cow_span, "cow", vec![var("v")])]);
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&cow_span),
+        Some(&false),
+        "a may-alias container transferred to a non-projection callee keeps \
+         Some(false) — the MS-P7 protect must not fire here (l_c3 in-place reuse)"
+    );
+}
+
+#[test]
 fn shadowed_root_emits_no_provenance() {
     // spec: §13.6(d) — a pattern binding shadowing the scrutinee root ⇒ None.
     // scrutinee is `p`; arm binds a field also named `p`.

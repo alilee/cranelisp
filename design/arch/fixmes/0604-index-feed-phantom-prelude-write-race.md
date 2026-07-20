@@ -1,24 +1,103 @@
 ---
 number: 0604
-target: /qa
-re_scoped_from: /dev (S110 — per contract §4; see "S110 /dev disposition" below)
+target: /dev (src — S115 instrumented run; escalation path /dev(typecheck) per
+  the trace, see the S114 re-attribution section)
+re_scoped_from: /qa (S114 pre-W7 disposition, folding /review's 0698) ←
+  /dev (S110 — per contract §4; see "S110 /dev disposition" below)
 filed_by: /qa
 filed_at: 2026-07-15
 sprint_filed: 109
-scheduled: S110
-refers_to: src/session_v4/index_worker.rs (branch (c) `index_branch_c` — the
-  live-table typecheck + R13 undo discipline) + the import/prelude installer
-  writers it drives (src/imports.rs); poison-consumer (CORRECT, do not touch)
-  at src/imports.rs::insert_detecting_ambiguity ~L547-560. Narrow-deploy
-  /dev to src/ (int); /design (int) records the isolation contract.
-  RE-SCOPED S110: the recipe's residual writer is on the FOREGROUND concurrent-
-  compile path (src/process_form/, src/imports.rs, src/worker.rs), NOT the
-  index feed — the index feed is proven inert under the `--run` recipe. See the
-  disposition section.
+scheduled: S115 (early wave — front-load; 3-sprint carry, escalation flag for
+  /sprint Phase 1)
+refers_to: src/worker.rs::commit_staging_to_live (:439; `live.insert` :513 —
+  the census-missed suspected writer) + src/imports.rs census block +
+  check_terminal_closure/write_is_closure_valid (landed 58ac8e46 — predicate
+  provably passes the live phantom) + design/int/prelude-table-write-isolation.md
+  §2.2 (false premise + census + check shape — /design(int) correction rides
+  the fixing wave); poison-consumer (CORRECT, do not touch) at
+  src/imports.rs::insert_detecting_ambiguity ~L547-560.
 status: open
 ---
 
-# Background stdlib index feed racily writes a phantom public binding into the live `prelude` table (family FIXME: the index-feed WRITE-race)
+# Phantom undeclared-PUBLIC `bit-and` entry in prelude's live table (S114: foreground writer, deterministic on this VM; formerly "index-feed write-race")
+
+## /qa S114 pre-W7 re-attribution (2026-07-20 — PLAN OF RECORD; folds /review FIXME 0698, now deleted)
+
+**Supersedes the S114 Phase-3 section below.** The W5 change-set `58ac8e46`
+(C3 chokepoint + census) produced MAJOR re-attribution evidence, previously
+durable only in that commit message; scribed here per 0698 finding 1.
+
+### The corrected model
+
+1. **The old premise is FALSE.** This file's root-cause section below says
+   "no stdlib module re-exports `bit-and`" as if no legitimate provider
+   path existed — but `bit-and` IS a bundled primitive: a genuine provider
+   (`primitives/bit-and`) exists. Consequence: **any provider-existence
+   check passes the defect by construction.**
+2. **The phantom is an UNDECLARED-PUBLIC entry**: a public
+   `bit-and → primitives/bit-and` entry in prelude's LIVE table that is
+   outside prelude's DECLARED export closure. **The correct check is
+   declared-export closure, not provider-existence.** The landed
+   `write_is_closure_valid` gate is therefore structurally unable to catch
+   the live defect (disclosed in the W5 commit; 0698 finding 3).
+3. **It bypasses all four routed src/ install seams** (install_exports,
+   install_imports, insert_cluster, defmacro register — all verified
+   routing through the chokepoint). **The W5 census MISSED
+   `commit_staging_to_live`** (src/worker.rs:439; `live.insert` at :513) —
+   the staging→live commit that writes every typecheck-staged entry
+   (including public Defs) into the live table, and the very seam the
+   evidence names as the suspected writer. Until that seam is dispositioned
+   (route through the gate or a named legal-skip with rationale), the
+   census cannot support its closure claim (0698 finding 2).
+4. **THIS VM reproduces 25/25 deterministically.** Environment fingerprint:
+   the S114 W5 /dev environment = the current project VM (aarch64 Linux,
+   kernel 7.0.0-27-generic), debug build at `58ac8e46`-era HEAD, recipe =
+   §"Deterministic repro recipe" below (`--run --no-cache` vs the workspace
+   stdlib). Contrast history: /sprint S109 env 16/16; /testing S109 0/140;
+   /dev S110 env 0/~175. The determinism is the single most valuable asset
+   this defect has ever had — preserve THIS record even if the VM state
+   drifts.
+
+### Next investigative step (S115, front-loaded — a single run, not a hunt)
+
+1. **/dev(src, narrow int)**: add `MODULE_TRACE` emission + the
+   declared-export-closure check (diagnostic tier first) at
+   `commit_staging_to_live`, dispositioning the missing census row
+   (route-or-legal-skip); then run the deterministic recipe ONCE with
+   `CRANELISP_MODULE_TRACE=1` — 25/25 determinism means one run names the
+   writer of the phantom entry and its origin.
+2. **Attribution fork, decided by the trace**: if the phantom entry arrives
+   in staging via typecheck's staging population, the defect is
+   **cross-crate** — attribution moves to /dev(typecheck) with the trace as
+   the brief; if the write is session-side (src/), it stays /dev(src).
+3. **Predicate correction lands with the fix**: provider-existence →
+   declared-export closure. Forward hazard (0698): the
+   `form_dispatch.rs::register_macro_in_module` gate call runs under a held
+   `get_mut` guard and is safe ONLY because the current predicate does no
+   map read for non-Import entries — a declared-export-closure check that
+   reads the target module's own declared exports would DEADLOCK there
+   (DashMap re-entrancy). Precompute/pass the export closure; no map read
+   under the guard.
+4. **Doc + fixture corrections ride the fixing wave**: /design(int)
+   corrects `prelude-table-write-isolation.md` §2.2 (false premise,
+   check-shape, census — add the staging-commit + defmacro-register rows);
+   /testing corrects the counterfactual comment on
+   `imports/tests.rs::check_terminal_closure_rejects_out_of_closure_public_write`
+   ("primitives has NO bit-and" — mechanics valid, comment false).
+
+### Amended acceptance (replaces the S114 §4 gate)
+
+Census CLOSED including `commit_staging_to_live`; corrected
+declared-export-closure predicate at the chokepoint (unconditional
+diagnosed error, deadlock hazard honored); writer identified via the
+deterministic recipe and fixed at its owning crate; the 25/25 recipe flips
+to 0-fire ≥25× on THIS VM; twin guards GREEN; unit test at the corrected
+predicate; /design(int) + fixture-comment corrections landed. Then this
+file retires.
+
+Disposition record: `tests/plan/s114-test-plan.md` §11 item 1.
+
+---
 
 ## /qa S114 Phase-3 plan of record (2026-07-20 — SCHEDULED TO SHIP; user approved Phase 1)
 

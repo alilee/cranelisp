@@ -76,7 +76,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.check_defn_body(state, defn, param_types, ret_ty, var_scope)
             .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
         self.resolve_deferred_trait_calls(state, defn.body())?;
-        self.resolve_value_position_trait_methods(state, defn.body(), false);
+        self.resolve_value_position_trait_methods(state, defn.body(), false)?;
 
         // Per-defn post-passes: resolve auto-curry accumulated during this
         // defn's body check. Overload resolution is deferred to finalize
@@ -429,7 +429,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty, var_scope)?;
             self.resolve_deferred_trait_calls(state, internal_defn.body())?;
-            self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
+            self.resolve_value_position_trait_methods(state, internal_defn.body(), false)?;
 
             // Per-variant post-passes (auto-curry only; overloads deferred to finalize)
             self.resolve_auto_curry(state);

@@ -758,7 +758,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // still unresolved vars during try_auto_curry), attempt it now.
             // Later unifications (e.g., from a call site like `(make-adder 10)`)
             // may have pinned the type vars to concrete types.
-            if trait_resolution.is_none() {
+            //
+            // §11.8.8 (W3-review Important-1) — "the carrier is the IDENTITY". Gate
+            // this raw-name re-resolution on the callee's recorded CARRIER VERDICT:
+            // a callee resolved to a §4.6 LOCAL shadow (`(let [+ (fn [a b] 0)]
+            // ((+ 1) 2))`) has `VarRef::Local`, so it must curry the LOCAL closure,
+            // NOT re-derive the trait/primitive dispatch by raw name (mis-dispatch
+            // → 3). `callee_has_keyed_carrier` is the shared P7 carrier guard (TRUE
+            // only for `VarRef::Global`); a `None` inner resolution then transports
+            // the local carrier downstream (below), currying the closure.
+            if trait_resolution.is_none()
+                && callee_var_span.is_none_or(|sp| {
+                    callee_has_keyed_carrier(&state.method_resolutions.var_refs, sp)
+                })
+            {
                 let resolved_callee = self.apply_subst(state, &callee_ty);
                 if let Type::Fn(full_params, _) = &resolved_callee {
                     let resolved_params: Vec<Type> = full_params

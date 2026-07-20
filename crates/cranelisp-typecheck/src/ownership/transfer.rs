@@ -700,7 +700,39 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                                 self.facts.provenance.insert(*span, root.clone());
                                 Origin::unconditional(root, true)
                             }
-                            Origin::Conditional { rep, .. } => Origin::conditional(rep, true),
+                            Origin::Conditional { rep, .. } => {
+                                // MS-P7 (§3.6) — PROJECTING OUT of a may-alias
+                                // CONTAINER: `(vec-get (vec-set v 0 9) 0)`, where the
+                                // container `(vec-set v 0 9)` is a COW result that may
+                                // BE param `v` in the rc==1 in-place arm. The inline
+                                // vec-get lowering RELEASES its container arg-temp
+                                // (`vec_codegen::emit_vec_drop_if_temporary`) after
+                                // the read, while the aliased param's own scope-dec
+                                // ALSO fires → both decs hit the SAME box in the
+                                // in-place arm → double-free (`--link` abort; --run
+                                // tolerates it). The §3.7 fix's protect/publish did
+                                // not cover this projection-out ARG-TEMP. Force the
+                                // CONTAINER'S escape fact TRUE so the backend's
+                                // escape-gated COW retain (`cow_source_ownership` →
+                                // `retain_reused`) incs the in-place result — the
+                                // container drop is then balanced (ONE net dec).
+                                //
+                                // Scoped to the PROJECTION consumer (this arm), NOT
+                                // the container's own Arg-context escape: a COW
+                                // may-alias TRANSFERRED to a recur / user-fn (l_c3
+                                // `(churn (vec-set v i 0) …)`) has the IDENTICAL
+                                // `Arg{Borrowed}` ctx + `Conditional` origin but is
+                                // NOT projected-out (no `emit_vec_drop_if_temporary`),
+                                // so its escape fact stays `Some(false)` and the
+                                // in-place reuse is preserved. Only a Fresh container
+                                // (no param reach) skips this (the `Fresh` arm).
+                                if let MonoExpr::Apply { span: container_span, .. } =
+                                    &args[k]
+                                {
+                                    self.facts.escapes.insert(*container_span, true);
+                                }
+                                Origin::conditional(rep, true)
+                            }
                             Origin::Fresh => Origin::Fresh,
                         }
                     }

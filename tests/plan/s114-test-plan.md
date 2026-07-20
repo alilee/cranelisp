@@ -193,6 +193,14 @@ superseded slot ref still needs exactly one dec). The exemplar parity
 expectation updates when both faces close (S113 §3.6 MS-P8
 characterization datum).
 
+**Post-W4 sibling (pre-W7 disposition §11 item 4):** the pre-existing
+scale-invariant **toggle-off** entry-return `Pure` leak (F-R1 family,
+design §6.1 sibling; reproduces at 0 iterations) is attributed to the same
+`protect_return_value` entry-frame seam — the W4 suppression's license
+does not reach the `CRANELISP_NO_OWNERSHIP=1` lowering. Pin rides the
+W7-close rider (×1 RED, `class=rc-miscount`); fix = S115 backend scope.
+The both-polarity fence below binds that fix too.
+
 **B-2 fix ownership fence (F4):** the 0668 contract must NOT absorb the B-2
 escape-fact half — the analysis-ON fact correction is typecheck work already
 landed S113; its *cache-coherence* half (stale persisted `Some(false)`)
@@ -516,6 +524,16 @@ track — do not fold). **FIXME 0604 retires when the chokepoint + census +
 guards land**; if a firing occurs first anywhere, the assert names the seam
 and the fix narrows to it.
 
+> **AMENDED post-W5 (pre-W7 disposition §11 item 1, 2026-07-20):** the
+> chokepoint + census landed (`58ac8e46`) but do NOT retire the FIXME —
+> the census missed `commit_staging_to_live` (the suspected writer) and
+> the landed provider-existence predicate passes the live phantom by
+> construction. The re-attribution evidence (premise false; undeclared-
+> PUBLIC entry; 25/25 deterministic on THIS VM) is scribed in FIXME 0604;
+> the residual writer identification **carries to S115** (single
+> MODULE_TRACE-instrumented run at the staging-commit seam). §11 is the
+> disposition record.
+
 ### 4.3 0670 chain cells (F8 — three waves, strict order) — **RE-BASED post-W1 (/qa disposition item 1, 2026-07-20)**
 
 Wave 1 (int fix, Track C) → wave 2 (frontend §5 value-level reject
@@ -637,6 +655,36 @@ duplicating).
 BD-A3's probe-first discipline stands (silent-accept vs late-incidental
 determines the pin's class); the type-params any-case cell rides the probe.
 
+**M3 — binder-position × {qualified `/`, dotted `.`} × {reject, bare-accept
+twin} (STANDING; drawn from FIXME 0702, pre-W7 disposition §11 item 3).**
+Spec §5's [S113] prose is categorical — a qualified OR dotted spelling in
+ANY binder position is a compile-time error — but the implemented reject
+(`reject_qualified_binder_head`) keys on `/` only: the S113/S114 waves drew
+the `/` column across all positions and never the `.` column, so every
+position grew the same hole (the coverage-by-definition-variants class).
+
+| Binder position | `/` reject | `.` reject | bare twin |
+|---|---|---|---|
+| defn head | landed (S113/W-D) | **[S115]** — probe: `(defn a.b [x] x)` silently binds `user/a.b` | GREEN corpus |
+| defn/fn param | landed (IQ-N) | **[S115]** — silently binds | GREEN corpus |
+| let name | landed (IQ-N) | **[S115]** — silently binds | GREEN corpus |
+| match var-pattern | landed (IQ-N) | **[S115]** — silently binds | GREEN corpus |
+| deftype head | landed (BD rows) | **[S115] — SHARPEST FACE**: `(deftype A.B [:Int v])` silently accepted; echo shows type `user/A.B` but mints ctor **`user/B`** (silent-accept + corrupted minted identity, D-qual re-root sibling) | GREEN corpus |
+| deftype field name | landed | **[S115]** — accepted w/ suppressed-accessor warning | GREEN corpus |
+| deftype type param | **[S115]** — dies as incidental `module not found` at degenerate 0..0 span (pre-S113 face; the design §3.2 justified-exclusion row never drawn — drawn NOW) | **[S115]** | GREEN corpus |
+| deftrait head + method names | landed | **[S115]** | GREEN corpus |
+| defmacro head | landed | **[S115]** | GREEN corpus |
+| **Deliberate positive** | — | ctor-pattern HEAD `Maybe.Some` in match position stays LEGAL (§6.2.1 — the one deliberate dotted reference in pattern position); born-green fence rides the batch | — |
+
+**Cell authoring is GATED on the /spec three-way settlement** (§5 prose vs
+the table's narrower per-row wording vs the design de-scope — FIXME 0702,
+re-targeted /spec): polarity is contested for several rows, and pins
+against a contested reading are wrong-polarity hazards. After the ruling:
+/testing authors the column as ONE batch (S115); the mechanism fix is one
+predicate widening at the shared helper + the `read_dotted_name`-fed head
+sites (/dev(frontend), small). The structural acceptance is the same as
+M1/M2: ONE shared predicate, no per-position hand-rolled check.
+
 **M2 type-param case ruling (/qa disposition item 3, 2026-07-20 —
 SPEC-MANDATED REJECT, ruled from spec text, no user question needed).**
 The W1 probe found `(deftype (Box A) …)` — an UPPERCASE type param —
@@ -739,6 +787,7 @@ family. Rows reserved — /qa adds them when the enumeration table exists
 | Track D: 0682 fix (rides W-D1) | RA-N1, RA-N2, RA-N5, RA-N6 ×2 | RA-P1/P2 + RA-N3 ×2 born-green, RA-N4 division fence |
 | Track E: 0590 (if it lands) | none | `_hkt` born-green fence ×2 (§6) + mint-family pins; unit-tier `Named`-arm obligation |
 | W7: /dev(typecheck) rider (adjudicated W3; priority over the conditional 0590 slot) | MS-P7 (§3.6 adjudication: typecheck ownership, `MayAliasOf` projection-out reaching context; class re-labeled `uaf`) + F-D2-11/F-D2-12 IF the §3.8 probes confirm RED | Safety-lane clean/green cells both toggles; MS-P6 capability cell re-planted in the flip change-set (§3.6 flip hazard); W4 fences: no backend workaround, pin color-change reported to /qa |
+| W7-close /testing pin rider (§11 items 4+5) | none flip — **+2 intended NEW REDs carried into S115**: toggle-off entry-return leak (rc-miscount, backend) + fn-as-value GOT-slot carrier-loss (carrier-loss, typecheck) | Phase-7 certification names them per the §11 counting convention (stable-exact + named flap set); ≥3 full-suite runs verify the 0694 nullary face |
 
 ## 8. Stage-1 battery — AS BUILT (W1 delivered 2026-07-20; /qa re-base)
 
@@ -815,11 +864,132 @@ dispositioned in place above — this section is the index:
 Ledger (§7) and counts (§8) re-based to the as-built battery: 45 tests,
 17 RED + 28 born-green; suite 5033/4985/48/1.
 
+## 11. Pre-W7 disposition batch (Phase 5, /qa, 2026-07-20 — evidence-only)
+
+The six accumulated dispositions (SPRINT.md §Notes: W5 owed queue, W4-fix
+note, rider-batch note, cleanup-batch escalation; FIXMEs 0698/0694/0702/0604).
+Durable record; the touched FIXMEs and sections point here.
+
+1. **0604 re-attribution (0698 folded and deleted).** The W5 evidence bundle
+   is now scribed in FIXME 0604 (§"S114 W5 re-attribution") as its durable
+   record: premise FALSE (`bit-and` IS a bundled primitive — a genuine
+   provider exists, so provider-existence checks pass the defect by
+   construction); the phantom is an **undeclared-PUBLIC**
+   `bit-and → primitives/bit-and` entry in prelude's live table, outside
+   prelude's declared exports; it bypasses all four routed src/ install
+   seams; the W5 census MISSED `commit_staging_to_live`
+   (src/worker.rs:439, `live.insert` :513) — the suspected writer; the
+   correct check is **declared-export closure**, not provider-existence;
+   THIS VM reproduces **25/25 deterministically** (recipe + environment
+   fingerprint in the FIXME). **Residual investigation CARRIES TO S115**
+   (early wave; see the FIXME for owner/next-step) — W7 is typecheck-lead
+   and at capacity, and the determinism is preserved by record, not by
+   haste. §4.2's ship-gate is amended: the chokepoint+census landed but
+   does NOT retire the FIXME (the census is not closed and the predicate
+   passes the live defect).
+2. **0694 re-scope.** The macro_clause `_link` face is **closed by fix**
+   (W5 C2 / 0638 protect-on-build; all 5 pins GREEN; the layout-corruption
+   mechanism was real and is fixed). Remaining scope = the **nullary
+   F-D2-10 load-flap** only (`nullary_return_dispatch_method_only_import_
+   no_codegen_leak`: 14/14 in isolation, fails under full-suite load).
+   Expectation recorded: W7's F-D2-11/fallback-seam-family work may
+   stabilize it. Verification at Phase-7 certification: **≥3 consecutive
+   full-suite runs**; green in all → the FIXME closes with a watch clause
+   (any future in-suite RED = reopen as a root-cause row, never "flake");
+   any RED → capture the in-suite failure output and open a **root-cause
+   investigation row in S115** (load-dependent behaviour in a check-gate is
+   a real defect signal — candidate classes `shared-state-write-race` or a
+   harness-contention mechanism to be demonstrated, not presumed).
+   **Counting convention (standing, from this batch):** suite-state
+   certification reports stable REDs as an exact count plus a NAMED
+   flap-class set — a run-dependent guard is never folded into an "exact"
+   scalar (the cleanup-batch commit `adb8d3fb` already practices this:
+   "7 W7 residuals + the 0694 nullary load-flap").
+3. **0702 — the `{/, .}` × binder-position matrix** is drawn as standing
+   rows: **M3 in §5.1** (the 0676 audit-R1 pattern). **Cell authoring is
+   S115 scope input, not this sprint**: the spec three-way disagreement
+   (§5 prose "qualified OR dotted rejects everywhere" vs the table's
+   narrower per-row wording vs the design's `.`-de-scope on a falsified
+   premise) gates cell POLARITY — authoring pins against a contested
+   reading risks wrong-polarity REDs (the S109 lesson: verify the example
+   well-formed before framing). Routing: /spec (user settles the three-way)
+   FIRST, then /design(frontend) premise correction, then /testing cells +
+   /dev(frontend) predicate widening. FIXME 0702 stays open, re-targeted
+   /spec. The sharpest face — `(deftype A.B …)` silently minting ctor
+   `user/B` — is a defect under EVERY reading (silent accept with a
+   corrupted minted identity, D-qual re-root sibling), but its correct
+   assertion differs by ruling, so it pins with the batch, first.
+4. **Entry-return `Pure` leak, toggle-off (W4-fix note) — PIN NOW.**
+   Attribution: `cranelisp-backend` entry-frame return protect
+   (`protect_return_value` seam, §2.1's F-R1 family / design §6.1 sibling),
+   **toggle-off arm** — the W4 F-R1 suppression is licensed at the
+   entry-`main` single-consumer contract but does not reach the
+   `CRANELISP_NO_OWNERSHIP=1` lowering; scale-invariant (reproduces at 0
+   iterations), deterministic. Grounds for pin-now rather than an S115 row:
+   the toggle-off lowering is the differential oracle's REFERENCE semantics
+   (memory-safety strategy §1.2 signals 1–2) — a standing entry-frame leak
+   there poisons every future `allocs==deallocs` oracle cell. Cell: minimal
+   entry-return IO program (the §2.1 F-R1 repro shape, no loop) under
+   `CRANELISP_NO_OWNERSHIP=1`, assert `allocs == deallocs` — RED ×1;
+   `class=rc-miscount locus=crates/cranelisp-backend
+   compiler/rc_emission.rs::protect_return_value — entry-main IO-return,
+   toggle-off arm (F-R1 sibling) owner=/dev` (locus provisional until the
+   fix confirms the seam). **Fix = S115 backend scope input** (W7 has no
+   backend slot). The fix must not weaken the general G2/item-26 protect —
+   the §2.1 both-polarity fence binds it.
+5. **fn-as-value GOT-slot carrier-loss (rider-batch note) — PIN NOW.**
+   `fn-as-value wrapper for '=' reached codegen with no GOT-slot carrier`,
+   failing even impl-present — a producer gap: the seam that mints the
+   fn-as-value wrapper body derives no GOT-slot carrier for the wrapped
+   callee, so the loud keyed-consumer miss fires on a spec-valid program.
+   Attribution: `cranelisp-typecheck`, carrier-producer family —
+   provisionally the mono_collect fn-value rewrite seam (`class=carrier-loss
+   locus=crates/cranelisp-typecheck mono_collect fn-value rewrite seam —
+   wrapper minted with no GOT-slot carrier owner=/dev`). Cell: minimal
+   trait-operator-as-value program with the impl present, ×--run at
+   minimum — RED ×1. **NOT a W7 fix-rider** (distinct seam from
+   MS-P7/trait-shadow/F-D2-11; W7 typecheck is at capacity) — **fix = S115
+   typecheck scope input.** Mask note (binding on P2's coverage claim):
+   F-D2-12's "P2 conformant" verdict holds only up to this mask — when the
+   carrier-loss pin flips, /qa re-probes the true late-pinning shape and
+   authors the deep P2 cells then.
+6. **MS-P6 capability-fence standing disposition (cleanup-batch
+   escalation) — RULED; the m1 retirement stands.** Canonical ruling
+   recorded in `tests/plan/memory-safety-coverage.md` §4.1: unit-tier
+   synthetic self-test per diagnostic mode is MANDATORY and durable; e2e
+   capability fences are opportunistic **by nature** (they need a live
+   compiler fault to plant) — mandatory while a live fault of the class
+   exists, retired with a tombstone naming the unit-tier successor + the
+   sibling wiring fences when the class drains; per-MODE env-wiring keeps
+   ≥1 e2e fence. The m1_quarantine retirement (`adb8d3fb`) is compliant on
+   all three prongs.
+
+**Pin batch (items 4+5): /testing authors both cells in one W7-close rider**
+(with or immediately after the W7 flip change-set), and the Phase-7
+certification names them as **+2 intended new REDs carried into S115** —
+the exact-count arithmetic must account for them, per item 2's convention.
+
+**What W7 inherits from this batch:** the pin rider (+2 RED, above); the
+already-scheduled MS-P6 COW capability re-plant with the MS-P7 flip (§8
+rider table — unchanged; it satisfies §4.1's ruling by re-planting on a
+SYNTHETIC fault); the 0694 stabilization expectation + the ≥3-run Phase-7
+verification; NO 0604 work and NO 0702 work (both S115).
+
+**S115 scope inputs from this batch (for /sprint Phase 1):** 0604 writer
+identification (front-load — now a single instrumented run; 3-sprint-carry
+escalation flag) + census close + predicate correction + /design(int) doc
+correction; 0702 chain (/spec ruling → /design premise → M3 cells +
+/dev(frontend) predicate widening); backend fix for the toggle-off
+entry-return leak (item 4); typecheck fix for the fn-as-value carrier-loss
+(item 5); 0694 root-cause row IF the post-W7 verification fails.
+
 ## Next skills
 
 - `/testing` — riders (§8): M2-TP1/TP2 (with/before W-D1), BI-H-heap ×2
-  (pre-W4), the §3.8 swallow-sibling probes (before/with W7), and the
-  MS-P6 capability re-plant with the MS-P7 flip (W7).
+  (pre-W4), the §3.8 swallow-sibling probes (before/with W7), the
+  MS-P6 capability re-plant with the MS-P7 flip (W7), and the §11
+  W7-close pin rider (toggle-off entry-return leak + fn-as-value
+  carrier-loss, +2 intended REDs).
 - `/dev`(typecheck, W7 rider) — MS-P7 fix per the §3.6 adjudication
   (ownership `MayAliasOf` projection-out; falsifiability check first),
   priority over the conditional 0590 slot; then F-D2-11/12 if the probes

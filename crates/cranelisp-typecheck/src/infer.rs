@@ -338,7 +338,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // value-position gates. A shadowed name falls through to ordinary local
         // inference (the closure's own scheme — indirect value, no carrier).
         if !state.in_call_position
-            && (state.env.lookup(name).is_none() || state.is_recursion_self_ref(name))
+            && state.resolves_to_carrier_identity(name)
             && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
@@ -366,7 +366,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // value position (HOF arg / returned / container-stored) MUST resolve to the
         // LOCAL closure, never wrong-reject as "multi-sig cannot be used as a value".
         if !state.in_call_position
-            && (state.env.lookup(name).is_none() || state.is_recursion_self_ref(name))
+            && state.resolves_to_carrier_identity(name)
             && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(kind.as_ref(), cranelisp_types::DefKind::Overloaded { .. })
@@ -756,8 +756,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // local inference (indirect call, no carrier — no schema bump).
         if let Some(name) = normalized_callee.as_ref()
             && state.overloads.contains_key(name)
-            && (state.env.lookup(name.as_ref()).is_none()
-                || state.is_recursion_self_ref(name.as_ref()))
+            && state.resolves_to_carrier_identity(name.as_ref())
         {
             // I1 fix (§11.3.1 caveat (b)): during a multi-sig template clause's
             // mono recheck, an inner self-call to the overloaded base (`(g x)`
@@ -930,7 +929,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Auto-curry succeeded. If the callee is a trait method or builtin,
                 // resolve it now so the wrapper function can call the concrete
                 // implementation (e.g., "+" → "add-i64" for Int).
-                if let Expr::Var { name, .. } = callee {
+                // §11.8.8 (Important-1) — the auto-curry filler is the untested
+                // SIBLING of the post-unify resolver below: it too keyed the raw
+                // AST name, so a shadowing local passed as a curried HOF value
+                // (`(let [+ (fn [a b] 0)] (map + xs))`) would fill in the
+                // trait/primitive carrier over the local closure. Gate on the same
+                // Ruling-5 carrier discriminator + `normalized_callee` (Minor-1).
+                if let Some(name) = normalized_callee.as_ref()
+                    && state.resolves_to_carrier_identity(name.as_ref())
+                {
                     // Use the FULL param types from the callee's resolved type
                     // (not just the applied args) for trait resolution.
                     let resolved_callee = self.apply_subst(state, &callee_ty);
@@ -943,7 +950,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             self.try_resolve_trait_method(state, name, &resolved_params, span)
                         {
                             Ok(Some(r)) => Some(r),
-                            Ok(None) => self.resolve_primitive_jit_name(state, name)
+                            Ok(None) => self.resolve_primitive_jit_name(state, name.as_ref())
                                 .map(|jit_name| ResolvedCall::BuiltinFn { name: jit_name }),
                             Err(e) => return Err(e),
                         };
@@ -963,7 +970,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         // Resolve the call: trait method, builtin primitive, or user function.
-        if let Expr::Var { name, .. } = callee {
+        // §11.8.8 (W3-review Important-1) — key on the CARRIER identity, NOT the
+        // raw AST name: a `let`/`fn`/param binding that SHADOWS a trait method or
+        // primitive (`(let [+ (fn [a b] 0)] (+ 1 2))`) MUST call the local closure
+        // (returns 0), never the global `Num.+` dispatch (mis-dispatch → 3, spec
+        // §4.6 violation). `resolves_to_carrier_identity` is the shared Ruling-5
+        // discriminator (checker.rs, the same gate the value-position + overload
+        // paths consult); a shadowed name skips resolution and rides its own local
+        // scheme (indirect call, no dispatch carrier). Minor-1: read
+        // `normalized_callee` so a self-qualified spelling (`(user/+ …)` inside
+        // module `user`) folds to the bare carrier identity like `infer_var`.
+        if let Some(name) = normalized_callee.as_ref()
+            && state.resolves_to_carrier_identity(name.as_ref())
+        {
             let resolved_args: Vec<Type> = arg_types
                 .iter()
                 .map(|t| self.apply_subst(state, t))
@@ -977,7 +996,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // span alongside the `resolved_calls` insert (FIXME 0616).
                 self.record_dispatch_target(state, span, &resolution);
                 state.method_resolutions.resolved_calls.insert(span, resolution);
-            } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, name) {
+            } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, name.as_ref()) {
                 // Named primitive resolution (Ring 0-3): add-i64, str-concat,
                 // macros/sconcat, quote-sexp, etc.
                 let resolution = ResolvedCall::BuiltinFn { name: jit_name };
@@ -1179,7 +1198,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Per-node action: try to resolve an as-yet-unresolved trait-method Apply.
         if let Expr::Apply { callee, args, span, .. } = expr
             && !state.method_resolutions.resolved_calls.contains_key(span)
-            && let Expr::Var { name, .. } = callee.as_ref()
+            && let Expr::Var { name, span: callee_span, .. } = callee.as_ref()
+            // §11.8.8 (W3-review Important-1) — "the carrier is the IDENTITY". This
+            // post-inference pass runs AFTER the `let`/`fn` scope is popped, so
+            // `env.lookup` can no longer see a shadowing local; consult the CARRIER
+            // VERDICT `infer_var` already recorded for the callee `Var` instead. A
+            // callee resolved to a §4.6 LOCAL binding (`(let [+ (fn [a b] 0)]
+            // (+ 1 2))`, and its `((+ 1) 2)` auto-curry sibling) carries
+            // `VarRef::Local` — the call is on the local closure, NOT the trait
+            // method (mis-dispatch → 3, spec §4.6 violation). The recursion-self
+            // carve-out records `VarRef::Global`, so a genuine self-call still
+            // dispatches. This is the post-scope form of the same discriminator
+            // `CheckState::resolves_to_carrier_identity` applies at the
+            // inference-time seams (the infer_apply post-unify + auto-curry blocks)
+            // — it READS the recorded verdict rather than recomputing it.
+            && !matches!(
+                state.method_resolutions.var_refs.get(callee_span),
+                Some(cranelisp_types::VarRef::Local { .. })
+            )
             && self.is_trait_method_with_state(state, name)
         {
             let resolved_args: Vec<Type> = args
@@ -1250,7 +1286,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         expr: &Expr,
         in_callee_position: bool,
-    ) {
+    ) -> Result<(), CranelispError> {
         // A bare Var in value position: try to resolve it as a trait method
         // used as a first-class value.
         if let Expr::Var { name, span, .. } = expr
@@ -1267,19 +1303,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(Type::Fn(params, _)) = var_ty {
                 let resolved_params: Vec<Type> =
                     params.iter().map(|t| self.apply_subst(state, t)).collect();
-                // Mirror the call-path resolution: trait-method impl selection
-                // first, then a primitive-name fallback (the latter only fires
-                // for genuinely primitive-named methods, which trait resolution
-                // already covers — kept for symmetry with infer_apply).
-                if let Ok(Some(resolution)) =
-                    self.try_resolve_trait_method(state, name, &resolved_params, *span)
-                {
-                    // S110 0583 leg 1 (value-position trait method): the carrier
-                    // rides the SAME Var span the resolved_call keys (this Var is
-                    // a value, not an Apply callee — the backend's fn-as-value
-                    // wrapper keys it here). FIXME 0616.
-                    self.record_dispatch_target(state, *span, &resolution);
-                    state.method_resolutions.resolved_calls.insert(*span, resolution);
+                // F-D2-11 (§3.8 disposition; §7.11.2(c)) — PROPAGATE the located
+                // no-impl `Err`. A trait method used as a first-class VALUE
+                // (`(let [eq =] (eq (Widget 1) (Widget 2)))`) whose concrete types
+                // have NO impl was previously SWALLOWED here (the `if let
+                // Ok(Some(..))` — the W2-review Important-3 sibling of the F-D2-10
+                // call-path swallow): the Var kept NO resolution and WRONG-ACCEPTED
+                // via the downstream primitive-name fallback (`=` → primitive `eq`,
+                // returns false). Widening this pass to `Result` (the same widening
+                // the W2 fix gave the call path — this is why the swallow survived)
+                // lets the located `no impl of trait Eq` error surface, uniform ×3
+                // modes. `Ok(None)` (deferred/return-dispatch) records nothing, as
+                // before; only `Ok(Some)` records a resolution.
+                match self.try_resolve_trait_method(state, name, &resolved_params, *span) {
+                    Ok(Some(resolution)) => {
+                        // S110 0583 leg 1 (value-position trait method): the carrier
+                        // rides the SAME Var span the resolved_call keys (this Var is
+                        // a value, not an Apply callee — the backend's fn-as-value
+                        // wrapper keys it here). FIXME 0616.
+                        self.record_dispatch_target(state, *span, &resolution);
+                        state.method_resolutions.resolved_calls.insert(*span, resolution);
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -1289,15 +1335,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // does not also try to resolve it as a value.
         match expr {
             Expr::Apply { callee, args, .. } => {
-                self.resolve_value_position_trait_methods(state, callee, true);
+                self.resolve_value_position_trait_methods(state, callee, true)?;
                 for arg in args {
-                    self.resolve_value_position_trait_methods(state, arg, false);
+                    self.resolve_value_position_trait_methods(state, arg, false)?;
                 }
             }
-            other => crate::program::for_each_child_expr(other, |child| {
-                self.resolve_value_position_trait_methods(state, child, false)
-            }),
+            other => {
+                // `for_each_child_expr` takes a `FnMut(&Expr)` (no `?`), so capture
+                // the first no-impl `Err` and surface it after the walk.
+                let mut first_err: Option<CranelispError> = None;
+                crate::program::for_each_child_expr(other, |child| {
+                    if first_err.is_none()
+                        && let Err(e) =
+                            self.resolve_value_position_trait_methods(state, child, false)
+                    {
+                        first_err = Some(e);
+                    }
+                });
+                if let Some(e) = first_err {
+                    return Err(e);
+                }
+            }
         }
+        Ok(())
     }
 
     fn infer_match(

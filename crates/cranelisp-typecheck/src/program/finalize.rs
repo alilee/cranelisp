@@ -849,11 +849,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             span: variant.span,
                         };
                         self.resolve_deferred_trait_calls(state, internal_defn.body())?;
-                        self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
+                        self.resolve_value_position_trait_methods(state, internal_defn.body(), false)?;
                     }
                 } else {
                     self.resolve_deferred_trait_calls(state, defn.body())?;
-                    self.resolve_value_position_trait_methods(state, defn.body(), false);
+                    self.resolve_value_position_trait_methods(state, defn.body(), false)?;
                 }
             }
         }
