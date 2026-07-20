@@ -343,16 +343,28 @@ fn let_shadowed_trait_operator_call_repl_resolves_to_local() {
     );
 }
 
-// spec: spec/04-expressions.md §4.6.3 — the AUTO-CURRY sibling (the review-named
-// untested position, `infer.rs:933-958`). A PARTIAL application of the shadowed
-// local `+` — `((+ 1) 2)` — MUST auto-curry the LOCAL closure and yield 0.
+// spec: spec/04-expressions.md §4.6.3 — the AUTO-CURRY sibling. A PARTIAL application
+// of the shadowed local `+` — `((+ 1) 2)` — MUST auto-curry the LOCAL closure and
+// yield 0.
 //
-// RED at HEAD: the auto-curry filler block ALSO keys on the raw AST name `+` and
-// resolves the Num trait method, returning 3 (verified /testing 2026-07-20: `--run`
-// exit 3, REPL `:primitives/Int 3`). The auto-curry resolution is a distinct code
-// block from the post-unify block (item above) — a fix at one seam that leaves the
-// other names a second resolver; both must green. Failing-not-ignored.
-// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/infer.rs:933-958 auto-curry trait-method resolution keys on the raw AST name (ignores the local shadow; the untested sibling of the post-unify block) found=S114 owner=/dev
+// RE-ATTRIBUTED S114 W7 (FIXME 0705): the typecheck mis-dispatch this cell originally
+// pinned (the `infer.rs` auto-curry filler keyed on the raw AST name `+`, dispatching
+// the Num trait method → 3) was FIXED by the W7 trait-shadow carrier discipline. The
+// cell did NOT flip green — its SYMPTOM CHANGED (the MC-E1 "a non-flip is evidence"
+// pattern): it now fails at codegen —
+//   fn-as-value wrapper for '+' reached codegen with no GOT-slot carrier
+// `resolve_auto_curry` correctly produces an `AutoCurry` over the LOCAL closure
+// (`VarRef::Local`, no Dispatch FQ), but the BACKEND then looks up `+`'s GOT slot and
+// a local closure has none. Typecheck is complete; this re-attributes to the BACKEND
+// (AutoCurry-over-local-target / fn-as-value-wrapper-for-local seam). Fix = S115.
+//
+// FAMILY CROSS-REF: `fn_as_value_carrier_loss.rs::
+// trait_operator_partial_app_impl_present_has_got_carrier` surfaces the IDENTICAL
+// "no GOT-slot carrier" error for the impl-PRESENT (non-shadowed, global) trait-op
+// partial-app face; the two are PLAUSIBLY the same fn-as-value-wrapper-carrier seam
+// family (this face over a §4.6 LOCAL closure, that one over a GLOBAL trait op).
+// Failing-not-ignored.
+// defect: class=carrier-loss locus=crates/cranelisp-backend AutoCurry-over-local-target fn-as-value wrapper — a local closure has no GOT slot (FIXME 0705; re-attributed out of typecheck infer.rs; plausibly the fn_as_value_carrier_loss seam family) found=S114 owner=/dev
 #[test]
 fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
     let out = Cranelisp::new()

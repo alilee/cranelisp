@@ -234,6 +234,57 @@ fn entry_main_heap_let_teardown_balances_r2() {
     );
 }
 
+// PIN-NOW (s114-test-plan §11 item 4) — the TOGGLE-OFF entry-return `Pure` leak, the
+// F-R1 family sibling under the conservative all-Owned lowering
+// (`CRANELISP_NO_OWNERSHIP=1`). The W4 F-R1 suppression is licensed at the
+// entry-`main` single-consumer contract but does NOT reach the toggle-off lowering,
+// which is the differential oracle's REFERENCE semantics (memory-safety-coverage.md
+// §1.2 signals 1–2) — a standing entry-frame leak there poisons every future
+// `allocs==deallocs` oracle cell. RED ×1; fix = S115 backend scope (W7 has no backend
+// slot). The §2.1 both-polarity fence binds the fix: it must not weaken the general
+// G2/item-26 protect.
+//
+// AUTHORING NOTE (/testing, S114 W7 — reported to /qa as inventory drift): the exact
+// §2.1 F-R1 scalar shape `(defn main [] (let [s "hi"] (Pure 9)))` is BALANCED at HEAD
+// under BOTH toggles (2 allocs / 2 frees — W4 fixed the scalar Pure-box leak), so it
+// no longer produces a RED. The surviving entry-return leak is the HEAP IO-RESULT
+// PAYLOAD case: when the value flowing to the `Pure` result is heap-allocated, one
+// allocation leaks (2 allocs / 1 free), and it reproduces under BOTH toggle-ON and
+// toggle-OFF — so the toggle-ON heap-payload face is ALSO an unguarded leak (this pin
+// deliberately fixes the toggle-OFF face per §11 item 4's reference-semantics
+// rationale). Seam attribution (`protect_return_value`) is provisional per §11 item 4
+// until the fix confirms it.
+// spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
+// defect: class=rc-miscount locus=crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value — entry-main IO-return heap payload, toggle-off arm (F-R1 sibling, §11 item 4; seam provisional) found=S114 owner=/dev
+#[test]
+fn entry_main_ioresult_heap_payload_toggle_off_leak_r2() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .env("CRANELISP_NO_OWNERSHIP", "1")
+        .env("CRANELISP_RC_TRACE", "1")
+        .user("(defn main [] (let [s \"hi\"] (Pure s)))\n")
+        .run("user.cl")
+        .output();
+    // The program runs clean (exit 0) under the leak — the only witness is the
+    // alloc/free imbalance.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the program must run clean (exit 0) under the leak:\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "under the conservative all-Owned lowering (`CRANELISP_NO_OWNERSHIP=1`) an \
+         entry-`main` IO result carrying a heap payload must not leak — the toggle-off \
+         reference semantics must balance; got {allocs} allocs / {frees} frees \
+         (§11 item 4 — protect_return_value entry-frame, toggle-off arm).\nstderr:\n{}",
+        out.stderr
+    );
+}
+
 // -----------------------------------------------------------------------------
 // 0640 — the mangle-sanitize NON-INJECTIVITY axis (S111 CS-1.2). CS-1.1 re-keyed
 // both layers on `adt_instantiation_mangle`, but the mangle "sanitized" the

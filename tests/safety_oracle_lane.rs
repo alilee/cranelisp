@@ -76,17 +76,25 @@ fn safety_lane_clean_vec_read_green() {
 const COW_SET_READ_PROG: &str = "(defn f [v] (vec-get (vec-set v 0 9) 0))\n\
      (defn main [] (Pure (f [1 2 3])))\n";
 
-// MS-P7 pin (R-2 re-shape) — the SPEC-CORRECT CONTRACT, RED under ALL mode configs.
+// MS-P7 (FIXED S114 W7) — the SPEC-CORRECT CONTRACT, now a GREEN regression guard.
 // `(vec-get (vec-set v 0 9) 0)` MUST return the set value 9, abort-free, in EVERY
 // mode. This asserts the contract directly (NOT the differential detection shape),
-// so its color tracks the DEFECT's existence, never lane-config/detection quality
-// (R-2: a pin whose color depends on lane config cannot serve as the flip trigger).
-// The `--link` abort is config-independent → RED under all combinations until the
-// W5 0641/§3 increment (typecheck rule-table + backend vec-set-result consume fix)
-// lands, verified under the lane.
+// so its color tracks the DEFECT's existence, never lane-config/detection quality.
+//
+// History (strip-when-fixed discipline): this was RED under `--link` while the COW
+// in-place `vec-set` arm double-dec'd its result. The W3 evidence brief (commit
+// 078d324b) discharged the §3.6 mode-divergence gate with a result the dichotomy
+// did not enumerate — CLIF is BYTE-IDENTICAL across `--run` and `--link`, and the
+// shared IR itself carried the double-dec: the in-place branch returns the SAME
+// heap pointer as the input vec, so both the result temp and the param got dec'd.
+// `--run` silently tolerated the corruption in-process; `--link`'s glibc allocator
+// aborted. The mode axis was only the DETECTOR, never the cause. The fix landed in
+// the /dev(typecheck) ownership analysis (§3.7 `MayAliasOf` projection-out — the
+// vec-set result released as an arg-temp). The `_red` suffix on the fn name is
+// retained for the plan's flip-record citation (s114-test-plan §3.6/§11).
 // spec: spec/12-runtime.md §12.1 — a COW `vec-set` result read by the caller returns
 // the set value and is memory-safe in all modes.
-// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership (COW-set→project result, --link mode-divergent double-free; §3.7 MayAliasOf gap; 0641-adjacent) found=S113 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::MayAliasOf projection-out — COW vec-set result released as an arg-temp; shared-IR double-dec (--run tolerated in-process, --link aborted); §3.7 gap, 0641-adjacent; fixed S114 W7 found=S113 owner=/dev
 #[test]
 fn safety_lane_cow_set_read_returns_set_value_abort_free_red() {
     // --run: returns the set value 9.
@@ -96,7 +104,7 @@ fn safety_lane_cow_set_read_returns_set_value_abort_free_red() {
         .user(COW_SET_READ_PROG)
         .output()
         .assert_exit(9);
-    // --link: MUST also return 9 (today it aborts — the config-independent RED).
+    // --link: MUST also return 9 (was the `--link`-abort RED before the S114 W7 fix).
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
@@ -112,21 +120,34 @@ fn safety_lane_cow_set_read_returns_set_value_abort_free_red() {
         .assert_stdout_contains(":primitives/Int 9");
 }
 
-// MS-P6 self-test (R-2) — the safety LANE's DETECTION CAPABILITY, kept SEPARATE
-// from the pin above (detection quality is separately valuable but must not be the
-// pin's color). Running the corrupting program through the differential-oracle
-// matrix MUST flag the planted-class fault (the matrix panics on the `--link`
-// divergence). GREEN: the lane sees the fault. (The panic hook is silenced around
-// the expected panic so the detection is not mistaken for a test failure.)
-// spec: spec/12-runtime.md §12.1 — the safety lane detects a COW-UAF planted fault.
+// MS-P6 capability RE-PLANT (§4.1 prong 2; rode the MS-P7 flip, S114 W7) — the
+// safety LANE's DETECTION CAPABILITY, kept SEPARATE from any live pin (detection
+// quality is separately valuable but must not be a pin's color). The prior plant
+// used the LIVE MS-P7 defect as its fault; when MS-P7 was FIXED (S114 W7) that plant
+// stopped tripping and this cell INVERTED to RED — the exact coupling the §4.1
+// ruling names. Per memory-safety-coverage.md §4.1 prong 2 it is re-planted on a
+// SYNTHETIC fault constructible regardless of compiler health: a CLEAN program
+// (`(Pure 5)` → exit 5) run through the matrix with a deliberately-FALSIFIED clean
+// expectation (`expect_exit(2)`). That is the shape a value-corrupting elision
+// presents to the lane — ownership-ON's observed value diverging from the asserted
+// clean result — and it trips the SAME Face-1 value-equivalence guard
+// (`on exit == expect`) a real UAF-to-wrong-value would trip. GREEN: the matrix
+// flags it (panics). If `SafetyMatrix::assert` ever stops asserting the clean
+// result, this cell goes RED (fail-on-revert of the lane's detection logic). The
+// panic hook is silenced around the expected panic so the detection is not mistaken
+// for a test failure. Verified to trip before landing (/testing, S114 W7).
+// spec: spec/12-runtime.md §12.1 — the safety lane detects a value divergence from
+// the asserted-clean result.
 #[test]
-fn safety_lane_detects_cow_set_read_corruption_capability_green() {
+fn safety_lane_detects_falsified_clean_expectation_capability_green() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let detected = std::panic::catch_unwind(|| {
-        SafetyMatrix::new(COW_SET_READ_PROG)
+        // A clean program that exits 5, asserted (falsely) as clean-exit 2. The
+        // lane's Face-1 value-equivalence guard MUST catch the divergence and panic.
+        SafetyMatrix::new("(defn main [] (Pure 5))\n")
             .prelude(PreludeVariant::PrimitivesOnly)
-            .expect_exit(9)
+            .expect_exit(2)
             .without_rc_balance()
             .assert();
     })
@@ -134,8 +155,9 @@ fn safety_lane_detects_cow_set_read_corruption_capability_green() {
     std::panic::set_hook(prev);
     assert!(
         detected,
-        "the safety-matrix lane MUST DETECT the COW-set-read corruption — running \
-         the corrupting program through the matrix must flag it (panic); it did not"
+        "the safety-matrix lane MUST DETECT a divergence from the asserted-clean \
+         result — running a clean program with a falsified expectation through the \
+         matrix must flag it (panic); it did not"
     );
 }
 
