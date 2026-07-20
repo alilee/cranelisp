@@ -325,7 +325,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Constrained polymorphic functions cannot be used as bare values
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
+        //
+        // PS-SH1 / §11.8.7 Ruling 5 (value-position mirror) — LOCAL-SCOPE-FIRST.
+        // A `let`/`fn`/param binding that lexically shadows a constrained/overload
+        // base is a §4.6 LOCAL — resolving it here to the module base and rejecting
+        // it as "cannot be used as a value" wrong-rejects the local (a plain closure
+        // value). Consult local scope BEFORE the base reject: enter the reject only
+        // when `name` is NOT locally bound at all, OR it is the genuine recursion
+        // self-reference (whose recursion binding IS a local at `current_defn_frame`
+        // but genuinely refers to the multi-sig/constrained base — still not a value).
+        // This mirrors the call-gate discriminator (`infer_apply`, Ruling 5) to the
+        // value-position gates. A shadowed name falls through to ordinary local
+        // inference (the closure's own scheme — indirect value, no carrier).
         if !state.in_call_position
+            && (state.env.lookup(name).is_none() || state.is_recursion_self_ref(name))
             && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
@@ -346,7 +359,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Multi-sig (overloaded) functions cannot be used as bare values.
         // They must be called so the dispatch can select the correct variant.
+        //
+        // PS-SH1 / §11.8.7 Ruling 5 (value-position mirror) — LOCAL-SCOPE-FIRST
+        // (see the constrained-value gate above). A `let`-shadowed multi-sig base
+        // (`(defn g [] (let [h (fn [y] 100)] (use-hof h)))`, `h` a base) used in
+        // value position (HOF arg / returned / container-stored) MUST resolve to the
+        // LOCAL closure, never wrong-reject as "multi-sig cannot be used as a value".
         if !state.in_call_position
+            && (state.env.lookup(name).is_none() || state.is_recursion_self_ref(name))
             && let Some(entry) = self.resolve_entry_scoped(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(kind.as_ref(), cranelisp_types::DefKind::Overloaded { .. })
@@ -363,8 +383,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Reference-recording feeds, placed after every rejection gate above so
         // only a successfully-typed reference records. ONE resolution serves
         // both (Principle 24 — the "Resolve once" consolidation, FIXME 0616):
-        //  - S110 0583 `resolved_targets` — the backend keyed-consumer carrier
-        //    (rides UNREAD until W1, behaviour-invariant);
+        //  - S110 0583 → S114 `var_refs` (was `resolved_targets`) — the total,
+        //    typed backend keyed-consumer carrier: `VarRef::Global(storage_fq)`
+        //    for a table reference, `VarRef::Local` for a §4.6 local (absence is
+        //    now unrepresentable — the totality flip);
         //  - S101 `Def.callees` — a `UserFn`-filtered projection of the same
         //    resolution.
         // A dotted `Type.member` form (`Maybe.Some`) resolved through the dotted
@@ -683,6 +705,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let ret_ty = self.fresh_var();
 
+        // MC-X5 — SPELLING NORMALIZATION at the overload gate. The gate below keys
+        // dispatch on the callee's RAW AST name, but a current-module-qualified
+        // self-call (`(user/msig …)` inside module `user`) IS the bare local
+        // (§8.6.6 / 0655 — the same normalization `infer_var` applies at its Var
+        // entry). Without it, `state.overloads.contains_key("user/msig")` misses
+        // (the table is keyed bare) so the qualified multi-sig self-call skips the
+        // dispatch path and wrong-rejects. Normalize ONCE here so every downstream
+        // read in the overload block (the `overloads`/`resolved_overloads` lookups,
+        // the rehydration gate, the recursion-self discriminator, the deferred
+        // pending's base key, the dispatch mangle) observes the bare identity. A
+        // non-self qualifier (`mlib/h`) and a bare name are returned unchanged, so
+        // the imported-base (MC-X2) and ordinary paths are untouched.
+        let normalized_callee: Option<Symbol> = match callee {
+            Expr::Var { name, .. } => {
+                Some(Symbol::from(self.normalize_self_qualified(state, name.as_ref())))
+            }
+            _ => None,
+        };
+
         // Multi-sig overload dispatch: if the callee is a Var whose name is
         // in the overloads table, defer resolution to the overload pass.
         // We don't unify here because the base name's scheme may not match
@@ -693,7 +734,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // chain-followed `Overloaded` home entry so the SAME overload machinery
         // (gate → drain → carrier) dispatches it, keyed by its HOME module (P24).
         // Only for a not-locally-shadowed Var callee that is not already an overload.
-        if let Expr::Var { name, .. } = callee
+        if let Some(name) = normalized_callee.as_ref()
             && !state.overloads.contains_key(name)
             && state.env.lookup(name.as_ref()).is_none()
         {
@@ -713,7 +754,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // unchanged — the guard is a strict pre-filter that never fires on R1's or
         // a genuine self-call's inputs. A shadowed call falls through to ordinary
         // local inference (indirect call, no carrier — no schema bump).
-        if let Expr::Var { name, .. } = callee
+        if let Some(name) = normalized_callee.as_ref()
             && state.overloads.contains_key(name)
             && (state.env.lookup(name.as_ref()).is_none()
                 || state.is_recursion_self_ref(name.as_ref()))

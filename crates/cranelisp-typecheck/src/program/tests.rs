@@ -2260,6 +2260,137 @@
         );
     }
 
+    // MC-X4 (S114 W3) — the SINGLE-SIG consumer face of the settlement harvest. A
+    // poly callee (`mycount : (Vec a) -> Int`) consuming a MULTI-SIG fn's bare
+    // `(Vec Int)` return MUST have its ground mono instance `mycount$…` minted. The
+    // consumer's call `(mycount (build 3))` lives in a SINGLE-sig body (`top`), so
+    // the pre-drain single-sig pass-4 saw its arg — the multi-sig call's result —
+    // as a residual `Var` (settled only in the drain) and SKIPPED it. The
+    // post-settlement single-sig re-harvest (finalize.rs, P26) re-derives the arg
+    // through the settled subst → concrete → mints. Fail-on-revert: without the
+    // re-harvest no `mycount$` instance is minted (the e2e leak is at codegen —
+    // typecheck accepts — so this asserts the MINT, not a reject).
+    #[test]
+    fn single_sig_consumer_of_multi_sig_return_monomorphised_mc_x4() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn mycount [v] (vec-len v))\n\
+             (defn build ([n] (build n [0])) \
+                         ([n acc] (if (eq-i64 n 0) acc \
+                             (build (add-i64 n -1) (vec-push acc n)))))\n\
+             (defn top [] (mycount (build 3)))",
+        );
+        assert!(
+            !symbol_names_containing(&tc, "mycount$").is_empty(),
+            "the poly consumer `mycount` of the multi-sig `build`'s `(Vec Int)` \
+             return MUST have its ground mono instance minted at the settlement \
+             re-harvest (MC-X4); current-module symbols: {:?}",
+            symbol_names_containing(&tc, "mycount"),
+        );
+    }
+
+    // MC-X4b (S114 W3) — the untyped-ADT-field face (same root as MC-X4). A `Box`
+    // with an UNTYPED field, built by a multi-sig `build` and consumed by a poly
+    // `unwrap`, grounds its field to `Int` only post-drain; the consumer's `unwrap`
+    // instance must mint at the settlement re-harvest. Fail-on-revert: no `unwrap$`
+    // instance minted (codegen `undefined function` in e2e).
+    #[test]
+    fn untyped_adt_field_consumer_of_multi_sig_return_monomorphised_mc_x4b() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype Box (MkBox [v]))\n\
+             (defn unwrap [b] (match b [(MkBox v) v]))\n\
+             (defn build ([n] (build n (MkBox 0))) \
+                         ([n b] (if (eq-i64 n 0) b \
+                             (build (add-i64 n -1) (MkBox (add-i64 n 40))))))\n\
+             (defn top [] (unwrap (build 3)))",
+        );
+        assert!(
+            !symbol_names_containing(&tc, "unwrap$").is_empty(),
+            "the poly consumer `unwrap` over the untyped `Box` field from a \
+             multi-sig return MUST have its ground mono instance minted at the \
+             settlement re-harvest (MC-X4b); current-module symbols: {:?}",
+            symbol_names_containing(&tc, "unwrap"),
+        );
+    }
+
+    // MC-X5 (S114 W3) — the overload gate keys on the RAW callee name, so a
+    // current-module-qualified multi-sig SELF-call (`(test/msig …)` inside module
+    // `test`) missed `state.overloads` (keyed bare) and wrong-rejected. The gate
+    // now normalizes the self-qualified spelling to the bare identity (§8.6.6 /
+    // 0655) before the dispatch lookups. `check_src` panics on the wrong-reject, so
+    // a clean return IS the assertion (fail-on-revert: the qualified self-call
+    // rejects).
+    #[test]
+    fn self_qualified_multi_sig_self_call_normalizes_at_overload_gate_mc_x5() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn msig ([n] (test/msig n 0)) \
+                        ([n acc] (if (eq-i64 n 0) acc \
+                            (msig (add-i64 n -1) (add-i64 acc n)))))\n\
+             (defn top [] (msig 3))",
+        );
+        // The dispatch path was taken (not a fallthrough): `msig`'s concrete clause
+        // variants are mangled + registered. The qualified self-call inside msig's
+        // clause body resolved to the same bare `msig` overload as the bare twin.
+        assert!(
+            !symbol_names_containing(&tc, "msig$").is_empty(),
+            "the self-qualified multi-sig self-call MUST normalize to the bare \
+             identity and dispatch through the overload machinery (MC-X5) — \
+             `msig$…` clause variants registered; current-module symbols: {:?}",
+            symbol_names_containing(&tc, "msig"),
+        );
+        // No doubled-qualifier `test/msig` spelling leaked into any registered name.
+        assert!(
+            symbol_names_containing(&tc, "test/msig").is_empty(),
+            "no `test/msig` doubled-qualifier mangle may leak from the normalized \
+             self-call; got: {:?}",
+            symbol_names_containing(&tc, "test/msig"),
+        );
+    }
+
+    // PS-SH1 (S114 W3) — the value-position mirror of Ruling 5. A `let` shadows a
+    // multi-sig base `h` with a local closure and uses the shadowed name in VALUE
+    // position (HOF arg). The value-gate MUST consult local scope first and resolve
+    // to the LOCAL closure, NOT wrong-reject "multi-sig function 'h' cannot be used
+    // as a value". `check_src` panics on the wrong-reject → clean return is the
+    // assertion (fail-on-revert: the value-ref rejects).
+    #[test]
+    fn let_shadowed_multi_sig_base_value_ref_resolves_to_local_ps_sh1() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn use-hof [f] (f 5))\n\
+             (defn g [] (let [h (fn [y] 100)] (use-hof h)))",
+        );
+    }
+
+    // PS-SH1 control — an UNSHADOWED multi-sig base used as a bare value STILL
+    // rejects (the local-scope-first gate must not weaken the base reject). Guards
+    // against the fix over-reaching into an accept of `h`-as-value.
+    #[test]
+    fn unshadowed_multi_sig_base_as_value_still_rejects_ps_sh1_control() {
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(
+            "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn use-hof [f] (f 5))\n\
+             (defn g [] (use-hof h))",
+        )
+        .expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        let err = tc.check_program_self(&program);
+        assert!(
+            err.is_err(),
+            "an UNSHADOWED multi-sig base `h` used as a bare value MUST still \
+             reject (the PS-SH1 local-scope-first gate must not accept the base \
+             itself as a value)"
+        );
+    }
+
     // §11.8.3 leg R2 — a call to a MULTI-SIG BASE (`h`) inside a monomorphised
     // body (`ga$Int`) MUST get its `resolved_target` carrier. Pre-fix the inner
     // scans handled only constrained self-recursion and pure-parametric hops —
@@ -7544,11 +7675,12 @@
     // BENIGN. A poly fn-value (`mk`) passed as a HOF argument inside a CONCRETE
     // multi-sig clause body is collected + monomorphised (`mk$Int` minted — the
     // `mono_scan_bodies` D3 extension reaches the clause bodies) and its span
-    // carrier (`resolved_targets → mk$Int`) is written UNCONDITIONALLY. Only the
+    // carrier (`var_refs → VarRef::Global(mk$Int)`; S114 carrier flip — was
+    // `resolved_targets → mk$Int`) is written UNCONDITIONALLY. Only the
     // belt-and-braces AST `Var`-rename skips (its target `st.symbols.get_mut(base)`
     // is the `Overloaded` base entry with `ast: None` — the clause bodies live
     // under the MANGLED variant entries). That skip is benign: the mangled
-    // variant's `codegen_view` is rebuilt from `resolved_targets`, so the backend
+    // variant's `codegen_view` is rebuilt from `var_refs`, so the backend
     // keyed-read resolves `mk → mk$Int` (BC §3 inv. 10) without the name rewrite.
     // This test pins BOTH facts (mint + carrier), so a regression that drops
     // either — turning the benign skip into a real slot-less leak — goes RED.
@@ -9536,8 +9668,9 @@
     //   RENAMED import `[lib [foo as bar]]` records the callees edge under the
     //   SOURCE storage key `lib/foo` (`resolved.storage_fq()`), NOT the written
     //   alias `lib/bar` (`resolved.fq`, composed from the alias spelling — no
-    //   such entry exists). Same storage-key discipline the `resolved_targets`
-    //   carrier already uses; both feeds now agree by the schema-20 flip.
+    //   such entry exists). Same storage-key discipline the `var_refs`
+    //   (S114 carrier flip — was `resolved_targets`) carrier already uses; both
+    //   feeds now agree by the schema-20 flip.
     #[test]
     fn callees_records_renamed_import_by_storage_key() {
         let mut tc = tc_with_prims();

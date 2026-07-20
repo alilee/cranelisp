@@ -1167,6 +1167,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
         self.pass4_monomorphise(state, &multi_sig_defns, &constrained_fn_names)?;
 
+        // MC-X4 / MC-X4b — the SINGLE-SIG consumer RE-HARVEST at the settlement
+        // point (P26 — record from settled state). A poly callee consuming a
+        // MULTI-SIG fn's bare return (`(mycount (build 3))` in a single-sig body,
+        // or `(unwrap (build 3))` over an untyped ADT field) had its arg type — the
+        // multi-sig call's RESULT — as a residual `Var` at the PRE-drain single-sig
+        // pass-4 (line ~1023), because a multi-sig call's return settles only in the
+        // drain (`resolve_pending_overloads`) + Phase A. So `collect_mono_call_sites`'
+        // concreteness gate SKIPPED the consumer's call and no ground `mycount$Vec$Int`
+        // / `unwrap$Box` instance minted → codegen `undefined function`.
+        //
+        // Now that the drain + `finalize_multi_sig_variant_types` have settled every
+        // multi-sig return, RE-RUN the single-sig harvest: `resolve_expr_types`
+        // re-derives each consumer's arg type through the now-settled `state.subst`
+        // (→ concrete), so the instance mints and its call-site carrier lands — both
+        // reach the `finalize_annotations_and_publish` codegen-view rebuild below
+        // (Phase 5). Idempotent for the instances the pre-drain pass already minted:
+        // `register_mono_entry` preserves the existing `got_slot`, and the
+        // concreteness gate re-admits the same concrete args. Runs in the SAME
+        // post-settlement / pre-sweep window as the D3 MultiSig harvest above (the
+        // §11.8.3 "one parameterized fn at two settlement points" precedent, extended
+        // to the single-sig consumer face). `class=carrier-loss`.
+        self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
+
         // Surface any field-accessor synthesis collisions with a NON-accessor
         // binding (FIXME 0351(a)) as non-fatal warnings.
         self.drain_accessor_collisions(state);

@@ -407,9 +407,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // shared discriminator `is_recursion_self_ref` (via
             // `record_reference_target`, run at `infer_var` during THIS recheck)
             // already made the verdict: a genuine self-call — the base resolving at
-            // the recursion frame — records a callee `resolved_targets` carrier; a
-            // deeper-frame shadow records NONE (the shadow gate returns early). So
-            // a self-apply whose callee span carries no target is a shadow: record
+            // the recursion frame — records a `var_refs` `VarRef::Global` callee
+            // carrier (S114 carrier flip — was a `resolved_targets` carrier); a
+            // deeper-frame shadow records `VarRef::Local` (not `Global`). So
+            // a self-apply whose callee span carries no `Global` target is a shadow:
+            // record
             // NO SigDispatch, NO carrier → the Apply reaches the backend fully bare
             // → `compile_var_apply` → `variables` → indirect local call (fixes the
             // TCO-self-loop hang + the non-tail wrong-value sibling).
@@ -920,8 +922,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         };
         let mut inner_calls = Vec::new();
-        // FIXME 0653 — the recheck's carriers (`resolutions.resolved_targets`) gate
-        // the name-scan: a §4.6 local shadow of a constrained fn has no carrier.
+        // FIXME 0653 — the recheck's carriers (`resolutions.var_refs`, S114 carrier
+        // flip — was `resolved_targets`) gate the name-scan: a §4.6 local shadow of
+        // a constrained fn carries `VarRef::Local`, not the `VarRef::Global`
+        // `callee_has_keyed_carrier` admits.
         Self::collect_constrained_calls(
             defn.body(),
             &constrained_fn_names,
@@ -1003,7 +1007,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // monomorphise (mutable) — avoids borrowing `self`/`state` across the walk.
         let mut inner_sites: Vec<(Symbol, Vec<Span>, Span)> = Vec::new();
         // FIXME 0653 — gate the name-scan on the recheck's carriers: a §4.6 local
-        // shadow of a parametric hop has no `resolved_targets` carrier.
+        // shadow of a parametric hop carries `VarRef::Local`, not the
+        // `VarRef::Global` `callee_has_keyed_carrier` admits (S114 carrier flip —
+        // was "no `resolved_targets` carrier").
         collect_apply_var_calls(
             defn.body(),
             &defn.name,

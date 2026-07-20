@@ -528,10 +528,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && name != self_name
-            // FIXME 0653 — skip a §4.6 LOCAL shadow: a callee whose span carries
-            // no keyed `resolved_targets` carrier resolved to a let/fn/param
-            // binding (the shadow gate declined it), NOT the top-level parametric
-            // fn the name-scan would mint. The name is a trigger, not the identity.
+            // FIXME 0653 — skip a §4.6 LOCAL shadow: a callee whose `var_refs`
+            // verdict is `VarRef::Local` (S114 carrier flip — was "no keyed
+            // `resolved_targets` carrier") resolved to a let/fn/param binding
+            // (the shadow gate declined a table target), NOT the top-level
+            // parametric fn the name-scan would mint. The name is a trigger, not
+            // the identity; `callee_has_keyed_carrier` returns TRUE only for a
+            // `VarRef::Global` verdict.
             && callee_has_keyed_carrier(&state.method_resolutions.var_refs, callee.span())
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
@@ -782,8 +785,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // (TraitMethod now reads `impl_module`). A PLAIN-fn curry instead
             // TRANSPORTS the callee `Var`'s already-recorded storage carrier
             // (resolve-once, shadow-correct) — the old `{current_module,
-            // target}` derivation was wrong for an imported target. `None` for
-            // a local-binding target (`infer_var` recorded nothing).
+            // target}` derivation was wrong for an imported target. Matches
+            // nothing for a local-binding target (`infer_var` records
+            // `VarRef::Local`, not a `Global` — S114 carrier flip; was "recorded
+            // nothing").
             if has_inner {
                 self.record_dispatch_target(state, span, &resolution);
             } else if let Some(cvs) = callee_var_span

@@ -58,6 +58,7 @@ The S113 finding: the check-gate-leak class (×3 in one sprint) and the `Option<
 | 0669 | /qa | RESOLVED P3 | Verdict: I-1 capture face → 0668 backend family; FIXME deleted |
 | 0664 | /design (backend) | RESOLVED P3 | §13.5/§13.7 reconciled to R14; FIXME deleted |
 | 0688 | /qa | RESOLVED P3 | Both BACKEND (run-discriminated); seams named; plan §2.1 durable record; FIXME deleted |
+| 0689 | /arch | open | W2 review Important-1 — single-source concreteness predicate + fence (before P5 close) |
 | 0660 | /design (frontend) | RESOLVED P3 | All three sides + 4 impl cells verified landed; FIXME deleted |
 | 0670 | /dev (src) | open (ruled, re-targeted P3) | Track C — int fix → frontend reject → /testing cells |
 | 0683 | /spec | RESOLVED P3 | §5 binder-position wording aligned to 0670 ruling; FIXME deleted |
@@ -190,13 +191,13 @@ Ordering constraints honored: Stage-1 QA-first battery first; the carrier flip i
 | /spec | spec/ | 0686 `/bar` enumeration (§8.5.1 + §2.4 mirror) | **done** — FIXME deleted |
 | /qa | tests/plan/ | W1 findings disposition (6 items — see Notes) | **done** — all 6 disposed, no user arbitration needed |
 
-### W2 — Atomic carrier flip (Track A anchor; one commit series, serial handoffs)
+### W2 — Atomic carrier flip — DONE 2026-07-20, committed `b0f03c96`, review APPROVED w/ follow-ups
 | Skill | Crate | Task | Status |
 |---|---|---|---|
 | /arch | cranelisp-types | field flip + `MethodResolutions` split + `from_expr` Result-widening + `synthetic_local_from_expr` interior flip + public-api regen | pending |
 | /dev | cranelisp-typecheck | producer totality (chokepoint + provenance + ~30 write-sites + adt.rs callsite swap) + F-D2-10 chokepoint fix + B-2 escape-recording fix + `CACHE_SCHEMA_VERSION` 21→22 | pending |
 | /dev | cranelisp-backend | consumer exhaustive matches + `is_self_call` on `VarRef::Global` (backend.md §2.7.2) | pending |
-| /review | typecheck + backend | change-set review of the whole flip series | pending |
+| /review | typecheck + backend | change-set review of the whole flip series | **done** — approve-with-required-fixes; 0 Blockers, 3 Important, 3 Minor |
 
 ### W3 — Typecheck settlement drain (orthogonal to flip)
 | Skill | Crate | Task | Status |
@@ -253,6 +254,8 @@ Audit rotation FIRMED: **cranelisp-typecheck** (dispatched read-only in the Phas
 | W2 | /arch | leg 1: types field flip + schema 21→22 | shim default | shim default | — |
 | W2 | /dev | leg 2: typecheck producer totality + F-D2-10 + B-2 | shim default | shim default | — |
 | W2 | /dev | leg 3: backend consumer flip + full-suite verification | shim default | shim default | — |
+| W2 | /review | flip series review (b0f03c96, 3 crates) | shim default | shim default | — |
+| W3 | /dev | typecheck settlement drain + MS-P7 brief + comment sweep | shim default | shim default | — |
 
 ## Notes
 
@@ -262,6 +265,7 @@ Audit rotation FIRMED: **cranelisp-typecheck** (dispatched read-only in the Phas
 - 2026-07-20: /arch Phase 3 DELIVERED (see Skill plans). 0652/0653 resolved+deleted; 0670 ruled+re-targeted; 0683 filed.
 - 2026-07-20: **USER RULING on 0682's normative half** (mid-Phase-3): `:` is a `^`-style reader macro — whitespace allowed, bound form MUST be a type; `:foo/` ERRORS; bare `foo/` ERRORS (Principle 16's degenerate pass-through overruled; bare `/` division stands). Recorded in 0682. **/spec dispatch now REQUIRED** (scribe ruling §1.4.5/§2.4/§8.5 + action 0683) — queued after /qa in the serial order.
 - 2026-07-20: **USER CONFIRMED the symmetric reading — `/bar` (empty module half) errors too.** Principle 16's amended bullet already states it; 0686 (/spec, explicit enumeration) + 0687 (/qa, RA-N6 cell) filed to make it explicit on both sides.
+- 2026-07-20: **W2 REVIEW: APPROVE with required follow-ups (0 Blockers).** Priorities 1–6 all CONFIRMED: totality airtight (ONE Local constructor, ONE ViaCallee stamp, all Dispatch writers plain-insert — the or_insert ordering safe both directions; lenient assert is always-on panic per arch §3.5); SYNTHETIC carve-out verified (no producer writes at the SYNTHETIC key); F-D2-10 propagation safe (both Err states genuine, already-propagated on the primary path); shim faithful (consumer-tests-only division — not the S87 F7 failure mode); riders mechanical; no recurring-class re-instantiation; suite reconciles at 5048/5004/44/1 serially (the spawn artifact passed). Follow-ups before Phase 5 close: **Important-1** → FIXME 0689 filed (/arch: single-source the strict-concreteness predicate + fence + Minor-1 rustdoc); **Important-2** ~13 stale `resolved_targets` comments → /dev(typecheck) sweep rider on W3; **Important-3** two surviving `if let Ok(Some(..))` swallow siblings (infer.rs:1233, mono_collect.rs:765) → /qa disposition + P26 sweep inventory (W3/W7); **Minor-2** "no producer writes at SYNTHETIC key" invariant → P26 sweep row; Minor-3 noted.
 - 2026-07-20: **W2 leg 3 DONE (/dev backend) — WORKSPACE RESTORED, suite 5048 run / 5003 passed / 45 failed / 1 skipped.** Reconciliation EXACT: 48 − 4 (F-D2-10 ×4 FLIPPED GREEN — the wave's win) + 1 spawn-contention artifact (`agent::yes_flag` passes in isolation; not attributable) = 45; all 45 REDs trace to the ledger's post-carrier expected set. CS-1 nuance: the carrier-relevant ON face + CS-2 mechanism GREEN; the toggle-off arm stays RED by construction until BI-C-off (Track B) — not a regression. Consumer flip exhaustive (no `_ =>`); `VarRef::Local` scope-miss = hard diagnosed error carrying binder identity (soft double-miss unrepresentable; new KC pin); `is_self_call` keys on `VarRef::Global == current storage FQ`; ~15 test files adapted via ONE `resolved_targets_to_typed_maps` shim; backend CLAUDE.md stale-19 staleness class killed. Cross-crate note for /review: `src/worker/tests.rs` ×2 mechanical signature adaptation (int-owned — flag to /dev(int)). Nothing committed mid-wave; committing now as one series.
 - 2026-07-20: **W2 leg 2 DONE (/dev typecheck)** — producer total: ~35 sites/13 files re-targeted (zero active `resolved_targets` reads remain); Apply-epilogue `or_insert(ViaCallee)` = totality by construction; provenance threaded at 6 seams; `callee_has_keyed_carrier` discriminates Local/Global (the totality-critical behavioural point). **F-D2-10 root cause: the settlement re-attempt SWALLOWED the located no-impl error via `if let Ok(Some(..))`** — now propagates; pins verified RED-on-revert. B-2 analysis fix confirmed already landed (S113 W5b transfer.rs) — owed unit pins authored (RED-on-revert verified). Validation obligation CLEAN (only the two adt.rs all-local bodies carry SYNTHETIC reference nodes; correctly routed). Deviation flagged for /review: `collect_universe` concreteness probe decoupled (local `body_is_strict_concrete` walk preserving the exact pre-flip universe; shared types-crate predicate = future /arch call). typecheck 780/780, types 216/216, 0 warnings. Nothing committed. Leg 3 dispatched.
 - 2026-07-20: **W2 leg 1 DONE (/arch, types)** — field flip landed (`resolution: VarRef` / `dispatch: ApplyRef`, no serde defaults — absence unrepresentable); `MethodResolutions` → total `var_refs`/`apply_refs`; `ViewBuildError{NotConcrete, Unresolved}` with gate precedence Unresolved-before-NotConcrete (deviation 1); ONE shared verdict rule with the SYNTHETIC carve-out (deviation 2 + leg-2 validation obligation: no real-body SYNTHETIC-span table refs); schema 21→22 (window OPEN — B-2 rides it, no re-bump). Types 216/216 (+9 pins). Nothing committed; workspace expected-broken until leg 3. Leg 2 dispatched.

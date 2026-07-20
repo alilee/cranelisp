@@ -225,8 +225,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
     /// Derive the STORAGE FQ the backend keys its ONE fetch on for a
     /// dispatch-leg selection (S110 0583, `design/arch/backend-keyed-consumer.md`
-    /// §1.1) — the Apply-span `resolved_targets` carrier the W0 writer never
-    /// produced (FIXME 0616 leg 1). Called alongside every `resolved_calls`
+    /// §1.1) — the Apply-span `apply_refs` `ApplyRef::Dispatch` carrier (S114
+    /// carrier flip — was the `resolved_targets` carrier the W0 writer never
+    /// produced, FIXME 0616 leg 1). Called alongside every `resolved_calls`
     /// insert at a dispatch-selection seam ("recording happens where resolution
     /// happens", Principle 24).
     ///

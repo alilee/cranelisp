@@ -1750,10 +1750,14 @@
             ty: fn_ty,
         };
 
-        // Bind in scope so infer_var finds it
-        tc.bind_local_self(Symbol::from("cfn"), scheme.clone());
-
-        // Register in module so the constrained_fn check finds it
+        // Register in module so the constrained_fn check finds it. NOTE (S114
+        // PS-SH1): `cfn` is registered ONLY in the module, NOT bound in local
+        // scope — a top-level constrained fn is resolved via the module fallback
+        // (`self.lookup` env-miss → `lookup_in_current_module`), with
+        // `env.lookup("cfn") == None`. Binding it into LOCAL scope would model it
+        // as a §4.6 lexical local (a plain value the value-position gate must NOT
+        // reject — the PS-SH1 local-scope-first discipline); the reject fires on
+        // the MODULE-resolved constrained base, which is what these tests intend.
         tc.symbol_table_mut().insert(
             Symbol::from("cfn"),
             ModuleEntry::def(

@@ -167,10 +167,11 @@ pub struct CheckState {
     /// callee_type, target_resolution, callee_var_span).
     ///
     /// `callee_var_span` (S110 W0.1b, §1.1.1) is the span of the callee `Var`,
-    /// used at drain time to transport the callee's already-recorded
-    /// `resolved_targets` storage carrier for a PLAIN-fn curry (resolve-once,
-    /// shadow-correct — `infer_var` recorded the target's terminal storage FQ,
-    /// or nothing for a local binding). `None` when the callee is not a `Var`
+    /// used at drain time to transport the callee's already-recorded `var_refs`
+    /// (S114 carrier flip — was `resolved_targets`) storage carrier for a
+    /// PLAIN-fn curry (resolve-once, shadow-correct — `infer_var` recorded the
+    /// target's `VarRef::Global` terminal storage FQ, or a `VarRef::Local` for a
+    /// local binding). `None` when the callee is not a `Var`
     /// (auto-curry requires a `Var` callee, so this is always `Some` in
     /// practice).
     pub(crate) pending_auto_curry:
@@ -289,8 +290,9 @@ pub struct CheckState {
     /// Sole consumer: the self-recursion carve-out in
     /// [`TypeCheckEnv::record_reference_target`] — a self-call resolves the
     /// recursion LOCAL (env-shadowed), yet the backend keys it through the
-    /// fn's own storage slot, so its `resolved_targets` carrier is the
-    /// enclosing defn's own FQ. Compared by name only (`as_deref`).
+    /// fn's own storage slot, so its `var_refs` carrier is the enclosing defn's
+    /// own FQ as `VarRef::Global` (S114 flip — was a bare `resolved_targets`
+    /// entry). Compared by name only (`as_deref`).
     ///
     /// **`None` when the fn's own name is also a PARAM** (`(defn f [f] …)`):
     /// a param named identically to the fn is a genuine LOCAL (a backend
@@ -1536,19 +1538,26 @@ where
     /// Called from `infer_var` for every successfully-typed non-dotted
     /// `Expr::Var`.
     ///
-    /// - **`resolved_targets`** — the backend keyed-consumer carrier (S110
-    ///   0583, `design/arch/backend-keyed-consumer.md` §1.1/§1.1.2). Keyed at
-    ///   the referencing `Var` span, the value is `resolved.storage_fq()` — the
-    ///   TERMINAL STORAGE key the walk surfaced, "whichever storage key HIT" —
-    ///   for EVERY table-resolved kind (user fn, primitive, constructor,
-    ///   platform effect, host-promised extern, mangled/mono variants a
-    ///   chain-follow lands on — any terminal `ModuleEntry::Def`). This is NOT
-    ///   `resolved.fq`: for a member-canonical-keyed symbol (sum ctor, field
-    ///   accessor) or a renamed import/re-export, `fq` composes the WRITTEN
-    ///   alias spelling while `storage_fq()` carries the terminal table key the
-    ///   backend's `entry_at` reads directly (FIXME 0620, W1.1). Rides UNREAD
-    ///   in W0/W0.1 (behaviour-invariant); W1 keys the backend's ONE fetch on
-    ///   it.
+    /// - **`var_refs`** (S114 carrier flip — was `resolved_targets`) — the total,
+    ///   typed backend keyed-consumer carrier (S110 0583 →
+    ///   `design/arch/typed-resolution-carrier.md`; `backend-keyed-consumer.md`
+    ///   §1.1/§1.1.2). Keyed at the referencing `Var` span, the value is a
+    ///   `VarRef` VERDICT — no longer a bare `Option<FQSymbol>`. A table-resolved
+    ///   reference records `VarRef::Global(resolved.storage_fq())` — the TERMINAL
+    ///   STORAGE key the walk surfaced, "whichever storage key HIT", for EVERY
+    ///   table-resolved kind (user fn, primitive, constructor, platform effect,
+    ///   host-promised extern, mangled/mono variants a chain-follow lands on —
+    ///   any terminal `ModuleEntry::Def`); a §4.6 LOCAL records
+    ///   `VarRef::Local { binder, binding_span }` (the positive local verdict with
+    ///   binder identity). `storage_fq()` is NOT `resolved.fq`: for a
+    ///   member-canonical-keyed symbol (sum ctor, field accessor) or a renamed
+    ///   import/re-export, `fq` composes the WRITTEN alias spelling while
+    ///   `storage_fq()` carries the terminal table key the backend's `entry_at`
+    ///   reads directly (FIXME 0620). Totality holds by construction: every
+    ///   successfully-typed reference records exactly one `VarRef` — "unresolved"
+    ///   has no constructor, so a dropped carrier fails LOUD at the view-build
+    ///   gate (`from_expr` → `ViewBuildError::Unresolved`), never as a codegen
+    ///   keyed miss. The backend consumes it via an exhaustive `VarRef` match.
     /// - **`user_fn_refs`** — the `Def.callees` edge feed (FIXME 0470, S101).
     ///   Records `resolved.storage_fq()` — the TERMINAL STORAGE key the walk
     ///   surfaced, NOT the written alias `resolved.fq` (FIXME 0621, S111 CS-5:
@@ -1568,14 +1577,17 @@ where
     /// resolve-once.
     ///
     /// Gates: a LOCAL binding (fn param, `let`, `match`, lambda param) shadows
-    /// module scope — a shadowed name records NEITHER feed — with ONE
-    /// carve-out: the enclosing defn's own recursion binding records the
-    /// `resolved_targets` carrier (see below). Self-edges stay OUT of `callees`
-    /// (the documented cheap disposition — `save.rs::dependency_sort` filters
-    /// them). Dotted `Type.member` references are recorded by the dedicated
+    /// module scope. Under the S114 totality flip a shadowed name still records
+    /// NO `callees` edge, but it DOES record a `var_refs` verdict —
+    /// `VarRef::Local` (the retired "record nothing for a local" license is what
+    /// the flip closed) — with ONE carve-out: the enclosing defn's own recursion
+    /// binding records `VarRef::Global` instead (a GOT-slot self-call is a table
+    /// reference; see below). Self-edges stay OUT of `callees` (the documented
+    /// cheap disposition — `save.rs::dependency_sort` filters them). Dotted
+    /// `Type.member` references are recorded by the dedicated
     /// [`Self::resolve_dotted_member_fq`] leg in `infer_var` (they never
     /// resolve through `scope_resolve`) and, per the S101 residue, feed only
-    /// `resolved_targets`, never `callees`.
+    /// `var_refs` (as `VarRef::Global`), never `callees`.
     pub(crate) fn record_reference_target(
         &self,
         state: &mut CheckState,
@@ -1768,13 +1780,15 @@ where
 
     /// The STORAGE FQ of a dotted `Type.member` reference (S110 0583 leg 3,
     /// FIXME 0616) — the canonical `(fqtn.module, member_key(Type, member))`
-    /// key `resolve_dotted_member_entry` probes, recorded into
-    /// `resolved_targets`. The reference resolves via the dotted core, NOT
+    /// key `resolve_dotted_member_entry` probes, recorded into `var_refs` as
+    /// `VarRef::Global` (S114 carrier flip — was `resolved_targets`). The
+    /// reference resolves via the dotted core, NOT
     /// `scope_resolve`, so the W0 bare-name re-probe missed it whenever only a
     /// type-only import was present (`(import [m [Maybe]])` then
     /// `(Maybe.Some 3)` — the always-works dotted spelling, S109). `None` when
-    /// `name` is not a dotted member of a type in scope. Feeds only
-    /// `resolved_targets` (dotted member refs are `callees` residue).
+    /// `name` is not a dotted member of a type in scope. Feeds only `var_refs`
+    /// (as `VarRef::Global`; S114 carrier flip — was `resolved_targets`) — dotted
+    /// member refs are `callees` residue.
     pub(crate) fn resolve_dotted_member_fq(
         &self,
         state: &CheckState,
