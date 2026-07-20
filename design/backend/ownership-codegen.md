@@ -2291,6 +2291,13 @@ audits coverage against these matrices):
   grow} × source polarity {`Owned`, `Borrowed`} × call-site kind {static, wrapper,
   curry} → exact RC balance per cell (allocs−deallocs = 0 over the cell's contract);
   COW value semantics asserted alongside (result correct, source unchanged on copy).
+  **Balance for the `Borrowed` mutate/grow row is governed by the settled R14
+  contract (§13.7 banner), NOT the falsified producer inc:** toggle-off classifies
+  the source `Owned` (counts it → rc≥2 → copy branch, correct by construction);
+  analysis-on incs iff `node_escapes != Some(false)`. Add the escape axis to this
+  row's cells — {mutate × Borrowed × escapes `Some(true)`/`Some(false)`/`None`} — so
+  the l_c3 recur-transfer (`Some(false)` ⇒ no inc, in-place reuse preserved) and the
+  I-2/I-1-container escape (`Some(true)`/`None` ⇒ one inc) are distinct pinned cells.
 - **`control_flow/let_if.rs` + stack slots (B3.4):** eligibility gates {statically
   sized ±} × {all-scalar payload ±} × {TCO back-edge flow ±} × {`escapes` =
   `Some(false)`/`Some(true)`/`None`} × site kind {ADT ctor, closure, VecLit} → {stack
@@ -2338,6 +2345,79 @@ per-visit phrasing:
   matrix here).
 
 ### 13.7 The COW mutate/grow-branch aliasing gap — the 0641 B-2/I-2 ownership-independent consume fix (S113 W5)
+
+> **SUPERSEDED — the analysis-independent producer-seam inc BELOW is FALSIFIED
+> (FIXME 0664, S113 W5b; reconciled here S114 P2 F6, `/design`(backend)). The
+> settled contract is the R14 two-halves ruling.** The original §13.7 "Fix shape"
+> (an unconditional `rc_inc` on the mutate/grow same-pointer branch under
+> `SourceOwnership::Borrowed`) flips B-2/I-2 but **regresses two green fences** and
+> is unachievable as an analysis-INDEPENDENT producer rule: escape is inherently a
+> consumer-context property, not a producer-site one. `/dev` did NOT land it
+> (no-regression discipline). The proof of unsoundness and the `/arch` R14 ruling
+> that dissolved the impasse are recorded in FIXME 0664; the **settled**
+> mechanism, now the operative design of record, has TWO inseparable halves (ONE
+> change-set):
+>
+> 1. **Polarity restore (toggle-off = all-Owned).** The toggle-off ("conservative")
+>    lowering was NOT conservative: `cow_source_ownership` (`vec_codegen.rs`)
+>    defaulted every non-return source to `SourceOwnership::Borrowed` — a purely
+>    SYNTACTIC classifier gated on neither the analysis facts nor the toggle,
+>    carrying an uncounted stake at a COW site. The spine already DEFINES toggle-off
+>    as the all-`Owned` lowering (`ownership-inference.md` §6.2 / R7 oracle; P25).
+>    Restored: analysis-off ⇒ `Borrowed` unreachable, every COW source COUNTED, so
+>    the runtime rc==1 in-place branch fires only when the source is genuinely
+>    unique and the rc≥2 copy branch is **correct by construction**. The loop
+>    allocates per iteration toggle-off — that is what conservative MEANS (monotone
+>    soundness; only performance degrades). This is **R14 count-truth**
+>    (`safety-invariants.md` §4 R14 row): the runtime rc==1 in-place branch is sound
+>    iff every live independently-owned reference is counted.
+> 2. **Analysis-on: escape-GATED inc.** `Borrowed` classification comes ONLY from the
+>    settled Origin lattice (a fresh temp is Fresh/transfer, never Borrowed); the COW
+>    core incs the returned pointer iff `node_escapes(cow_apply) != Some(false)`
+>    (escape OR absent ⇒ inc — the UAF-safe direction, P25; a recur-transfer
+>    `Some(false)` in-frame ⇒ no inc, so l_c3 in-place reuse is preserved). Escape is
+>    read from the node (P26 shape), never re-derived structurally at the producer.
+>
+> **The halves are NOT separable** (0664): the gate without the polarity restore
+> leaves the oracle lane comparing correct-on against garbage-off; the polarity
+> without the gate leaves the analysis-on REDs. **Candidate (a) — a per-consumer
+> alias-inc at every consume shape — was REJECTED by `/arch`** as the P7 mirror
+> family (a future consume shape misses the rule by construction). NOTE the
+> boundary: that REJECT is about the COW **producer** escape decision; it does NOT
+> forbid the separate, orthogonal binding-indirection consume contract
+> (`design/backend/binding-indirection-consume.md`, the 0668 design-iteration
+> anchor), whose discriminator is STRUCTURAL alias-forwarding (analysis-independent
+> by construction) rather than an escape re-derivation — see that doc §2 for why the
+> two are not the same rule.
+>
+> **As-built (S113 W5b, verified toggle-ON AND toggle-off):** I-2 ×2
+> (`fresh_container_holding_cow_aliased_element_{repl,link}`) + the COW-container
+> I-1 face ×2 (`container_element_provenance_returned_param_{repl,link}`) FLIPPED;
+> **no regression** — `ownership_reuse::l_c3_*` ×2 GREEN (escape gate → no inc for
+> the recur loop), golden byte-identical, `vec_lifecycle` GREEN. Counterexample
+> units: `cow_polarity_tests` (BorrowedInFrame / Owned = zero inc; BorrowedEscaping
+> = one inc).
+>
+> **Residuals that CARRY (this is the R14 "partial" status, `safety-invariants.md`
+> §4):**
+> - **B-2** `(match (vec-set v 1 99) [r r])` — a TYPECHECK fix (F4), NOT this seam
+>   and NOT the binding-indirection backend contract. The COW `Apply` carries
+>   `escapes=Some(false)` from typecheck's match-var-pattern escape-recording bug;
+>   the escape gate correctly declines to inc a "non-escaping" result and **cannot
+>   distinguish this wrong-`Some(false)` from the correct-`Some(false)` recur loop**
+>   (R14: the backend gate is correct). The B-2 analysis-ON face needs the recorded
+>   escape fact corrected in typecheck (Track A carrier wave); its cache-coherence
+>   half (a stale persisted `Some(false)` reproducing the UAF post-fix) rides the
+>   Track-A schema window (F7). The B-2 **toggle-OFF** face is a different mechanism
+>   — it flips with the binding-indirection consume contract (BI-C-off;
+>   `binding-indirection-consume.md` §4), because toggle-off consults no escape fact
+>   at all.
+> - **MS-P7** `--link` divergence (per-turn JIT vs ObjectModule) — evidence-gated
+>   (F5); no wave until the call-chain brief (`s114-test-plan.md` §3.6).
+>
+> **The remainder of §13.7 below is the FALSIFIED producer-inc analysis, RETAINED
+> as the correction record** (the "twice-burned" root-cause discipline the section
+> itself invokes) — read it as history, not as the fix to implement.
 
 **Scope (arch-narrowed W5, `safety-invariants.md` §6 W5-status).** The ownership-INDEPENDENT
 backend half of the 0641 family — the two residuals (B-2, I-2) whose wrong-VALUE face the
@@ -2423,7 +2503,20 @@ reproduction (the value is wrong with the analysis OFF).
 exact RC balance (allocs−deallocs = 0) AND **value-correct under `MALLOC_PERTURB_`** (a
 leak-balance guard reads green over corrupt memory — the B3.1a-R lesson above; the repro
 asserts the RESULT, not balance). Negative cell {mutate × Borrowed × result-does-NOT-escape,
-e.g. `(vec-len (vec-set v 0 9))`} stays balanced (the inc is paired by the temporary drop).
+e.g. `(vec-len (vec-set v 0 9))`} stays balanced.
+
+> **§13.5 negative-cell CORRECTION (FIXME 0664, S114 P2 F6).** The parenthetical that
+> stood here — "the inc is paired by the temporary drop" — is **Var-source-only and is
+> retired with the falsified producer inc**. It is FALSE for a literal source
+> (`(vec-len (vec-set [10 20 30] 0 99))` — the temp transfers, has no separate
+> scope-dec, so the producer inc leaks) and silent on the loop-transfer case
+> (`(recur (vec-set v i x))` — the inc scales allocation with iteration count). Under
+> the **settled R14 contract** (banner atop §13.7) there is no unconditional
+> mutate-branch inc to pair: toggle-off counts the source (all-Owned) so the rc check
+> is correct by construction, and analysis-on incs iff `node_escapes != Some(false)`
+> (an in-frame `vec-len` result does not escape ⇒ no inc ⇒ nothing to pair). The
+> §13.5 COW-cores matrix bullet (branch × source-polarity balance) is governed by the
+> escape-gated contract + the toggle-off polarity restore, NOT by this retired inc.
 
 **Joint acceptance with the typecheck W5b frame.** The 8 committed 0641 REDs flip under the
 differential-oracle lane + diagnostic modes ONLY when BOTH halves land: B-1/I-1 need the

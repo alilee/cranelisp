@@ -536,7 +536,10 @@ core.option/Some        ; constructor 'Some' in module 'core.option'
 core.math/+             ; operator '+' in module 'core.math'
 ```
 
-The parser MUST distinguish qualified names from the division operator. A `/` is only a qualified separator when preceded by an alphabetic module path. `(/ 10 2)` remains the division operator because the `/` is not preceded by a symbol.
+**The `/` qualifier separator requires both halves non-empty.** A `/` acts as the module/local separator of a qualified name only when it is flanked by a **non-empty module path** on the left AND a **non-empty local name** on the right. This both-halves-non-empty rule distinguishes a qualified name from the division operator and outlaws degenerate spellings:
+
+- **Division operator (legal).** A lone `/` with no module path before it is the plain symbol `/`, resolved through the ordinary unqualified path exactly as `+` or `not` — `(/ 10 2)` is division, not a qualified reference. The reject below MUST NOT over-reach onto it: bare `/` stays a plain name. [S114]
+- **Dangling qualifier (a located error).** A symbol run ending in `/` with an **empty local half** — `foo/`, `a.b/` (a non-empty module path with no local name) — is a **compile-time error** at the offending token's span, in **every** position (value, call head, operand, annotation, and type — §2.4, §1.4.5). It does **not** silently degrade to the module-less name (`foo`, `a.b`) and does **not** pass through as a literal bare symbol: a qualified reference MUST name a local symbol on the right of the `/`. [S114]
 
 Qualified-name resolution per §8.6.6 walks module alias chains. Alias substitution operates on the dot-separated segments of `module_path` (within the grammar above), NOT across `/`. If the current resolution scope contains a public mount alias under module `current-module` that maps the segment `str` to `core.string` (per §8.4.4), then writing `current-module.str/split` causes the resolver to walk `module_path` segment-by-segment: it finds `current-module`, looks up `str` in that module's alias table, substitutes `core.string`, and then resolves `split` in `core.string`. Mount aliases declared by `export` are public; alias-imports declared by `import` (§8.3.4) are private to the importing module.
 

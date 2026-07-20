@@ -88,7 +88,16 @@ doc is subordinate.
 macro expansion; the int leg of the quasiquote-legal-everywhere wave),
 `macro-diagnostic-reanchoring.md` (S113, FIXME 0650 — the int-side re-anchoring seam:
 synthetic-span diagnostics over macro-expansion output relocate to the origin form;
-paired with `design/frontend/binder-head-reject.md`),
+paired with `design/frontend/binder-head-reject.md`; §2.1 S114 extends the same
+transform to the def/const finalize/typecheck-error path),
+`macro-marshal-rc-protection.md` (S114, FIXME 0638 — the marshal-boundary RC
+contract: deep protection of the whole marshalled arg tree, curing the macro-clause
+interior-alias double-free),
+`expansion-qualification-scope.md` (S114, FIXME 0670 — `qualify_expanded_sexp`
+becomes scope-aware, skipping value-level binder slots; wave-1 of the F8 chain,
+paired with frontend `binder-head-reject.md` re-landing),
+`prelude-table-write-isolation.md` (S114, FIXME 0604 — the foreground public-write
+chokepoint contract; companion to `index-worker-isolation.md`'s background half),
 `multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
 read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.

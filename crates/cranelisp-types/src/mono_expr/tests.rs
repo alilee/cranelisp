@@ -138,6 +138,66 @@ fn var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span() {
     assert!(matches!(*callee, MonoExpr::Var { resolved_target: None, .. }));
 }
 
+// S114 FIXME 0685 (design/arch/typed-resolution-carrier.md §3.4): the sanctioned
+// all-local builder for SYNTHETIC synthesis bodies (adt.rs ctor + accessor).
+// No resolution-map parameters; byte-identical to the lenient walk with an
+// empty resolution sidecar (the pre-0685 adt.rs encoding); pattern-ctor
+// identities still transported through the `pattern_ctors` sidecar keyed by
+// the synthetic pattern span.
+#[test]
+fn synthetic_local_builder_matches_lenient_and_carries_pattern_ctor() {
+    use crate::{FQSymbol, Pattern, SymbolRef};
+    // Accessor-shaped synthesis body: (match self [(Box v) v]) — every node
+    // Span::SYNTHETIC, every inferred_type None (the lenient placeholder path).
+    let syn = Span::SYNTHETIC;
+    let fq_ctor = FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("Box") };
+    let body = Expr::Match {
+        scrutinee: Box::new(Expr::var(Symbol::from("self$accessor"), syn)),
+        arms: vec![MatchArm {
+            pattern: Pattern::Constructor {
+                name: SymbolRef::new(None, Symbol::from("Box")),
+                bindings: vec![Symbol::from("v")],
+                span: syn,
+            },
+            body: Expr::var(Symbol::from("v"), syn),
+            span: syn,
+        }],
+        span: syn,
+        compiler_generated: true,
+        inferred_type: None,
+    };
+    let mut pc = std::collections::HashMap::new();
+    pc.insert(syn, fq_ctor.clone());
+
+    let via_synthetic = MonoExpr::synthetic_local_from_expr(&body, &pc);
+    let via_lenient =
+        MonoExpr::lenient_from_expr(&body, &pc, &std::collections::HashMap::new());
+    assert_eq!(
+        format!("{via_synthetic:?}"),
+        format!("{via_lenient:?}"),
+        "the all-local builder is byte-identical to the lenient walk with an empty \
+         resolution sidecar"
+    );
+    let MonoExpr::Match { arms, .. } = via_synthetic else {
+        panic!("expected a Match node");
+    };
+    assert_eq!(
+        arms[0].resolved_ctor.as_ref(),
+        Some(&fq_ctor),
+        "a synthesis-held ctor identity still rides the pattern_ctors sidecar"
+    );
+}
+
+// The always-on tier-3 license assert (safety-invariants.md §2): a real-span
+// node must never reach the all-local builder — it would grant a table
+// reference a silent local verdict.
+#[test]
+#[should_panic(expected = "synthetic_local_from_expr")]
+fn synthetic_local_builder_rejects_real_span_bodies() {
+    let real = Expr::var(Symbol::from("table-ref"), Span::new(3, 12));
+    let _ = MonoExpr::synthetic_local_from_expr(&real, &std::collections::HashMap::new());
+}
+
 #[test]
 fn concrete_int_lit_round_trips() {
     let e = int_lit(42);

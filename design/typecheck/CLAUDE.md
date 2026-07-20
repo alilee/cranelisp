@@ -54,7 +54,12 @@ subordinate to `adt.md`), `s87-traits-decomposition.md` (the `traits/` module cu
 resolver single-source refactor → subordinate to `inference.md` + `traits.md`),
 `return-poly-dispatch-signal.md` (S110 R16/R17 — the unresolved-return-poly
 dispatch signal + the typecheck→int carrier → subordinate to `traits.md` +
-`monomorphisation.md`).
+`monomorphisation.md`),
+`typed-resolution-carrier.md` (S114 Track A — the `VarRef`/`ApplyRef` carrier
+flip PRODUCER side; totality at `infer_var`/the Apply chokepoints, binder-provenance
+plumbing, the `from_expr` `ViewBuildError` gate, F-D2-10 riding the flip →
+subordinate to `monomorphisation.md`, governed by
+`design/arch/typed-resolution-carrier.md`).
 
 **Historical working docs** (`HISTORICAL`-bannered; completed/superseded, audit
 trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `implementation-slice-s66.md`,

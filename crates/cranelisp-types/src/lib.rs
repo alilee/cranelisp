@@ -270,7 +270,7 @@ pub use concrete::{ConcreteType, NotConcrete};
 // is structurally unrepresentable on a codegen node. `MonoExpr::from_expr` is the
 // fallible builder; its failure is the unified ambiguity / could-not-mono error.
 // design/arch/concrete-boundary-type.md §2.4.
-pub use mono_expr::{MonoDefnVariant, MonoExpr, MonoMatchArm};
+pub use mono_expr::{ApplyRef, MonoDefnVariant, MonoExpr, MonoMatchArm, VarRef};
 pub use check::{
     DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TraitDeclInfo, TypeDefInfo,
 };

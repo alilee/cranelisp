@@ -12,7 +12,10 @@ title: Resolve once
 > itself is characterized as a keyed-lookup chain, and the enumeration +
 > `/search` carve-outs are made explicit. **RATIFIED at S110 Phase-7 close
 > (user-approved 2026-07-16)** with the strengthened wording, per the
-> close-only register rule (the P21/P23 precedent).
+> close-only register rule (the P21/P23 precedent). **Corollary "resolution
+> products travel typed" added S114 Phase 3** (scribing the user's prong-3
+> directive, two statements 2026-07-19 — quoted in FIXME 0653; register
+> confirmation at the S114 Phase-7 close per the close-only convention).
 
 **Statement.** A semantic identity — a name, a type, a member, a dispatch
 target — is derived at exactly ONE pipeline stage and crosses every stage
@@ -118,6 +121,40 @@ resolver), 0585 (one value-position enumeration for mint and die), R-2 (one
 ADT-entry derivation, `cranelisp_types::build_adt_entries`). The backend's
 end-state under this principle is a PURE keyed-lookup consumer: zero name
 resolution, zero bare-type-name resolution (BC §3 invariant 10).
+
+**Corollary — resolution products travel typed (user-directed 2026-07-19;
+scribed S114 Phase 3).** Three prongs, one rule:
+
+1. **A bare name past its resolution seam is a defect marker.** A resolution
+   *product* travels as the typed value the seam minted — `FQSymbol`,
+   `FQTypeName`, `FQTraitName`, the closed `VarRef`/`ApplyRef` sums — never
+   re-narrowed to its bare written name for later re-resolution in whatever
+   scope happens to be ambient. Post-resolution helper signatures take the FQ
+   type; a `(&CheckState, &bare-name)` shape past the seam is an open
+   invitation to ambient re-resolution (the S113 six-instance register: the
+   *identity-from-written-name* and *resolve-once-home-discarded* families,
+   FIXME 0653 §Strengthened evidence).
+2. **Scan discipline.** A body-scan that mints or records dispatch may use the
+   AST name only as a *trigger for a keyed read* of the per-span recorded
+   verdict (`resolved_targets`/`resolved_calls` and their typed successors) —
+   never as the identity itself. The carrier-presence-consumption fix shape
+   (S113 fix 1, the mono-recheck self-call classifier) is the canonical form.
+3. **The local/global dichotomy is enforced IN THE TYPE, not by a checking
+   sweep.** At the checked-program boundary every reference carries a closed
+   sum constructed only by typecheck — `VarRef::Local` (binder identity) `|`
+   `VarRef::Global` (storage FQ); the Apply side separately carries
+   `ApplyRef::Dispatch` `|` `ApplyRef::ViaCallee` (its third legal state gets
+   its own constructor, not a shared ambiguous `None`). **"Unresolved" has NO
+   constructor**: a checked program in which a reference is neither
+   local-bound nor FQ-carried is unrepresentable downstream — the
+   phase-boundary completeness gate is the constructor, and a producer bug
+   that drops a carrier fails as a LOCATED typecheck error at view-build,
+   never a codegen-time keyed miss (wrong phase). Sweeps — the bare-name
+   helper classification, the scan census — are **migration aids, never the
+   enforcement mechanism** (an interim gate patch a constructor obsoletes is
+   the Principle-8 half-measure). Carrier shape + wave plan:
+   `crates/cranelisp-types/src/mono_expr.rs` (`VarRef`/`ApplyRef` rustdoc) +
+   `design/arch/typed-resolution-carrier.md`.
 
 **Enforcement consequence.** Under the compiler-wide statement, any ambient
 identity-scan anywhere in the pipeline is a defect this principle names: an

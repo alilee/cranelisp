@@ -12,10 +12,28 @@ This is distinct from:
 
 ## What to Document
 
-- **Reader internals**: PEG grammar structure, error recovery strategy, span threading
-- **Macro expansion**: expansion algorithm, fixed-point iteration, hygiene approach, MacroExpander trait implementation
-- **AST builder**: Sexp-to-Expr translation decisions, desugaring rules, validation passes
-- **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
+The frontend is **purely syntactic** post-S76 W-Macro: text → `Sexp` → AST. It
+does **no macro recognition or execution** (recognition → typecheck via
+`cranelisp_types::resolve_macro_head`; execution → int via
+`cranelisp_types::MacroExpander`) — only quasiquote desugaring. The reader is a
+**hand-written recursive-descent** parser (there is no PEG grammar — the stale
+`peg` references in `plan-frontend.md`/history are drift).
+
+- **Reader internals**: hand-written recursive-descent dispatch (the
+  load-bearing first-byte precedence + `/`/`.` structural significance), the
+  dangling-qualifier reject placement, span threading, error recovery
+- **AST builder**: Sexp-to-AST translation decisions, desugaring rules,
+  validation passes, the annotation-pairing (`build_one_expr_at`) and
+  binder-reject (`reject_qualified_binder_head`) single-seams, enforcement
+  matrices (operand-position ascription/trailing; binder heads)
+- **Quasiquote desugaring**: `` ` ``/`~`/`~@`/`quote` → synthetic `macros/`
+  constructor Sexps; the fold into `build_forms`/`build_form`; synthetic-span
+  allocation
+- **Defmacro shape-parse**: `(defmacro name [params] body)` → `DefmacroInfo` +
+  per-clause `Defn` synthesis (shape only — no execution)
+- **Design evolution**: what changed and why across sprints, and what was
+  considered but rejected (per-sprint history lives in the docs themselves and
+  `sprints/archive/`)
 
 ## Conventions
 

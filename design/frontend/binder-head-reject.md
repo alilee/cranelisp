@@ -184,75 +184,104 @@ symmetry candidate for `/qa`'s matrix (a `/qa` row, mirroring how F3 con_var was
 routed). Named here so the enumeration is complete and the exclusion is
 deliberate; `/dev` does not action it in W3 unless `/qa` adds the row.
 
-### 3.3 deftype variant-constructor names — the enumeration miss (FIXME 0660)
+### 3.3 deftype variant-constructor / field / platform names — LANDED (FIXME 0660 closed)
 
 `/review` (S113 W3) found that **deftype variant-constructor names are binders
 missed on all three sides** — spec §5's enumeration, this design's §3/§8, and
 /qa's BD-M1 matrix. A variant ctor "introduces a distinct variant" (spec §5.2.2)
 and mints a module-level callable — the exact analogue of the S5 method-signature
-name (§5.3.3) the design DID include. Site: `build_constructor_def`
-(`ast_builder.rs:623`), two arms. Three cells, each with a distinct disposition
-(evidence probed on the W3 tree, `--run`, no module `fmt` present):
+name (§5.3.3) the design DID include. The user RULED 2026-07-19 that
+variant-constructor and field names ARE binders ("you can't define a name in
+another module, only reference"); /spec scribed §5 intro + the §5.2.2/§5.2.6
+per-site bullets + §5.10 platform simple-symbol clause `[S113]`. **All three
+cells' implementation LANDED in the same wave** (verified in source S114 Phase 3):
 
-**(a) ctor-name uppercase gate on the list arm — clear defect-class MIRROR,
-recommend in-sprint fix.** The bare-nullary arm is guarded by `is_uppercase_start`
-(`:626`) so `(deftype C red)` rejects a lowercase nullary ctor — but the **data
-ctor list arm** (`:637` `expect_symbol(&children[0])`) has **no uppercase check**,
-so `(deftype Shape (circle [:Int r]))` parses, typechecks, and binds a callable
-**lowercase ctor `circle`** — additionally **unmatchable** (`build_pattern` treats
-a lowercase pattern symbol as a var binder, never a ctor). This is the **exact
-mirror of the `build_type_head` list-arm case defect this very W3 change-set
-fixed** (audit S113 finding 2) — a known defect class, not a new normative
-question. **Recommendation: in-sprint fix**, a frontend touch in the W4 window
-(rider) — add the `is_uppercase_start` gate to the list arm (`:637`), located,
-naming the uppercase-ctor rule, mirroring the head-arm fix. **Re-targetable to
-`/dev`** once /sprint accepts this disposition (it is a settled defect-class
-mirror, no user ruling needed).
+**(a) ctor-name uppercase gate on the list arm — LANDED.** The data-ctor list
+arm now checks `is_uppercase_start` (`build_constructor_def`
+`ast_builder.rs:719`), rejecting `(deftype Shape (circle [:Int r]))` located at
+the name with a fix-naming message (write `Circle` — matchable in patterns). This
+was the exact mirror of the `build_type_head` list-arm case defect the same wave
+fixed (audit S113 finding 2) — a settled defect class, no user ruling needed.
 
-**(b) ctor-name qualified reject — an EXTENSION of the binder principle,
-USER-QUEUE (veto-visible).** `(deftype Shape (fmt/Circle [:Int r]))` is
-**accepted at parse** and fails later with the incidental degenerate-span
-`module 'fmt' … not found` (`0..0`) — the same dual silent-accept face §1 pins
-for deftrait heads; `build_constructor_def` has no `reject_qualified_binder_head`
-in either arm (the bare arm's `is_uppercase_start` keys on the after-slash
-segment, so `fmt/Circle` passes it). Rejecting a qualified ctor name is the
-**right** behaviour on the binder principle (a ctor binds into the current
-module; you cannot declare a ctor into another module) — but spec §5's
-enumeration names only the def-form heads + impl-body method defns + (now
-§5-scribed) method-sig names; **extending the binder principle to variant-ctor
-names is a spec extension, NOT a settled ruling.** Per the TB-27/S112 precedent
-(binder generalizations stand **veto-visible** until the user rules), this cell
-is **user-queue**: `/sprint` carries it to the user gate; `/dev` does **not** land
-the ctor-name qualified reject until the user ratifies (or it stands
-un-vetoed). Do **not** treat as settled. The spec-enumeration amendment (§5 →
-add variant-ctor names) is tracked in FIXME 0660 and routed to /spec by /sprint
-once ruled.
+**(b) ctor-name qualified reject — LANDED (settled by the 2026-07-19 ruling).**
+`reject_qualified_binder_head` now fires in **both** arms —
+`ast_builder.rs:694` (bare-nullary) and `:712` (list, checked BEFORE the
+uppercase rule so a qualified name reports the qualified fault regardless of its
+after-slash case). `(deftype Shape (fmt/Circle …))` rejects located at the ctor
+name instead of accepting and dying at the degenerate `0..0` span.
 
-**(c) field names + `platform` name — same-family cells, enumerated with
-evidence + recommendation:**
+**(c) field names + `platform` name — LANDED.** Field names carry
+`reject_qualified_binder_head` in both arms of `build_field_list`
+(`ast_builder.rs:793` annotated, `:804` bare) — a field binder mints a
+`Type.field` accessor (§5.2.6), so a qualified spelling `(deftype P [:Int fmt/r])`
+rejects located at the field name. The `platform` name adopts the **`mod`-model**
+module-phase guard (`parse_platform` `module_extract.rs:455` —
+`name.contains('/') || name.contains('.')`, NOT `reject_qualified_binder_head`
+which is `/`-only), symmetric with `parse_mod_decl:181`; a qualified/dotted
+platform name would corrupt the composed `platform.<name>` module path. Field
+names are NOT a §3.2-style justified exclusion after all — the user's ruling
+made them binders, and the accessor-minting seam is a clean name-based reject
+site, so they landed with the ctor cells rather than deferring to a /qa row.
 
-- **Field names** (`(deftype P [:Int fmt/r])`) are the secondary-binder sibling
-  of the §3.2 type-param cell — silently accepted, dying at the synthesized
-  accessor with the same degenerate `0..0` module-not-found face (probed).
-  Disposition: **same as §3.2 type-params** — a `/qa` matrix candidate, **not** a
-  W3/W4 reject site (spec §5's principle names the head name, not secondary field
-  binders); named here so the deftype family {head, type-params, ctor names,
-  field names} is fully dispositioned. `/dev` actions only if /qa adds the row.
-- **`platform` name** (`(platform name)`, `module_extract.rs:435`
-  `parse_platform`) enforces nothing beyond symbol-ness — spec §5.10 says only
-  "bare symbol (not a string literal)", with **no §5.8-style "not qualified, not
-  dotted" clause** — yet the name composes the synthetic module path
-  `platform.<name>` + the DLL search path, so a qualified/dotted spelling mints a
-  bogus module path (probed). This is the **exact family** as the `mod`-head cell
-  W3 closed (a module-phase decl, not a §5 declaration-head binder), which
-  already rejects `/` AND `.` at `parse_mod_decl:181`
-  (`name.contains('/') || name.contains('.')`). Disposition: **recommend the
-  `platform` name adopt the same `mod`-model guard** (reject `/` and `.` at
-  `parse_platform`, module-phase style — NOT `reject_qualified_binder_head`,
-  which is `/`-only for §5 binders) as a small in-sprint frontend rider; **spec
-  wording gap** — §5.10 should gain the §5.8 "not qualified, not dotted" clause,
-  tracked in FIXME 0660, routed to /spec by /sprint. `/dev`-actionable once
-  /sprint accepts.
+**Type-params remain the one justified exclusion** (§3.2) — spec §5's principle
+names the head name + the now-scribed ctor/field/method-sig binders, not the
+secondary type-param binders (`(deftype (Pair prim/a b) …)`); that stays a /qa
+matrix candidate. `/qa`'s BD-ctor matrix rows (qualified-reject, lowercase-list-arm
+twin, bare-uppercase twin) are tracked in `tests/plan/s114-test-plan.md` §5.3
+(reserved rows against this now-final enumeration). **FIXME 0660 is deleted** —
+spec (done /spec), design enumeration (this §3.3 + §8), and implementation (all
+three cells) are complete; the /qa rows are the plan's to draw.
+
+### 3.4 Value-level local binders — the re-landing (0670-gated, F8 wave 2)
+
+The §5 native-head reject covers **declaration heads**. Spec §5's binder-position
+table also names the **value-level local binders** — `defn`/`fn`/`defmacro`
+params, `let` names, `match` var-patterns — as bare-symbol binders. Their reject
+was **deferred** at S113 (crate `CLAUDE.md` §"DEFERRED — value-level local
+binders"; the three NOTE comments at `build_annotated_params:2001`,
+`build_let_bindings:1588`, `build_pattern:1780`): these `build_form` seams run
+AFTER int's macro-expansion name-resolution, which itself **qualifies** a local
+binder whose name collides with an importable symbol (`name` →
+`primitives/name`, only when a macro is in scope), so a build-layer reject fired
+on int's mangled output and broke the VALID program `(defn f [name] (str … name))`.
+
+**0670 unblocks this (ruled path 1, /arch Phase 3):** int's expansion-pass
+qualification now **skips binder slots** — a binder is never a reference, so it
+is never a candidate for name-resolution. The int fix is Track C (src-surface,
+F8 wave 1); the mandatory expansion-seam unit test (a colliding param stays
+**bare** through expansion) is /dev(src)'s. Once it lands, a raw qualified binder
+name reaches these seams unmangled, so `reject_qualified_binder_head` is sound at
+each:
+
+- **`build_annotated_params`** (`ast_builder.rs:1972`) — insert after each
+  `reject_reserved_binder_name`, in BOTH the annotated arm (`:2000`) and the bare
+  arm (`:2013`). Covers `defn`/`defn-` params, `fn` params (via `build_fn`), and
+  `defmacro` params (via the same builder) — one seam, three forms.
+- **`build_let_bindings`** (`:1580`) — insert after `reject_reserved_binder_name`
+  (`:1587`).
+- **`build_pattern`** (`:1766`) — insert at the lowercase var-binder arm
+  (after `:1784`) AND on each constructor-pattern **binding** symbol
+  (`:1806-1807`). NOT on `children[0]` (the ctor name is a REFERENCE, spec
+  §6.2.1 — a qualified ctor pattern head is legal and splits).
+
+The SAME `reject_qualified_binder_head` helper (`:111`, both-halves-non-empty
+predicate, Principle 16) — no per-seam copy (Principle 7). This makes the
+value-level cells (IQ-N1..N4, `s114-test-plan.md` §4.3) reject located at the
+user's written form, with the bare-colliding-binder twin (`(defn f [name] …)`)
+staying LEGAL (the reject fires on the qualified spelling, not on the collision).
+
+**`/dev`(frontend) retirements riding this wave** (crate `CLAUDE.md` +
+source — `/dev`-owned, named here for the wave brief): the three NOTE comments;
+the §"DEFERRED — value-level local binders" section; and the **degenerate-`foo/`
+mirror sentence** (crate `CLAUDE.md`:114 + `ast_builder.rs:2082-2086`
+`type_expr_to_trait_ref` debug_assert comment) — superseded by 0684 (bare `foo/`
+now rejects at the reader, `enforcement-matrices.md` §3.2, so only bare `/`
+division reaches the splitters unsplit).
+
+**Sequencing (F8 strict order):** 0670 int fix (Track C) → this re-landing
+(Track D) → /testing IQ-N1..N4 cells (Track D wave 3). This is the ONLY Track-D
+frontend item gated on 0670; §3.1–§3.3 (binder heads, con_var, deftype-ctor
+family) and `enforcement-matrices.md` (BD-A, RA) are all independent.
 
 ## 4. Span provenance across macro expansion — the LOAD-BEARING finding
 
@@ -452,10 +481,10 @@ enumerates the binder heads; this design's sites are checked against them:
 | `def`/`def-` head (macro route) | §5, §5.7:544 | S1 post-expansion + §4 span seam | ✓ correctness; span → int seam (§4) |
 | `const`/`const-` head (macro route) | §5, §5.6:522 | S4 post-expansion + §4 span seam | ✓ correctness; span → int seam (§4) |
 | con_var (secondary binder) | §5.3.2 grammar | §3.1 `parse_trait_head_shape` con_var arm | ✓ (BD-M4, folded) |
-| **deftype variant-ctor name — uppercase gate** (list arm) | §5.2.2 (introduces a distinct variant) | §3.3(a) `build_constructor_def` list arm | **DEFECT-CLASS MIRROR** of the just-fixed `build_type_head` list arm — recommend in-sprint fix (W4 rider), re-targetable /dev (FIXME 0660(a)) |
-| **deftype variant-ctor name — qualified reject** | §5.2.2 | §3.3(b) `build_constructor_def` both arms | **USER-QUEUE (veto-visible)** — extends the binder principle to ctor names; /sprint carries to the user gate, NOT settled (FIXME 0660(b)) |
-| deftype field names (secondary binder) | §5.2 grammar | §3.3(c) | flagged to /qa, **justified exclusion** (secondary field binder, like §3.2 type-params) |
-| `platform` name | §5.10 | §3.3(c) `parse_platform` | **module-phase family** — recommend the `mod`-model `/`+`.` guard (in-sprint rider); §5.10 wording gap → /spec (FIXME 0660(c)) |
+| **deftype variant-ctor name — uppercase gate** (list arm) | §5.2.2 (introduces a distinct variant) | §3.3(a) `build_constructor_def:719` list arm | ✓ **LANDED** — mirror of the fixed `build_type_head` list arm |
+| **deftype variant-ctor name — qualified reject** | §5.2.2 | §3.3(b) `build_constructor_def:694/:712` both arms | ✓ **LANDED** — settled by the 2026-07-19 ruling (variant-ctor names are binders) |
+| deftype field names (secondary binder) | §5.2.6 | §3.3(c) `build_field_list:793/:804` both arms | ✓ **LANDED** — ruled a binder (mints `Type.field` accessor); qualified rejects |
+| `platform` name | §5.10 | §3.3(c) `parse_platform:455` | ✓ **LANDED** — `mod`-model `/`+`.` guard (module-phase, not `reject_qualified_binder_head`) |
 | deftype type-params (secondary binder) | §5.2 grammar | §3.2 | flagged to /qa, **justified exclusion** (spec §5 principle names the head name, not secondary param binders) |
 | `mod`/`mod-` name | §5.8 | — | **justified exclusion**: `mod` already requires "a simple symbol (not qualified, not dotted)" (§5.8) — enforced at `module_extract.rs`, a module-phase decl, not a §5 declaration-head binder; not a new S113 site |
 
@@ -476,18 +505,19 @@ alongside the impl-body method defns, and §5.3.3 carries the per-site binder no
 implementation's site set are now two-sided-complete for the method-name axis.
 (The originating FIXME 0651 was actioned and deleted.)
 
-**Second delta family (FIXME 0660, /review-found post-Phase-3): the deftype
-variant-constructor cells** — the enumeration missed variant-ctor names on all
-three sides (spec §5, this diff, /qa's BD matrix), dispositioned per-cell in
-§3.3: **(a)** the missing list-arm uppercase gate is a settled defect-class
-mirror → in-sprint fix (re-target /dev); **(b)** the ctor-name qualified reject
-is a **veto-visible spec extension** → user-queue (/sprint carries, NOT settled);
-**(c)** field names → /qa (secondary-binder exclusion like type-params), and the
-`platform` name → the `mod`-model module-phase guard (in-sprint rider) + a §5.10
-spec-wording gap. The remaining deltas (type-params, `mod`) are excluded with
-rationale; con_var and (now) the deftype-ctor family are dispositioned. No design
-site lacks a spec basis; every §5-family binder cell is now covered or
-justified-excluded or user-queued.
+**Second delta family (was FIXME 0660, /review-found post-Phase-3): the deftype
+variant-constructor cells — now CLOSED.** The enumeration originally missed
+variant-ctor names on all three sides (spec §5, this diff, /qa's BD matrix). The
+user ruled 2026-07-19 that variant-ctor AND field names are binders; /spec
+scribed §5 intro + §5.2.2/§5.2.6/§5.10 `[S113]`; and all four implementation
+cells LANDED (§3.3): **(a)** the list-arm uppercase gate, **(b)** the ctor-name
+qualified reject (both arms), **(c)** field-name qualified rejects (both arms) +
+the `platform` `mod`-model `/`+`.` guard. The remaining deltas (type-params,
+`mod`) stay justified-excluded with rationale; con_var and the deftype-ctor
+family are dispositioned. No design site lacks a spec basis; every §5-family
+binder cell is now **covered or justified-excluded**. FIXME 0660 deleted; the
+/qa BD-ctor matrix rows are reserved against this final enumeration
+(`s114-test-plan.md` §5.3).
 
 ## 9. Testability (Principle 5)
 
@@ -543,10 +573,14 @@ the trigger that keeps the int seam honest.
 - `design/arch/fixmes/0589-*`, `0590-*` — the annotation/resolver legs (§5/§6).
 - `design/arch/fixmes/0650-*` — the paired int-side span re-anchoring seam,
   `target: /arch` (§4 finding).
-- `design/arch/fixmes/0660-*` — the deftype variant-ctor / field / platform
-  enumeration cells (§3.3), `target: /design`→per-cell routing; stays open.
-  (FIXME 0651, the deftrait method-name enumeration gap, was actioned by /spec
-  and deleted — §5 intro + §5.3.3 now scribe it.)
+- FIXME 0660 (the deftype variant-ctor / field / platform enumeration cells,
+  §3.3) — **actioned + DELETED S114 Phase 3**: spec scribed, design enumerated,
+  all four cells implemented. (FIXME 0651, the deftrait method-name enumeration
+  gap, was likewise actioned by /spec and deleted — §5 intro + §5.3.3 scribe it.)
+- `design/frontend/enforcement-matrices.md` — the sibling S114 Track-D doc: the
+  BD-A operand-position one-seam + the RA dangling-qualifier/bound-form-type
+  reject (annotation/reference family, NOT binder heads) + deftype-ctor trailing.
+  The value-level binder re-landing (§3.4) is this doc's; BD-A/RA are that one's.
 - `crates/cranelisp-frontend/src/ast_builder.rs:111` — `reject_qualified_binder_head`
   as landed (the both-halves-non-empty §8.5-dual predicate; FIXME 0659 realigned §2).
 - SPRINT.md §"Architecture review" Q3 — the `/arch` ruling this designs against.

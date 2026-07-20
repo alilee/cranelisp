@@ -10,8 +10,8 @@ changes. Design narrative: `design/arch/interfaces.md` + `bounded-contexts.md`
 `SymbolTable`/`ModuleEntry` serialize into the backend's `.meta.json` sidecars.
 **Any serde-visible change — field add/delete/retype, OR a meaning change to
 what an existing field records — bumps `CACHE_SCHEMA_VERSION` in
-`crates/cranelisp-backend/src/cache/mod.rs` (currently 16) in the SAME
-change-set.** The constant lives in the backend, not here — an edit here is
+`crates/cranelisp-backend/src/cache/mod.rs` in the SAME change-set.** (Read
+the constant for the current value — a literal here goes stale, and did.) The constant lives in the backend, not here — an edit here is
 incomplete without the cross-crate bump (precedents: `codegen_view` 7→8, S101
 `callees` widening 10→11, S102 ownership carriers 11→12). Only exempt class: a
 `#[serde(default)]` addition whose default equals the fresh-build value
@@ -184,7 +184,17 @@ enums where exhaustive consumer matches are the Principle-18 safety feature
 and a summary struct constructed literally by both producers. See the
 `ownership.rs` module rustdoc §"Exhaustiveness discipline" (recorded S111
 Phase 3); every variant-adding change-set re-runs the `_ =>`/`== Fresh`
-escape grep over `ResultMode`.
+escape grep over `ResultMode`. The **typed resolution sums `VarRef`/`ApplyRef`**
+(`mono_expr.rs`, S114 FIXME 0653 prong 3) join the same exception class:
+closed sums whose exhaustive consumer matches ARE the contract ("unresolved"
+has no constructor; a `_ =>` arm would re-smuggle the ambiguous default) —
+dormant until the Phase-5 carrier wave flips the `resolved_target` fields
+(`design/arch/typed-resolution-carrier.md`). Their sibling
+`MonoExpr::synthetic_local_from_expr` (FIXME 0685) is the ONE sanctioned
+all-local builder for `Span::SYNTHETIC` synthesis bodies (typecheck adt.rs
+ctor/accessor): no resolution-map params by design, plus an always-on
+synthetic-span assert — routing a real (check-run) body through it panics
+deliberately; never "fix" that by widening the license.
 
 ## Seam map + `#[cfg(test)]` locations
 

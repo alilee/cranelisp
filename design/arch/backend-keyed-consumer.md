@@ -666,8 +666,9 @@ Re-verified exhaustively this phase (grep over
 resolver-reaching site, its kind, and the wave that flips it. **This table is
 each wave brief's checklist and `/qa`'s per-wave acceptance basis.** (The
 Phase-2 review quoted "26 sites" counting the ten resolver entry points'
-internal driver calls; the binding artifact is this SET — S1–S24. At W3 the
-grep gate, not the count, is the criterion.)
+internal driver calls; the binding artifact is this SET — S1–S24, plus the
+S25 keyed-read row below the grep gate. At W3 the grep gate, not the count, is
+the criterion — noting the grep surface does NOT cover carrier-reads like S25.)
 
 Direct resolver invocations:
 
@@ -707,6 +708,36 @@ Resolver seam itself (all deleted W3):
 `resolve_driven|resolve_chain|resolve_got_target|resolve_is_callable_target|resolve_vec_query_primitive|resolve_callee_summary|resolve_platform_effect_target|resolve_poll_effect_target|resolve_extern_target|resolve_func_arity|lookup_constructor|lenient_mono_from_expr`
 in `crates/cranelisp-backend/src/` outside git history. `resolution.rs`
 retains exactly `got_data_symbol_name` + `inner_fn_discriminator_for`.
+
+Keyed-read sites OUTSIDE the resolver-grep surface (S113 addition, FIXME 0652
+— sites the §707 grep gate structurally cannot count, because they read a
+carrier rather than calling a resolver; a future audit counts them
+deliberately, from this table, not from the grep):
+
+| # | Site | Kind | Carrier / key | Wave |
+|---|---|---|---|---|
+| S25 | `compiler/apply.rs` TCO self-call fast-path 1 (the `compile_tail_self_call` gate; shared predicate `is_self_call`, `fn_compiler.rs`) | self-call TCO gate | callee `MonoExpr::Var.resolved_target` storage FQ compared against the current fn's storage identity `{ctx.current_module, current_fn_name}` (module AND symbol) | S113 W2 |
+
+The pre-S113 shape decided self-call by BARE written-name equality
+(`*name == *fn_name`) before consulting the carrier — a
+name-equality-as-identity judgment (BC §3 invariant 10 / Principle 24 class,
+the 0632 register) that survived the S110 W1–W3 excision precisely because it
+was neither a `resolve_*` call nor a scan, so S1–S24 and the grep gate never
+counted it. The S113 W2 fix DELETED the bare-name match (not demoted to a
+fallback — §1.2 REJECTs the hybrid); a carrier-absent callee falls through to
+`compile_var_apply`, whose local `variables` check finds a §4.6 shadow and
+emits an indirect call. Full fix design + case list: `design/backend/backend.md`
+§2.7.1.
+
+**Fast-path 2 note (SigDispatch mangled-name arm of `is_self_call`).** No
+backend change — but its soundness is **truthfulness-conditional**, not merely
+module-safe: the 0519 `{home}/{bare}$sig` mangle embeds the module
+(necessary), while the load-bearing guarantee is that the PRODUCER never
+records a self-`SigDispatch` for a shadowed call — established by the S113 W2b
+`/arch` REDIRECT ruling (producer-side; the Phase-3 "module-safe, no change"
+verdict was empirically falsified by the polymorphic-shadow hang). fp2 is a
+carrier-adjacent read whose safety rests on producer record truthfulness
+(P24), not on the backend re-checking locals.
 
 ---
 

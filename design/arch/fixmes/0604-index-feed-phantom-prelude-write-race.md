@@ -20,7 +20,37 @@ status: open
 
 # Background stdlib index feed racily writes a phantom public binding into the live `prelude` table (family FIXME: the index-feed WRITE-race)
 
-## /qa S113 Phase-3 plan of record (2026-07-19 — observability rider, then evidence)
+## /qa S114 Phase-3 plan of record (2026-07-20 — SCHEDULED TO SHIP; user approved Phase 1)
+
+**Supersedes the S113 observability-rider plan below as the plan of record.**
+Full attack plan: `tests/plan/s114-test-plan.md` §4.2 (Track C). Summary:
+
+1. **The ship gate is STRUCTURAL, not a flip** (still no stable RED — the
+   sanctioned exception stands): /dev(src, narrow int surface) lands (a) a
+   complete FOREGROUND writer census (`src/imports.rs` installers,
+   `src/process_form/`, `src/worker.rs` — every seam that can insert a
+   PUBLIC entry into a live module table routes through one chokepoint or
+   carries a named legal-skip; seed = `prelude-import-convergence.md` §3.4),
+   and (b) a **terminal-table freeze / export-closure gate at that ONE
+   chokepoint**, promoting the S113 PS-R7 `debug_assert!` to an
+   unconditional diagnosed error (trust-boundary tier) — isolation by
+   construction per the S61→S93 precedent, no per-interleaving patch.
+2. **Prime suspects to check first**: a prelude transparent-fallback hit
+   MATERIALIZED as a public table entry under concurrency (§8.6.4's
+   materialise-or-not is zero-weight only while never public); an
+   import-direction write landing in the wrong table during the concurrent
+   build of prelude's ~13-module re-export closure.
+3. **Acceptance**: chokepoint unit test (fail-on-revert, METHOD §2.2);
+   census table in the change-set; ≥25× recipe sweep vs real stdlib
+   (`--run` + REPL — behavioural no-regression, not the guard); the two
+   GREEN twins hold; /design(int) records the isolation contract.
+   `concurrency_capacity` stays a SEPARATE defect (effect-concurrency
+   track).
+4. This file retires when the chokepoint + census + guards land; any
+   interim firing names its seam via the promoted assert and narrows the
+   fix.
+
+## /qa S113 Phase-3 plan of record (2026-07-19 — observability rider, then evidence; SUPERSEDED by the S114 section above)
 
 Standing state after the S111 P5-close hunt (`tests/plan/PLAN.md` §"Sprint
 111" I.4, "0604 seam verdict"): ~320 cumulative no-fires across four

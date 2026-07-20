@@ -378,4 +378,15 @@ file** — the trail is the mechanism that makes the fourth audit cheaper than t
 
 ## 4. Disposition trail
 
+**S114 Phase 1 (user, 2026-07-20): ALL SEVEN recommendations ACCEPTED** — none
+declined. FIXMEs filed by `/sprint`: R1 → 0676 (/qa), R2 → 0677 (/dev frontend),
+R3 → 0678 (/dev frontend; third-carry accepted, not declined-permanently), R4 → 0679
+(/dev frontend; third-carry accepted), R5 → 0680 (/design frontend), R6 → 0681
+(/dev frontend), R7 → 0682 (/qa; the embedded §1.4.5/§2.4 normative question is
+flagged for USER arbitration — described to the user at Phase 1, ruling pending on
+/qa's framed cells). Scheduled into Sprint 114 Track D. Live-defect candidates
+(§2.2/§2.8) were routed at dispatch per protocol (BD-A family attributed; deftype
+list-arm + mod-head MUST closed in S113 W3). Meta accepted: this trail entry is the
+mechanism.
+
 *(Appended at S114 Phase 1 by /sprint + the user; not by /audit.)*

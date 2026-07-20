@@ -594,7 +594,7 @@ The arms bracket MUST contain an even number of elements (alternating patterns a
 annotate_expr = annotation expr
 ```
 
-The annotation token (`:Type`) **binds the immediately-following form**, producing an `annotate_expr`. It is a reader-level prefix — like a reader macro, it attaches a type-unifying annotation to the next form — and is **never a standalone atom or variable reference**. There is no expression whose meaning is a bare `:Type`; the token always consumes a following form.
+The annotation `:` **binds the immediately-following form**, producing an `annotate_expr`. It is a **`^`-style reader macro** — in the manner of Clojure's `^` type-hint reader macro, it reads the next form and attaches a type-unifying annotation to it — and is **never a standalone atom or variable reference**. There is no expression whose meaning is a bare `:Type`; the introducer always consumes a following form. Because `:` reads the following form the way `^` does, **whitespace between `:` and that form is permitted**: `: Int` ≡ `:Int` and `: (Fn [Int] Int)` ≡ `:(Fn [Int] Int)` (user ruling 2026-07-20). The bound form **MUST be a type expression** (§2.4) — `:` is **not** a keyword constructor and **not** a typed-racket-style declaration form; a bound form that is not a type expression is a compile-time error. A **dangling qualifier** in the bound form — `:foo/`, `:a.b/` (§8.5.1) — is a **located error** at the offending token, never a silent degradation to `:foo` / `:a.b`. [S114]
 
 Because `annotate_expr` is itself a first-class `expr` (it appears in the `expr` production of §2.3), an annotation MAY appear in **every** expression position. This includes:
 
@@ -686,6 +686,8 @@ applied_type = '(' TYPE_NAME type_expr+ ')'
 
 fn_type      = '(' 'Fn' '[' type_expr* ']' type_expr ')'
 ```
+
+**Symbol well-formedness.** A `SYMBOL` or `TYPE_NAME` appearing in a type expression MUST be a well-formed name. A **dangling-qualifier** spelling — a symbol run ending in `/` with an empty local half (`Foo/`, `foo/`; a non-empty module path with no local name, §8.5.1) — is a **located compile-time error** at the offending token, exactly as in every other position. It is not a valid named type, type variable, or qualified type reference. A qualified type reference (`core.option/Option`, §8.5.3) MUST name a local symbol on the right of the `/`. [S114]
 
 ### 2.4.1 Named Types
 
@@ -926,7 +928,7 @@ annotation   = COLON_PREFIX               (* :Int, :a, :Num *)
 
 Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., `:Int`, `:a`), and `type_expr_list` is a parenthesized type expression (e.g., `(Option Int)`, `(Fn [Int] Bool)`).
 
-The colon serves as the annotation introducer. A colon immediately followed by an uppercase letter is a named type annotation. A colon immediately followed by a lowercase letter is a type variable or trait constraint. A bare colon followed by a parenthesized form is a compound type annotation.
+The colon serves as the annotation introducer — a `^`-style reader macro binding the following type form (§2.3.8), so **whitespace between the colon and that form is permitted** (`: Int` ≡ `:Int`). A colon followed (with or without intervening whitespace) by an uppercase-led name is a named type annotation; by a lowercase-led name, a type variable or trait constraint; by a parenthesized form, a compound type annotation. The bound form MUST be a type expression (§2.4). [S114]
 
 ## 2.9 Reserved Words [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_reject_trace_defn_name]
 

@@ -77,6 +77,78 @@ pub struct MonoMatchArm {
     pub resolved_ctor: Option<FQSymbol>,
 }
 
+/// How a `MonoExpr::Var` reference was resolved — the CLOSED sum at the
+/// checked-program boundary (S114, FIXME 0653 prong 3; Principle 24 corollary
+/// "resolution products travel typed" — `principles/24-resolve-once.md`;
+/// design: `design/arch/typed-resolution-carrier.md`).
+///
+/// Constructed ONLY by typecheck, at its Var-resolution chokepoint.
+/// **"Unresolved" has NO constructor**: a `Var` whose reference typecheck could
+/// not classify as one of these two states is a LOCATED typecheck error at
+/// view-build time, never a representable carrier state. This retires the
+/// `Option<FQSymbol>` conflation on `MonoExpr::Var.resolved_target`, where
+/// `None` meant both "local by design" (legal) and "unresolved by producer
+/// bug" (the S113 check-gate-leak class) and the backend disambiguated by
+/// convention (`variables` consult, hard-error on double miss). The
+/// phase-boundary completeness gate is the constructor itself — a sweep is a
+/// migration aid, never the mechanism.
+///
+/// **NOT `#[non_exhaustive]`** — deliberately. The closed sum IS the contract
+/// (the same exception class as the ownership mode vocabulary, types
+/// `CLAUDE.md` §Public-surface mechanics): a variant addition MUST break every
+/// consumer match at compile time; a `_ =>` arm here would re-smuggle the
+/// ambiguous default this type exists to kill.
+///
+/// **Dormant (S114 Phase 3, produces-but-unused).** The vocabulary lands ahead
+/// of its wiring; the `MonoExpr::{Var,Apply}` field flip
+/// (`resolved_target: Option<FQSymbol>` → `resolution: VarRef` /
+/// `dispatch: ApplyRef`), the `MethodResolutions` sidecar split, and the
+/// `CACHE_SCHEMA_VERSION` 21→22 bump land as ONE coordinated Phase-5 carrier
+/// wave (`design/arch/typed-resolution-carrier.md` §4–§5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VarRef {
+    /// A local binding — defn/fn param, `let` name, `match` var-pattern
+    /// binding. Carries the BINDER IDENTITY typecheck bound this reference to:
+    /// the bound name plus the span of the binding *form* that introduced it
+    /// (the `let`/`fn`/`defn`/match-arm node — per-binder spans do not exist
+    /// on the AST for params, so the form span is the honest grain).
+    /// Frame/slot mapping stays backend-side (the backend's scope stack): this
+    /// is a positive resolution verdict, not a storage locator.
+    Local { binder: Symbol, binding_span: Span },
+    /// A table-resolved reference — the storage FQ ("whichever storage key
+    /// HIT" at typecheck's resolution chokepoint; `Resolved.storage_fq()`,
+    /// never a written spelling — the 0620 rule). The backend keys ONE fetch
+    /// on this and hard-fails on an entry miss.
+    Global(FQSymbol),
+}
+
+/// How a `MonoExpr::Apply`'s dispatch identity is carried — the Apply-side
+/// closed sum (S114, FIXME 0653 prong 3; design:
+/// `design/arch/typed-resolution-carrier.md`).
+///
+/// Deliberately a SEPARATE sum from [`VarRef`]: an `Apply` has a third legal
+/// state a `Var` does not — "the identity rides the callee expression" — and
+/// sharing one shape would re-smuggle the ambiguous `None` the split exists to
+/// kill (the S114 Phase-2 public-API assessment, SPRINT.md §Architecture
+/// review (b)). Both variants are POSITIVE verdicts recorded by typecheck;
+/// "unresolved" has no constructor here either.
+///
+/// **NOT `#[non_exhaustive]`** — closed sum, same rationale as [`VarRef`].
+///
+/// **Dormant (S114 Phase 3, produces-but-unused)** — see [`VarRef`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApplyRef {
+    /// A dispatch-leg resolution recorded at this `Apply`'s span (BuiltinFn /
+    /// TraitMethod / SigDispatch selection) — the storage FQ of the SELECTED
+    /// mangled/mono entry.
+    Dispatch(FQSymbol),
+    /// No Apply-level dispatch: the identity is carried by the callee
+    /// expression itself — its `Var`'s [`VarRef`] (local or global), or a
+    /// computed callee value (closure call). Typecheck ASSERTS it looked and
+    /// there is no dispatch selection at this node.
+    ViaCallee,
+}
+
 /// Post-monomorphisation codegen AST node.
 ///
 /// Mirrors [`Expr`](crate::Expr)'s variants one-for-one with two differences:
@@ -647,6 +719,115 @@ impl MonoExpr {
                 escapes: None,
                 unique_static: None,
             },
+        }
+    }
+
+    /// Build a `MonoExpr` from a SYNTHETIC, **all-local** body — the sanctioned
+    /// entry point for compiler-synthesised bodies whose every reference is a
+    /// local **by construction** (FIXME 0685;
+    /// `design/arch/typed-resolution-carrier.md` §3.4): the deftype ctor body
+    /// (`Expr::ConstrADT` over param `Var`s) and the field-accessor body
+    /// (`(match self [(Ctor .. field ..) field])` — `self` param + `field`
+    /// match-var), both synthesised in typecheck's `adt.rs` with
+    /// [`Span::SYNTHETIC`] on every node. Classifying these `Var`s local is a
+    /// POSITIVE verdict, not a silent default masking a table-reference miss.
+    ///
+    /// Two structural properties keep that distinction airtight (the
+    /// distinction the [`VarRef`]/[`ApplyRef`] flip enforces):
+    ///
+    /// - **No resolution-map parameters.** The all-local license is the
+    ///   signature itself — there is no `resolved_targets`/`var_refs` sidecar
+    ///   to consult and none to forget, retiring the "pass empty maps for
+    ///   all-local bodies" convention. `pattern_ctors` IS still taken: a
+    ///   match-arm ctor identity is not a local — synthesis holds it in hand
+    ///   and transports it through the sidecar keyed by the (synthetic)
+    ///   pattern span, as the accessor body does.
+    /// - **Always-on synthetic-span assertion** (tier-3 seam assert,
+    ///   `design/arch/safety-invariants.md` §2). Every produced node's span
+    ///   must be [`Span::SYNTHETIC`]; a real-span node panics. A real
+    ///   (check-run) body routed through this builder would grant its table
+    ///   references a silent local verdict — the assert bounds the license by
+    ///   a machine-checked property instead of call-site discipline, so
+    ///   "unresolved has no constructor" cannot be re-smuggled through this
+    ///   door.
+    ///
+    /// **Dormant interior (S114 Phase 3).** Until the Phase-5 carrier flip
+    /// this delegates to [`MonoExpr::lenient_from_expr`] with an empty
+    /// resolution sidecar — byte-identical to the pre-0685 adt.rs callsites.
+    /// At the flip its interior becomes the all-local MODE of the ONE shared
+    /// lenient walk (every `Var` → `VarRef::Local { binder, binding_span:
+    /// Span::SYNTHETIC }`, every `Apply` → `ApplyRef::ViaCallee`) — never a
+    /// hand-built second node-construction walk
+    /// (`design/arch/typed-resolution-carrier.md` §4).
+    pub fn synthetic_local_from_expr(
+        expr: &Expr,
+        pattern_ctors: &HashMap<Span, FQSymbol>,
+    ) -> MonoExpr {
+        let mono = MonoExpr::lenient_from_expr(expr, pattern_ctors, &HashMap::new());
+        assert_all_synthetic(&mono);
+        mono
+    }
+}
+
+/// Tier-3 seam assertion for [`MonoExpr::synthetic_local_from_expr`]: every
+/// node of a synthesis body carries [`Span::SYNTHETIC`]. A real-span node here
+/// means a check-run body reached the all-local builder — its table references
+/// would be silently classified local, the exact ambiguity the
+/// [`VarRef`]/[`ApplyRef`] flip exists to kill — an in-process producer-bug
+/// breach, asserted always-on (`design/arch/safety-invariants.md` §2 tier 3;
+/// the walked bodies are tiny per-ADT synthesis artefacts, so the check is
+/// free).
+fn assert_all_synthetic(m: &MonoExpr) {
+    assert!(
+        m.span() == Span::SYNTHETIC,
+        "synthetic_local_from_expr: non-SYNTHETIC span {:?} on a synthesis-body node — \
+         a real (check-run) body must go through from_expr/lenient_from_expr, never the \
+         all-local builder (FIXME 0685; design/arch/typed-resolution-carrier.md §3.4)",
+        m.span()
+    );
+    match m {
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::StringLit { .. }
+        | MonoExpr::Var { .. } => {}
+        MonoExpr::Let { bindings, body, .. } | MonoExpr::ParBind { bindings, body, .. } => {
+            for (_, e) in bindings {
+                assert_all_synthetic(e);
+            }
+            assert_all_synthetic(body);
+        }
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            assert_all_synthetic(cond);
+            assert_all_synthetic(then_branch);
+            assert_all_synthetic(else_branch);
+        }
+        MonoExpr::Lambda { body, .. } | MonoExpr::Trace { body, .. } => assert_all_synthetic(body),
+        MonoExpr::Apply { callee, args, .. } => {
+            assert_all_synthetic(callee);
+            for a in args {
+                assert_all_synthetic(a);
+            }
+        }
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            assert_all_synthetic(scrutinee);
+            for arm in arms {
+                assert_all_synthetic(&arm.body);
+            }
+        }
+        MonoExpr::VecLit { elements, .. } => {
+            for e in elements {
+                assert_all_synthetic(e);
+            }
+        }
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            assert_all_synthetic(launched);
+            assert_all_synthetic(continuation);
+        }
+        MonoExpr::ConstrADT { fields, .. } => {
+            for f in fields {
+                assert_all_synthetic(f);
+            }
         }
     }
 }

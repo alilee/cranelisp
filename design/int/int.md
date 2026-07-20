@@ -867,6 +867,59 @@ The triage itself is a `/sprint`-coordinated `/dev` task — too large for a sin
 
 These are tracked in `design/arch/fixmes/NNNN-*.md`; this section mirrors them for design-intent visibility. The S64 audit-recommendation items (`scheduler_trace/` rename, subordinate-doc sweep) are retired: the `*_trace` rename did not survive the S76 trace relocation, and the doc-currency sweep is subsumed by the 0298 facade-retire reorg.
 
+### 16.1 S114 Track C (src/) — design-of-record
+
+Four design-bearing items + three riders, each with a subordinate doc or a
+dev-direct disposition:
+
+- **FIXME 0638** (macro-alias double-free ×5, MUST ship) — `macro-marshal-rc-protection.md`.
+  Root cause: `src/marshal.rs` / `invoke_clause` protect only the **top-level**
+  marshalled arg cell while the marshaller **retains the whole tree** and the
+  consuming clause tears it down / consumes interiors **deeply**. Fix: deep,
+  recursive protection of the entire marshalled tree (make the marshaller's RC
+  count its actual retention). §4 names the RC_TRACE discriminator `/dev` runs
+  FIRST to confirm sufficiency (the function-call twin is the negative control).
+- **FIXME 0670** (int qualifies a value binder) — `expansion-qualification-scope.md`.
+  `qualify_expanded_sexp` becomes scope-aware, skipping the value-level binder
+  slots (defn/fn params, let names, match var-patterns) by sharing the expander's
+  `is_binding_form`/`params_scope`/`pattern_binders` enumeration. Wave-1 of the F8
+  three-wave chain (int-first, strict; then frontend reject re-lands, then cells).
+- **FIXME 0604** (foreground prelude-table write race, ships this sprint) —
+  `prelude-table-write-isolation.md`. Foreground writer census + ONE
+  terminal-table export-closure chokepoint (S113 `assert_prelude_closure`
+  `debug_assert!` promoted to an unconditional diagnosed error). The poison
+  consumer `insert_detecting_ambiguity` is CORRECT and must not be touched.
+- **"in expansion of" on the def/const finalize path** (S113 carry) —
+  `macro-diagnostic-reanchoring.md` §2.1. Second application site of the existing
+  pure re-anchor transform at the `check_program_compat` finalize seam
+  (`process_form.rs:468`); no new mechanism.
+
+**Riders (dev-direct — design constraint noted, no subordinate doc needed):**
+
+- **FIXME 0671** (PS-D1 — impl-confirmation line stamps the asking module, not
+  each name's canonical home; `src/repl/format.rs:497-501` + `:707-710`).
+  **Dev-direct** under `resolve-home-enumeration.md` §3 rule-1 authority — the
+  design constraint is the only load-bearing part: resolve the **trait's** home
+  (chain-follow the trait ref / `TraitImpl.impl_module` back-pointer) and the
+  **type's** canonical home each **once**, and root the `impl <trait-home>/Trait
+  for <type-home>/Type` line at those homes — never `push_fq_name(module, …)`
+  from the asking module (P24 "resolve once", P26 read the settled home). Same
+  CLASS as the S112-guarded `impl user/Functor for user/Functor` defect. `/testing`
+  pins first (repl/spec.md §1.3); `/repl` tightens §1.3 to the canonical-home rule
+  (6b). No int design elaboration beyond this constraint.
+- **FIXME 0674** (startup restore notice, `repl/spec.md` §15.2.2) — **dev-direct**.
+  Implement at the session-restore seam: emit `; resumed N definitions from
+  <file>` when startup restores a **non-empty** backing file, **suppressed** when
+  absent/empty (fresh-dir transcripts stay byte-identical). Count = restored
+  **definitions** (§15.7), not transient expressions; startup chrome, never
+  persisted. Land the guard both ways. Wording/count/empty-suppression are
+  `/repl`-owned (spec'd); no int design elaboration.
+- **FIXME 0675** (cheatsheet multi-sig settled facts, `src/syntax/cheatsheet.txt`)
+  — **dev-direct**, pure static-primer content. `/repl` specifies the exact
+  `INDEPENDENT` block (0575: `fn` single-arity, multi-arity is `defn`-only; 0576:
+  clauses type-check independently, shared param names carry no shared type),
+  inserted after `EXAMPLE`, before `NOT`. No test owed; no int design elaboration.
+
 ---
 
 ## 17. Sketch consultation

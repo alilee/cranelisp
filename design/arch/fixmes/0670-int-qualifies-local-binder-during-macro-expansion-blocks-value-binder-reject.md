@@ -1,15 +1,56 @@
 ---
 number: 0670
-target: /arch
+target: /dev
+surface: src (int)
 filed_by: /dev
 filed_at: 2026-07-19
 sprint_filed: 113
-sprint: S113
+sprint: S114
 refers_to: int macro-expansion name-resolution qualifies a VALUE-LEVEL local binder (defn/fn param, let name, match var) whose name collides with an importable symbol (`name` → `primitives/name`); this blocks the spec §5 value-level local-binder qualified-reject from landing at the frontend build layer
 status: open
+ruled: /arch 2026-07-20 (S114 Phase 3) — path 1; see §Ruling below
 ---
 
 # int qualifies a local binder during macro expansion — blocks the §5 value-level local-binder reject
+
+## RULING (/arch, S114 Phase 3, 2026-07-20) — path 1: fix int; a binder is never a reference
+
+**The enforcement layer is the frontend build layer, unblocked by fixing the
+int defect at its root**: int's macro-expansion qualification pass MUST skip
+binder slots. A binder is never a reference — qualification is a
+resolution-product operation, and a binder position produces no resolution
+product (the same intent as Principle 24's corollary: only *references* carry
+resolved identity; a binder *introduces* a name). The pass rewriting a binder
+`name` → `primitives/name` is a correctness bug independent of the §5 reject
+(a valid program gets a mis-qualified binder internally, masked only by the
+consistent mis-qualification of the body reference).
+
+**Path 2 (reader/raw-layer reject) is REJECTED as the mechanism**: it would
+mask the int bug rather than fix it, and the spec's "structural at the reader"
+claim it leans on is not as-built (the reader produces one
+`Sexp::Symbol("a/b")` — no structural reject exists). The spec-accuracy
+correction on that claim is filed as **FIXME 0683** (`target: /spec` — wording,
+not semantics).
+
+**Consequent chain (P2 F8 — three waves, strict order, Phase 4 places them):**
+
+1. **int fix (this FIXME, now `target: /dev` src-surface, Track C):** the
+   expansion-pass qualification skips binder positions — defn/fn params, `let`
+   names, `match` var-patterns (the value-level binder slots §5 names). The
+   binder-position enumeration must be COMPLETE across the walk (the 0660
+   enumeration-completeness discipline applies: every binder-introducing form,
+   or a legal skip, named in the change-set). Unit test at the expansion seam
+   (`(defn greet [name] (str "hello, " name))` expands with the param BARE and
+   the body reference qualified correctly) is mandatory per METHOD §2.2.
+2. **Frontend value-level reject re-lands** at the three reverted seams
+   (`build_annotated_params`, `build_let_bindings`, `build_pattern`) — now
+   firing only on user-written qualified binders, never on int's output.
+3. **`/testing` cells**: the positive cell (collision + macro compiles) + the
+   value-level qualified-binder negative cells.
+
+**Durable invariant recorded** at `design/arch/bounded-contexts.md` §6
+(In-scope, macro-execution area): expansion-side name qualification operates
+on references only; binder positions are never qualified.
 
 ## The finding (S113 W3, 0660(b)/item-3 implementation)
 

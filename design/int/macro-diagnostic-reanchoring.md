@@ -19,14 +19,15 @@
 > `process_form.rs:784/:936` as the live site. Unit tier landed at
 > `process_form/tests.rs:167/:933`.
 
-> **Residual (S114 candidate, W4 review).** This seam covers **frontend**
-> diagnostics from `build_form(s)` over expansion output. **Typecheck** errors
-> over macro-expansion output — surfaced via `check_program_compat` at finalize
-> (`process_form.rs:468`) — still carry synthetic spans; they are **outside the
-> ruled build-seam scope** (0650 ruled the `build_form(s)` boundary only). Applying
-> the same synthetic-location re-anchoring to the finalize/typecheck-error path is
-> an S114 candidate — the identical predicate + origin-span discipline, a second
-> application site, no new mechanism.
+> **Residual — SCHEDULED S114 Track C (design §2.1 below).** The W4 seam covers
+> **frontend** diagnostics from `build_form(s)` over expansion output.
+> **Typecheck** errors over macro-expansion output — surfaced via
+> `check_program_compat` at finalize (`process_form.rs:468`) — still carry
+> synthetic spans and reach the user as `def`/`const`-route diagnostics pointing
+> at no source byte. The S114 extension applies the **same** re-anchor transform
+> at that second application site: identical synthetic-location predicate,
+> identical origin-span + `in expansion of …` treatment, **no new mechanism**.
+> Designed in §2.1.
 
 ## 1. The problem — a correct reject with a useless location
 
@@ -73,6 +74,66 @@ NOT a second reject seam. The reject stays single-sourced in frontend (Principle
 7 / P19). Span-uniqueness stays intact: macro output keeps its unique synthetic
 spans for the carriers; only the one surfaced diagnostic's `location` is
 rewritten.
+
+## 2.1 The finalize/typecheck-error extension (S114 Track C — the def/const path)
+
+The W4 seam fires only where int drives `build_form(s)` over expansion output. A
+**typecheck** error over macro-expansion output takes a different route: it is
+surfaced by `check_program_compat` at the cluster **finalize** step
+(`src/process_form.rs:468`, `let (maybe_gap, …) = check_program_compat(…)` over
+`final_working`), which typechecks the fully-expanded cluster. A `def`/`const`
+(stdlib macros) whose expansion typechecks with an error — e.g. a type mismatch in
+the synthesized body — surfaces that error carrying the macro output's
+**synthetic** span (`Span::SYNTHETIC` from marshal, or the `rewrite_spans_unique`
+≥ 1M band), so the user sees a diagnostic anchored at no source byte, with no
+`in expansion of …` provenance.
+
+**The extension is a second APPLICATION SITE of the existing transform, not a new
+mechanism.** `reanchor_expansion_diagnostic` (`process_form.rs:784`) is already a
+pure `(error, origin_span, source_text) → error` function (§6): synthetic-location
+predicate in, origin-span + `in expansion of …` suffix out, native-form errors
+passed through unchanged. The S114 work wraps the finalize-path typecheck error in
+the **same** call, at the finalize site that holds the same provenance the W4 site
+holds — the pre-expansion cluster source text and each origin form's real span.
+
+**Design constraints (unchanged from §3–§6, restated for the new site):**
+
+- **Key on the synthetic-location predicate, never the error class** (§3). The
+  finalize path yields *typecheck* errors, a different class from the frontend
+  binder reject — which is exactly why class-sniffing would fail and the
+  structural "location maps to no source byte in the cluster's source text"
+  predicate is the right and only key. Re-anchoring is strictly better for every
+  finalize-path error class (any typecheck error over macro output gets a located
+  diagnostic for free), so the predicate closes the whole family here too.
+- **The origin form for a multi-form cluster.** Finalize typechecks the whole
+  `final_working` cluster; a surfaced error must re-anchor to the **origin form
+  whose expansion produced the erroring node**, not blanket-anchor to the cluster
+  head. The finalize site holds the pre-expansion cluster forms; the origin span
+  is the pre-expansion form whose real byte extent the erroring node's provenance
+  belongs to — the same "outside the origin form's real byte range" test §3 uses,
+  applied per-form. If the error's synthetic node cannot be attributed to a single
+  origin form (rare — a cluster-level check with no single culprit), fall back to
+  the cluster's own source span rather than a synthetic one (a real, if coarse,
+  location always beats a no-source-byte location).
+- **Append provenance, never re-phrase** (§4) — the typecheck message stays
+  single-sourced in `cranelisp-typecheck`; int adds `  in expansion of <written
+  form>` naming the origin form it holds. Never reconstruct or second-guess the
+  typecheck text (Principle 7).
+- **Pure + unit-testable** (§6) — the extension needs no new transform, so the
+  existing unit tier (`process_form/tests.rs:167/:933`) extends with one cell: a
+  finalize-shaped error carrying a synthetic `location` + an origin span + source
+  text ⇒ re-anchored location + `in expansion of …` suffix; a native finalize
+  error ⇒ passes through unchanged.
+
+**Do NOT** preserve real spans through the marshal boundary to avoid the problem —
+that is REJECTED (§1, §8): it collides with the span-uniqueness invariant the
+`backend-keyed-consumer.md` carriers depend on. The re-anchor-at-the-owning-layer
+model is the settled shape for both sites.
+
+**Testability.** Whether the def/const finalize error is reachable end-to-end (a
+`--run`/REPL cell producing a synthetic-span typecheck error over `def`/`const`
+output) is `/qa`+`/testing`'s to pin; the unit tier is `/dev`'s at the finalize
+application site.
 
 ## 3. The binding arch pin — key on the SYNTHETIC-LOCATION predicate, never the error class
 

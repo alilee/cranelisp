@@ -210,16 +210,18 @@ colon_prefix = ':' symbol_start symbol_char*
 colon_bare   = ':' !symbol_char
 ```
 
-Colon-prefixed symbols are used for type annotations. A bare colon `:` (not followed by a symbol character) is a separate token used in field definitions. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bare_colon]
+Colon-prefixed symbols are used for type annotations. A bare colon `:` (not immediately followed by a symbol character) is the same annotation introducer whose type form follows either parenthesised (`:(Fn [a] a)`) or separated from the colon by whitespace (`: Int`, see the S114 note below). [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bare_colon]
 
 ```clojure
 :Int              ; type annotation
 :Num              ; trait constraint
 :Display          ; trait constraint
-:                 ; bare colon (field separator)
+:                 ; bare colon — annotation introducer for a parenthesised or whitespace-separated type form
 ```
 
 > **Normative note (annotation introducer).** A `colon_prefix` token (`:Int`) is an **annotation introducer**, not a variable reference. It is valid only as the head of an `annotate_expr` (§2.3.8), where it **binds the immediately-following form**. A `colon_prefix` is never a standalone atom or variable reference, and a `colon_prefix` with **no following form** is a parse error (`annotation missing expression`). This holds in every expression position, including as the leading element of a parenthesized list — there the `colon_prefix` annotates only the single following element, and the list is the application of that one annotated element.
+
+> **Normative note (`:` is a `^`-style reader macro; user ruling 2026-07-20). [S114]** The annotation `:` is a **reader macro in the manner of Clojure's `^` type hint**: it **binds the immediately-following form**, and — like `^`, whose reader recursively reads the next form — **whitespace between `:` and that form is permitted**. `: Int` ≡ `:Int`, and `: (Fn [a] a)` ≡ `:(Fn [a] a)`. The bound form **MUST be a type expression** (§2.4); `:` is **not** a keyword constructor (it does not mint a Clojure-style keyword value) and **not** a typed-racket-style `:` declaration form. A **dangling qualifier** in the bound form — `:foo/`, `:a.b/` (a module path with an empty local half, §8.5.1) — is a **located compile-time error** at the offending token; it does **not** silently degrade to `:foo` / `:a.b`. [S114]
 
 ### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_gensym_shorthand]
 
