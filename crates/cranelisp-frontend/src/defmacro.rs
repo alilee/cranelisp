@@ -8,23 +8,17 @@
 //!
 //! These items are **internal-but-exposed** per the crate-root preamble
 //! §"Macro-resolver helpers": pub at the crate root and via this module,
-//! but not part of the four-free-function form-by-form boundary. Their
-//! consumers today are `src/expander.rs` (until FIXME 0098 Phase 2
-//! migrates the JIT-invocation path) and `src/cluster.rs` (which builds
-//! per-clause `Defn` instances for the backend per Decision 21).
-//!
-//! At FIXME 0098 Phase 2 close, [`parse_defmacro`], [`is_defmacro`],
-//! [`is_begin`], [`flatten_begin`], and [`synthesize_macro_clause_defn`]
-//! narrow back to `pub(crate)` once `int` no longer calls them directly.
+//! but not part of the four-free-function form-by-form boundary. They are
+//! called directly by `int` (`src/process_form.rs`, `src/repl/commands.rs`,
+//! `src/session_v4/index_worker.rs`) — a settled, permanent part of the
+//! surface (`design/frontend/frontend.md` §9.1: `lib.rs` is correct, there
+//! is NO "narrow back"). The former "narrow to `pub(crate)` at FIXME 0098
+//! Phase 2 close" plan was withdrawn by S76 W-Macro, which DELETED `expand`
+//! rather than migrating it — the conditioning event never happens.
 
 use cranelisp_types::{CranelispError, ErrorLocation, MacroParam, Sexp, Span, Symbol};
 
-use crate::quasiquote::next_synthetic_span;
-
-/// Allocate a fresh synthetic span (delegates to shared counter in quasiquote).
-fn next_span() -> Span {
-    next_synthetic_span()
-}
+use crate::synth;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -92,29 +86,6 @@ pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
 // ---------------------------------------------------------------------------
 // Macro parameter parsing
 // ---------------------------------------------------------------------------
-
-/// Parse macro parameters from bracket items.
-///
-/// Supports simple names, bracket destructuring, and `& rest` syntax.
-/// Examples: `[a b]`, `[a & rest]`, `[[x y] body]`
-///
-/// Demoted to `pub(crate)`; retained as a sub-parser for future
-/// REPL/slash-command surfacing through the public boundary.
-#[allow(dead_code)]
-pub(crate) fn parse_macro_params(
-    bracket: &Sexp,
-) -> Result<(Vec<MacroParam>, Option<Symbol>), CranelispError> {
-    let (items, _span) = match bracket {
-        Sexp::Bracket(items, span) => (items, *span),
-        _ => {
-            return Err(CranelispError::ParseError {
-                message: "macro params must be a bracket list".to_string(),
-                location: ErrorLocation::from_span(bracket.span()),
-            });
-        }
-    };
-    parse_param_items(items)
-}
 
 /// Parse param items from a slice (used for both top-level and bracket patterns).
 ///
@@ -212,10 +183,9 @@ fn parse_bracket_pattern(
 /// multi-clause `(defmacro name ([params] body) ([params] body))`
 /// syntax, with optional docstring.
 ///
-/// Internal-but-exposed: pub at the crate root for `src/cluster.rs`'s
-/// per-clause `Defn` build path (per Decision 21). Narrows back to
-/// `pub(crate)` once `int` no longer calls it directly (FIXME 0098
-/// Phase 2 close).
+/// Internal-but-exposed: pub at the crate root, called directly by `int`
+/// (`src/process_form.rs`, `src/repl/commands.rs`, index worker) — a settled
+/// part of the surface (`frontend.md` §9.1: no "narrow back").
 ///
 /// `MacroParam`, `MacroClauseInfo`, and `DefmacroInfo` live in
 /// `cranelisp-types` (they cross the typecheck boundary).
@@ -357,10 +327,10 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 /// macro clause.
 ///
 /// Internal-but-exposed (per the crate-root preamble §"Macro-resolver
-/// helpers"): pub at the crate root so `src/cluster.rs::process_cluster`
-/// can build per-clause `Defn`s for the backend per Decision 21 without
-/// rebuilding the shape-checking logic outside the frontend. Narrows
-/// back to `pub(crate)` at FIXME 0098 Phase 2 close.
+/// helpers"): pub at the crate root so `int` can build per-clause `Defn`s
+/// for the backend per Decision 21 without rebuilding the shape-checking
+/// logic outside the frontend. A settled part of the surface (`frontend.md`
+/// §9.1: no "narrow back").
 ///
 /// Takes a `&MacroClause` parameter — the type comes from
 /// `cranelisp_types::parsed::MacroClause` (re-exported at crate root for
@@ -436,34 +406,16 @@ pub fn synthesize_macro_clause_defn(
     // Emitting the FQ form lets the resolver bypass short-name lookup entirely.
     // (Pre-Wave-3a-α this code emitted unqualified `SList`/`Sexp`; the typechecker's
     // known_types registry used to be flat, but is no longer.)
-    let type_expr = Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SList".to_string(), next_span()),
-            Sexp::Symbol("macros/Sexp".to_string(), next_span()),
-        ],
-        next_span(),
-    );
+    let type_expr = synth::list(vec![synth::sym("macros/SList"), synth::sym("macros/Sexp")]);
 
-    let param_bracket = Sexp::Bracket(
-        vec![
-            Sexp::Symbol(":".to_string(), next_span()),
-            type_expr,
-            Sexp::Symbol(args_name.to_string(), next_span()),
-        ],
-        next_span(),
-    );
+    let param_bracket = synth::bracket(vec![synth::sym(":"), type_expr, synth::sym(args_name)]);
 
     // Outer list span carries the user-source span of the originating
     // clause — the underscore in the parameter was a "not yet wired"
     // marker; the value now feeds the synthesised defn so downstream
     // errors trace back to the source clause.
     Sexp::List(
-        vec![
-            Sexp::Symbol("defn-".to_string(), next_span()),
-            Sexp::Symbol(fn_name, next_span()),
-            param_bracket,
-            body,
-        ],
+        vec![synth::sym("defn-"), synth::sym(&fn_name), param_bracket, body],
         span,
     )
 }
@@ -544,15 +496,9 @@ fn compute_tail_binding(is_last: bool, rest_param: &Option<Symbol>, remaining: u
 /// The wildcard arm is unreachable — macro arity is validated before invocation —
 /// but the typechecker requires exhaustive match coverage on SList.
 fn make_scons_match(scrutinee_name: &str, head_name: &Symbol, tail_name: &str, body: Sexp) -> Sexp {
-    let pattern = Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SCons".to_string(), next_span()),
-            Sexp::Symbol(head_name.to_string(), next_span()),
-            Sexp::Symbol(tail_name.to_string(), next_span()),
-        ],
-        next_span(),
-    );
-
+    // The SCons DESTRUCTURING pattern shares the `(macros/SCons head tail)` shape
+    // that `synth::cons` builds for construction (audit R4).
+    let pattern = synth::cons(synth::sym(head_name), synth::sym(tail_name));
     make_match_sexp_exhaustive(scrutinee_name, pattern, body)
 }
 
@@ -561,15 +507,8 @@ fn make_scons_match(scrutinee_name: &str, head_name: &Symbol, tail_name: &str, b
 /// The arms bracket uses `Sexp::Bracket` per the AST builder's `build_match`
 /// expectation (it calls `expect_bracket` on the third element).
 fn make_match_sexp(scrutinee_name: &str, pattern: Sexp, body: Sexp) -> Sexp {
-    let arm = Sexp::Bracket(vec![pattern, body], next_span());
-    Sexp::List(
-        vec![
-            Sexp::Symbol("match".to_string(), next_span()),
-            Sexp::Symbol(scrutinee_name.to_string(), next_span()),
-            arm,
-        ],
-        next_span(),
-    )
+    let arm = synth::bracket(vec![pattern, body]);
+    synth::list(vec![synth::sym("match"), synth::sym(scrutinee_name), arm])
 }
 
 /// Build `(match <scrutinee> [<pattern> <body> _ <dead>])`.
@@ -582,38 +521,17 @@ fn make_match_sexp(scrutinee_name: &str, pattern: Sexp, body: Sexp) -> Sexp {
 /// with all pattern-body pairs in a single bracket.
 fn make_match_sexp_exhaustive(scrutinee_name: &str, pattern: Sexp, body: Sexp) -> Sexp {
     // Dead arm body: (macros/SexpInt 0)
-    let dead_body = Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpInt".to_string(), next_span()),
-            Sexp::Int(0, next_span()),
-        ],
-        next_span(),
-    );
+    let dead_body = synth::list(vec![synth::sym("macros/SexpInt"), synth::int(0)]);
 
     // All arms in a single bracket: [pattern body _ dead_body]
-    let arms = Sexp::Bracket(
-        vec![
-            pattern,
-            body,
-            Sexp::Symbol("_".to_string(), next_span()),
-            dead_body,
-        ],
-        next_span(),
-    );
+    let arms = synth::bracket(vec![pattern, body, synth::sym("_"), dead_body]);
 
-    Sexp::List(
-        vec![
-            Sexp::Symbol("match".to_string(), next_span()),
-            Sexp::Symbol(scrutinee_name.to_string(), next_span()),
-            arms,
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("match"), synth::sym(scrutinee_name), arms])
 }
 
 /// Build a var pattern (just a symbol that binds the whole scrutinee).
 fn make_var_pattern(name: &Symbol) -> Sexp {
-    Sexp::Symbol(name.to_string(), next_span())
+    synth::sym(name)
 }
 
 /// Build bracket destructuring: match against SexpBracket, then destructure inner SList.
@@ -643,13 +561,8 @@ fn build_bracket_destructure_sexp(
 
     // Outer match: (match scrutinee [(macros/SexpBracket __inner__) <inner_body>] [_ ...])
     // Wildcard arm needed for exhaustiveness — Sexp has 7 constructors.
-    let bracket_pattern = Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpBracket".to_string(), next_span()),
-            Sexp::Symbol(inner_name.to_string(), next_span()),
-        ],
-        next_span(),
-    );
+    let bracket_pattern =
+        synth::list(vec![synth::sym("macros/SexpBracket"), synth::sym(&inner_name)]);
 
     make_match_sexp_exhaustive(scrutinee_name, bracket_pattern, inner_body)
 }

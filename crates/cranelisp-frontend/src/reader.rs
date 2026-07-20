@@ -401,7 +401,7 @@ fn read_colon_prefix(r: &mut Reader) -> Result<Sexp, CranelispError> {
             // type ref to read as a single qualified leaf. Mirror the qualified /
             // dotted-module logic of `read_symbol_or_keyword`.
             let first_part = r.src[sym_start..r.pos].to_string();
-            let name = read_qualified_tail(r, &first_part);
+            let name = read_qualified_tail(r, &first_part)?;
             let end = r.pos as u32;
             let full = format!(":{name}");
             return Ok(Sexp::Symbol(full, Span::new(start, end)));
@@ -547,6 +547,27 @@ fn read_operator(r: &mut Reader) -> Result<Sexp, CranelispError> {
     let start = r.pos as u32;
     consume_operator_chars(r);
     let end = r.pos as u32;
+    let text = &r.src[start as usize..r.pos];
+
+    // `/bar` — a lone `/` immediately followed (no whitespace boundary) by a name
+    // is a dangling qualifier with an EMPTY module half (spec §8.5.1; 0682/0686
+    // ruling). Keyed on `"/"` EXACTLY (Principle 16 — only `/` is the qualifier
+    // char; `->`, `*foo`, `<=` read as operator text ≠ `"/"`) and on
+    // symbol-adjacency, so a bare `/` DIVISION operator (`(/ 6 2)`, `(map / xs)`,
+    // `/` at a boundary/EOF) stays the division symbol (RA-N4 fence). This is the
+    // ONE genuinely-new lexical reject; the qualified-name swallows elsewhere
+    // un-swallow existing paths. The reject fires at tokenization — before any
+    // downstream defn-tail — so `/bar` cannot degrade to an incidental
+    // "extra forms" / "undefined variable: /" split (RA-N6).
+    if text == "/" && r.peek().is_some_and(is_symbol_start) {
+        return Err(r.error_at(
+            "`/` here has no module name before it — a qualified name needs a \
+             non-empty module (`mod/name`); a bare `/` division must be separated \
+             (`(/ a b)`)",
+            start,
+            end,
+        ));
+    }
 
     // Operator must not be immediately followed by a digit (spec 1.4.2)
     if let Some(b) = r.peek()
@@ -559,7 +580,6 @@ fn read_operator(r: &mut Reader) -> Result<Sexp, CranelispError> {
         ));
     }
 
-    let text = &r.src[start as usize..r.pos];
     Ok(Sexp::Symbol(text.to_string(), Span::new(start, end)))
 }
 
@@ -605,59 +625,16 @@ fn read_symbol_or_keyword(r: &mut Reader) -> Result<Sexp, CranelispError> {
     }
 
     // Check for dotted: `first.rest`
-    // Could be dotted symbol (Option.Some) or dotted module path (core.io/pure)
+    // Could be a dotted module path (`core.io/pure`, `/`-terminated) or a bare
+    // dotted symbol (`Option.Some`, `Num.+`, `main.shell.inner`). ONE shared
+    // module-path consumer decides (audit R7); a run that does not terminate in
+    // `/` is a dotted symbol.
     if r.peek() == Some(b'.') {
-        // Peek ahead: is this a dotted module path leading to '/'?
-        let saved_pos = r.pos;
-        let mut module = first_part.to_string();
-        let mut found_slash = false;
-        while r.peek() == Some(b'.') {
-            let dot_pos = r.pos;
-            r.advance(1); // skip '.'
-            if let Some(b) = r.peek() {
-                if is_symbol_start(b) {
-                    let seg_start = r.pos;
-                    consume_symbol_chars(r);
-                    let segment = &r.src[seg_start..r.pos];
-                    module.push('.');
-                    module.push_str(segment);
-                    if r.peek() == Some(b'/') {
-                        found_slash = true;
-                        break;
-                    }
-                    // Continue looking for more dots or '/'
-                    continue;
-                }
-                // Not a symbol start (could be operator char like Num.+)
-                // Back up and let dotted symbol handler deal with it
-                r.pos = dot_pos;
-                break;
-            }
-            // '.' not followed by valid continuation: back up
-            r.pos = dot_pos;
-            break;
+        if let Some(full) = consume_dotted_module_path(r, first_part)? {
+            return Ok(Sexp::Symbol(full, Span::new(start, r.pos as u32)));
         }
-
-        if found_slash {
-            // module contains the full dotted module path, and we're at '/'
-            r.advance(1); // skip '/'
-            let local = read_local_name(r)?;
-            let end = r.pos as u32;
-            let full = format!("{module}/{local}");
-            return Ok(Sexp::Symbol(full, Span::new(start, end)));
-        }
-
-        // No '/' found — if we collected multiple dot-separated segments,
-        // return the whole dotted path as a symbol (e.g. `main.shell.inner`
-        // in import forms). Otherwise fall back to single-dot symbol parsing.
-        if module.contains('.') {
-            let end = r.pos as u32;
-            return Ok(Sexp::Symbol(module, Span::new(start, end)));
-        }
-
-        // Single segment after first_part — reset and try dotted symbol
-        r.pos = saved_pos;
-        return read_dotted_symbol(r, first_part, start);
+        // No `/`-terminated module path — position rewound to the first `.`.
+        return Ok(read_dotted_name(r, first_part, start));
     }
 
     let end = r.pos as u32;
@@ -693,63 +670,122 @@ fn read_qualified_symbol(
 ///
 /// Used by `read_colon_prefix` so a `:`-prefixed type annotation can carry a
 /// qualified type name (`:primitives/Int`, `:core.option/Option`).
-fn read_qualified_tail(r: &mut Reader, first_part: &str) -> String {
+fn read_qualified_tail(r: &mut Reader, first_part: &str) -> Result<String, CranelispError> {
     // Simple qualified: `first/local`.
     if r.peek() == Some(b'/') {
         r.advance(1); // skip '/'
-        if let Ok(local) = read_local_name(r) {
-            return format!("{first_part}/{local}");
-        }
-        // No valid local name after '/': leave position at the consumed '/'
-        // and return the bare first part (the AST builder reports the error).
-        return first_part.to_string();
+        // A dangling qualifier `:foo/` (empty local half) is a LOCATED error —
+        // `read_local_name` raises "expected local name after '/'". Propagate it
+        // (`?`) rather than swallowing to `:foo`: the annotation path reaches
+        // parity with the value path (RA-N1, spec §1.4.5). The former swallow
+        // silently degraded `:foo/` to a minted `:foo` type-var (0682 ruling).
+        let local = read_local_name(r)?;
+        return Ok(format!("{first_part}/{local}"));
     }
 
     // Dotted module path leading to `/`: `first.seg.../local`.
     if r.peek() == Some(b'.') {
-        let saved_pos = r.pos;
-        let mut module = first_part.to_string();
-        let mut found_slash = false;
-        while r.peek() == Some(b'.') {
-            let dot_pos = r.pos;
-            r.advance(1); // skip '.'
-            if let Some(b) = r.peek() {
-                if is_symbol_start(b) {
-                    let seg_start = r.pos;
-                    consume_symbol_chars(r);
-                    let segment = &r.src[seg_start..r.pos];
-                    module.push('.');
-                    module.push_str(segment);
-                    if r.peek() == Some(b'/') {
-                        found_slash = true;
-                        break;
-                    }
-                    continue;
+        // ONE fallible dotted-module-path consumer (audit R7 — the second swallow
+        // site vanishes). A dangling `:a.b/` (empty local) propagates as a located
+        // error (RA-N2), a `/`-terminated path returns the full name, and a run
+        // with no `/` rewinds (the helper leaves the dots for later tokens — a
+        // colon annotation never names a dotted *symbol*).
+        if let Some(full) = consume_dotted_module_path(r, first_part)? {
+            return Ok(full);
+        }
+        return Ok(first_part.to_string());
+    }
+
+    Ok(first_part.to_string())
+}
+
+/// Consume a `.seg.seg…/local` DOTTED-MODULE-PATH continuation from an
+/// already-read `first_part`. The caller must have checked `r.peek() == '.'`;
+/// the immediate `first/local` form is the caller's own concern.
+///
+/// The ONE dotted-module-path lexer (audit R7 / S87 F5) — shared by
+/// `read_qualified_tail` (annotation position) and `read_symbol_or_keyword`
+/// (value position), so the second swallow site cannot re-grow. Returns:
+///   - `Ok(Some(full))` — a `/`-terminated path `module/local` was consumed
+///     (position past the local name);
+///   - `Ok(None)`       — no `/` terminated the dotted run; position is REWOUND
+///     to the first `.` (the caller keeps `first_part` / reads a dotted symbol);
+///   - `Err(..)`        — a `/` terminated the run but no valid local name
+///     followed (a dangling qualifier — located, via `read_local_name`).
+fn consume_dotted_module_path(
+    r: &mut Reader,
+    first_part: &str,
+) -> Result<Option<String>, CranelispError> {
+    debug_assert_eq!(r.peek(), Some(b'.'));
+    let saved_pos = r.pos;
+    let mut module = first_part.to_string();
+    let mut found_slash = false;
+    while r.peek() == Some(b'.') {
+        let dot_pos = r.pos;
+        r.advance(1); // skip '.'
+        match r.peek() {
+            Some(b) if is_symbol_start(b) => {
+                let seg_start = r.pos;
+                consume_symbol_chars(r);
+                module.push('.');
+                module.push_str(&r.src[seg_start..r.pos]);
+                if r.peek() == Some(b'/') {
+                    found_slash = true;
+                    break;
                 }
-                // Not a symbol start: back up and stop.
+            }
+            // `.` not followed by a symbol start (an operator member like
+            // `Num.+`, or EOF): not a module path — back up and stop.
+            _ => {
                 r.pos = dot_pos;
                 break;
             }
-            r.pos = dot_pos;
-            break;
         }
-
-        if found_slash {
-            r.advance(1); // skip '/'
-            if let Ok(local) = read_local_name(r) {
-                return format!("{module}/{local}");
-            }
-            return module;
-        }
-
-        // No `/` terminated the dotted run — a colon annotation does not name a
-        // dotted symbol (`:Option.Some` is not a type). Rewind so the dots are
-        // left unconsumed and return the bare first part.
-        r.pos = saved_pos;
-        return first_part.to_string();
     }
 
-    first_part.to_string()
+    if found_slash {
+        r.advance(1); // skip '/'
+        let local = read_local_name(r)?; // dangling qualifier -> located error
+        return Ok(Some(format!("{module}/{local}")));
+    }
+
+    // No `/` terminated the dotted run — rewind so the caller sees the dots.
+    r.pos = saved_pos;
+    Ok(None)
+}
+
+/// Read a bare DOTTED-SYMBOL run (`Option.Some`, `main.shell.inner`, `Num.+`)
+/// from an already-read `first_part`, positioned at the first `.`. Used by
+/// `read_symbol_or_keyword` when the dotted run is NOT a `/`-terminated module
+/// path (`consume_dotted_module_path` returned `None`). All-symbol segments join
+/// verbatim; a `.`-operator member (`Num.+`) joins one member and terminates.
+fn read_dotted_name(r: &mut Reader, first_part: &str, start: u32) -> Sexp {
+    let mut name = first_part.to_string();
+    while r.peek() == Some(b'.') {
+        let dot_pos = r.pos;
+        r.advance(1); // skip '.'
+        match r.peek() {
+            Some(b) if is_symbol_start(b) => {
+                let seg_start = r.pos;
+                consume_symbol_chars(r);
+                name.push('.');
+                name.push_str(&r.src[seg_start..r.pos]);
+            }
+            Some(b) if is_operator_char(b) => {
+                let member_start = r.pos;
+                consume_operator_chars(r);
+                name.push('.');
+                name.push_str(&r.src[member_start..r.pos]);
+                break;
+            }
+            // `.` not followed by a valid member: back up, stop.
+            _ => {
+                r.pos = dot_pos;
+                break;
+            }
+        }
+    }
+    Sexp::Symbol(name, Span::new(start, r.pos as u32))
 }
 
 /// Read the local name portion of a qualified symbol (after '/').
@@ -786,41 +822,6 @@ fn read_local_name(r: &mut Reader) -> Result<String, CranelispError> {
         }
     }
     Err(r.error("expected local name after '/'"))
-}
-
-/// Read dotted symbol continuation after we've consumed the first part.
-fn read_dotted_symbol(
-    r: &mut Reader,
-    first_part: &str,
-    start: u32,
-) -> Result<Sexp, CranelispError> {
-    let dot_pos = r.pos;
-    r.advance(1); // skip '.'
-
-    // Member can be symbol chars or operator chars
-    if let Some(b) = r.peek() {
-        if is_symbol_char(b) || is_symbol_start(b) {
-            let member_start = r.pos;
-            consume_symbol_chars(r);
-            let member = &r.src[member_start..r.pos];
-            let end = r.pos as u32;
-            let full = format!("{first_part}.{member}");
-            return Ok(Sexp::Symbol(full, Span::new(start, end)));
-        }
-        if is_operator_char(b) {
-            let member_start = r.pos;
-            consume_operator_chars(r);
-            let member = &r.src[member_start..r.pos];
-            let end = r.pos as u32;
-            let full = format!("{first_part}.{member}");
-            return Ok(Sexp::Symbol(full, Span::new(start, end)));
-        }
-    }
-
-    // '.' not followed by a valid member: back up, treat as plain symbol
-    r.pos = dot_pos;
-    let end = r.pos as u32;
-    Ok(Sexp::Symbol(first_part.to_string(), Span::new(start, end)))
 }
 
 fn consume_symbol_chars(r: &mut Reader) {

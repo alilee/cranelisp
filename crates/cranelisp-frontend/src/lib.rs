@@ -343,6 +343,7 @@ pub mod module_extract;
 pub mod preamble;
 pub mod quasiquote;
 pub mod defmacro;
+pub(crate) mod synth;
 
 use cranelisp_types::{CranelispError, Sexp};
 

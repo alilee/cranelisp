@@ -20,10 +20,24 @@ invariants 1–2).
 | `module_extract.rs` | peel `mod`/`import`/`export`/`platform` decls | `module_extract/tests.rs` |
 | `quasiquote.rs` | `` ` ``/`~`/`~@`/`quote` → `macros/`-qualified ctor Sexps | `quasiquote/tests.rs` |
 | `defmacro.rs` | defmacro shape-parse + per-clause defn synthesis | `defmacro/tests.rs` |
+| `synth.rs` | synthetic-`Sexp` primitives (`sym`/`int`/`str`/`list`/`bracket`/`cons`/`nil`) shared by quasiquote + defmacro (audit R4/FIXME 0679) | **inline** `mod tests` |
 | `preamble.rs` | leading `;;` block capture (spec §8.16) | **inline** `mod tests` |
 
-**Asymmetry**: `preamble.rs` keeps its tests inline; every other submodule uses a
-sibling `{module}/tests.rs` file. Match the sibling convention for new submodules.
+**Asymmetry**: `preamble.rs` and `synth.rs` keep their tests inline; the larger
+submodules use a sibling `{module}/tests.rs` file. Match the sibling convention
+for new substantial submodules.
+
+**`synth` is the ONE synthetic-Sexp kit** (FIXME 0679): quasiquote's
+`macros/`-qualified ctor composites and defmacro's per-clause `defn`/`match`
+scaffolding both build on `synth::{sym,int,str,list,bracket,cons,nil,…}` — never
+hand-roll `Sexp::{Symbol,List,Bracket}` + `next_synthetic_span()` inline. Spans
+are opaque-unique (BC invariant 4), so consolidating never changed behaviour.
+
+**`classify_head` is the ONE top-level-head classifier** (FIXME 0678):
+`build_form_inner` (dispatch) and `is_top_level_form_sexp`/`head_is_top_level_form`
+(build_form-vs-bare-expr routing) both consume it, and the `ast_builder/tests.rs`
+adapter routes through the prod `is_top_level_form_sexp` — adding a top-level head
+is exactly ONE edit in `classify_head`, and the test router cannot drift.
 
 ## Reader token disambiguation (spec §1.7) — `read_form` dispatch order is load-bearing
 
@@ -65,6 +79,26 @@ and the top-level form sequence (`build_forms`). When you add a new operand
 position, route it through `build_one_expr_at` — a raw `build_expr` there silently
 drops annotation support.
 
+- **Single-body operand positions** (a body that must be the LAST form and may be
+  ascribed) route through **`build_body_to_end`** (S114 BD-A one-seam,
+  `design/frontend/enforcement-matrices.md` §1) — the let body, impl-method body,
+  trait default-method body, and `trace` operand. It calls `build_one_expr_at`
+  (so `:Type body` ascription works) and rejects any form left after the body
+  (so `(form … body junk)` is a LOCATED error, not a silent drop). A raw
+  `build_expr` for a body, or a hand-rolled tail check, is the BD-A defect the
+  seam closes (P7/P18). `parse_defn`/`build_defn_variant` have their own routed
+  tail and need not adopt it. `try_consume_annotation` returns
+  `Result<Option<…>>` — a bare `:` binding a NON-type form is a located reject
+  (RA-N5), not a swallow to `Var{":"}`.
+
+- **The reader** rejects a dangling qualifier where the token is formed (the only
+  site adjacency is known): `:foo/`/`:a.b/` (empty local half) and `/bar` (empty
+  module half) are located reader errors; a bare `/` division stays legal
+  (`reader.rs` `read_qualified_tail`→`consume_dotted_module_path`, `read_operator`
+  `/`-guard; S114 RA, spec §1.4.5/§8.5.1). The two dotted-module loops are ONE
+  `consume_dotted_module_path` helper (audit R7); bare dotted SYMBOLS
+  (`Option.Some`) read via `read_dotted_name`.
+
 - **Stacked annotation runs** (`:Eq :Display a`) can only be trait bounds, so
   `annotation_run_carrier` (FIXME 0341/0346) folds a run of length >1 into
   `TypeExpr::Bounds([TraitRef..])`; a run of length 1 is left as the resolved
@@ -72,12 +106,15 @@ drops annotation support.
 
 ## Qualified-name splitting (§8.5) — split at the LAST `/`, guard both halves
 
-`type_ref_from_name` and `trait_ref_from_name` (`ast_builder.rs`) split a written
-`module/Name` onto `Some(module)` only when both halves are non-empty; otherwise
-`module: None`. Stuffing a whole slash-name into the bare-name slot re-roots it
-under the current module (the **D-qual** defect class, S91). Every impl
-trait-name / target / constraint / applied-head position routes through the
-splitter (`build_impl_target`). See RED defects below.
+`split_qualified_name` (`ast_builder.rs`) is the **ONE** frontend qualified-name
+splitter (audit R2/FIXME 0677): a written `module/Name` splits at the LAST `/`
+onto `Some((module, bare))` only when both halves are non-empty, else `None`.
+`type_ref_from_name`, `trait_ref_from_name`, `reject_qualified_binder_head`, and
+the `type_expr_to_trait_ref` structural assert all delegate to it — no per-site
+`rsplit_once` copies (the split grammar cannot drift). Stuffing a whole slash-name
+into the bare-name slot re-roots it under the current module (the **D-qual**
+defect class, S91). Every impl trait-name / target / constraint / applied-head
+position routes through the splitter (`build_impl_target`).
 
 `reject_qualified_binder_head` is the **dual** of these splitters: a reference
 splits `module/Name` and reaches across modules; a declaration binder MUST be
@@ -90,28 +127,31 @@ sound): the §5 native heads (defn / deftype-both-arms / deftrait-caller /
 defmacro / method-sig / con_var); `deftype` **constructor names** (both arms) and
 **field names** (both arms); `defmacro` **params** (`parse_param_items` +
 `parse_bracket_pattern`); the `import`/`export` **module alias**
-(`module_extract`). `mod`/`mod-` and `platform` names enforce their own
+(`module_extract`); and — **since S114 W-D2** — the **value-level local binders**:
+`defn`/`fn`/`defmacro` params (`build_annotated_params`, both arms), `let` names
+(`build_let_bindings`), and `match` var-patterns (`build_pattern`, the lowercase
+var arm AND each ctor-pattern binding symbol — NOT `children[0]`, the ctor name,
+which is a reference). `mod`/`mod-` and `platform` names enforce their own
 simple-symbol rule (reject `/` AND `.`) at `module_extract.rs` (spec §5.8/§5.10 —
 module-phase decls).
 
-**DEFERRED — value-level local binders** (`defn`/`fn` params, `let` names,
-`match` var-patterns): the reject is NOT applied at their `build_form` seams
-(`build_annotated_params`, `build_let_bindings`, `build_pattern` — see the NOTEs
-there). Those seams run AFTER int's macro-expansion name-resolution, which itself
-(mis-)qualifies a local binder whose name collides with an importable symbol
-(`name` → `primitives/name`, only with a macro in scope). A build-layer reject
-there fires on int's mangled output and breaks a VALID program
-(`(defn f [name] (str … name))`). Enforcement is owed at the reader/raw layer or
-via the paired int fix — **FIXME 0670** (`target: /arch`). Do not re-add a reject
-at these three seams without that fix.
+The value-level re-landing was gated on **0670**: int's expansion pass now SKIPS
+binder slots, so a colliding local binder (`name`) is no longer mis-qualified to
+`primitives/name` during macro expansion — a bare binder reaches these seams
+unmangled and the reject fires ONLY on the user's WRITTEN qualified spelling (the
+bare-colliding twin `(defn f [name] (str … name))` stays legal). The three
+`build_form` seams that were the deferred exception (0670) now carry the reject;
+do NOT re-add the old NOTE deferral.
 
 `type_expr_to_trait_ref` (the stacked-bounds `:Eq :Display a` reshaper) **does
 NOT re-split** — it trusts the upstream split and only reshapes `TypeRef`→
 `TraitRef`. Every name reaching it is already module-split (`Named`/`Applied`
 names via `type_ref_from_name`; `parse_annotation_name` never mints a
-slash-carrying `TypeVar` since FIXME 0589). A `debug_assert` enforces the
-**splitter dual** — no *splittable* qualified spelling (two non-empty halves)
-survives (a degenerate `foo/` is legitimately passed through, Principle 16). Its
+slash-carrying `TypeVar` since FIXME 0589). A `debug_assert` (over
+`split_qualified_name`) enforces the **splitter dual** — no *splittable* qualified
+spelling survives. Since the S114 RA reader reject (0684) a written `foo/`/`/bar`
+is rejected at tokenization, so only a bare `/` (division) reaches the splitters
+unsplit, and `split_qualified_name` returns `None` for it (Principle 16). Its
 former hand-rolled `rsplit_once` was downstream compensation for 0589's
 slash-`TypeVar` and was retired at S113 (P7).
 
@@ -131,11 +171,11 @@ re-list a count here, honor the invariant.
 
 ## Known open defects (RED guards — the test is the record, no FIXME file)
 
-- **Trailing junk after a valid ctor field bracket is silently dropped.**
-  `build_constructor_def` (`ast_builder.rs` ~L604) rejects a trailing *non-bracket*
-  non-docstring form (S107 item 1), but `(deftype Box (Box [:Int n] extra))` still
-  silently drops `extra`. Guard: `tests/spec_05_definitions.rs::
-  deftype_ctor_trailing_form_after_field_bracket_rejected_neg` (RED, `// FIXME(/frontend)`).
+None currently open. (The S107 **deftype-ctor trailing-form** silent-drop —
+`(deftype Box (Box [:Int n] extra))` dropping `extra` — was FIXED S114 W-D1:
+`build_constructor_def`'s `Bracket` arm now requires the field bracket to be the
+LAST form, else rejects the trailing form located. Guard now GREEN:
+`tests/spec_05_definitions.rs::deftype_ctor_trailing_form_after_field_bracket_rejected_neg`.)
 
 ## Intentional NYI gates in `build_expr` — not bugs
 

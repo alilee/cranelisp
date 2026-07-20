@@ -1,35 +1,41 @@
 # Frontend Plan — Ring 0 Reader and AST Builder
 
-Produced by `/frontend` for Sprint 0, Task 5. This document plans the Ring 0 implementation of the `cranelisp-frontend` crate: the S-expression reader and the AST builder. No macros are included (Ring 3).
+Produced by `/frontend` for Sprint 0, Task 5. This document plans the Ring 0 implementation of the `cranelisp-frontend` crate: the S-expression reader and the AST builder. Historical reference only — the pre-Ring-0 plan; the as-built design lives in `design/frontend/reader.md` + `frontend.md`.
 
-## 1. PEG Crate Choice
+## 1. Reader Approach — hand-written recursive descent
 
 ### Evaluation
 
-| Crate | Style | Pros | Cons |
-|---|---|---|---|
-| `peg` 0.8 | PEG macro (`peg::parser!{}`) | Used by prototype; proven for this grammar; zero-copy position tracking; readable inline grammar; fast compile times | Proc macro grammar not separately testable as data; error messages can be opaque |
-| `pest` | External `.pest` grammar file | Grammar in a separate file (reviewable); excellent error reporting; well-documented | Heavier dependency; grammar file is another asset to manage; pairs-based API requires more boilerplate to build Sexp |
-| `nom` | Combinator functions | Maximum flexibility; pure Rust functions; easy to test individual parsers | Verbose for this grammar size; harder to read at a glance; more code to maintain |
-| `winnow` | Fork of nom | Improved error handling over nom; streaming support | Same verbosity issues as nom; newer, smaller ecosystem |
-| `chumsky` | Parser combinators with error recovery | Best-in-class error recovery; designed for programming languages | Heavy compile times; complex API; overkill for an S-expression grammar |
-| Hand-written | Recursive descent | Full control; zero dependencies; best possible error messages | More code; more surface area for bugs; no grammar-as-specification benefit |
+The candidate approaches were a parser-generator/combinator library (`peg`,
+`pest`, `nom`, `winnow`, `chumsky`) versus a hand-written recursive-descent
+reader. The grammar is a small S-expression reader with a handful of reader
+macros; token precedence (float before integer before operator, boolean before
+symbol) is a fixed first-byte dispatch order.
 
-### Decision: `peg` 0.8
+### Decision: hand-written recursive descent (as built)
+
+The reader (`reader.rs`) is a **hand-written recursive-descent** parser over
+source bytes — there is no PEG grammar and no parser-library dependency. This is
+the as-built reality; the earlier plan named `peg 0.8` and was superseded before
+Ring 0 landed (the sketch/prototype `peg` grammar was never ported).
 
 **Rationale**:
 
-1. **Proven**: The prototype uses `peg` 0.8 and it handles the full Cranelisp grammar (58 KB of parser, ~400 lines of grammar rules, ~980 tests pass). The grammar is not novel -- it is an S-expression reader with a handful of reader macros. There is no risk that `peg` cannot handle it.
+1. **Full control over diagnostics.** Hand-written descent yields located,
+   self-documenting parse errors (`ErrorLocation::from_span`) — no mapping from a
+   library's opaque "expected one of …" set. The dangling-qualifier and
+   annotation-lexing rejects (`design/frontend/enforcement-matrices.md`) live at
+   the exact byte where the token is formed.
 
-2. **Appropriate complexity**: S-expression grammars are simple. The token precedence (float before integer before operator, etc.) maps directly to PEG's ordered choice (`/`). A combinator library or hand-written parser would be more code for no benefit.
+2. **Appropriate complexity.** S-expression grammars are simple; the first-byte
+   precedence maps directly to a `match` in `read_form`. A parser library would be
+   more machinery, not less, for a grammar this small (Principle 6).
 
-3. **Position tracking**: `peg` provides `position!()` for byte offsets. The prototype uses `(usize, usize)` spans; the reimplementation uses `Span { start: u32, end: u32 }`. The conversion is a cast at the grammar boundary.
+3. **Position tracking.** The reader threads a byte cursor (`Reader.pos: usize`)
+   and constructs `Span { start: u32, end: u32 }` directly at each token
+   boundary — no external position primitive, no tuple-to-struct conversion.
 
-4. **Compile time**: `peg` generates code at compile time via proc macro. It compiles fast and produces efficient parsers. No runtime grammar interpretation.
-
-5. **Familiarity**: The prototype grammar is a tested reference. The reimplementation grammar will be structurally identical (same rules, same ordering), with two changes: `Span` struct instead of tuple, and `String` newtype conversions.
-
-**Risk**: `peg` error messages on malformed input can be unhelpful (e.g., "expected one of: ..."). This is acceptable for Ring 0. If error quality becomes a blocking usability finding, we can add a post-parse error enhancement pass that maps common PEG failures to user-friendly messages. This is cheaper than switching parsers.
+4. **Zero dependencies.** The crate names no parser library in `Cargo.toml`.
 
 ## 2. Ring 0 Grammar Rules
 
@@ -111,7 +117,7 @@ pub fn parse_sexp(input: &str) -> Result<Sexp, CranelispError>;
 pub fn parse_sexps(input: &str) -> Result<Vec<Sexp>, CranelispError>;
 ```
 
-Error mapping: PEG's `ParseError` (offset + expected set) is converted to `CranelispError::ParseError { message, span }` at the public boundary.
+Error mapping: the reader raises `CranelispError::ParseError { message, location }` directly at the offending byte offset (`Reader::error` / `error_at`) — there is no intermediate library error to translate.
 
 ### 2.7 `$` Reader Macro
 
@@ -268,7 +274,7 @@ Optional docstrings are detected by checking if `children[start]` is `Sexp::Str`
 
 ### 4.13 Span Type Change: Tuple to Struct
 
-The prototype uses `type Span = (usize, usize)`. The reimplementation uses `struct Span { start: u32, end: u32 }`. All reader code that constructs spans must use `Span::new(start as u32, end as u32)` instead of tuple construction. The PEG `position!()` macro returns `usize`; the cast to `u32` is safe for source files under 4 GB.
+The prototype used `type Span = (usize, usize)`. The reimplementation uses `struct Span { start: u32, end: u32 }`. All reader code constructs spans via `Span::new(start as u32, end as u32)`. The byte cursor is a `usize`; the cast to `u32` is safe for source files under 4 GB.
 
 ### 4.14 String Newtypes: `Symbol` Instead of `String`
 
@@ -289,10 +295,9 @@ The `#(...)` reader macro wraps the entire body as a *list* (not just the forms)
 ```toml
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
-peg = "0.8"
 ```
 
-No other dependencies. The frontend crate is self-contained.
+No parser-library dependency — the reader is hand-written. The frontend crate is self-contained.
 
 ### 5.2 Source Layout
 
@@ -300,7 +305,7 @@ No other dependencies. The frontend crate is self-contained.
 cranelisp-frontend/
   src/
     lib.rs            # pub mod declarations, re-exports
-    reader.rs         # PEG grammar, parse_sexp(), parse_sexps()
+    reader.rs         # hand-written recursive descent, parse_sexp(), parse_sexps()
     ast_builder.rs    # Sexp -> Expr, TopLevel, ReplInput
     desugar.rs        # desugar_type_def() (type shortcut syntax)
     CLAUDE.md         # Frontend-specific conventions
@@ -407,7 +412,7 @@ Integration tests (owned by `/qa`) will exercise the full parse-then-build pipel
 
 1. **`cranelisp-types` stubs** (by `/arch`): Ensure `Sexp`, `Span`, `Expr`, `TopLevel`, `Pattern`, `MatchArm`, `TypeExpr`, `FieldDef`, `ConstructorDef`, `Defn`, `DefnVariant`, `Visibility`, `Program`, `ReplInput`, `CranelispError` are defined.
 
-2. **`reader.rs`**: Port the PEG grammar from `sketch/src/sexp.rs`. Change `Span` from tuple to struct. Add `parse_sexp()` and `parse_sexps()` public functions. Port and adapt unit tests.
+2. **`reader.rs`**: Hand-written recursive-descent reader over source bytes (first-byte dispatch in `read_form`). Construct `Span { start, end }` at each token boundary. Add `parse_sexp()` and `parse_sexps()` public functions with unit tests.
 
 3. **`desugar.rs`**: Port `desugar_type_def()` from `sketch/src/ast.rs`. Adapt for `Symbol`/`TypeName` newtypes.
 

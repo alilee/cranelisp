@@ -989,3 +989,85 @@
             }
         }
     }
+
+    // -- RA (0682) — dangling-qualifier lexing (W-D1) ------------------------
+    //
+    // `:foo/`/`:a.b/` (empty local), `/bar` (empty module half) are located
+    // reader errors; a bare `/` (division) and a valid qualified name stay
+    // legal (RA-N4 fence, Principle 16). The value-path `foo/` already erred;
+    // these pin the annotation-path parity + the new `/bar` guard.
+    mod ra_dangling_qualifier {
+        use super::*;
+
+        fn read_err(src: &str) -> CranelispError {
+            match parse(src) {
+                Ok(sexps) => panic!("expected reader error from {src:?}, got {sexps:?}"),
+                Err(e) => e,
+            }
+        }
+
+        // spec: 01-lexical §1.4.5 — `:foo/` (empty local) is a located reader error.
+        #[test]
+        fn colon_foo_slash_empty_local_rejected() {
+            let e = read_err(":foo/");
+            assert!(
+                e.message().contains("local name"),
+                "`:foo/` must reject naming the missing local name, got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 01-lexical §1.4.5 — `:a.b/` (dotted module, empty local) rejects
+        // through the SAME `consume_dotted_module_path` path (audit R7).
+        #[test]
+        fn colon_dotted_module_empty_local_rejected() {
+            let e = read_err(":a.b/");
+            assert!(
+                e.message().contains("local name"),
+                "`:a.b/` must reject (dotted-module swallow removed), got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 08-modules §8.5.1 — `/bar` (empty module half) is a located reader
+        // error at the `/` token (the ONE genuinely-new lexical reject, RA-N6).
+        #[test]
+        fn slash_bar_empty_module_half_rejected() {
+            let e = read_err("/bar");
+            assert!(
+                e.message().contains("module name"),
+                "`/bar` must reject naming the empty module half, got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 08-modules §8.5.1 — a bare `/` (division) stays legal (RA-N4
+        // fence; Principle 16). It reads as the operator symbol `/`.
+        #[test]
+        fn bare_slash_division_stays_a_symbol() {
+            assert_symbol(&parse_one("/"), "/");
+            // `/` separated from operands is division, not a dangling qualifier.
+            let sexps = parse("(/ 6 2)").unwrap();
+            assert_eq!(sexps.len(), 1);
+            // `(map / xs)` — `/` as a first-class value, followed by whitespace.
+            let sexps = parse("(map / xs)").unwrap();
+            assert_eq!(sexps.len(), 1);
+        }
+
+        // spec: 08-modules §8.5.1 — a valid qualified name still reads as ONE leaf
+        // (the un-swallow must not break the happy path).
+        #[test]
+        fn valid_qualified_names_still_read_as_one_leaf() {
+            assert_symbol(&parse_one("foo/bar"), "foo/bar");
+            assert_symbol(&parse_one(":primitives/Int"), ":primitives/Int");
+            assert_symbol(&parse_one(":core.option/Option"), ":core.option/Option");
+        }
+
+        // spec: 01-lexical §1.7 — a bare dotted symbol/module path (no `/`) still
+        // reads intact (the dotted-symbol reader is unchanged behaviourally).
+        #[test]
+        fn bare_dotted_names_unchanged() {
+            assert_symbol(&parse_one("Option.Some"), "Option.Some");
+            assert_symbol(&parse_one("main.shell.inner"), "main.shell.inner");
+        }
+    }

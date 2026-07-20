@@ -59,21 +59,12 @@
         }
     }
 
-    /// Detect a top-level form head (defn/deftype/deftrait/impl/defmacro and
-    /// their `-` variants) so the test adapter knows whether to route to
-    /// `build_form` (and propagate its errors) or fall through to
-    /// `build_expr`.
+    /// Route through the PRODUCTION classifier so the test adapter cannot drift
+    /// from the prod router (FIXME 0678, audit R3). The former verbatim head-list
+    /// mirror is deleted — this delegates to `is_top_level_form_sexp` /
+    /// `classify_head`, the single source of the top-level head vocabulary.
     fn is_top_level_form(sexp: &Sexp) -> bool {
-        if let Sexp::List(children, _) = sexp
-            && let Some(Sexp::Symbol(head, _)) = children.first()
-        {
-            return matches!(
-                head.as_str(),
-                "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
-                    | "impl" | "defmacro" | "defmacro-"
-            );
-        }
-        false
+        super::is_top_level_form_sexp(sexp)
     }
 
     fn parse_and_build_program(input: &str) -> Result<Program, CranelispError> {
@@ -2662,44 +2653,50 @@
         assert!(err.message().contains("should have been expanded"));
     }
 
-    // spec: 01-lexical §1.6 — anonymous function form rejected (Ring 3)
+    // spec: 01-lexical §1.6 — anonymous function form rejected; the NYI message
+    // says what to write instead (no retired ring axis).
     #[test]
     fn test_reject_anon_fn() {
         let err = parse_and_build_expr("#(+ %1 %2)").unwrap_err();
-        assert!(err.message().contains("anonymous functions"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("anonymous-function"));
+        assert!(err.message().contains("(fn"));
+        assert!(!err.message().contains("Ring"));
     }
 
-    // spec: 01-lexical §1.4.7 — percent param rejected in AST (Ring 3)
+    // spec: 01-lexical §1.4.7 — percent param rejected in AST; the NYI message
+    // names the explicit-`fn` alternative, no ring number.
     #[test]
     fn test_reject_percent_param() {
         let err = parse_and_build_expr("%1").unwrap_err();
-        assert!(err.message().contains("percent parameters not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("percent parameters"));
+        assert!(err.message().contains("(fn"));
+        assert!(!err.message().contains("Ring"));
     }
 
-    // spec: 01-lexical §1.4.6 — gensym dollar rejected in AST (Ring 3)
+    // spec: 01-lexical §1.4.6 — gensym dollar rejected in AST; message names the
+    // `let`-bound-name alternative, no ring number.
     #[test]
     fn test_reject_gensym_dollar() {
         let err = parse_and_build_expr("$foo").unwrap_err();
-        assert!(err.message().contains("gensym not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("gensym"));
+        assert!(err.message().contains("let"));
+        assert!(!err.message().contains("Ring"));
     }
 
-    // spec: 01-lexical §1.4.8 — ampersand rejected in AST (Ring 3)
+    // spec: 01-lexical §1.4.8 — ampersand rejected in AST; no ring number.
     #[test]
     fn test_reject_ampersand() {
         let err = parse_and_build_expr("&rest").unwrap_err();
-        assert!(err.message().contains("rest parameters not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("rest parameters"));
+        assert!(!err.message().contains("Ring"));
     }
 
-    // spec: 01-lexical §1.4.6 — gensym shorthand rejected in AST (Ring 3)
+    // spec: 01-lexical §1.4.6 — gensym shorthand rejected in AST; no ring number.
     #[test]
     fn test_reject_gensym_shorthand() {
         let err = parse_and_build_expr("foo#").unwrap_err();
-        assert!(err.message().contains("gensym shorthand not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("gensym"));
+        assert!(!err.message().contains("Ring"));
     }
 
     // -- Ring 1: String literal --
@@ -3631,5 +3628,257 @@
                 assert_no_debug_artifacts(&e);
                 assert_real_span(&e, src);
             }
+        }
+    }
+
+    // -- Track D W-D1 seams: BD-A one-body-seam, deftype-ctor trailing, M2-TP1,
+    //    RA-N5 bound-form-type, 0677 single splitter -------------------------
+    mod track_d_wd1 {
+        use super::*;
+
+        // BD-A1: the four single-body operand positions accept a `:Type body`
+        // ascription (spec §2.3.8), routed through the ONE `build_body_to_end`
+        // seam. Each also has a bare-body positive twin.
+
+        // spec: 03-types §2.3.8 — ascribed let body accepted (BD-A1, let position).
+        #[test]
+        fn let_body_ascription_builds() {
+            let e = parse_and_build_expr("(let [x 41] :Int x)")
+                .expect("an ascribed let body is valid (§2.3.8)");
+            assert!(matches!(e, Expr::Let { .. }));
+            assert!(parse_and_build_expr("(let [x 41] x)").is_ok());
+        }
+
+        // spec: 04-expressions §4.3 — a trailing form after the let body is a
+        // located reject (BD-A2 sibling; `build_body_to_end` tail check).
+        #[test]
+        fn let_body_trailing_form_rejected() {
+            let e = parse_and_build_expr("(let [x 1] x 9)")
+                .expect_err("a trailing form after the let body is rejected");
+            assert!(
+                e.message().contains("trailing"),
+                "the reject names the trailing form; got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 03-types §2.3.8 — ascribed `trace` operand accepted (BD-A1).
+        #[test]
+        fn trace_operand_ascription_builds() {
+            assert!(parse_and_build_expr("(trace :Int 5)").is_ok());
+            assert!(parse_and_build_expr("(trace 5)").is_ok());
+        }
+
+        // spec: 04-expressions §4.12 — a trailing form after the traced operand is
+        // rejected (BD-A2 sibling; replaces the former blanket arity error).
+        #[test]
+        fn trace_trailing_form_rejected() {
+            let e = parse_and_build_expr("(trace 5 9)")
+                .expect_err("a trailing form after the trace operand is rejected");
+            assert!(
+                e.message().contains("trailing"),
+                "the reject names the trailing form; got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 03-types §2.3.8 — ascribed impl-method body accepted (BD-A1); a
+        // trailing form after it is rejected (BD-A2 — was a silent drop).
+        #[test]
+        fn impl_method_body_ascription_and_trailing() {
+            assert!(parse_and_build_program(
+                "(impl T Int (defn m [x] :Int x))"
+            )
+            .is_ok());
+            let e = parse_and_build_program("(impl T Int (defn m [x] x 999))")
+                .expect_err("a trailing form after an impl-method body is rejected");
+            assert!(
+                e.message().contains("trailing"),
+                "the reject names the trailing form; got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 03-types §2.3.8 — ascribed trait default-method body accepted
+        // (BD-A1); a trailing form after it is rejected (BD-A2).
+        #[test]
+        fn trait_default_body_ascription_and_trailing() {
+            assert!(parse_and_build_program("(deftrait T (m [x] :Int :Int x))").is_ok());
+            let e = parse_and_build_program("(deftrait T (show [x] Int 999 888))")
+                .expect_err("a trailing form after a method sig is rejected");
+            assert!(
+                e.message().contains("trailing"),
+                "the reject names the trailing form; got: {}",
+                e.message(),
+            );
+        }
+
+        // spec: 05-definitions §5.2 — a form after a valid ctor field bracket is a
+        // located reject, no longer silently dropped (deftype-ctor trailing; the
+        // S107 pre-existing RED). Sibling of BD-A2.
+        #[test]
+        fn deftype_ctor_trailing_form_after_field_bracket_rejected() {
+            let e = parse_and_build_program("(deftype Box (Box [:Int n] extra))")
+                .expect_err("a form after the field bracket is rejected");
+            assert!(
+                e.message().contains("trailing"),
+                "the reject names the trailing form; got: {}",
+                e.message(),
+            );
+            // The well-formed one-field ctor still builds.
+            assert!(parse_and_build_program("(deftype Box (Box [:Int n]))").is_ok());
+        }
+
+        // spec: 02-grammar §2.2.2 — an uppercase deftype type param is a located
+        // reject (M2-TP1); a lowercase one is accepted (converges deftype onto
+        // deftrait's existing case rule).
+        #[test]
+        fn deftype_uppercase_type_param_rejected() {
+            let e = parse_and_build_program("(deftype (Box A) [:Int val])")
+                .expect_err("an uppercase type param is rejected (§2.2.2)");
+            assert!(
+                e.message().contains("lowercase"),
+                "the reject names the lowercase requirement; got: {}",
+                e.message(),
+            );
+            assert!(parse_and_build_program("(deftype (Box a) [:Int val])").is_ok());
+        }
+
+        // spec: 03-types §2.3.8 — the form bound by a bare `:` MUST be a type
+        // expression; a non-type bound form is a located reject (RA-N5), not a
+        // swallow to `Expr::Var{ name: ":" }`.
+        #[test]
+        fn bare_colon_non_type_bound_form_rejected() {
+            let e = parse_and_build_expr("(add-i64 :3 5)")
+                .expect_err("`:3` binds a non-type form (§2.3.8)");
+            assert!(
+                e.message().contains("type expression"),
+                "the reject names the type-expression requirement; got: {}",
+                e.message(),
+            );
+            // A well-formed compound annotation `: (Fn [Int] Int) g` still builds.
+            assert!(parse_and_build_expr("(let [g : (Fn [Int] Int) g] g)").is_ok());
+        }
+
+        // spec: 08-modules §8.5 — the ONE frontend splitter (0677). A qualified
+        // name splits at the LAST `/` into two non-empty halves; a bare `/`,
+        // `foo/`, `/bar` are NOT qualified (Principle 16).
+        #[test]
+        fn split_qualified_name_both_halves_nonempty() {
+            assert_eq!(split_qualified_name("a/b"), Some(("a", "b")));
+            assert_eq!(split_qualified_name("core.io/pure"), Some(("core.io", "pure")));
+            assert_eq!(split_qualified_name("foo"), None);
+            assert_eq!(split_qualified_name("/"), None);
+            assert_eq!(split_qualified_name("foo/"), None);
+            assert_eq!(split_qualified_name("/bar"), None);
+        }
+
+        // spec: 03-types §3.3 — a slash-bearing lowercase annotation routes to
+        // `Named` (via the splitter), NEVER a slash-carrying `TypeVar` (0589 /
+        // 0677 structural fence: such a `TypeVar` cannot reach
+        // `type_expr_to_trait_ref`).
+        #[test]
+        fn qualified_lowercase_annotation_is_named_not_typevar() {
+            assert!(matches!(parse_annotation_name("user/int"), TypeExpr::Named(_)));
+            assert!(matches!(parse_annotation_name("int"), TypeExpr::TypeVar(_)));
+            // A stacked-bounds run of qualified names reshapes without tripping
+            // the `type_expr_to_trait_ref` splitter-dual debug_assert.
+            assert!(parse_and_build_program("(defn f [:m/Foo :Bar a] a)").is_ok());
+        }
+    }
+
+    // -- Audit R3 (0678): the ONE head classifier ---------------------------
+    mod head_classifier {
+        use super::*;
+
+        // The head vocabulary is single-sourced in `classify_head`; the routing
+        // predicate and the test adapter both consume it (cannot drift).
+        #[test]
+        fn classify_head_vocabulary() {
+            use cranelisp_types::Visibility;
+            assert_eq!(
+                classify_head("defn"),
+                HeadKind::Def { base: "defn", visibility: Visibility::Public }
+            );
+            assert_eq!(
+                classify_head("deftype-"),
+                HeadKind::Def { base: "deftype", visibility: Visibility::Private }
+            );
+            assert_eq!(classify_head("defmacro"), HeadKind::Defmacro);
+            assert_eq!(classify_head("impl"), HeadKind::Impl);
+            assert_eq!(classify_head("begin"), HeadKind::Begin);
+            assert_eq!(classify_head("import"), HeadKind::StructuralDecl);
+            assert_eq!(classify_head("platform"), HeadKind::StructuralDecl);
+            assert_eq!(classify_head("add-i64"), HeadKind::Expr);
+        }
+
+        // `head_is_top_level_form` (the routing predicate) is defined over
+        // `classify_head`, so `is_top_level_form_sexp` — used by BOTH prod and
+        // the test adapter — cannot diverge from the vocabulary.
+        #[test]
+        fn routing_predicate_agrees_with_classifier() {
+            for head in ["defn", "deftype", "deftrait-", "impl", "defmacro"] {
+                assert!(head_is_top_level_form(head), "{head} routes to build_form");
+            }
+            for head in ["begin", "import", "mod", "platform", "add-i64", "let"] {
+                assert!(!head_is_top_level_form(head), "{head} is NOT a build_form head");
+            }
+        }
+    }
+
+    // -- W-D2 (0670 wave 2): value-level qualified-binder reject re-landing ---
+    //
+    // A qualified spelling (`a/b`, both halves non-empty) in a value-level binder
+    // slot — defn/fn param, let name, match var-pattern — is a located reject; the
+    // BARE-binder twin stays legal. The reject fires on the WRITTEN spelling
+    // (the seams see raw source, and 0670 keeps int from mangling colliding
+    // binders into qualified names).
+    mod value_level_qualified_binder {
+        use super::*;
+
+        // spec: 05-definitions §5.1.1 — a defn param binder must be bare.
+        #[test]
+        fn defn_param_qualified_rejects_bare_accepts() {
+            assert!(parse_and_build_program("(defn f [a/b] a/b)").is_err());
+            assert!(parse_and_build_program("(defn f [ab] ab)").is_ok());
+        }
+
+        // spec: 04-expressions §4.5 — an fn param binder must be bare.
+        #[test]
+        fn fn_param_qualified_rejects_bare_accepts() {
+            assert!(parse_and_build_expr("(fn [a/b] a/b)").is_err());
+            assert!(parse_and_build_expr("(fn [ab] ab)").is_ok());
+        }
+
+        // spec: 04-expressions §4.3 — a let binding name must be bare.
+        #[test]
+        fn let_name_qualified_rejects_bare_accepts() {
+            assert!(parse_and_build_expr("(let [a/b 5] a/b)").is_err());
+            assert!(parse_and_build_expr("(let [ab 5] ab)").is_ok());
+        }
+
+        // spec: 06-pattern-matching §6.2 — a match var-pattern binder must be
+        // bare, but a qualified CONSTRUCTOR-pattern head is a reference (legal).
+        #[test]
+        fn match_var_pattern_qualified_rejects_ctor_head_ok() {
+            assert!(parse_and_build_expr("(match v [a/b a/b])").is_err());
+            assert!(parse_and_build_expr("(match v [x x])").is_ok());
+            // A qualified ctor-pattern HEAD is a reference (spec §6.2.1) — legal;
+            // only the bound variables inside must be bare.
+            assert!(parse_and_build_expr("(match v [(option/Some x) x])").is_ok());
+            // ...but a qualified binding VARIABLE inside a ctor pattern rejects.
+            assert!(parse_and_build_expr("(match v [(Some a/b) a/b])").is_err());
+        }
+
+        // The reject uses the ONE `reject_qualified_binder_head` helper, so its
+        // located message names the bare fix (self-documenting).
+        #[test]
+        fn qualified_binder_reject_names_the_bare_fix() {
+            let e = parse_and_build_program("(defn f [a/b] a/b)").unwrap_err();
+            assert!(
+                e.message().contains("bare") && e.message().contains("a/b"),
+                "the reject names the qualified spelling + the bare requirement; got: {}",
+                e.message(),
+            );
         }
     }

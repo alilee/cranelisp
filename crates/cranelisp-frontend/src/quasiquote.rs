@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cranelisp_types::{ErrorLocation, CranelispError, Sexp, Span};
 
+use crate::synth;
+
 /// Global counter for unique synthetic spans. Starts well above any realistic
 /// source file size to avoid collisions with real source spans.
 ///
@@ -39,11 +41,6 @@ static SYNTHETIC_SPAN_COUNTER: AtomicU32 = AtomicU32::new(1_000_000);
 pub fn next_synthetic_span() -> Span {
     let v = SYNTHETIC_SPAN_COUNTER.fetch_add(1, Ordering::Relaxed);
     Span::new(v, v)
-}
-
-/// Allocate a fresh synthetic span (crate-internal alias).
-fn next_span() -> Span {
-    next_synthetic_span()
 }
 
 // ---------------------------------------------------------------------------
@@ -69,96 +66,54 @@ fn is_unquote_splicing(children: &[Sexp]) -> bool {
 
 // ---------------------------------------------------------------------------
 // Sexp constructor builders (all macros/-qualified)
+//
+// These are the quasiquote-specific COMPOSITES — `macros/`-qualified ctor
+// calls — layered on the shared `crate::synth` primitives (audit R4, FIXME
+// 0679). The primitive `Sexp::{Symbol,List,…}` + span construction lives in
+// `synth`; these name the ctor vocabulary.
 // ---------------------------------------------------------------------------
 
 /// Build `(macros/SexpSym "name")`.
 fn make_sexp_sym(name: &str) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpSym".to_string(), next_span()),
-            Sexp::Str(name.to_string(), next_span()),
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/SexpSym"), synth::str(name)])
 }
 
 /// Build `(macros/SexpInt val)`.
 fn make_sexp_int(val: i64) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpInt".to_string(), next_span()),
-            Sexp::Int(val, next_span()),
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/SexpInt"), synth::int(val)])
 }
 
 /// Build `(macros/SexpFloat val)`.
 fn make_sexp_float(val: f64) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpFloat".to_string(), next_span()),
-            Sexp::Float(val, next_span()),
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/SexpFloat"), synth::float(val)])
 }
 
 /// Build `(macros/SexpBool val)`.
 fn make_sexp_bool(val: bool) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpBool".to_string(), next_span()),
-            Sexp::Bool(val, next_span()),
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/SexpBool"), synth::bool(val)])
 }
 
 /// Build `(macros/SexpStr "val")`.
 fn make_sexp_str(val: &str) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/SexpStr".to_string(), next_span()),
-            Sexp::Str(val.to_string(), next_span()),
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/SexpStr"), synth::str(val)])
 }
 
 /// Build `(ctor items_sexp)` where `ctor` is `macros/SexpList` or `macros/SexpBracket`.
 fn make_sexp_container(ctor: &str, items_sexp: Sexp) -> Sexp {
-    Sexp::List(
-        vec![Sexp::Symbol(ctor.to_string(), next_span()), items_sexp],
-        next_span(),
-    )
+    synth::list(vec![synth::sym(ctor), items_sexp])
 }
 
 /// Build nested `(macros/SCons e0 (macros/SCons e1 ... macros/SNil))`.
 fn make_slist(elements: Vec<Sexp>) -> Sexp {
-    let nil = Sexp::Symbol("macros/SNil".to_string(), next_span());
-    elements.into_iter().rev().fold(nil, |acc, elem| {
-        Sexp::List(
-            vec![
-                Sexp::Symbol("macros/SCons".to_string(), next_span()),
-                elem,
-                acc,
-            ],
-            next_span(),
-        )
-    })
+    elements
+        .into_iter()
+        .rev()
+        .fold(synth::nil(), |acc, elem| synth::cons(elem, acc))
 }
 
 /// Build `(macros/sconcat a b)`.
 fn make_sconcat(a: Sexp, b: Sexp) -> Sexp {
-    Sexp::List(
-        vec![
-            Sexp::Symbol("macros/sconcat".to_string(), next_span()),
-            a,
-            b,
-        ],
-        next_span(),
-    )
+    synth::list(vec![synth::sym("macros/sconcat"), a, b])
 }
 
 // ---------------------------------------------------------------------------

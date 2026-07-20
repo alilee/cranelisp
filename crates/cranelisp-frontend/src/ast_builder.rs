@@ -53,6 +53,24 @@ fn parse_err(message: &str, span: Span) -> CranelispError {
     }
 }
 
+/// The ONE qualified-name splitter for the frontend (audit R2, FIXME 0677).
+///
+/// A written name is qualified **iff** splitting at the LAST `/` yields two
+/// NON-EMPTY halves — `Some((module, bare))`. A bare name, a bare `/` operator,
+/// and a degenerate `foo/` / `/bar` all return `None` (Principle 16: punctuation
+/// symbols are not special; a bare `/` is the legitimate division-operator
+/// name). This is the frontend twin of `cranelisp_types::resolve::split_qualified`
+/// (crate-private there — the frontend keeps its own copy rather than widen the
+/// types-crate surface, no cross-crate need). Every place that used to hand-roll
+/// `name.rsplit_once('/')` with the both-halves-non-empty guard
+/// (`reject_qualified_binder_head`, `type_ref_from_name`, `trait_ref_from_name`,
+/// the `type_expr_to_trait_ref` structural assert) delegates here so the split
+/// grammar cannot drift across sites.
+fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
+    name.rsplit_once('/')
+        .filter(|(module, bare)| !module.is_empty() && !bare.is_empty())
+}
+
 /// Reserved names that root special forms claim. A root special form's name
 /// cannot be defined or bound by user code (spec/02-grammar.md §2.9, Principle
 /// 10's two-category amendment). The set is **only** `trace` — the other root
@@ -109,10 +127,7 @@ pub(crate) fn reject_reserved_binder_name(name: &str, span: Span) -> Result<(), 
 /// (`Point.x`) is a member/accessor form, never a raw declaration head, and
 /// widening to `.` is out of scope (Principle 6).
 pub(crate) fn reject_qualified_binder_head(name: &str, span: Span) -> Result<(), CranelispError> {
-    if let Some((module, bare)) = name.rsplit_once('/')
-        && !module.is_empty()
-        && !bare.is_empty()
-    {
+    if let Some((_module, bare)) = split_qualified_name(name) {
         return Err(parse_err(
             &format!(
                 "'{name}' is a qualified name, but a definition head is a binder and must be a \
@@ -170,17 +185,59 @@ fn is_uppercase_start(s: &str) -> bool {
     bare.starts_with(|c: char| c.is_uppercase())
 }
 
-/// Check if a head symbol is a definition form and return its base form and visibility.
-fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
+/// The kind of a top-level form head. The ONE head-vocabulary classifier (audit
+/// R3, FIXME 0678): every site that dispatches on a form head — `build_form_inner`
+/// (per-form dispatch), `is_top_level_form_sexp` (build_form-vs-bare-expr
+/// routing), and the test adapter — consumes [`classify_head`], so adding a
+/// top-level head is exactly ONE edit here and the test router cannot drift from
+/// the prod router (Principle 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeadKind {
+    /// A definition form (`defn`/`deftype`/`deftrait`, with `-` = private):
+    /// its `base` name (suffix stripped) and visibility.
+    Def { base: &'static str, visibility: Visibility },
+    /// `defmacro` / `defmacro-`.
+    Defmacro,
+    /// `impl` (no visibility variant).
+    Impl,
+    /// `begin` — a cluster the orchestrator must flatten before per-form dispatch.
+    Begin,
+    /// A module-phase structural declaration (`mod`/`mod-`/`import`/`export`/
+    /// `platform`) the orchestrator must peel before per-form dispatch.
+    StructuralDecl,
+    /// Not a recognised top-level head — a bare expression / unknown form.
+    Expr,
+}
+
+/// Classify a form head symbol. The single source of the top-level head
+/// vocabulary (FIXME 0678).
+pub(crate) fn classify_head(head: &str) -> HeadKind {
     match head {
-        "defn" => Some(("defn", Visibility::Public)),
-        "defn-" => Some(("defn", Visibility::Private)),
-        "deftype" => Some(("deftype", Visibility::Public)),
-        "deftype-" => Some(("deftype", Visibility::Private)),
-        "deftrait" => Some(("deftrait", Visibility::Public)),
-        "deftrait-" => Some(("deftrait", Visibility::Private)),
-        _ => None,
+        "defn" => HeadKind::Def { base: "defn", visibility: Visibility::Public },
+        "defn-" => HeadKind::Def { base: "defn", visibility: Visibility::Private },
+        "deftype" => HeadKind::Def { base: "deftype", visibility: Visibility::Public },
+        "deftype-" => HeadKind::Def { base: "deftype", visibility: Visibility::Private },
+        "deftrait" => HeadKind::Def { base: "deftrait", visibility: Visibility::Public },
+        "deftrait-" => HeadKind::Def { base: "deftrait", visibility: Visibility::Private },
+        "defmacro" | "defmacro-" => HeadKind::Defmacro,
+        "impl" => HeadKind::Impl,
+        "begin" => HeadKind::Begin,
+        "mod" | "mod-" | "import" | "export" | "platform" => HeadKind::StructuralDecl,
+        _ => HeadKind::Expr,
     }
+}
+
+/// True when `head` names a top-level definition/impl/macro form — the routing
+/// predicate that sends a sexp to [`build_form`] rather than [`build_expr`].
+/// Structural decls and `begin` are NOT included: they are peeled/flattened by
+/// the orchestrator before dispatch (they answer `false` here). Single-sourced
+/// via [`classify_head`] (FIXME 0678) so `build_forms` and the test adapter
+/// share the ONE router.
+pub(crate) fn head_is_top_level_form(head: &str) -> bool {
+    matches!(
+        classify_head(head),
+        HeadKind::Def { .. } | HeadKind::Defmacro | HeadKind::Impl
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -263,50 +320,34 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
         }
     };
 
-    // Pre-AST forms are not accepted by `build_form`. begin / module-decl
-    // forms are the orchestrator's responsibility; defmacro is dispatched
-    // separately below (it's a top-level form vocabulary entry, not pre-AST).
-    match head {
-        "begin" => {
-            return Err(parse_err(
-                "build_form: `(begin …)` must be flattened by the orchestrator before per-form dispatch",
-                head_span,
-            ));
+    // Dispatch on the ONE head classifier (FIXME 0678). Pre-AST forms
+    // (`begin` / structural decls) are the orchestrator's responsibility and
+    // are rejected here to surface the missing peel/flatten step early.
+    match classify_head(head) {
+        HeadKind::Begin => Err(parse_err(
+            "build_form: `(begin …)` must be flattened by the orchestrator before per-form dispatch",
+            head_span,
+        )),
+        HeadKind::StructuralDecl => Err(parse_err(
+            "build_form: structural declarations must be peeled by `extract_module_declarations` before per-form dispatch",
+            head_span,
+        )),
+        HeadKind::Defmacro => {
+            let info = parse_defmacro(sexp)?;
+            Ok(vec![ParsedEntry::Macro { info }])
         }
-        "mod" | "mod-" | "import" | "export" | "platform" => {
-            return Err(parse_err(
-                "build_form: structural declarations must be peeled by `extract_module_declarations` before per-form dispatch",
-                head_span,
-            ));
-        }
-        _ => {}
+        HeadKind::Impl => parse_impl(children, span).map(|e| vec![e]),
+        HeadKind::Def { base, visibility } => match base {
+            "defn" => parse_defn(children, span, visibility).map(|e| vec![e]),
+            "deftype" => parse_deftype(children, span, visibility),
+            "deftrait" => parse_deftrait(children, span, visibility).map(|e| vec![e]),
+            _ => unreachable!("invariant: classify_head returns a known Def base"),
+        },
+        HeadKind::Expr => Err(parse_err(
+            &format!("unknown top-level form: `{head}`"),
+            head_span,
+        )),
     }
-
-    // defmacro / defmacro-: package as ParsedEntry::Macro.
-    if head == "defmacro" || head == "defmacro-" {
-        let info = parse_defmacro(sexp)?;
-        return Ok(vec![ParsedEntry::Macro { info }]);
-    }
-
-    // impl: no private variant.
-    if head == "impl" {
-        return parse_impl(children, span).map(|e| vec![e]);
-    }
-
-    // defn / deftype / deftrait (with visibility suffix `-`).
-    if let Some((base, vis)) = parse_def_visibility(head) {
-        return match base {
-            "defn" => parse_defn(children, span, vis).map(|e| vec![e]),
-            "deftype" => parse_deftype(children, span, vis),
-            "deftrait" => parse_deftrait(children, span, vis).map(|e| vec![e]),
-            _ => unreachable!("invariant: parse_def_visibility returns known base"),
-        };
-    }
-
-    Err(parse_err(
-        &format!("unknown top-level form: `{head}`"),
-        head_span,
-    ))
 }
 
 /// Build a sequence of top-level forms, performing `:Type` annotation pairing
@@ -365,7 +406,7 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
         // so the non-annotated path below handles the per-form dispatch that
         // `build_one_expr_at`'s plain-`build_expr` arm cannot (it has no
         // knowledge of top-level forms).
-        if try_consume_annotation(sexps, i).is_some() {
+        if try_consume_annotation(sexps, i)?.is_some() {
             let (expr, consumed) = build_one_expr_at(sexps, i)?;
             out.push(TopLevel::Expr(expr));
             i += consumed;
@@ -394,17 +435,15 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
 
 /// Detect a top-level form head (`defn`/`deftype`/`deftrait`/`impl`/`defmacro`
 /// and their `-` variants) so [`build_forms`] knows whether to route a sexp to
-/// [`build_form`] or treat it as a bare expression. Mirrors the orchestrator's
-/// prior `is_top_level_form` heuristic.
-fn is_top_level_form_sexp(sexp: &Sexp) -> bool {
+/// [`build_form`] or treat it as a bare expression. The head vocabulary is
+/// single-sourced via [`head_is_top_level_form`] → [`classify_head`] (FIXME
+/// 0678) — the test adapter routes through the SAME predicate, so the two
+/// routers cannot drift.
+pub(crate) fn is_top_level_form_sexp(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
     {
-        return matches!(
-            head.as_str(),
-            "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
-                | "impl" | "defmacro" | "defmacro-"
-        );
+        return head_is_top_level_form(head);
     }
     false
 }
@@ -454,22 +493,28 @@ fn parsed_entry_to_top_level(entry: ParsedEntry) -> Option<TopLevel> {
 fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError> {
     if name.starts_with('%') {
         return Err(parse_err(
-            "percent parameters not yet supported (Ring 3)",
+            "percent parameters (`%1`, `%&`) are not yet supported — write an \
+             explicit `(fn [x] …)` with named parameters",
             span,
         ));
     }
     if name.starts_with('$') {
-        return Err(parse_err("gensym not yet supported (Ring 3)", span));
+        return Err(parse_err(
+            "gensym (`$name`) is not yet supported — use a `let`-bound name",
+            span,
+        ));
     }
     if name.starts_with('&') {
         return Err(parse_err(
-            "rest parameters not yet supported (Ring 3)",
+            "rest parameters (`&rest`) are not yet supported in expression \
+             position — write explicit fixed parameters",
             span,
         ));
     }
     if name.ends_with('#') {
         return Err(parse_err(
-            "gensym shorthand not yet supported (Ring 3)",
+            "auto-gensym shorthand (`name#`) is not yet supported — use a \
+             `let`-bound name",
             span,
         ));
     }
@@ -669,7 +714,26 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
             let params: Vec<Symbol> = children[1..]
                 .iter()
                 .map(|s| {
-                    let (n, _) = expect_symbol(s)?;
+                    let (n, n_span) = expect_symbol(s)?;
+                    // A `deftype` type parameter is a type VARIABLE and MUST be a
+                    // lowercase symbol (spec §2.2.2 `type_param = SYMBOL
+                    // (* lowercase *)`; §2.4.2 — an uppercase symbol is a
+                    // named-type reference, not a parameter binder). This
+                    // converges deftype onto the SAME case rule
+                    // `parse_trait_head_shape` already enforces for deftrait
+                    // con-vars (M2-TP1/M2-TP2, audit R1 Done criterion). A
+                    // silently-accepted uppercase param was the §2.2.2
+                    // `class=silent-accept` defect.
+                    if is_uppercase_start(n) {
+                        return Err(parse_err(
+                            &format!(
+                                "type parameter `{n}` must be a lowercase symbol (a type \
+                                 variable); an uppercase name is a named-type reference, not a \
+                                 parameter (spec §2.2.2)"
+                            ),
+                            n_span,
+                        ));
+                    }
                     Ok(n.into())
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
@@ -738,7 +802,27 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
 
             let fields = if next < children.len() {
                 match &children[next] {
-                    Sexp::Bracket(..) => build_field_list(&children[next])?,
+                    Sexp::Bracket(..) => {
+                        let fields = build_field_list(&children[next])?;
+                        // A constructor is `( name docstring? field_list )` —
+                        // NOTHING follows the field bracket (spec §5.2 grammar).
+                        // A form after a VALID `[:Type name]` bracket was silently
+                        // dropped (`(deftype Box (Box [:Int n] extra))` collapsed
+                        // to a one-field `Box`). Reject it located — the
+                        // constructor-position sibling of BD-A2, mirroring the
+                        // `other =>` arm below and `parse_defn`'s trailing reject.
+                        if next + 1 != children.len() {
+                            return Err(parse_err(
+                                &format!(
+                                    "constructor `{name}` has an unexpected trailing form after \
+                                     its field list — a constructor is `({name} [:Type name])` \
+                                     with nothing after the field bracket (spec §5.2)"
+                                ),
+                                children[next + 1].span(),
+                            ));
+                        }
+                        fields
+                    }
                     // A trailing form that is neither a docstring nor a
                     // `[:Type name]` bracket is malformed (spec §5.2 requires
                     // constructor fields to be a bracketed list). Historically
@@ -777,7 +861,7 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
     let mut i = 0;
 
     while i < items.len() {
-        if let Some((te, consumed)) = try_consume_annotation(items, i) {
+        if let Some((te, consumed)) = try_consume_annotation(items, i)? {
             let name_pos = i + consumed;
             if name_pos >= items.len() {
                 return Err(parse_err(
@@ -1126,8 +1210,11 @@ fn build_method_sig(
     let default_body = if has_default_body {
         // Default body lowered to Expr per S69 Sub 26 — building the AST at
         // trait-decl time catches structural errors in special forms (`let`,
-        // `if`, `match`, …) immediately, rather than per-impl.
-        Some(build_expr(&children[ret_pos + 1])?)
+        // `if`, `match`, …) immediately, rather than per-impl. The default body
+        // is a single-body operand position: `:Type body` ascription valid
+        // (spec §2.3.8), a trailing form after it rejected located (BD-A1/A2).
+        // ONE seam.
+        Some(build_body_to_end(children, ret_pos + 1, "trait default method body")?)
     } else {
         None
     };
@@ -1342,7 +1429,10 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
     }
     let name = get_defn_name(&children[1])?;
     let params = build_annotated_params(&children[2])?;
-    let body = build_expr(&children[3])?;
+    // The impl-method body is a single-body operand position: `:Type body`
+    // ascription valid (spec §2.3.8), a trailing form rejected located (mirrors
+    // `parse_defn`, closing the BD-A2 silent-drop). ONE seam.
+    let body = build_body_to_end(children, 3, "impl method body")?;
 
     Ok(Defn {
         name,
@@ -1461,7 +1551,8 @@ fn build_list_expr(
             }
             "anon-fn" => {
                 return Err(parse_err(
-                    "anonymous functions #(...) not yet supported (Ring 3)",
+                    "anonymous-function shorthand `#(…)` is not yet supported — \
+                     write an explicit `(fn [x] …)`",
                     *head_span,
                 ))
             }
@@ -1475,7 +1566,10 @@ fn build_list_expr(
             // through the symbol table like any other name.
             // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
-                return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
+                return Err(parse_err(
+                    "`par-let` is not yet supported — use a sequential `let`",
+                    *head_span,
+                ))
             }
             // If an unexpanded macro call reaches here, it will be treated as a
             // regular function application and fail at typecheck. All callers
@@ -1515,13 +1609,13 @@ fn build_trace(
     // Quoted occurrences (`'(trace x)`, `` `(trace x) ``) are desugared by the
     // expander into `Sexp` constructor calls before reaching this builder, so
     // they appear as `Expr::Apply` to those constructors (not `Expr::Trace`).
-    if children.len() != 2 {
-        return Err(parse_err(
-            "trace requires exactly one expression",
-            span,
-        ));
-    }
-    let body = build_expr(&children[1])?;
+    // The traced operand is a single-body operand position: it may carry a
+    // `:Type body` ascription (spec §2.3.8 — `(trace :Int 5)`) and rejects a
+    // trailing form. Route through the ONE seam; a missing operand `(trace)`
+    // reports "trace: missing body expression", a trailing `(trace x y)`
+    // reports "trace: unexpected trailing form after body" (clearer than the
+    // former blanket arity error).
+    let body = build_body_to_end(children, 1, "trace")?;
     Ok(Expr::Trace {
         modules: vec![],
         body: Box::new(body),
@@ -1563,12 +1657,15 @@ fn build_let(
     span: Span,
 ) -> Result<Expr, CranelispError> {
     // (let [name val name val ...] body)
-    if children.len() != 3 {
+    if children.len() < 3 {
         return Err(parse_err("let requires bindings and body", span));
     }
     let (bracket_items, _) = expect_bracket(&children[1])?;
     let bindings = build_let_bindings(bracket_items)?;
-    let body = build_expr(&children[2])?;
+    // The let BODY is a single-body operand position: it may carry a `:Type body`
+    // ascription (spec §2.3.8 — `(let [x 1] :Int x)`) and rejects a trailing form
+    // located. ONE seam (`build_body_to_end`) for every single-body position.
+    let body = build_body_to_end(children, 2, "let body")?;
     Ok(Expr::Let {
         bindings,
         body: Box::new(body),
@@ -1585,11 +1682,12 @@ fn build_let_bindings(
     while i < items.len() {
         let (name, name_span) = expect_symbol(&items[i])?;
         reject_reserved_binder_name(name, name_span)?;
-        // NOTE: no qualified-binder reject here — same reason as `build_annotated_params`:
-        // int qualifies a colliding let-binder name (`name` → `primitives/name`)
-        // during macro expansion, so a build-layer reject breaks a VALID program
-        // (`(let [name …] (str … name))`). Deferred to the reader/raw-source layer
-        // (or the paired int fix) — FIXME (S113, item-3 finding).
+        // A `let` binding name is a value-level binder (spec §5 binder-positions
+        // table) — a qualified spelling `[a/b 5]` is a compile-time error. Sound
+        // since 0670 (int's expansion pass skips binder slots), so the reject
+        // fires only on the user's WRITTEN qualified spelling, never int's
+        // output. Re-landed S114 W-D2 (same helper, Principle 7).
+        reject_qualified_binder_head(name, name_span)?;
         i += 1;
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
@@ -1777,11 +1875,12 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                 })
             } else {
                 // A bare lowercase pattern symbol is a variable binder (spec
-                // §6.2.4). NOTE: no qualified-binder reject here — this build-layer
-                // seam runs after int qualifies colliding binder names during macro
-                // expansion, so a reject would break a VALID program. Deferred to
-                // the reader/raw-source layer or the paired int fix (S113 finding).
+                // §6.2.4) — a qualified spelling `a/b` is a compile-time error.
+                // Sound since 0670 (int's expansion pass skips binder slots), so
+                // the reject fires only on the user's WRITTEN qualified spelling,
+                // never int's output. Re-landed S114 W-D2.
                 reject_reserved_binder_name(name, *span)?;
+                reject_qualified_binder_head(name, *span)?;
                 Ok(Pattern::Var {
                     name: name.as_str().into(),
                     span: *span,
@@ -1796,14 +1895,15 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
             let (name, _) = expect_symbol(&children[0])?;
             // children[0] is the constructor name (a REFERENCE, not a binder —
             // qualifier permitted, spec §6.2.1). The remaining symbols are variable
-            // binders (spec §6.2.4); a qualified-binder reject is deferred here for
-            // the same int-qualification reason as the other value-level binders
-            // (S113 item-3 finding).
+            // binders (spec §6.2.4): a qualified spelling `a/b` is a compile-time
+            // error (re-landed S114 W-D2; sound since 0670 skips binder slots in
+            // int's expansion pass — fires only on the written qualified spelling).
             let bindings = children[1..]
                 .iter()
                 .map(|s| {
                     let (n, n_span) = expect_symbol(s)?;
                     reject_reserved_binder_name(n, n_span)?;
+                    reject_qualified_binder_head(n, n_span)?;
                     Ok(n.into())
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
@@ -1838,28 +1938,50 @@ fn build_vec_lit(
 // ---------------------------------------------------------------------------
 
 /// Try to consume a type annotation starting at `items[pos]`.
-/// Returns `Some((TypeExpr, items_consumed))` or `None`.
-fn try_consume_annotation(items: &[Sexp], pos: usize) -> Option<(TypeExpr, usize)> {
+///
+/// Returns `Ok(Some((TypeExpr, items_consumed)))` when `items[pos]` is an
+/// annotation introducer, `Ok(None)` when it is not, and `Err` when it IS an
+/// introducer (a bare `:`) but the form it binds is not a type expression.
+///
+/// A bare `:` token is **only ever** an annotation introducer (never a `Var`;
+/// crate `CLAUDE.md` §`:Type`), so the form it binds MUST parse as a type
+/// expression. The bare-`:` arm therefore raises a LOCATED reject naming the fix
+/// rather than swallowing a `build_type_expr` failure and letting `:` fall
+/// through to `Expr::Var{ name: ":" }` (the opaque "unresolved symbol `:`"
+/// degradation — RA-N5, spec §2.3.8).
+fn try_consume_annotation(
+    items: &[Sexp],
+    pos: usize,
+) -> Result<Option<(TypeExpr, usize)>, CranelispError> {
     if pos >= items.len() {
-        return None;
+        return Ok(None);
     }
     match &items[pos] {
         // `:Int`, `:a`, `:Num` -- simple colon-prefixed symbol
         Sexp::Symbol(s, _) if s.starts_with(':') && s.len() > 1 => {
             let name = &s[1..];
             let te = parse_annotation_name(name);
-            Some((te, 1))
+            Ok(Some((te, 1)))
         }
         // `:` followed by `(Fn [...] ret)` or `(Option a)` etc -- compound annotation
-        Sexp::Symbol(s, _) if s == ":" => {
-            if pos + 1 < items.len()
-                && let Ok(te) = build_type_expr(&items[pos + 1])
-            {
-                return Some((te, 2));
+        Sexp::Symbol(s, sp) if s == ":" => {
+            if pos + 1 >= items.len() {
+                // Trailing bare `:` with nothing to bind — not an annotation here;
+                // downstream `build_expr` reports "annotation missing expression".
+                return Ok(None);
             }
-            None
+            match build_type_expr(&items[pos + 1]) {
+                Ok(te) => Ok(Some((te, 2))),
+                Err(_) => Err(parse_err(
+                    &format!(
+                        "the form bound by `:` must be a type expression; found `{}`",
+                        items[pos + 1].format_flat()
+                    ),
+                    *sp,
+                )),
+            }
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -1876,11 +1998,9 @@ fn try_consume_annotation(items: &[Sexp], pos: usize) -> Option<(TypeExpr, usize
 /// arrive at typecheck as `TypeRef { module: Some("t"), name: "Box" }`, not
 /// as the un-split `TypeRef { module: None, name: "t/Box" }`.
 fn type_ref_from_name(name: &str) -> TypeRef {
-    match name.rsplit_once('/') {
-        Some((m, n)) if !m.is_empty() && !n.is_empty() => {
-            TypeRef::new(Some(ModuleFullPath::from(m)), TypeName::from(n))
-        }
-        _ => TypeRef::new(None, TypeName::from(name)),
+    match split_qualified_name(name) {
+        Some((m, n)) => TypeRef::new(Some(ModuleFullPath::from(m)), TypeName::from(n)),
+        None => TypeRef::new(None, TypeName::from(name)),
     }
 }
 
@@ -1892,11 +2012,9 @@ fn type_ref_from_name(name: &str) -> TypeRef {
 /// `TraitRef { module: None, name: "primitives/Num" }` (which would re-root the
 /// trait under the current module the same way the impl-target defect did).
 fn trait_ref_from_name(name: &str) -> TraitRef {
-    match name.rsplit_once('/') {
-        Some((m, n)) if !m.is_empty() && !n.is_empty() => {
-            TraitRef::new(Some(ModuleFullPath::from(m)), TraitName::from(n))
-        }
-        _ => TraitRef::new(None, TraitName::from(name)),
+    match split_qualified_name(name) {
+        Some((m, n)) => TraitRef::new(Some(ModuleFullPath::from(m)), TraitName::from(n)),
+        None => TraitRef::new(None, TraitName::from(name)),
     }
 }
 
@@ -1923,7 +2041,7 @@ fn build_one_expr_at(
     items: &[Sexp],
     pos: usize,
 ) -> Result<(Expr, usize), CranelispError> {
-    if let Some((annotation, consumed)) = try_consume_annotation(items, pos) {
+    if let Some((annotation, consumed)) = try_consume_annotation(items, pos)? {
         let expr_pos = pos + consumed;
         if expr_pos >= items.len() {
             return Err(parse_err("annotation missing expression", items[pos].span()));
@@ -1943,6 +2061,33 @@ fn build_one_expr_at(
         let expr = build_expr(&items[pos])?;
         Ok((expr, 1))
     }
+}
+
+/// Build the single trailing body-expression at `children[pos..]`, routing it
+/// through the annotation-pairing primitive (so `:Type body` ascription works —
+/// spec §2.3.8) and rejecting any form left after it (so `(form … body junk)` is
+/// a LOCATED error, not a silent drop).
+///
+/// The ONE seam for every single-body operand position — let-body,
+/// impl-method body, trait-default body, `trace` operand
+/// (`design/frontend/enforcement-matrices.md` §1; Principle 7 single-source,
+/// Principle 18 enforce-where-built). Mirrors the tail-consumption discipline
+/// `parse_defn` / `build_defn_variant` already have on their own bodies.
+fn build_body_to_end(children: &[Sexp], pos: usize, ctx: &str) -> Result<Expr, CranelispError> {
+    if pos >= children.len() {
+        return Err(parse_err(
+            &format!("{ctx}: missing body expression"),
+            children.last().map(Sexp::span).unwrap_or(Span::SYNTHETIC),
+        ));
+    }
+    let (expr, consumed) = build_one_expr_at(children, pos)?;
+    if pos + consumed != children.len() {
+        return Err(parse_err(
+            &format!("{ctx}: unexpected trailing form after body"),
+            children[pos + consumed].span(),
+        ));
+    }
+    Ok(expr)
 }
 
 /// Build argument list, handling inline annotations (`:Type expr` -> `Annotate`).
@@ -1977,7 +2122,7 @@ fn build_annotated_params(
     let mut i = 0;
 
     while i < items.len() {
-        if let Some((te, consumed)) = try_consume_annotation(items, i) {
+        if let Some((te, consumed)) = try_consume_annotation(items, i)? {
             // Accumulate the RUN of consecutive annotations preceding the binder
             // name. A `:Type`/`:Trait` annotation is reader-macro-like — it binds
             // the immediately-following form (FIXME 0341,
@@ -1986,7 +2131,7 @@ fn build_annotated_params(
             // the run. The single-annotation case is the run-of-length-1.
             let mut run: Vec<TypeExpr> = vec![te];
             let mut name_pos = i + consumed;
-            while let Some((te, consumed)) = try_consume_annotation(items, name_pos) {
+            while let Some((te, consumed)) = try_consume_annotation(items, name_pos)? {
                 run.push(te);
                 name_pos += consumed;
             }
@@ -1998,19 +2143,20 @@ fn build_annotated_params(
             }
             let (name, name_span) = expect_symbol(&items[name_pos])?;
             reject_reserved_binder_name(name, name_span)?;
-            // NOTE: a qualified-param reject does NOT belong here — this build-layer
-            // seam runs AFTER int's macro-expansion name-resolution, which itself
-            // (mis-)qualifies a local binder whose name collides with an importable
-            // symbol (`name` → `primitives/name`, only when a macro is in scope).
-            // A reject here fires on int's mangled output and breaks a VALID program
-            // (`(defn f [name] (str … name))`). Enforcement for value-level local
-            // binders must live at the reader/raw-source layer, or int must stop
-            // qualifying binders first — see FIXME (S113, item-3 finding).
+            // A `defn`/`fn`/`defmacro` param is a value-level binder (spec §5
+            // binder-positions table) — a qualified spelling `[a/b]` is a
+            // compile-time error, same seam/helper as the §5 native heads. Sound
+            // to enforce here since 0670 (int's expansion pass now SKIPS binder
+            // slots, so int never mangles a colliding binder into a qualified
+            // name — a bare `name` reaches here unmangled; the reject fires only
+            // on the user's WRITTEN qualified spelling). Re-landed S114 W-D2.
+            reject_qualified_binder_head(name, name_span)?;
             params.push((name.into(), Some(annotation_run_carrier(run))));
             i = name_pos + 1;
         } else {
             let (name, name_span) = expect_symbol(&items[i])?;
             reject_reserved_binder_name(name, name_span)?;
+            reject_qualified_binder_head(name, name_span)?;
             params.push((name.into(), None));
             i += 1;
         }
@@ -2078,14 +2224,15 @@ fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
         TypeExpr::SelfType => (None, "Self"),
         TypeExpr::FnType(..) | TypeExpr::Bounds(_) => (None, ""),
     };
-    // The invariant is the EXACT dual of the §8.5 splitter guard: no *splittable*
-    // qualified spelling (two non-empty halves) survives upstream — a degenerate
-    // `foo/`/`/bar`/`/` is deliberately left unsplit by the splitters (Principle
-    // 16) and is NOT a violation (the retired `rsplit_once` fell through for it
-    // too). So assert the splitter dual, not the stronger `!contains('/')` which
-    // would panic on a degenerate name the splitters legitimately pass through.
+    // The invariant is the EXACT dual of the §8.5 splitter guard
+    // (`split_qualified_name`): no *splittable* qualified spelling (two non-empty
+    // halves) survives upstream. Since the S114 RA reader reject (0684,
+    // `enforcement-matrices.md` §3.2), a written `foo/`/`/bar` is rejected at
+    // tokenization, so only a bare `/` (the division operator) can reach the
+    // splitters unsplit — `split_qualified_name` returns `None` for it (Principle
+    // 16), so the assert holds without the stronger `!contains('/')`.
     debug_assert!(
-        !matches!(name.rsplit_once('/'), Some((m, n)) if !m.is_empty() && !n.is_empty()),
+        split_qualified_name(name).is_none(),
         "type_expr_to_trait_ref received a splittable qualified name `{name}` — the \
          §8.5 split must happen upstream (type_ref_from_name / parse_annotation_name), \
          never be re-derived here (P7/FIXME 0589)"
