@@ -53,20 +53,15 @@ block1:
     v30 = iconst.i64 0
     store notrap aligned v30, v29+16  ; v30 = 0
     store notrap aligned v27, v29+24
-    v31 = iadd_imm v29, 8
+    v31 = iadd_imm v6, 8
     v32 = iconst.i64 1
-    v33 = load.i64 notrap aligned v31
-    v34 = iadd v33, v32  ; v32 = 1
-    store notrap aligned v34, v31
-    v35 = iadd_imm v6, 8
-    v36 = iconst.i64 1
-    v37 = atomic_rmw.i64 sub v35, v36  ; v36 = 1
-    v38 = icmp eq v37, v36  ; v36 = 1
-    brif v38, block3, block2
+    v33 = atomic_rmw.i64 sub v31, v32  ; v32 = 1
+    v34 = icmp eq v33, v32  ; v32 = 1
+    brif v34, block3, block2
 
 block3:
     fence 
-    v39 = call fn2(v6)
+    v35 = call fn2(v6)
     jump block2
 
 block2:

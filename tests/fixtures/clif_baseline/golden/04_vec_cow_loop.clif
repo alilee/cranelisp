@@ -121,7 +121,7 @@ block1:
     v11 = iconst.i64 100
     v12 = iconst.i64 0
     v13 = call fn1(v9, v10, v11, v12)  ; v10 = 0, v11 = 100, v12 = 0
-    v49 -> v13
+    v45 -> v13
     v14 = iconst.i64 0
     v15 = load.i64 notrap aligned v9+16
     v16 = iconst.i64 0
@@ -156,34 +156,29 @@ block2:
     v39 = iconst.i64 0
     store notrap aligned v39, v38+16  ; v39 = 0
     store notrap aligned v36, v38+24
-    v40 = iadd_imm v38, 8
-    v41 = iconst.i64 1
-    v42 = load.i64 notrap aligned v40
-    v43 = iadd v42, v41  ; v41 = 1
-    store notrap aligned v43, v40
-    v44 = iconst.i64 0
-    v45 = iadd_imm.i64 v9, 8
-    v46 = iconst.i64 1
-    v47 = atomic_rmw.i64 sub v45, v46  ; v46 = 1
-    v48 = icmp eq v47, v46  ; v46 = 1
-    brif v48, block5, block4
+    v40 = iconst.i64 0
+    v41 = iadd_imm.i64 v9, 8
+    v42 = iconst.i64 1
+    v43 = atomic_rmw.i64 sub v41, v42  ; v42 = 1
+    v44 = icmp eq v43, v42  ; v42 = 1
+    brif v44, block5, block4
 
 block5:
     fence 
-    call fn4(v9, v44)  ; v44 = 0
+    call fn4(v9, v40)  ; v40 = 0
     jump block4
 
 block4:
-    v50 = iconst.i64 0
-    v51 = iadd_imm.i64 v13, 8
-    v52 = iconst.i64 1
-    v53 = atomic_rmw.i64 sub v51, v52  ; v52 = 1
-    v54 = icmp eq v53, v52  ; v52 = 1
-    brif v54, block7, block6
+    v46 = iconst.i64 0
+    v47 = iadd_imm.i64 v13, 8
+    v48 = iconst.i64 1
+    v49 = atomic_rmw.i64 sub v47, v48  ; v48 = 1
+    v50 = icmp eq v49, v48  ; v48 = 1
+    brif v50, block7, block6
 
 block7:
     fence 
-    call fn5(v13, v50)  ; v50 = 0
+    call fn5(v13, v46)  ; v46 = 0
     jump block6
 
 block6:

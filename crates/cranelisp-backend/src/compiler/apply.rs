@@ -1940,6 +1940,12 @@ where
         // predicate correctness contract; the F1 UAF cure.)
         let transfer_skip = tail_transfer_skip(args);
         self.flush_let_scopes_before_tail_jump(&transfer_skip);
+        // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
+        // slots too (the sibling seam the let flush does not cover): the jump
+        // below overwrites each param slot, orphaning the old heap value's
+        // reference (the conj/assoc persistent-op leak). Same `transfer_skip`
+        // move-contract; in-place COW params are excluded inside.
+        self.flush_superseded_heap_params_before_tail_jump(args, &transfer_skip);
 
         // Jump to loop header with new argument values.
         let loop_block = self.tail_loop_block.unwrap_or_else(|| {

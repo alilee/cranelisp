@@ -286,6 +286,27 @@ where
         if matches!(body, MonoExpr::Lambda { .. } | MonoExpr::StringLit { .. }) {
             return;
         }
+        // F-R1 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — entry-`main`'s IO
+        // result is consumed EXACTLY ONCE by the IO trampoline
+        // (`cranelisp_intrinsics::drop::consume_io_tree`), so a protective inc on it
+        // is a FIXED over-retention the single consumer can never balance — the
+        // §13.3 G2/item-26 class localized to the known nullary entry frame. A
+        // freshly-constructed IO value (`ConstrADT` — the `Pure`/effect ctor) is a
+        // brand-new box that never aliases a scope binding, so scope cleanup cannot
+        // free it and the protect is pure over-inc. Suppress it for exactly this
+        // shape: nullary `main`, tail return, fresh `ConstrADT` body. Licensed
+        // SOLELY by the entry-`main` single-consumer trampoline contract — the
+        // general G2 protect (an `Apply` return that MAY alias an argument and
+        // needs B2 callee summaries to narrow) is UNTOUCHED (the plan §2.1 fence:
+        // do not weaken the general protect). Balances `allocs == deallocs`
+        // EXACTLY: the trampoline's one `consume_io_tree` dec now frees the box.
+        if self.current_fn_name.as_ref().is_some_and(|n| n.as_ref() == "main")
+            && self.fn_param_count == 0
+            && self.in_tail_position
+            && self.body_is_fresh_construction(body)
+        {
+            return;
+        }
         // Only protect if the current scope has heap-typed bindings that
         // scope cleanup will dec. Borrowed vars are skipped by
         // `pop_scope_with_cleanup`, so their presence alone does NOT justify

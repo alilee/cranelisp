@@ -152,6 +152,23 @@ where
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(name.clone());
+
+            // R1 — alias-binding recognition (0668 §3, W-B2). A `let` binding whose
+            // value FORWARDS a live-binding alias (a bare `Var`, or a `Var`
+            // forwarded through control-flow/match-var per the W-B1 classifier) is
+            // a NON-OWNING alias: it inherits the root's identity and carries NO
+            // independent scope-dec obligation — exactly the `borrowed_vars`
+            // discipline match-arm field bindings already use. Registering it
+            // removes the double-scope-dec that frees the shared box out from under
+            // an escaping consumer (cell G: `q` and `v` both scope-dec'ing one
+            // reference; cell I-1: the captured let-alias). The consume position
+            // (vec-lit store / closure capture / arg) takes its own reference (R2),
+            // so `q` never needs to. A genuine owned temporary (COW result, fresh
+            // vec/ctor — cells A/E) roots at None and is UNCHANGED (keeps its
+            // scope-dec). Structural ⇒ correct in both ownership toggles.
+            if self.operand_live_binding_root(val_expr).is_some() {
+                self.mark_borrowed(name);
+            }
         }
 
         // Body inherits tail position.
@@ -305,6 +322,14 @@ where
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(name.clone());
+
+            // R1 — alias-binding recognition (0668 §3, W-B2); see the sequential
+            // path. A sparked binding's `val_expr` is never a bare-`Var` alias (a
+            // `Var` is not spark-worthy), so this only fires on the non-sparked
+            // alias bindings, identically to `compile_let_sequential`.
+            if self.operand_live_binding_root(val_expr).is_some() {
+                self.mark_borrowed(name);
+            }
         }
 
         // Phase 3: Compile body.

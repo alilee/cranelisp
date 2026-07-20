@@ -1165,6 +1165,53 @@ where
         self.emit_heap_binding_decs(&to_dec);
     }
 
+    /// MS-P8 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — the PARAM sibling
+    /// of [`FnCompiler::flush_let_scopes_before_tail_jump`]. On a tail self-call
+    /// the loop header OVERWRITES each param slot (scope frame `[0]`) with the new
+    /// argument value; a heap-typed param whose slot is superseded by a FRESH,
+    /// independently-owned value leaks its slot reference — the `conj`/`assoc`
+    /// persistent-op loop's 1-Vec-per-iteration leak (each `conj` COPIES because
+    /// the go-side arg-pass inc makes rc≥2, so the old `v` is always superseded;
+    /// the copy path is the EXPOSURE, the missing slot-dec is the SEAM). Dec each
+    /// superseded heap param before the jump, EXCEPT:
+    ///  - a param whose reference TRANSFERS into a tail argument as a bare `Var`
+    ///    (a MOVE — `transfer_skip`, self- or cross-slot): the box carries forward,
+    ///    so dec'ing it would double-free the value the next iteration owns (the
+    ///    exact contract the let flush honors);
+    ///  - a `borrowed_vars` param (the caller owns it);
+    ///  - a param whose matching arg is an IN-PLACE COW primitive on THAT param
+    ///    (`(vec-set p …)` / `(vec-push p …)` returns `p`'s OWN box when it reuses
+    ///    in place, so the slot is NOT superseded — dec'ing it would free the
+    ///    carried box; SKIP = leak-safe, the both-polarity fence's safe direction:
+    ///    never an under-count / UAF). `conj`/`assoc` are USER-fn calls, not these
+    ///    primitives, so the persistent-op leak is still fixed.
+    ///
+    /// The frames are NOT popped (the loop header reuses the param slots) — this
+    /// only releases the superseded slot references.
+    pub(crate) fn flush_superseded_heap_params_before_tail_jump(
+        &mut self,
+        args: &[MonoExpr],
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) {
+        let param_frame = match self.scope_stack.first() {
+            Some(f) => f.clone(),
+            None => return,
+        };
+        let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
+            if transfer_skip.contains(name) || this.borrowed_vars.contains(name) {
+                return true;
+            }
+            // In-place COW hazard: the arg in THIS param's position mutates the
+            // param and may return its own box (skip — leak-safe).
+            param_frame
+                .iter()
+                .position(|p| p == name)
+                .and_then(|pos| args.get(pos))
+                .is_some_and(|arg| arg_is_inplace_cow_on(arg, name))
+        });
+        self.emit_heap_binding_decs(&to_dec);
+    }
+
     /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
     /// `name`: it lives in a `let`/match/lambda frame (`scope_stack[1..]` — NOT
     /// the param frame `[0]`, which the loop header reuses and the flush leaves
@@ -1303,6 +1350,183 @@ where
     /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
     pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
         self.borrowed_vars.insert(name.clone());
+    }
+
+    // === 0668 binding-indirection consume contract (W-B1 classifier) ==========
+    //
+    // `design/backend/binding-indirection-consume.md` §1/§2. The ONE shared
+    // provenance classifier every consume/cleanup position keys off, instead of
+    // its local node syntax. It answers the value-flow question — "does this
+    // operand deliver (or forward) an independently-owned count, or is it an
+    // ALIAS of a live binding that carries none?" — by tracing the operand to its
+    // provenance root THROUGH binding-indirection (`let`-forward, match-var-arm
+    // forward, nesting). It reads ONLY the scope stack (`variables` — "is this a
+    // live binding"), NEVER an ownership fact, so it answers IDENTICALLY in both
+    // `CRANELISP_NO_OWNERSHIP` toggle states by construction (§2, the load-bearing
+    // contrast with the escape gate that makes 0668 a SEPARATE family from the
+    // R14 producer ruling).
+
+    /// The live-binding provenance ROOT of `node`, traced through
+    /// binding-indirection, or `None` if the operand delivers an independent owned
+    /// count (a producing op / fresh temporary transfers its own reference).
+    ///
+    /// `Some(root)` ⇒ the operand is an ALIAS of the live scope binding `root`:
+    /// it carries NO independent count, so a consume position that stores/captures
+    /// it must take one reference (R2) and a cleanup position must NOT dec it (R1).
+    /// `None` ⇒ an owned temporary that transfers.
+    ///
+    /// Structural only (Var-rootedness / alias-forwarding) — analysis-independent.
+    pub(crate) fn operand_live_binding_root(&self, node: &MonoExpr) -> Option<Symbol> {
+        operand_live_binding_root(node, &|name| self.variables.contains_key(name))
+    }
+
+    /// F-R1 (FIXME 0688 verdict a) — is `body` a FRESHLY-CONSTRUCTED value (a
+    /// brand-new heap box that cannot alias any scope binding)? True for a
+    /// `ConstrADT` node and for an `Apply` whose callee resolves to a constructor
+    /// (`ctor_meta_at` hits its carrier) — both mint a fresh box. A general
+    /// `Apply` (a user/trait call) may RETURN an aliased argument (e.g. `(id x)`),
+    /// so it is NOT fresh and still needs the return-protect. This is the precise
+    /// predicate that lets the entry-`main` IO-result suppression fire on `(Pure
+    /// 9)` while leaving an aliasing return protected — analysis-independent
+    /// (reads only the ctor carrier, no ownership fact).
+    pub(crate) fn body_is_fresh_construction(&self, body: &MonoExpr) -> bool {
+        match body {
+            MonoExpr::ConstrADT { .. } => true,
+            MonoExpr::Apply { callee, .. } => match callee.as_ref() {
+                MonoExpr::Var { resolution: VarRef::Global(fq), .. } => {
+                    self.ctx.ctor_meta_at(fq).is_some()
+                }
+                _ => false,
+            },
+            // A `let` forwards its body's provenance: a fresh construction returned
+            // through nested `let`s is still fresh, so the suppression stays
+            // SCALE-INVARIANT (the R-3 fixed-residual signature — the entry-`main`
+            // over-inc is the same one alloc regardless of heap-let depth).
+            MonoExpr::Let { body, .. } => self.body_is_fresh_construction(body),
+            _ => false,
+        }
+    }
+
+    /// Mirror of the §13.7 COW escape gate's `retain_reused` condition
+    /// (`vec_codegen.rs::cow_source_ownership`), read at the match consume seam so
+    /// R3 (forwarding-suppresses-dec) and the COW producer's escape-inc stay a
+    /// MATCHED PAIR. Returns `true` iff `node` is a direct `vec-set`/`vec-push`
+    /// COW whose in-place/mutate branch emits the escape-inc on the returned
+    /// pointer — i.e. a live-`Var` source, analysis-ON, recorded `escapes !=
+    /// Some(false)`, and NOT the function's return-COW-source (that path is
+    /// `Owned`, releasing on copy, never a mutate-branch retain). When this holds,
+    /// the scrutinee-dec is the BALANCING dec for that inc and MUST fire; when it
+    /// does not (non-COW temp, alias, toggle-off, or a nested/non-escaping COW
+    /// whose gate declined the inc), the forwarding dec is spurious and R3
+    /// suppresses it. This is the dec side of the SAME escape gate — NOT a
+    /// "distinguish wrong-`Some(false)`" workaround (R14/F4): a `Some(false)` is
+    /// treated uniformly as "no escape-inc ⇒ suppress", never corrected.
+    pub(crate) fn scrutinee_cow_retains_reused(&self, node: &MonoExpr) -> bool {
+        if cranelisp_types::ownership_analysis_off() {
+            return false;
+        }
+        let MonoExpr::Apply { callee, args, escapes, .. } = node else {
+            return false;
+        };
+        let MonoExpr::Var { name: callee_name, .. } = callee.as_ref() else {
+            return false;
+        };
+        if !matches!(callee_name.as_ref(), "vec-set" | "vec-push") {
+            return false;
+        }
+        let Some(MonoExpr::Var { name: src, .. }) = args.first() else {
+            return false;
+        };
+        if !self.variables.contains_key(src) {
+            return false;
+        }
+        if self.return_cow_source.as_ref() == Some(src) {
+            return false;
+        }
+        *escapes != Some(false)
+    }
+}
+
+/// Structural: is `arg` an IN-PLACE COW primitive (`vec-set`/`vec-push`) whose
+/// source is the bare `Var` `name`? Such an op can return `name`'s OWN box when it
+/// reuses in place, so the MS-P8 param-flush must not dec that param (the box is
+/// carried forward). Free fn (no liveness) — a pure AST-shape predicate.
+pub(crate) fn arg_is_inplace_cow_on(arg: &MonoExpr, name: &Symbol) -> bool {
+    let MonoExpr::Apply { callee, args, .. } = arg else {
+        return false;
+    };
+    let MonoExpr::Var { name: c, .. } = callee.as_ref() else {
+        return false;
+    };
+    if !matches!(c.as_ref(), "vec-set" | "vec-push") {
+        return false;
+    }
+    matches!(args.first(), Some(MonoExpr::Var { name: s, .. }) if s == name)
+}
+
+/// Structural: does `body` forward the binding `name` out as its value? True for
+/// the bare `Var(name)` return and for a `let`/`match` that itself forwards it —
+/// the value-flow shape a match var-pattern arm `[r <body>]` uses to pass the
+/// scrutinee through (0668 §2 match-forward row). Never consults liveness — it is
+/// a pure AST-shape predicate over the arm body.
+pub(crate) fn body_forwards_binding(body: &MonoExpr, name: &Symbol) -> bool {
+    match body {
+        MonoExpr::Var { name: n, .. } => n == name,
+        MonoExpr::Let { body, .. } => body_forwards_binding(body, name),
+        MonoExpr::Match { arms, .. } => {
+            // A nested match forwards `name` iff its selected var-pattern arm
+            // rebinds the (forwarded) scrutinee and forwards THAT binder — the
+            // §2 nesting row. Conservative: only the var-pattern-arm shape.
+            arms.iter().any(|arm| match &arm.pattern {
+                cranelisp_types::Pattern::Var { name: bound, .. } => {
+                    body_forwards_binding(&arm.body, bound)
+                }
+                _ => false,
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Structural: does this match FORWARD its scrutinee's provenance to the result?
+/// True iff some arm is a var-pattern `[r <body forwarding r>]` (0668 §2). A
+/// var-pattern is irrefutable, so in the tested family it is the sole/last arm and
+/// this is exact; a mixed constructor+var match is out of the acceptance set.
+pub(crate) fn match_forwards_scrutinee(arms: &[cranelisp_types::MonoMatchArm]) -> bool {
+    arms.iter().any(|arm| match &arm.pattern {
+        cranelisp_types::Pattern::Var { name, .. } => body_forwards_binding(&arm.body, name),
+        _ => false,
+    })
+}
+
+/// The W-B1 classifier core (0668 §1/§2), factored as a free function over a
+/// liveness predicate so the provenance trace is unit-testable without a full
+/// `FnCompiler` (the `return_cow_source_in_scope` precedent). `is_live(name)`
+/// answers "is `name` a live scope binding" (the `variables` read the method
+/// wrapper supplies). Traces Var-root → let-forward → match-var-forward → nested.
+pub(crate) fn operand_live_binding_root(
+    node: &MonoExpr,
+    is_live: &impl Fn(&Symbol) -> bool,
+) -> Option<Symbol> {
+    match node {
+        MonoExpr::Var { name, .. } => {
+            if is_live(name) {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        MonoExpr::Let { body, .. } => operand_live_binding_root(body, is_live),
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            if match_forwards_scrutinee(arms) {
+                operand_live_binding_root(scrutinee, is_live)
+            } else {
+                None
+            }
+        }
+        // Every producing op — vec-lit, ctor, COW result, string/lambda literal —
+        // delivers its own count and transfers it: no live-binding root.
+        _ => None,
     }
 }
 
@@ -2158,5 +2382,218 @@ mod b33_node_confined_tests {
         assert_eq!(map(node_confined(&constr_adt(Some(true)))), RcAtomicity::NonAtomic);
         assert_eq!(map(node_confined(&constr_adt(Some(false)))), RcAtomicity::Atomic);
         assert_eq!(map(node_confined(&constr_adt(None))), RcAtomicity::Atomic);
+    }
+}
+
+#[cfg(test)]
+mod binding_indirection_classifier_tests {
+    //! W-B1 unit matrix (`design/backend/binding-indirection-consume.md` §5): the
+    //! ONE shared provenance classifier `operand_live_binding_root` +
+    //! `match_forwards_scrutinee`. Structural, analysis-independent — reads only a
+    //! liveness predicate, never an ownership fact. Cells: Var-root, producing-op
+    //! temp, let-forward, match-var-forward, nested; a non-live Var ⇒ None.
+    use super::{match_forwards_scrutinee, operand_live_binding_root};
+    use cranelisp_types::{
+        ConcreteType, MonoExpr, MonoMatchArm, Pattern, Span, Symbol, VarRef,
+    };
+
+    fn var(name: &str) -> MonoExpr {
+        MonoExpr::Var {
+            name: Symbol::from(name),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            resolution: VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
+            ty: ConcreteType::Int,
+        }
+    }
+
+    fn vec_lit() -> MonoExpr {
+        MonoExpr::VecLit {
+            elements: vec![],
+            span: Span::new(0, 1),
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+        }
+    }
+
+    // `(match <scrut> [r r])` — a single var-pattern arm forwarding its binder.
+    fn var_match(scrut: MonoExpr, binder: &str) -> MonoExpr {
+        MonoExpr::Match {
+            scrutinee: Box::new(scrut),
+            arms: vec![MonoMatchArm {
+                pattern: Pattern::Var {
+                    name: Symbol::from(binder),
+                    span: Span::new(0, 1),
+                },
+                body: var(binder),
+                span: Span::new(0, 1),
+                provenance: None,
+                resolved_ctor: None,
+            }],
+            span: Span::new(0, 1),
+            compiler_generated: false,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    fn live<'a>(names: &'a [&'a str]) -> impl Fn(&Symbol) -> bool + 'a {
+        move |n: &Symbol| names.iter().any(|x| *x == n.as_ref())
+    }
+
+    // Cell 1 — a bare `Var` naming a live binding is that binding's alias (root).
+    #[test]
+    fn var_root_of_live_binding() {
+        assert_eq!(
+            operand_live_binding_root(&var("v"), &live(&["v"])),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // Cell 2 — a `Var` naming NO live binding (a fn-as-value name / free ref) is
+    // NOT an alias: it mints its own value ⇒ None (a NeverHeap/fresh Var ⇒ no inc).
+    #[test]
+    fn var_not_live_is_not_an_alias() {
+        assert_eq!(operand_live_binding_root(&var("v"), &live(&["other"])), None);
+    }
+
+    // Cell 3 — a producing op (vec-lit, ctor, …) delivers its own count ⇒ None.
+    #[test]
+    fn producing_op_temp_is_not_an_alias() {
+        assert_eq!(operand_live_binding_root(&vec_lit(), &live(&["v"])), None);
+    }
+
+    // Cell 4 — a `let` forwards its BODY's provenance: `(let [q …] v)` roots at v.
+    #[test]
+    fn let_forwards_body_root() {
+        let node = MonoExpr::Let {
+            bindings: vec![(Symbol::from("q"), vec_lit())],
+            body: Box::new(var("v")),
+            span: Span::new(0, 1),
+            ty: ConcreteType::Int,
+        };
+        assert_eq!(
+            operand_live_binding_root(&node, &live(&["v"])),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // Cell 5 — a var-pattern match forwards the scrutinee's provenance:
+    // `(match v [r r])` roots at v.
+    #[test]
+    fn match_var_pattern_forwards_scrutinee_root() {
+        assert_eq!(
+            operand_live_binding_root(&var_match(var("v"), "r"), &live(&["v"])),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // Cell 6 — NESTED forward: `(match (match v [r r]) [q q])` traces to v (cell F).
+    #[test]
+    fn nested_match_forwards_to_root() {
+        let inner = var_match(var("v"), "r");
+        assert_eq!(
+            operand_live_binding_root(&var_match(inner, "q"), &live(&["v"])),
+            Some(Symbol::from("v"))
+        );
+    }
+
+    // Cell 7 — a match forwarding a producing-op temp has NO live-binding root
+    // (the temp transfers its own count), but IS a forwarding match structurally.
+    #[test]
+    fn match_forwarding_fresh_temp_has_no_root_but_forwards() {
+        let m = var_match(vec_lit(), "r");
+        assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
+        if let MonoExpr::Match { arms, .. } = &m {
+            assert!(match_forwards_scrutinee(arms), "single [r r] arm forwards");
+        }
+    }
+
+    fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
+        MonoExpr::Apply {
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
+            callee: Box::new(var(prim)),
+            args: vec![src, var("i"), var("x")],
+            span: Span::new(0, 1),
+            resolved_call: None,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
+        }
+    }
+
+    // MS-P8 in-place guard — `(vec-set p …)` / `(vec-push p …)` on a param `p` may
+    // return `p`'s own box, so the param-flush must SKIP it (never dec the carried
+    // box → the both-polarity fence's leak-safe direction).
+    #[test]
+    fn arg_is_inplace_cow_on_matches_vecset_and_vecpush_on_param() {
+        use super::arg_is_inplace_cow_on;
+        let p = Symbol::from("v");
+        assert!(arg_is_inplace_cow_on(&cow_call("vec-set", var("v")), &p));
+        assert!(arg_is_inplace_cow_on(&cow_call("vec-push", var("v")), &p));
+        // A COW on a DIFFERENT source is not in-place on `v` (v IS superseded ⇒
+        // must be dec'd, so it is NOT skipped).
+        assert!(!arg_is_inplace_cow_on(&cow_call("vec-set", var("w")), &p));
+        // A user-fn call (`conj`) is NOT an in-place primitive — the persistent-op
+        // leak MUST still be fixed (dec fires).
+        assert!(!arg_is_inplace_cow_on(&cow_call("conj", var("v")), &p));
+        // A non-COW primitive is not skipped.
+        assert!(!arg_is_inplace_cow_on(&cow_call("vec-get", var("v")), &p));
+    }
+
+    // F-R1 fresh-construction — a `ConstrADT` and a `let`-forwarded `ConstrADT` are
+    // fresh (suppress main's IO-return protect); a general (non-ctor) `Apply` may
+    // return an aliased arg and is NOT fresh (protect KEPT). The ctor-`Apply` arm
+    // needs a live ctx and is covered e2e (`entry_main_heap_let_teardown_balances_r2`).
+    #[test]
+    fn body_forwards_binding_traces_through_let_and_match() {
+        use super::body_forwards_binding;
+        let name = Symbol::from("r");
+        // Bare Var forwards.
+        assert!(body_forwards_binding(&var("r"), &name));
+        // A different Var does not.
+        assert!(!body_forwards_binding(&var("q"), &name));
+        // A let forwarding its body's `r`.
+        let l = MonoExpr::Let {
+            bindings: vec![(Symbol::from("z"), vec_lit())],
+            body: Box::new(var("r")),
+            span: Span::new(0, 1),
+            ty: ConcreteType::Int,
+        };
+        assert!(body_forwards_binding(&l, &name));
+        // A fresh producing op does not forward.
+        assert!(!body_forwards_binding(&vec_lit(), &name));
+    }
+
+    // Cell 8 — a match whose var-arm does NOT forward its binder (body is a
+    // different value) is not a forwarding match.
+    #[test]
+    fn match_var_arm_not_forwarding_is_not_a_forward() {
+        let m = MonoExpr::Match {
+            scrutinee: Box::new(var("v")),
+            arms: vec![MonoMatchArm {
+                pattern: Pattern::Var {
+                    name: Symbol::from("r"),
+                    span: Span::new(0, 1),
+                },
+                body: vec_lit(),
+                span: Span::new(0, 1),
+                provenance: None,
+                resolved_ctor: None,
+            }],
+            span: Span::new(0, 1),
+            compiler_generated: false,
+            ty: ConcreteType::Int,
+        };
+        if let MonoExpr::Match { arms, .. } = &m {
+            assert!(!match_forwards_scrutinee(arms));
+        }
+        assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
     }
 }

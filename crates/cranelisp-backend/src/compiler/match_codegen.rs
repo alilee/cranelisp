@@ -122,8 +122,26 @@ where
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
 
-        // Dec temporary scrutinee after all arms have used it.
-        self.dec_temporary_scrutinee(scrutinee, scrut_val);
+        // R3 — forwarding-suppresses-dec (0668 §3, W-B4). When this match FORWARDS
+        // its scrutinee OUT (a var-pattern arm `[r r]` returns the bound
+        // scrutinee), the scrutinee temporary is NOT consumed here — its value
+        // passes through to the OUTER consume position / the fn-return protect
+        // (R2). The syntactic temp-dec would free a value that transfers out (cell
+        // H: a fresh `[7 8 9]`; cell F: an alias of a live binding forwarded
+        // through the inner match; cell B-cow: a COW result; cell C-off: the
+        // toggle-off COW copy) — so suppress it. The SOLE exception is a direct
+        // COW scrutinee whose §13.7 escape-inc fired (`scrutinee_cow_retains_reused`
+        // — analysis-ON, live-`Var` source, `escapes != Some(false)`): that inc's
+        // BALANCING dec is exactly this one, so it MUST fire (the direct B-2
+        // analysis-ON twin stays GREEN). A non-forwarding scrutinee (constructor
+        // arms, a var-arm whose body is NOT the scrutinee) is genuinely consumed
+        // and always decs. Structural forwarding predicate ⇒ correct in BOTH
+        // ownership toggles by construction (§2); the escape exception is the dec
+        // side of the SAME escape gate, never a wrong-`Some(false)` workaround (F4).
+        let forwards = crate::compiler::match_forwards_scrutinee(arms);
+        if !(forwards && !self.scrutinee_cow_retains_reused(scrutinee)) {
+            self.dec_temporary_scrutinee(scrutinee, scrut_val);
+        }
 
         Ok(self.builder.block_params(merge_block)[0])
     }
