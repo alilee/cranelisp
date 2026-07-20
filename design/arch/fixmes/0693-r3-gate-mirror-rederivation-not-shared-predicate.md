@@ -5,7 +5,8 @@ filed_by: /review
 filed_at: 2026-07-20
 sprint_filed: 114
 refers_to: crates/cranelisp-backend/src/compiler/fn_compiler.rs::scrutinee_cow_retains_reused vs vec_codegen.rs::cow_source_ownership
-status: open
+status: deferred
+deferred_to: S115
 ---
 
 # The R3 gate mirror re-derives the COW escape gate from the syntactic callee name instead of sharing the producer's discriminator (P7 mirror; latent UAF channel)
@@ -58,9 +59,21 @@ producer record its retain decision (beside `pending_cow_escapes` /
 keyed by the Apply span) and have the match seam read THAT. Add a unit
 disagreement fence: for each row of the §13.5-style matrix (builtin/user-named,
 live/non-live source, escapes true/false/absent, return-source y/n, both
-toggles) assert `mirror == producer-emitted-inc?`. Land with W-B5 or earlier;
-must land before or with the W7 escape-fact correction, which is the event
-that opens the masked channel.
+toggles) assert `mirror == producer-emitted-inc?`.
+
+**Re-anchored binding trigger (S114 W7 close, deferred to S115):** the fence (or
+the shared-predicate consolidation) MUST land before or with the S115 MS-P7
+chained-face escape-fact correction (FIXME 0706 family) — that correction will
+touch the same escape-fact surface and the mask lifts become plausible again.
+
+The original trigger clause ("before or with the W7 escape-fact correction") was
+overtaken: W7's `ProjectionOf` escape-force landed WITHOUT lifting the R3
+mirror's mask (verified by the W7 dev's mask check — the fix is
+projection-container-narrow, disjoint from the match-scrutinee consumer channel;
+all binding-indirection + vec-set shapes held). W7 carried no backend slot for
+this consolidation and the mask was verified held, so the item defers to S115
+and re-anchors onto the next event that reopens the masked channel: the MS-P7
+chained-face escape-fact correction (see FIXME 0706).
 
 ## Context
 

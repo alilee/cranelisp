@@ -76,10 +76,34 @@ fn safety_lane_clean_vec_read_green() {
 const COW_SET_READ_PROG: &str = "(defn f [v] (vec-get (vec-set v 0 9) 0))\n\
      (defn main [] (Pure (f [1 2 3])))\n";
 
-// MS-P7 (FIXED S114 W7) — the SPEC-CORRECT CONTRACT, now a GREEN regression guard.
-// `(vec-get (vec-set v 0 9) 0)` MUST return the set value 9, abort-free, in EVERY
-// mode. This asserts the contract directly (NOT the differential detection shape),
-// so its color tracks the DEFECT's existence, never lane-config/detection quality.
+// 0706 face (a) — nested COW projected out in one frame: inner (vec-set v 0 1) is the
+// unprotected inner may-alias link; f [9 9 9] → 1.
+const CHAINED_NESTED_COW_PROG: &str =
+    "(defn f [v] (vec-get (vec-set (vec-set v 0 1) 1 2) 0))\n\
+     (defn main [] (Pure (f [9 9 9])))\n";
+
+// 0706 face (b) — let-bound intermediate `w`, single set over the alias, projected
+// out; `w` is the unprotected inner may-alias link; f [9 9 9] → 1.
+const CHAINED_LET_COW_PROG: &str =
+    "(defn f [v] (let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0)))\n\
+     (defn main [] (Pure (f [9 9 9])))\n";
+
+// 0706 negative control — whole-value nested transfer, caller-projected; CLEAN both
+// modes. f [9 9 9] → [1 2 9]; (vec-get (f …) 0) → 1.
+const WHOLE_VALUE_NESTED_TRANSFER_PROG: &str =
+    "(defn f [v] (vec-set (vec-set v 0 1) 1 2))\n\
+     (defn main [] (Pure (vec-get (f [9 9 9]) 0)))\n";
+
+// MS-P7 (immediate-link face FIXED S114 W7; chained faces carry — 0706 pins below)
+// — the SPEC-CORRECT CONTRACT for the FLAT/single-link shape, now a GREEN regression
+// guard. `(vec-get (vec-set v 0 9) 0)` MUST return the set value 9, abort-free, in
+// EVERY mode. This asserts the contract directly (NOT the differential detection
+// shape), so its color tracks the DEFECT's existence, never lane-config/detection
+// quality. SCOPE: the W7 fix protects exactly ONE may-alias link (the immediately-
+// projected container); a chain of length ≥2 in one frame still double-decs an INNER
+// link — pinned failing-not-ignored by the two `_chained_*` cells below (0706, fix =
+// S115). This pin covers ONLY the immediate-link face; do NOT read it as closing the
+// `class=uaf` MayAliasOf family.
 //
 // History (strip-when-fixed discipline): this was RED under `--link` while the COW
 // in-place `vec-set` arm double-dec'd its result. The W3 evidence brief (commit
@@ -118,6 +142,119 @@ fn safety_lane_cow_set_read_returns_set_value_abort_free_red() {
         .stdin("(defn f [v] (vec-get (vec-set v 0 9) 0))\n(f [1 2 3])\n")
         .output()
         .assert_stdout_contains(":primitives/Int 9");
+}
+
+// 0706 (S114 W7-review Blocker; fix = S115) — CHAINED may-alias link, face (a):
+// NESTED COW projected out. `(vec-get (vec-set (vec-set v 0 1) 1 2) 0)` on [9 9 9]
+// MUST return 1 (inner set → [1 9 9], outer set → [1 2 9], get 0 → 1), abort-free, in
+// EVERY mode. The W7 `ProjectionOf`/`MayAliasOf` escape-force protects ONLY the
+// immediately-projected (outer) container; a chain of length ≥2 in one frame still
+// double-decs the INNER link — the `vec-set v 0 1` intermediate is released twice.
+// `--run` tolerates the corruption in-process (returns 1); the `--link` binary
+// DETERMINISTICALLY ABORTS ("corrupted double-linked list", exit 134; 2/2 this VM,
+// HEAD 89d2f09c). Polarity probe-verified before landing (/testing, S114 Phase-5
+// close). This is the 4th reaching context of the §3.7 `MayAliasOf` family (chained
+// links), NOT a regression (pre-W7 the flat outer link aborted too; the escape-force
+// only ADDS incs — the failure is in the too-many-decs direction). Contract-asserting
+// (color tracks the defect's existence); flips GREEN when the S115 typecheck fix
+// protects every may-alias link whose accounting includes a consumer-emitted release.
+// spec: spec/12-runtime.md §12.1 — a chained COW `vec-set` result read by the caller
+// returns the set value and is memory-safe in all modes.
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::ProjectionOf — chained may-alias link unprotected (W7 fixed the immediate/outer link only); inner vec-set intermediate double-dec'd, --run tolerated in-process / --link aborted; §3.7 MayAliasOf family reaching-context 4 found=S114 owner=/dev
+#[test]
+fn safety_lane_chained_nested_cow_projection_returns_set_value_abort_free_red() {
+    // --run: returns the correct set value 1.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(CHAINED_NESTED_COW_PROG)
+        .output()
+        .assert_exit(1);
+    // --link: MUST also return 1 (currently the `--link`-abort RED — 0706, fix S115).
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(CHAINED_NESTED_COW_PROG)
+        .output()
+        .assert_exit(1);
+    // REPL: MUST evaluate to 1 (JIT tolerates in-process, like the flat MS-P7 face).
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(defn f [v] (vec-get (vec-set (vec-set v 0 1) 1 2) 0))\n(f [9 9 9])\n")
+        .output()
+        .assert_stdout_contains(":primitives/Int 1");
+}
+
+// 0706 (S114 W7-review Blocker; fix = S115) — CHAINED may-alias link, face (b):
+// LET-BOUND intermediate, single set over the alias binding, projected out.
+// `(let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0))` on [9 9 9] MUST return 1
+// (w → [1 9 9], set w 1 2 → [1 2 9], get 0 → 1), abort-free, in EVERY mode. Repro (b)
+// shows the projected (outer) container DOES receive the W7 escape-force (the Apply
+// container, Conditional via the `w` binding) — so the double-dec is on the INNER
+// link (`w`), confirming the open face is chained-may-alias × projection-in-the-same-
+// frame, not nested COW per se. `--run` returns 1; `--link` DETERMINISTICALLY ABORTS
+// (exit 134, "corrupted double-linked list"; 2/2 this VM, HEAD 89d2f09c). Polarity
+// probe-verified before landing (/testing, S114 Phase-5 close). Contract-asserting;
+// flips GREEN with the S115 family-grain typecheck fix.
+// spec: spec/12-runtime.md §12.1 — a let-chained COW `vec-set` result read by the
+// caller returns the set value and is memory-safe in all modes.
+// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::ProjectionOf — chained may-alias link unprotected (let-bound inner alias `w` double-dec'd; outer container got the W7 escape-force, inner did not); --run tolerated in-process / --link aborted; §3.7 MayAliasOf family reaching-context 4 found=S114 owner=/dev
+#[test]
+fn safety_lane_chained_let_bound_cow_projection_returns_set_value_abort_free_red() {
+    // --run: returns the correct set value 1.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(CHAINED_LET_COW_PROG)
+        .output()
+        .assert_exit(1);
+    // --link: MUST also return 1 (currently the `--link`-abort RED — 0706, fix S115).
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(CHAINED_LET_COW_PROG)
+        .output()
+        .assert_exit(1);
+    // REPL: MUST evaluate to 1 (JIT tolerates in-process, like the flat MS-P7 face).
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn f [v] (let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0)))\n\
+             (f [9 9 9])\n",
+        )
+        .output()
+        .assert_stdout_contains(":primitives/Int 1");
+}
+
+// 0706 NEGATIVE CONTROL (green fence) — the whole-value nested transfer is CLEAN. Two
+// chained `vec-set`s returned WHOLE (no in-frame projection), then read by the CALLER:
+// `(defn f [v] (vec-set (vec-set v 0 1) 1 2))` + `(vec-get (f [9 9 9]) 0)`. Exit 1 in
+// BOTH `--run` and `--link` (probe-verified 2/2 this VM). This fences the family
+// boundary: the open face is chained-may-alias × projection-IN-THE-SAME-FRAME, NOT
+// nested COW per se — when the chain crosses a call boundary before projection, the
+// W7 fix (and the pre-W7 return-protect) already cover it. If the S115 fix over-widens
+// and this cell regresses to a `--link` abort, the fix has broken the clean nested-
+// transfer shape. Contract-asserting; MUST stay GREEN.
+// spec: spec/12-runtime.md §12.1 — a whole-value nested COW transfer across a call
+// boundary, projected by the caller, is memory-safe in all modes.
+#[test]
+fn safety_lane_whole_value_nested_transfer_clean_green() {
+    // --run: whole-value nested transfer, caller-projected → exit 1, no abort.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(WHOLE_VALUE_NESTED_TRANSFER_PROG)
+        .output()
+        .assert_exit(1);
+    // --link: MUST also be clean exit 1 (the chained-face defect does NOT reach here).
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link_then_run("user.cl")
+        .user(WHOLE_VALUE_NESTED_TRANSFER_PROG)
+        .output()
+        .assert_exit(1);
 }
 
 // MS-P6 capability RE-PLANT (§4.1 prong 2; rode the MS-P7 flip, S114 W7) — the

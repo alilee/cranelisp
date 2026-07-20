@@ -308,12 +308,30 @@ replaced by unit-only coverage?
 The m1_quarantine retirement is compliant on all three prongs (intrinsics
 unit seam carries the verification; sibling quarantine faces fence the
 wiring; tombstone recorded in the retiring change-set). The W7 MS-P6 COW
-capability re-plant (s114-test-plan §8 rider) is the worked example of the
-compliant alternative: re-plant on a SYNTHETIC fault when one is
-constructible at the e2e tier. A retirement claiming prong-2 impossibility
-must state WHY a synthetic e2e plant is not constructible (as the m1
-tombstone does: quarantine's detected class cannot be committed from
-source once the compiler is fixed).
+capability re-plant (s114-test-plan §8 rider; landed `7c2d5168` as
+`safety_lane_detects_falsified_clean_expectation_capability_green`) is the
+worked example of the compliant alternative: re-plant on a SYNTHETIC fault
+when one is constructible at the e2e tier. A retirement claiming prong-2
+impossibility must state WHY a synthetic e2e plant is not constructible
+(as the m1 tombstone does: quarantine's detected class cannot be committed
+from source once the compiler is fixed).
+
+**Face-1 narrowing (S114 W7-review Minor, recorded here as the standing
+coverage statement):** the synthetic re-plant exercises the **Face-1
+value-equivalence guard only** (a falsified clean expectation tripping the
+§1.2 signal-1 comparison). The gate's **differential faces — signal 1
+ON-vs-OFF behavioral divergence from a REAL elision bug, signal 2
+rc-balance (`allocs != deallocs`), and signal 4 abort-on-corruption —
+currently have NO e2e capability plant**: constructing them synthetically
+requires a source-committable fault of each class, which per prong 2
+exists only opportunistically. The **unit-tier prong (prong 1) is the
+durable capability layer for those faces** — the intrinsics-allocator-seam
+self-tests are what durably prove each detection mechanism fires. An e2e
+differential plant is authored opportunistically per prong 2 whenever a
+live (or synthetically constructible) fault of the matching class exists —
+e.g. the S114→S115 chained-MayAliasOf pins double as live signal-4 plants
+while they stay RED; when that family drains, the capability question
+returns to prong 1 + this note.
 
 ---
 

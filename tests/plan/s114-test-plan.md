@@ -358,7 +358,9 @@ WRONG in both modes; `--run` silently tolerates the corruption in-process,
 - **Flip**: `safety_oracle_lane.rs::safety_lane_cow_set_read_returns_set_value_abort_free_red`
   (all three legs), verified under the lane BOTH toggles ×3 modes.
 - **Flip hazard (/testing rider, same change-set as the flip)**: the MS-P6
-  capability cell `safety_lane_detects_cow_set_read_corruption_capability_green`
+  capability cell (as landed under its post-re-plant name
+  `safety_lane_detects_falsified_clean_expectation_capability_green`,
+  `7c2d5168`; planned here under the pre-rename cow-set-read name)
   uses the LIVE defect as its planted fault — it INVERTS to RED the moment
   MS-P7 is fixed. /testing re-plants it on a synthetic fault (or retires
   the cell with rationale) in the flip change-set. Also refresh the pin's
@@ -376,6 +378,48 @@ WRONG in both modes; `--run` silently tolerates the corruption in-process,
   discriminator; (3) any color change on the MS-P7 pin under W4's
   change-sets is REPORTED to /qa as attribution evidence, not treated as
   a win or regression.
+
+**SECOND ADJUDICATION — the MS-P7 FAMILY verdict (/qa, Phase 5 close,
+2026-07-20; from FIXME 0706, filed by /review at the W7 final gate).**
+The W7 fix (`68cd7a96`, transfer.rs `ProjectionOf` escape-force) closes the
+**immediate-link face only** — the flat `(vec-get (vec-set v 0 9) 0)` shape.
+Every "MS-P7 FIXED" statement in this plan, SPRINT.md, and the
+`safety_oracle_lane.rs` guard comments is scope-narrowed to that face; the
+`class=uaf` family stays OPEN.
+
+- **Open faces (S115 typecheck-ownership carry; the §3.7 `MayAliasOf`
+  family's 4th reaching context — chained links):**
+  1. **Nested-projection chain**: `(vec-get (vec-set (vec-set v 0 1) 1 2) 0)`
+     — `--run` correct, `--link` aborts 134, 2/2 deterministic (0706 repro a).
+  2. **Let-chained intermediate**: single set over an alias binding,
+     projected out in the same frame (0706 repro b) — proves the W7
+     escape-force DOES fire on the projected container (Apply +
+     `Conditional` via the binding); the double-dec is on the INNER link.
+  3. **Conditional-container face (review-noted, unprobed sibling)**: an
+     If/Match-SHAPED container producing the may-alias chain feeding the
+     projection. No committed repro yet — S115 scope probes it first and
+     pins only a demonstrated RED (probe-first discipline, §3.8 precedent).
+- **Negative control (keep GREEN)**: whole-value nested transfer —
+  `(defn f [v] (vec-set (vec-set v 0 1) 1 2))` projected by the CALLER — is
+  clean both modes. The open face is chained-may-alias × projection-in-the-
+  same-frame, not nested COW per se.
+- **Family-grain invariant the S115 fix must state (binding; folds the W7
+  review Minor):** *every may-alias link whose accounting includes a
+  consumer-emitted release needs its protect* — the fix is designed at the
+  family grain, NOT another per-consumer/per-context arm (the W7 arm was
+  the 4th; a 5th arm is the instance-patch anti-pattern this plan's §0
+  risk-2 names). The review's mirror note rides it: transfer.rs currently
+  encodes backend temp-drop policy in prose (0693's class one level up) —
+  the design question routes to /design(typecheck) before the /dev fix.
+- **0693 ordering coupling (binding on S115 sequencing):** the backend
+  R3-mirror producer/consumer disagreement fence (FIXME 0693, deferred,
+  re-anchored) MUST land before or with the S115 chained-face escape-fact
+  correction — that correction reopens 0693's masked channel.
+- **Acceptance / record:** /testing pins faces 1+2 as failing-not-ignored
+  `class=uaf` cells (+2 intended NEW REDs, §7 ledger + §11 certification
+  arithmetic); the pins are the record + trigger, so **FIXME 0706 deletes
+  with the pin commit** (no-FIXME-with-failing-test rule). Face 3 is an
+  S115 probe row, not a pre-committed RED.
 
 ### 3.7 Sweep acceptance (no new cells)
 
@@ -786,8 +830,9 @@ family. Rows reserved — /qa adds them when the enumeration table exists
 | Track D: 0670 wave 2 (W-D2, reject re-lands; requires C1 committed) | IQ-N1..N4 | IQ-P1..P3 + IQ-N bare twins stay GREEN (the reject must not re-break the valid program) |
 | Track D: 0682 fix (rides W-D1) | RA-N1, RA-N2, RA-N5, RA-N6 ×2 | RA-P1/P2 + RA-N3 ×2 born-green, RA-N4 division fence |
 | Track E: 0590 (if it lands) | none | `_hkt` born-green fence ×2 (§6) + mint-family pins; unit-tier `Named`-arm obligation |
-| W7: /dev(typecheck) rider (adjudicated W3; priority over the conditional 0590 slot) | MS-P7 (§3.6 adjudication: typecheck ownership, `MayAliasOf` projection-out reaching context; class re-labeled `uaf`) + F-D2-11/F-D2-12 IF the §3.8 probes confirm RED | Safety-lane clean/green cells both toggles; MS-P6 capability cell re-planted in the flip change-set (§3.6 flip hazard); W4 fences: no backend workaround, pin color-change reported to /qa |
-| W7-close /testing pin rider (§11 items 4+5) | none flip — **+2 intended NEW REDs carried into S115**: toggle-off entry-return leak (rc-miscount, backend) + fn-as-value GOT-slot carrier-loss (carrier-loss, typecheck) | Phase-7 certification names them per the §11 counting convention (stable-exact + named flap set); ≥3 full-suite runs verify the 0694 nullary face |
+| W7: /dev(typecheck) rider (adjudicated W3; priority over the conditional 0590 slot) | MS-P7 **immediate-link face only** (§3.6 adjudications: typecheck ownership, `MayAliasOf` projection-out reaching context; class re-labeled `uaf`; chained faces carried per the §3.6 second adjudication) + F-D2-11/F-D2-12 IF the §3.8 probes confirm RED | Safety-lane clean/green cells both toggles; MS-P6 capability cell re-planted in the flip change-set (§3.6 flip hazard); W4 fences: no backend workaround, pin color-change reported to /qa |
+| W7-close /testing pin rider (§11 items 4+5) | none flip — **+2 intended NEW REDs carried into S115**: toggle-off entry-return HEAP-PAYLOAD leak (rc-miscount, backend; §11 item-4 drift note — the mechanism is toggle-independent) + fn-as-value GOT-slot carrier-loss (carrier-loss, typecheck) — landed `7c2d5168` | Phase-7 certification names them per the §11 counting convention (stable-exact + named flap set); ≥3 full-suite runs verify the 0694 nullary face |
+| W7-close 0706 chained-face pins (/testing, with the §3.6 second adjudication) | none flip — **+2 intended NEW REDs carried into S115**: nested-projection chain + let-chained intermediate (`class=uaf`, typecheck ownership, family grain per §3.6; whole-value-transfer control stays GREEN) | FIXME 0706 deletes in the pin commit (pins = record + trigger); 0693 fence lands before/with the S115 fix; Phase-7 certification: stable-REDs-exact = **5** |
 
 ## 8. Stage-1 battery — AS BUILT (W1 delivered 2026-07-20; /qa re-base)
 
@@ -813,7 +858,7 @@ the `_hkt` probe pinned born-green.
 | BI-H-heap (§2) | ×2 RED (bare single match forwarding a fresh heap vec: inline + fn-return) | pre-W4 rider |
 | 0671 asking-module twin, riders 0674/0675 | per §4.1 | with their Track-C change-sets |
 | Swallow-sibling probes (§3.8, W3 disposition) | P1 value-position no-impl + P2 auto-curry no-impl, ×3 modes each; author F-D2-11/F-D2-12 RED only where a probe demonstrates the gap | before/with W7 |
-| MS-P6 capability re-plant (§3.6 flip hazard) | re-plant `safety_lane_detects_cow_set_read_corruption_capability_green` on a synthetic fault (or retire with rationale) + refresh the MS-P7 pin's stale flip-trigger/locus comments | same change-set as the MS-P7 flip (W7) |
+| MS-P6 capability re-plant (§3.6 flip hazard) | re-plant the MS-P6 capability cell on a synthetic fault (or retire with rationale) + refresh the MS-P7 pin's stale flip-trigger/locus comments — DONE `7c2d5168`; cell renamed at re-plant to `safety_lane_detects_falsified_clean_expectation_capability_green` | same change-set as the MS-P7 flip (W7) |
 
 Unit-tier (/dev, enumerated so nothing falls through the deferral): §3.4
 items 1–5 (carrier + escape-fact), §4.2 item 4 (0604 chokepoint), the
@@ -831,6 +876,8 @@ items 1–5 (carrier + escape-fact), §4.2 item 4 (0604 chokepoint), the
 - Phase-6/7 audit: every remaining RED traces to an open owner+trigger;
   expected end-state = the 31-RED ledger drained except explicit carries
   (MS-P7 if evidence arrives late; anything Phase 4 defers with rationale).
+  **As-closed (2026-07-20): the certification expectation is §11.1 item 3 —
+  stable-REDs-exact = 5 + the named flap set.**
 
 ## 10. W1 findings disposition record (Phase 5 post-W1, /qa, 2026-07-20)
 
@@ -982,6 +1029,37 @@ correction; 0702 chain (/spec ruling → /design premise → M3 cells +
 /dev(frontend) predicate widening); backend fix for the toggle-off
 entry-return leak (item 4); typecheck fix for the fn-as-value carrier-loss
 (item 5); 0694 root-cause row IF the post-W7 verification fails.
+
+### 11.1 Phase-5 close addendum (/qa, 2026-07-20 — post-W7-review)
+
+1. **0706 adjudicated — the MS-P7 FAMILY stays open.** Durable record =
+   the §3.6 second-adjudication block: W7 closed the immediate-link face
+   only; chained faces (nested-projection, let-chained, plus the unprobed
+   Conditional-container sibling) carry to S115 typecheck ownership at the
+   family grain ("every may-alias link whose accounting includes a
+   consumer-emitted release needs its protect"); 0693's fence must land
+   before/with that fix; /testing's +2 chained pins are the record and
+   FIXME 0706 deletes in their commit.
+2. **Item-4 inventory-drift note (binding on the S115 backend fix):** the
+   pin as landed (`7c2d5168`) demonstrates the leaked object is the heap
+   PAYLOAD of the entry-main IO result — a **toggle-independent**
+   mechanism. The W4 F-R1 fix covered the scalar Pure-box case only, so
+   the **toggle-ON face is ALSO unguarded**. The S115 backend fix must
+   cover both faces; the pinned toggle-off face is the oracle-lane-critical
+   one (it poisons the reference semantics' `allocs==deallocs` signal),
+   which is why it alone was pin-NOW.
+3. **Phase-7 certification expectation (per the item-2 counting
+   convention):** **stable-REDs-exact = 5** — the 3 close-rider carries
+   (0705 AutoCurry-over-local GOT-slot; entry-payload leak, toggle-off
+   face; fn-as-value GOT-slot carrier-loss) + the 2 chained-face 0706
+   pins — plus the NAMED flap set **{0694 nullary load-flap, agent-lane
+   spawn-contention race (`agent::yes_flag` class)}**. A flap is never
+   folded into the exact scalar. Verification: **≥3 consecutive
+   full-suite runs** at the certification (status at this close-out: 2/≥3
+   identical per the W7 final review; the remaining run(s) land with the
+   chained-pin commit or at Phase 7). Any RED outside the 5+flaps set is
+   a genuine regression; a flap RED reopens per item 2 (root-cause row,
+   never "flake").
 
 ## Next skills
 
