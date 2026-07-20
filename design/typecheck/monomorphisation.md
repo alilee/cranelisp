@@ -1937,6 +1937,100 @@ overload record) so the mangle reads it rather than re-splitting the reference �
 0653 "resolved identity is the currency" sweep. Recorded here so the S114 P26 sweep (typecheck.md
 §9.7) picks up `overload_homes` and this re-derivation as classified carriers.
 
+#### 11.8.10 The settlement harvest window — the SETTLED three-invocation shape (S114 W7, W3-review Important-2)
+
+**Status:** SETTLED CONTRACT (S114 W7 /design(typecheck); the W3-review
+Important-2 disposition). The W3 review found that the number of
+`pass4_monomorphise` *invocations* — the "settlement harvest windows" — grew
+**1 → 2 → 3** across S112 → S113 → S114, and routed the choice here:
+**scribe the settled multi-window shape with its idempotence obligations as the
+documented contract, OR design the single-settlement convergence as an S115 work
+item.** Verdict: **SCRIBE** — the three windows are each a legitimately-distinct
+settlement point, the idempotence is verified (W3 review: "P26 acid test PASSES
+on the re-harvest; a pre-drain mint cannot disagree with its re-derivation;
+idempotence verified in code"), and the convergence is NOT free (it must
+re-derive the 0349 → `regeneralize_defn_schemes` → `register_test_fn_mono_roots`
+ordering — §below). The single-settlement convergence is recorded as a NOTED
+S115 option, not committed.
+
+**The three windows (all `finalize.rs`, in `finalize_check_result_inner`):**
+
+| # | Site | Family | Settlement window it records from | Why a distinct window |
+|---|---|---|---|---|
+| 1 | `finalize.rs:1023` | `SingleSig` | **PRE-drain** (immediately before the FIXME-0349 `regeneralize_defn_schemes`) | The common-case harvest; its call-site result propagation (`monomorphise_call`) pins caller result vars so the 0349 re-generalize collapses a spuriously-poly caller to its true mono scheme. It MUST run pre-drain because 0349 + `register_test_fn_mono_roots` consume its output. |
+| 2 | `finalize.rs:1168` | `MultiSig` | **post-`finalize_multi_sig_variant_types`** (Phase-A concrete promotion) | D3 (§11.8.3): a multi-sig CLAUSE body's inner poly hop (`(idpoly n)` in `build`) is invisible pre-settlement — the clause is a `$Var` template until Phase A promotes it concrete. `Defn::body()` panics on a multi-sig defn, so window 1's `SingleSig` family structurally cannot reach these bodies. |
+| 3 | `finalize.rs:1191` | `SingleSig` (RE-harvest) | **post-drain + post-Phase-A** (same window as #2) | MC-X4/X4b (§3.1): a single-sig body consuming a MULTI-SIG fn's bare return (`(mycount (build 3))`) had that arg type as a residual `Var` at window 1 — a multi-sig return settles only in the drain + Phase A. Re-running the `SingleSig` harvest lets `resolve_expr_types` re-derive the consumer's arg concrete and mint the instance. |
+
+Windows 2 and 3 share ONE post-settlement window (the §11.8.3 "one parameterized
+`pass4_monomorphise` at two settlement points" precedent, extended to the
+single-sig consumer face); only window 1 is pre-settlement, and it is the fast
+common path whose *misses* are exactly the set window 3 re-covers.
+
+**Idempotence obligations (the contract — currently only code comments; scribed here).**
+The multi-window shape is sound iff re-running a harvest over an already-harvested
+defn set re-derives byte-identical instances. Four obligations, each with its
+as-built mechanism:
+
+1. **`got_slot` preservation.** A re-minted instance MUST reuse the existing GOT
+   slot, never allocate a second. Mechanism: `register_mono_entry` preserves the
+   entry's `got_slot` on re-registration (`mono_collect.rs:1186` comment). A
+   regression here is a double-slot for one callable — a Principle-20/24 keyed
+   identity break.
+2. **Monotone-subst arg stability.** Window 3's `resolve_expr_types` re-derives
+   each consumer's arg type through `state.subst`, which only ever grows toward
+   ground between windows (a settled var never un-settles — the monotone-soundness
+   spine, `ownership-inference.md` §2.1, applied to the type substitution). So an
+   arg concrete at window 1 stays that exact concrete at window 3; a residual `Var`
+   at window 1 becomes concrete (never a *different* concrete). The concreteness
+   gate therefore re-admits the SAME concrete args — the P26 acid test ("recording
+   the same datum later yields the same value") holds by the subst's monotonicity.
+3. **Per-invocation `seen`.** Each `pass4_monomorphise` call owns a FRESH
+   `seen: HashMap<String, JitSymbol>` (`mono_collect.rs:70`) — dedup is
+   WITHIN an invocation, not across. This is what makes windows 1 and 3 both
+   safe to scan the SAME `single_sig_defns` (obligation 1 handles the cross-window
+   re-mint), and it is the source of the cost note below.
+4. **Pending-isolation.** A mono-recheck body's own overloaded-base dispatch
+   deferrals are settled in place by `recheck_body_for_mono`'s `mem::take` of the
+   outer `pending_overload_resolutions` (§11.8.3 R1/R2), so a harvest at window 2
+   or 3 cannot orphan or double-drain the outer pendings — the top-level drain
+   (window boundary) sees an unperturbed pending list.
+
+**Cost note (obligation 3's price).** Because `seen` is per-invocation, window 3
+re-runs every mono-recheck window 1 already performed for the single-sig family
+— **the single-sig mono-recheck work is done twice** for any defn whose instances
+were already minted at window 1 (the re-mint is a no-op on the symbol table by
+obligation 1, but the body re-check + `from_expr` view rebuild are repeated). For
+the common program (few multi-sig-return consumers) this is a small constant over
+an already-walked form; it is not perf-sensitive today. It IS the concrete cost a
+single-settlement convergence would recover.
+
+**The NOTED S115 convergence option (NOT committed).** A single post-settlement
+harvest per family — drop window 1, run each of `SingleSig`/`MultiSig` ONCE at the
+post-drain/post-Phase-A window — would halve the single-sig mono-recheck work
+(obligation-3 cost) and collapse three windows to two (one per family, at one
+settlement point). It is **not free**: window 1 feeds the FIXME-0349
+`regeneralize_defn_schemes` chain and (transitively) `register_test_fn_mono_roots`,
+whose ordering is load-bearing (a blanket third re-generalize would overwrite a
+mono-root's minted concrete scheme — the `finalize.rs:1073` hazard). Converging
+requires re-deriving that ordering so the 0349 collapse still sees window-1's
+result-var pinning at a post-settlement single harvest — a real design task, not a
+mechanical de-dup. Recorded as an S115 candidate seeded by this section; the
+scribed three-window shape is the operative contract until then.
+
+**Standing rule — a FOURTH window forces the /arch class ruling.** Three
+settlement-harvest windows is the escalation threshold (the recurring-class rule:
+3rd instance across the arc ⇒ `/arch` assessment — the P24/P26 authoring
+precedent). The three windows are each justified by a distinct settlement point
+(pre-drain common path; post-Phase-A multi-sig bodies; post-settlement single-sig
+consumers). **A FOURTH `pass4_monomorphise` invocation — a fourth "harvest at a
+new settlement point" — is NOT to be added ad-hoc; it is the trigger for an
+`/arch` class ruling** on whether the "harvest at N settlement points" pattern
+should converge to a single settlement-driven mechanism (the noted S115 option
+promoted). File `target: /arch` rather than adding the invocation. This is the
+harvest-window analogue of the P26 "record from settled state" boundary: the
+windows are a finite, enumerated set, and growing the set is an architectural
+event, not an implementation convenience.
+
 ### 11.7 Cross-references
 
 - `spec/05-definitions.md` §5.1.2 (settled back-flow) + §5.1.1 (dispatch coherence)

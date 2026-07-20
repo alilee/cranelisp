@@ -140,6 +140,13 @@ Fields that LOOK optional but are contractually required downstream:
   DashMap guard before recursing — two Refs in one shard deadlock (`heap.rs:207`).
 - `type_ctor_names` (`heap.rs:269`) — the ONE `TypeDef`-vs-product-ctor-facet
   reader (FIXME 0528 mirror cure); backend heap classifiers delegate here.
+- `is_strict_type_concrete` (`mono_expr.rs`) — the pure-TYPE half of the
+  `from_expr` gate (Annotate erased; every other node's `inferred_type` must
+  convert), single source for the ownership fixpoint's W0.b universe pin
+  (FIXME 0689). A drifted local mirror silently perturbs every cluster
+  summary; ask THIS predicate, never re-walk the gate (and never probe via
+  `from_expr` with empty maps — since S114 that answers `Unresolved`, not the
+  type question).
 - `Type::is_concrete()` (`types.rs:92`) — the GOT-slot eligibility gate,
   strictly stronger than "no constraints" (constraint-emptiness gating was the
   S84 `(Box a)`-through-HOF SIGSEGV); `TyConApp` counts as non-concrete.

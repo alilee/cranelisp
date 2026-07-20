@@ -583,4 +583,158 @@ MS-P7 produces no wave until its evidence brief (§10.2) yields an attribution.
   + accessor): name the sanctioned §3.4 shape (direct `MonoExpr` construction with
   `VarRef::Local`, or a `synthetic_local_from_expr` / all-local lenient entry
   point) so the flip's `from_expr`/`lenient_from_expr` signature accounts for it.
-  Blocks the types-crate half of Wave A.
+  Blocks the types-crate half of Wave A. **RESOLVED** (S114 Phase 3, option (b)
+  hardened: dormant `MonoExpr::synthetic_local_from_expr`).
+
+---
+
+## 14. The acceptance sweeps — run AFTER the carrier flip (S114 W7, doc-only)
+
+**Status:** SWEEP RESULTS (S114 W7 /design(typecheck); the carrier's acceptance,
+per §5/§10.3.2 and the arch contract §5.2). These sweeps are **migration aids,
+never the enforcement mechanism** (P24 §Corollary prong 3): the flip landed the
+closed sums whose completeness gate IS the constructor, so the sweeps *classify a
+post-reshape inventory* and confirm no gate patch survives — they do not enforce
+anything the type does not already. Run post-flip because the flip reshaped the
+inventory (`resolved_targets` → total typed `var_refs`/`apply_refs`); a
+pre-reshape classification would misinventory (§10.3.2).
+
+### 14.1 P26 full typecheck sweep — the carrier→pass→settlement-window classification
+
+The carried-from-S112 sweep the P26 ratification ordered (§9.7 of `typecheck.md`
+seeds it; this is its S114 continuation over the *carrier* surface — the sweep of
+the whole producer surface remains the §9.7 standing analysis). Each row: the
+carrier, its producing pass, the settlement WINDOW it must record from, and the
+as-built verdict (record at/after the window ⇒ IN-WINDOW; the P26 admissible
+shapes are DEFER-and-derive-at-settlement or DERIVE-on-demand).
+
+**`var_refs: HashMap<Span, VarRef>`** (owner: the `infer_var` Var chokepoint):
+
+| Write-site | Producing pass | Settlement window | Verdict |
+|---|---|---|---|
+| `checker.rs:1672` — `record_reference_target` (the ONE Var chokepoint; Local/Global verdict) | Pass-2 body check, at `infer_var`, live frames | resolve-once at the chokepoint: home resolution is settled when the reference is checked; binder identity read from the LIVE scope frame (the §3 provenance) | **IN-WINDOW** — the totality-by-construction source (§2.1). The verdict is computed once, when the frames are live; no later patch. |
+| `mono_collect.rs:118` — fn-value mono-rewrite (`arg_span` → `VarRef::Global(minted-instance FQ)`) | `pass4_monomorphise` epilogue, AFTER the instance mints | the minted instance's storage FQ is settled at mint | **IN-WINDOW (P26 DEFER shape)** — the carrier is derived from the just-minted mangle, not patched from a pre-mint record; it repoints the arg `Var` at the caller-local mono (§1.1.1 W0.1b). The rename + carrier update are one settlement-point derivation. |
+
+**`apply_refs: HashMap<Span, ApplyRef>`** (owner: the dispatch chokepoints + the Apply-epilogue totality stamp):
+
+| Write-site | Producing pass | Settlement window | Verdict |
+|---|---|---|---|
+| `infer.rs:63` — the `or_insert(ApplyRef::ViaCallee)` totality stamp | `infer_apply` epilogue (Pass-2) | a POSITIVE no-dispatch verdict; the ⊥ of a monotone lattice `ViaCallee ⊑ Dispatch` | **IN-WINDOW + ORDER-INDEPENDENT.** The stamp is P26-clean by the `or_insert`/`insert` asymmetry: `ViaCallee` never clobbers a `Dispatch`; a later-pass `Dispatch` `insert` always clobbers a `ViaCallee`. So the FINAL verdict is independent of whether the dispatch is resolved before or after the stamp — the acid test ("recording earlier or later yields the same value") holds by the lattice, not by ordering luck. **Invariant this rests on:** at most ONE `Dispatch` writer per Apply span (the drain and the scoped mono-recheck operate on DISJOINT span populations — outer vs `mem::take`-isolated), so the clobbering `insert` never races a second Dispatch value at one span. |
+| `register.rs:883` — the drain (`resolve_pending_overloads`) → `Dispatch` | THE multi-sig settlement point | the drain IS the settlement point (post-back-flow overload set) | **IN-WINDOW** — records at the settlement point itself (the §11.3.2 B1 cure realised: nothing provisional exists to invalidate). |
+| `monomorphise.rs:442 / 963 / 1119` — mono-recheck dispatch carriers | `recheck_body_for_mono` epilogue | the SCOPED drain settles the body's own deferrals in place (§11.8.3 `mem::take` isolation) | **IN-WINDOW** — each per-instance body records post-its-own-settlement. |
+| all `record_dispatch_target` sites (`infer.rs:791/877/997/1235/1324`, `mono_collect.rs:316/328/806`, `register.rs:309/872/924`) writing `ApplyRef::Dispatch` via `callees.rs:269` | each dispatch chokepoint | the `ResolvedCall` is settled when recorded (trait method resolved on concrete args; deferred ones recorded post-drain) | **IN-WINDOW** — the shared writer (`callees.rs:269`) records `Dispatch(dispatch_target_fq(resolved))` at the point the resolution is settled; the companion `resolved_calls.insert` rides the same site. |
+
+**Adjacent P26-relevant carriers touched by the family (not carrier-flipped, classified for completeness):**
+
+| Carrier | Producing pass | Window | Verdict |
+|---|---|---|---|
+| `overload_homes` (`infer.rs:676`) — imported multi-sig base HOME | `infer_apply` callee seam (lazy rehydration, §11.8.9) | the chain-follow terminal is settled | **IN-WINDOW as a record, but carries the §11.8.9 P24-corollary re-derivation smell** (the qualified-face mangle re-splits the bare base via `rsplit('/')` at `register.rs`, a bare-name re-derivation past a resolution seam). Sound TODAY (uniform bare-mangle, Phase-A consistent); **STANDING classified item** with the retirement path named (carry the storage base name as resolved data on the rehydrated record) — 0632 tripwire row, folds into the "resolved identity is the currency" close. Not a defect this sprint; a classified re-derivation. |
+| `callee_has_keyed_carrier` guard (`support.rs:18`; §11.8.8) | the six pass-4/mono-recheck name-scan collectors | the shadow verdict is computed ONCE at `infer_var`, materialised ONCE in the carrier | **IN-WINDOW / P26-CLEAN** — the canonical "name is a TRIGGER, carrier is the IDENTITY" shape (0653 second prong): every collector READS the per-span carrier rather than re-deriving from a name. The exemplar of what the sweep confirms across the family. |
+
+**P26 classification counts (carrier surface, S114 post-flip):** 8 producer
+write-populations classified — **6 IN-WINDOW** (2 `var_refs`, 4 `apply_refs`
+populations incl. the shared `record_dispatch_target`), **1 IN-WINDOW +
+ORDER-INDEPENDENT** (the `ViaCallee` monotone stamp), **1 STANDING classified
+re-derivation** (`overload_homes`, retirement path named, 0632 tripwire, not a
+defect). **Zero out-of-window writes; zero record-provisionally-repair-afterward
+shapes** (the P26 inadmissible shape). The family is P26-clean; the one
+re-derivation is a known, tripwired, sound-today item with a named retirement.
+
+### 14.2 SW-1 — the `try_resolve_trait_method` Err-disposition family: CLOSED
+
+Classify EVERY non-test caller of `try_resolve_trait_method` by what it does with
+the `Err` (the located no-impl reject that F-D2-10 made load-bearing). Five call
+sites (the definition at `dispatch.rs:21` excluded):
+
+| Caller | Err disposition | Class |
+|---|---|---|
+| `infer.rs:950` — auto-curry pending path in `infer_apply` | `match { Ok(Some)=>record, Ok(None)=>primitive-fallback, Err(e)=>return Err(e) }` | **PROPAGATES** |
+| `infer.rs:992` — trait-method dispatch at `Apply` | `?` | **PROPAGATES** |
+| `infer.rs:1232` — `resolve_deferred_trait_calls` (the F-D2-10 deferred re-attempt) | `?` (comment: "Propagate the located no-impl error (F-D2-10)") | **PROPAGATES** — the F-D2-10 primary fix (W2 landed) |
+| `infer.rs:1318` — `resolve_value_position_trait_methods` | `match { Ok(Some)=>record, Ok(None)=>{}, Err(e)=>return Err(e) }` | **PROPAGATES** — the F-D2-11 fix (W7 Result-widening; was the W2-review Important-3 value-position swallow) |
+| `mono_collect.rs:781` — `resolve_auto_curry` re-attempt | `if let Ok(Some(r)) = …` then falls to `resolve_primitive_jit_name` | **JUSTIFIED-BENIGN, FENCED** — see below |
+
+**Verdict: the family is CLOSED.** Four propagation sites + one
+justified-benign-with-fence; **zero unclassified swallows remain**. The lone
+surviving `if let Ok(Some(..))` swallow (`mono_collect.rs:781`, the auto-curry
+re-attempt) is the ONLY acceptable "benign swallow" closure per test-plan §3.8:
+the P2 probe found the auto-curry no-impl surface **already conformant** — some
+other path produces the trait-naming located error — and it is pinned by the
+**F-D2-12 born-green fences** (the rider batch, SPRINT W-rider note "P2
+conformant"). The residual observed at this site (the fn-as-value wrapper reaching
+codegen with no GOT-slot carrier, failing even impl-present) is a **SEPARATE
+`carrier-loss` defect** (backend AutoCurry-over-local GOT-slot gap, FIXME **0705**
+per the W7 typecheck-lead close; non-trait repro, MC-E1 non-flip-is-evidence) —
+**it is not this swallow**, and the swallow's benignity is the F-D2-12 fence's to
+guard. Any NEW caller found joins §3.8's disposition (propagate / justified-benign
+with a fence as evidence / defect).
+
+### 14.3 SW-2 — no producer writes `var_refs`/`apply_refs` at `Span::SYNTHETIC`: HOLDS (standing invariant)
+
+**Verdict: the invariant HOLDS.** The only non-test producer inserts into the two
+maps are the six sites classified in §14.1; a grep of each confirms **none keys at
+`Span::SYNTHETIC`** — `checker.rs:1672` keys the real reference `Var` span;
+`mono_collect.rs:118` keys the real `arg_span`; `infer.rs:63` and the
+`record_dispatch_target` / drain / mono-recheck sites all key real `Apply` spans.
+(Verified at the flip by W2 review, SPRINT W2 note "SYNTHETIC carve-out verified —
+no producer writes at the SYNTHETIC key".)
+
+**Rationale (why this is a standing invariant, not a style nit).**
+`Span::SYNTHETIC == Span{0,0}` is ONE shared key — span-keyed transport
+**structurally cannot address individual synthetic nodes** (arch §3.4/§4.1(2)). A
+producer that wrote a carrier at the SYNTHETIC key would either (a) collide with
+every other synthetic node's carrier (last-writer-wins over a shared key — an
+order-dependent verdict, the exact P24/P26 divergence surface), or (b) mask the
+all-local carve-out that both `from_expr` and `lenient_from_expr` apply to
+SYNTHETIC-key misses (`VarRef::Local{binding_span: SYNTHETIC}` / `ViaCallee`). The
+synthetic all-local bodies (adt.rs ctor/accessor) are handled by the POSITIVE
+`synthetic_local_from_expr` classification (0685), which holds the identity in
+hand and NEVER routes it through the span-keyed maps. So the invariant is what
+keeps the synthetic carve-out and the real-span gate/seam-assert cleanly
+separated. **A future violation is a carrier-provenance defect** (a real-body
+SYNTHETIC-span table reference would be classified local by the carve-out — the
+leg-2 validation obligation, arch §4.1(2)), not a style nit; the sweep row is the
+mechanical re-check (grep the two-map inserts; the single licensed SYNTHETIC-key
+population is the `synthetic_local_from_expr` all-local builder, which is NOT a
+map write).
+
+### 14.4 0653 helper-classification sweep — the prong-3 flagged residuals
+
+The arch contract §6 (assessment (c)) flagged three residual audit items as
+helper-sweep scope (not carrier scope). Classification post-flip:
+
+| Residual | Classification | Disposition |
+|---|---|---|
+| **The `mono_expr.rs` `node_ty` `NotConcrete::Var(0)` sentinel** (`mono_expr.rs:494`) — "no concrete type at this position" | **RETIRED-BY-THE-FLIP as a *conflation*; STANDS as an honest failure value.** Pre-flip this sentinel was the whole story for a `Var`/`Apply` node with no type. Post-flip it is ONLY the type-incompleteness signal: `from_expr` reads the RESOLUTION verdict (`var_refs`/`apply_refs`) BEFORE `node_ty`, so a node that is both unresolved AND non-concrete reports `Unresolved`, never `NotConcrete::Var(0)` (arch §4.1(1) gate precedence, `from_expr` rustdoc `mono_expr.rs:474`). The sentinel no longer conflates "unresolved" with "un-typed" — the two failures are now distinct `ViewBuildError` arms. As a value it is a legitimate "this position's type is not representation-determined" marker (an un-annotated codegen node is as illegal as a `Var`-typed one — `mono_expr.rs:492`), routed to the lenient fallback for legitimate multi-sig `f$Var` type incompleteness. **Not a convention-in-value defect: the conflation it was flagged for is gone.** |
+| **The `{home}/{bare}$sig` string-embedded mangle identities** (`build_mangled_name`, `monomorphise.rs:1239`) | **STANDS-WITH-RATIONALE; already fenced.** A per-instantiation mono name is a `String` composed from home + bare + concrete-arg-mangle. This is a *keyed-identity mangle* (the R4 census family, `safety-invariants.md` §4 R4 — semantic-identity → symbol), NOT a resolution product travelling as a bare name past a seam (the 0653 prong-1 concern). It is order-independent (a pure function of home+name+concrete-arg-types), injective by the arg-mangle recursion (`build_mangled_name_*` tests pin the injectivity axes: home-distinguishes, order-matters, nested-adt, fn-param-distinguishes), and its dedup key equals the minted name (`build_mangled_name_dedup_key_equals_minted_name`). Its home is R4 (keyed-identity injectivity), NOT the carrier sweep — the arch contract §6 correctly routes it to the `safety-invariants.md` R4 census, not here. **No defect; correctly-homed elsewhere.** |
+| **The bare-name+state helper camps** (0653 prong 1: legitimate pre-resolution seams vs re-resolvers to delete) | **DISPOSITIONED.** The two named re-resolver candidates: `has_impl_with_state` (the dead-code template) — classified for deletion by the 0590/keyed-consumer arc, tracked there, not this sprint's carrier scope. `resolve_trait` / `resolve_type` — classified as **legitimate pre-resolution seams** (they run at the type/dispatch-resolution stage, BEFORE the seam that mints the FQ; they ARE the producer, not a downstream re-resolver). Diagnostics-only renderers **pass** (human-facing, never an identity the compiler acts on — the P24 carve-out 2 boundary). The `overload_homes` re-derivation (§14.1, §11.8.9) is the one classified re-derivation with a named retirement. |
+
+**0653 helper-sweep verdict:** of the three flagged residuals, **one retired-by-the-flip
+as a conflation** (the `node_ty` sentinel — the flag's concern is gone), **one
+stands-with-rationale and is correctly homed at R4** (the string-embedded mangle —
+a keyed-identity, not a bare resolution product), and **the bare-name camps are
+dispositioned** (re-resolvers routed to their own arcs; pre-resolution seams and
+diagnostics-only renderers pass). **Zero new carrier-scope defects; zero
+keyed-read-else-resolver hybrids** (the Rev-2 REJECT shape — arch §5.2(b) /
+test-plan §3.7(b)). The one live re-derivation (`overload_homes`) is
+sound-today, tripwired, and has a named retirement — not filed as a defect.
+
+---
+
+## 15. Sweep acceptance summary (for /qa Phase 6/7)
+
+- **P26 carrier surface:** 8 populations classified — 6 IN-WINDOW, 1 IN-WINDOW +
+  order-independent (the `ViaCallee` monotone stamp), 1 standing classified
+  re-derivation (`overload_homes`). Zero out-of-window / provisional-then-repair
+  writes.
+- **SW-1:** the `try_resolve_trait_method` Err-disposition family is **CLOSED** —
+  4 propagate, 1 justified-benign-with-fence (F-D2-12); zero unclassified swallows.
+- **SW-2:** the "no producer writes at `Span::SYNTHETIC`" invariant **HOLDS** —
+  recorded as a standing invariant with its order-dependence rationale.
+- **0653 residuals:** node_ty sentinel retired-by-the-flip (conflation gone);
+  string-embedded mangle stands-with-rationale (R4-homed); bare-name camps
+  dispositioned.
+- **No new FIXMEs filed by the sweep** — the one live re-derivation is a
+  classified, tripwired, sound-today item (`overload_homes`, §11.8.9 retirement
+  path); the one observed defect at an SW-1 site (fn-as-value GOT-slot carrier-loss)
+  is already filed as **0705** and is NOT the swallow it sits beside.

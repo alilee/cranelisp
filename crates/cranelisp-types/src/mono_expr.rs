@@ -1006,6 +1006,88 @@ fn node_ty(expr: &Expr) -> Result<ConcreteType, NotConcrete> {
     }
 }
 
+/// Strict TYPE-concreteness of a body subtree — the pure TYPE half of the
+/// [`MonoExpr::from_expr`] gate, decoupled from the resolution gate (the S114
+/// carrier flip coupled the two inside `from_expr`; FIXME 0689 single-sources
+/// the TYPE half here so out-of-crate askers of the pure type question cannot
+/// grow an unfenced mirror).
+///
+/// `true` iff every **non-erased** node of `expr` carries an `inferred_type`
+/// that converts via [`ConcreteType::from_type`]. The `Annotate` node is
+/// **erased** exactly as in `from_expr`: its own `inferred_type` is never
+/// examined — the predicate recurses to the inner node. Every other variant
+/// checks its own node type, then its children — the same per-arm child
+/// coverage as `from_expr`'s construction walk.
+///
+/// # Equivalence contract with `from_expr`
+///
+/// For a body whose resolution maps are TOTAL over its real-span references
+/// (the producer contract, `design/arch/typed-resolution-carrier.md` §3) —
+/// equivalently, for an all-synthetic-span body — `from_expr` succeeds **iff**
+/// this predicate holds: totality excludes [`ViewBuildError::Unresolved`], and
+/// `from_expr`'s only other failure is [`ViewBuildError::NotConcrete`], raised
+/// exactly where this predicate answers `false`. Both share the ONE node-level
+/// type gate ([`node_ty`] + the `Annotate` erasure arm), and both matches live
+/// in this file and are exhaustive — a new [`Expr`] variant breaks them in the
+/// same compile, so the erasure set and child coverage cannot drift silently
+/// (Principle 7; the fence the pre-0689 typecheck-local mirror lacked).
+///
+/// # Consumer: the ownership fixpoint's W0.b universe pin
+///
+/// `cranelisp-typecheck::ownership::fixpoint::collect_universe` membership =
+/// "would this body have carried a STRICT (not lenient) view pre-flip" —
+/// exactly this TYPE question (`design/arch/backend-keyed-consumer.md` §4
+/// W0.b / §5): mono instances and genuine concrete defns answer `true`;
+/// ctor/accessor synthesis bodies (`inferred_type: None` nodes) and
+/// lenient-fallback concrete defns answer `false`.
+pub fn is_strict_type_concrete(expr: &Expr) -> bool {
+    match expr {
+        // The erased node — mirrors `from_expr`'s `Annotate` arm: no own-type
+        // read, collapse to the inner node.
+        Expr::Annotate { expr: inner, .. } => is_strict_type_concrete(inner),
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => node_ty(expr).is_ok(),
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            node_ty(expr).is_ok()
+                && bindings.iter().all(|(_, e)| is_strict_type_concrete(e))
+                && is_strict_type_concrete(body)
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            node_ty(expr).is_ok()
+                && is_strict_type_concrete(cond)
+                && is_strict_type_concrete(then_branch)
+                && is_strict_type_concrete(else_branch)
+        }
+        Expr::Lambda { body, .. } | Expr::Trace { body, .. } => {
+            node_ty(expr).is_ok() && is_strict_type_concrete(body)
+        }
+        Expr::Apply { callee, args, .. } => {
+            node_ty(expr).is_ok()
+                && is_strict_type_concrete(callee)
+                && args.iter().all(is_strict_type_concrete)
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            node_ty(expr).is_ok()
+                && is_strict_type_concrete(scrutinee)
+                && arms.iter().all(|arm| is_strict_type_concrete(&arm.body))
+        }
+        Expr::VecLit { elements, .. } => {
+            node_ty(expr).is_ok() && elements.iter().all(is_strict_type_concrete)
+        }
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            node_ty(expr).is_ok()
+                && is_strict_type_concrete(launched)
+                && is_strict_type_concrete(continuation)
+        }
+        Expr::ConstrADT { fields, .. } => {
+            node_ty(expr).is_ok() && fields.iter().all(is_strict_type_concrete)
+        }
+    }
+}
+
 /// A monomorphised function definition carrying a [`MonoExpr`] body.
 ///
 /// The post-mono counterpart of [`MonoDefn`](crate::MonoDefn) (which wraps a

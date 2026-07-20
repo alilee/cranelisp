@@ -271,6 +271,8 @@ Audit rotation FIRMED: **cranelisp-typecheck** (dispatched read-only in the Phas
 | W7 | /qa | disposition batch (0698/0694/0702/0604 + 2 leak observations + m1 standing) — no-cargo parallel | shim default | shim default | — |
 | W7 | /dev | typecheck lead: MS-P7 + trait-shadow + F-D2-11 + extraction | shim default | shim default | — |
 | W7 | /testing | close rider: MS-P6 re-plant + 2 pin-NOW cells | shim default | shim default | — |
+| W7 | /arch | 0689 predicate fence (parallel, code) | shim default | shim default | — |
+| W7 | /design | typecheck acceptance sweeps (parallel, doc-only) | shim default | shim default | — |
 
 ## Notes
 

@@ -148,45 +148,21 @@ where
 /// forbids. The pre-flip predicate was "`build_concrete_codegen_view` returned
 /// `Some`" ⇔ strict `MonoExpr::from_expr` succeeds on the stored body; the
 /// lenient/synthetic classes fail it (residual `Var` / `inferred_type: None`
-/// nodes), so re-checking strict success on the entry's `ast` reproduces the
-/// pre-flip set exactly — ctors (Constructor kind, `ConstrADT` un-typed body),
-/// accessors (`(match self …)` un-typed body), and lenient-fallback concrete
-/// defns all excluded, mono instances and genuine concrete defns retained.
-/// Whether every non-erased node of `expr` carries a concrete `inferred_type`
-/// — the TYPE-concreteness half of the pre-S114 `MonoExpr::from_expr` gate,
-/// DECOUPLED from the carrier-flip resolution gate.
+/// nodes), so re-checking strict TYPE-concreteness on the entry's `ast`
+/// reproduces the pre-flip set exactly — ctors (Constructor kind, `ConstrADT`
+/// un-typed body), accessors (`(match self …)` un-typed body), and
+/// lenient-fallback concrete defns all excluded, mono instances and genuine
+/// concrete defns retained.
 ///
-/// The S114 flip couples type + resolution in `from_expr` (a real-span
-/// reference with no `var_refs`/`apply_refs` verdict now fails as `Unresolved`
-/// BEFORE the type is examined), so `from_expr(body, &empty, &empty, &empty)` no
-/// longer answers "is this body strict-concrete-typed" — it answers "unresolved"
-/// for any body with a reference. `collect_universe` needs the pure type
-/// question (which entries were pre-flip strict-concrete, i.e. would have carried
-/// a strict — not lenient — view). This walk answers exactly that, mirroring
-/// `from_expr`'s node handling: the `Annotate` node is erased (its own type is
-/// not checked — recurse to the inner node), every other node's `inferred_type`
-/// must convert via `ConcreteType::from_type`. Child recursion routes through the
-/// shared `for_each_child_expr` enumeration (no forked structural walk).
-fn body_is_strict_concrete(expr: &cranelisp_types::Expr) -> bool {
-    use cranelisp_types::Expr;
-    if !matches!(expr, Expr::Annotate { .. }) {
-        let concrete = expr
-            .inferred_type()
-            .and_then(|t| ConcreteType::from_type(t).ok())
-            .is_some();
-        if !concrete {
-            return false;
-        }
-    }
-    let mut all = true;
-    crate::program::for_each_child_expr(expr, |child| {
-        if !body_is_strict_concrete(child) {
-            all = false;
-        }
-    });
-    all
-}
-
+/// The membership probe is the single-sourced
+/// [`cranelisp_types::is_strict_type_concrete`] — the pure TYPE half of the
+/// `from_expr` gate, exported beside it (FIXME 0689). The S114 flip couples
+/// type + resolution inside `from_expr` (a real-span reference with no
+/// `var_refs`/`apply_refs` verdict fails `Unresolved` BEFORE its type is
+/// examined), so calling `from_expr` with empty maps cannot answer the pure
+/// type question; the exported predicate answers exactly it, and lives in
+/// `mono_expr.rs` so this membership question cannot drift from `from_expr`'s
+/// node handling (the pre-0689 local mirror was unfenced).
 fn collect_universe<C, L>(env: &TypeCheckEnv<C, L>, state: &CheckState) -> Vec<Callable>
 where
     C: cranelisp_types::CodeStore,
@@ -198,15 +174,9 @@ where
     for (key, entry) in view.iter() {
         let Some(cv) = entry.codegen_view() else { continue };
         let ModuleEntry::Def { scheme, ast: Some(ast_variant), .. } = entry else { continue };
-        // Pre-flip universe pin: only a STRICT-concrete body participates.
-        // This is a TYPE-concreteness probe, decoupled from the S114 resolution
-        // gate: `from_expr` now couples type + resolution and would `Unresolved`
-        // on empty maps for any body with a reference (excluding almost every
-        // real defn). `body_is_strict_concrete` tests exactly the pre-flip TYPE
-        // gate ("every non-erased node carries a concrete inferred_type"),
-        // preserving the pre-flip universe (mono instances + genuine concrete
-        // defns retained; ctors/accessors/lenient-fallback bodies excluded).
-        if !body_is_strict_concrete(&ast_variant.body) {
+        // Pre-flip universe pin: only a STRICT-TYPE-concrete body participates
+        // (see the fn rustdoc above; the probe is the types-side single source).
+        if !cranelisp_types::is_strict_type_concrete(&ast_variant.body) {
             continue;
         }
         let params = param_types(&cv.params, Some(&scheme.ty));

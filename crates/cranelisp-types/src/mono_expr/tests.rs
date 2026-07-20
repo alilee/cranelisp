@@ -601,3 +601,124 @@ fn deeply_nested_var_in_let_binding_is_caught() {
         ViewBuildError::NotConcrete(NotConcrete::Var(3))
     );
 }
+
+// --- FIXME-0689 fence: `is_strict_type_concrete`, the single-sourced pure-TYPE
+// half of the `from_expr` gate, consumed by the ownership fixpoint's W0.b
+// universe pin (`cranelisp-typecheck::ownership::fixpoint::collect_universe`).
+// The three universe populations are pinned at the representative-body level —
+// the exact body shapes typecheck synthesizes/produces per population
+// (`backend-keyed-consumer.md` §4 W0.b: ctor/accessor/lenient-fallback
+// excluded; mono instances + genuine concrete defns retained) — plus the
+// Annotate-erasure rule and the equivalence contract with `from_expr` under
+// total resolution maps (here: all-synthetic-span bodies, whose all-local
+// carve-out makes the empty maps total).
+
+#[test]
+fn strict_type_concrete_retains_genuine_concrete_and_mono_bodies() {
+    // Retained populations: a fully-typed body — the genuine-concrete-defn and
+    // mono-instance shapes (both are fully-annotated bodies at pin time).
+    let body = Expr::Let {
+        bindings: vec![(Symbol::from("x"), int_lit(1))],
+        body: Box::new(Expr::Apply {
+            callee: Box::new(typed_var(
+                "f",
+                span(),
+                Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            )),
+            args: vec![typed_var("x", span(), Type::Int)],
+            span: span(),
+            resolved_call: None,
+            inferred_type: int_ty(),
+        }),
+        span: span(),
+        inferred_type: int_ty(),
+    };
+    assert!(is_strict_type_concrete(&body));
+    // Equivalence contract: strict build succeeds exactly where the predicate
+    // holds (total-maps precondition met via the synthetic-span carve-out).
+    assert!(MonoExpr::from_expr(&body, &no_pc(), &no_vr(), &no_ar()).is_ok());
+}
+
+#[test]
+fn strict_type_concrete_excludes_ctor_synthesis_bodies() {
+    // Excluded population 1 (ctors): adt.rs synthesizes `ConstrADT` bodies
+    // with NO `inferred_type` — they must stay out of the ownership universe.
+    let body = Expr::ConstrADT {
+        type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Maybe")),
+        tag: 0,
+        fields: vec![],
+        span: span(),
+        inferred_type: None,
+    };
+    assert!(!is_strict_type_concrete(&body));
+    // Equivalence: `from_expr` refuses the same body (NotConcrete).
+    assert!(matches!(
+        MonoExpr::from_expr(&body, &no_pc(), &no_vr(), &no_ar()),
+        Err(ViewBuildError::NotConcrete(_))
+    ));
+}
+
+#[test]
+fn strict_type_concrete_excludes_accessor_synthesis_bodies() {
+    // Excluded population 2 (accessors): the `(match self …)` synthesis body
+    // with un-typed nodes.
+    let body = Expr::Match {
+        scrutinee: Box::new(Expr::Var {
+            name: Symbol::from("self"),
+            span: span(),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        arms: vec![MatchArm {
+            pattern: Pattern::Wildcard { span: span() },
+            body: int_lit(0),
+            span: span(),
+        }],
+        span: span(),
+        compiler_generated: true,
+        inferred_type: None,
+    };
+    assert!(!is_strict_type_concrete(&body));
+    assert!(matches!(
+        MonoExpr::from_expr(&body, &no_pc(), &no_vr(), &no_ar()),
+        Err(ViewBuildError::NotConcrete(_))
+    ));
+}
+
+#[test]
+fn strict_type_concrete_excludes_lenient_fallback_bodies() {
+    // Excluded population 3 (lenient-fallback concrete defns): a genuine
+    // `Type::Var` residual deep in an otherwise-typed body (the `f$Var`
+    // multi-sig-variant shape) — `from_expr` fails it, the lenient walk
+    // carries it, and the universe pin must exclude it.
+    let body = Expr::If {
+        cond: Box::new(Expr::BoolLit {
+            value: true,
+            span: span(),
+            inferred_type: Some(Box::new(Type::Bool)),
+        }),
+        then_branch: Box::new(typed_var("x", span(), Type::Var(9))),
+        else_branch: Box::new(int_lit(0)),
+        span: span(),
+        inferred_type: int_ty(),
+    };
+    assert!(!is_strict_type_concrete(&body));
+    assert!(matches!(
+        MonoExpr::from_expr(&body, &no_pc(), &no_vr(), &no_ar()),
+        Err(ViewBuildError::NotConcrete(_))
+    ));
+}
+
+#[test]
+fn strict_type_concrete_erases_annotate_like_from_expr() {
+    // The `Annotate` node's own (here: absent) type is never examined — the
+    // predicate erases it to the inner node, exactly the `from_expr` arm.
+    let e = Expr::Annotate {
+        annotation: TypeExpr::Named(TypeRef::new(None, TypeName::from("Int"))),
+        expr: Box::new(int_lit(5)),
+        span: span(),
+        inferred_type: None,
+    };
+    assert!(is_strict_type_concrete(&e));
+    assert!(MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).is_ok());
+}
