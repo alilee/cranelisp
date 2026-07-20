@@ -184,6 +184,58 @@ fn bare_match_forward_scalar_green() {
     .assert_exit(7);
 }
 
+// ---- BI-H-heap — the INLINE / single-match heap-forward face (RED ×2) ------------
+//
+// s114-test-plan §2 (BI-H-heap row, /qa item-4 completion). The committed family
+// rows cover the NESTED (F, B-cow) and COW/toggle faces; the MINIMAL single bare
+// match forwarding a FRESH heap vec had no committed row despite being RED. This is
+// the pre-W4 rider closing that gap. GREEN twin: `bare_match_forward_scalar_green`
+// (above) — a scalar forward through the SAME machinery, proving the match logic
+// (var-pattern bind + arm forward) is correct and isolating the consume seam as the
+// RC-accounting site (the forwarded value being a non-heap Int is the only
+// difference). Flips with the same Track-B 0668 consume-contract change-set (the R3
+// forwarding-suppression rule that fixes G / F / B-cow).
+
+// BI-H-heap — INLINE face. A bare var-pattern match forwards a FRESH heap vec
+// literal: `(match [7 8 9] [r r])` binds `r` to the fresh `[7 8 9]` and returns it.
+// The match syntactically classifies its scrutinee a "temp" and decs it after the
+// arm, but the arm merely forwards the binding's value (an alias carrying no
+// independent count) — so the vec is freed under the caller and `(vec-get (f) 0)`
+// reads freed heap. MUST be 7; today a per-run-varying garbage word (verified
+// /testing 2026-07-20: exit 110/112/153/204/227 across runs; RC_STATS allocs=2
+// deallocs=1). This is the single-match minimum of cells F / B-cow.
+// spec: spec/12-runtime.md §12.1 — a bare var-pattern match forwards its bound
+// (heap) value live to the caller.
+// defect: class=rc-miscount locus=crates/cranelisp-backend match scrutinee/arm forward consume seam (spurious temp-dec of a forwarded fresh-heap alias, single bare match; FIXME 0668 R3 forwarding-suppression) found=S114 owner=/dev
+#[test]
+fn bare_match_forward_fresh_heap_vec_inline_neg() {
+    run_prims(
+        "(defn f [] (match [7 8 9] [r r]))\n\
+         (defn main [] (Pure (vec-get (f) 0)))\n",
+    )
+    .assert_exit(7);
+}
+
+// BI-H-heap — ACROSS-FN-RETURN face. The same single bare match, but the fresh heap
+// vec arrives as the RESULT of another fn call (`(g)` returns `[7 8 9]`) rather than
+// an inline literal — the forwarded value's provenance is a returned temp, not a
+// syntactic literal. `(match (g) [r r])` forwards it; MUST be 7; today garbage
+// (verified /testing 2026-07-20: exit 84/166/173/207/249 across runs). Pairs the
+// inline face to prove the consume-seam mis-accounting is provenance-independent
+// (literal vs returned-temp both fall in the gap). Same seam / flip trigger.
+// spec: spec/12-runtime.md §12.1 — a bare var-pattern match forwards a returned
+// heap value live to the caller.
+// defect: class=rc-miscount locus=crates/cranelisp-backend match scrutinee/arm forward consume seam (spurious temp-dec of a forwarded returned-heap alias, single bare match; FIXME 0668 R3) found=S114 owner=/dev
+#[test]
+fn bare_match_forward_fresh_heap_vec_across_fn_return_neg() {
+    run_prims(
+        "(defn g [] [7 8 9])\n\
+         (defn f [] (match (g) [r r]))\n\
+         (defn main [] (Pure (vec-get (f) 0)))\n",
+    )
+    .assert_exit(7);
+}
+
 // ---- BI-B-cow — NESTED-MATCH forward WITH COW (0668 cell B verbatim), RED ×2 -----
 
 // Cell B-cow — `(match (match (vec-set v 0 5) [r r]) [q q])`: a COW `vec-set`

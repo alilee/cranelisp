@@ -273,3 +273,125 @@ fn let_shadowed_single_sig_defn_value_ref_hof_resolves_to_local() {
         .output()
         .assert_exit(100);
 }
+
+// ============================================================================
+// S114 W3-review Important-1 — let-shadowed TRAIT OPERATOR mis-dispatch
+// ============================================================================
+//
+// The shadowing family's TRAIT-METHOD face (the operator sibling of the
+// defn-shadow cells above): a `let` binds a same-named local `+`, but the call
+// resolves to the Num trait method `+` (→ 3) instead of the local closure (→ 0).
+// §11.8.8 "name is the TRIGGER, the carrier is the IDENTITY" + P24 are violated —
+// the post-unify call-resolution block keys on the RAW AST name `+` and ignores
+// both the available carrier verdict and the lexical shadow. Two positions
+// mis-dispatch (call, auto-curry); the value-ref position is CORRECT (the
+// born-green control), exactly mirroring the single-sig defn matrix above where
+// value-refs see the local but the call-head does not. These use TestStandard
+// (the Num trait supplies the operator `+`). Flip trigger: the W7 /dev(typecheck)
+// rider (priority behind MS-P7, ahead of 0590). PRE-EXISTING (W3-review probe).
+
+// spec: spec/04-expressions.md §4.6 — a `let`-bound name lexically shadows a
+// same-named TRAIT METHOD; a CALL to that name inside the let body MUST resolve to
+// the LOCAL binding (§11.8.8: the name is the trigger, the carrier is the identity).
+// `(let [+ (fn [a b] 0)] (+ 1 2))` MUST yield 0.
+//
+// RED at HEAD: the post-unify call-resolution block keys on the raw AST name `+`,
+// resolves it to the Num/Int trait method, and returns 3 (verified /testing
+// 2026-07-20: `--run` exit 3, REPL `:primitives/Int 3`, `--link` exit 3 — mode-
+// uniform). Failing-not-ignored.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/infer.rs:966 post-unify call resolution keys on the raw AST name (ignores the carrier verdict + local shadow, dispatches the trait method over the let binding) found=S114 owner=/dev
+#[test]
+fn let_shadowed_trait_operator_call_resolves_to_local_not_dispatch() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .run("user.cl")
+        .user(
+            "(defn f [] (let [+ (fn [a b] 0)] (+ 1 2)))\n\
+             (defn main [] (Pure (f)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`(let [+ (fn [a b] 0)] (+ 1 2))` MUST call the LOCAL `+` (`(fn [a b] 0)`) \
+         and yield 0 — the call-head MUST NOT dispatch the Num trait method `+` \
+         (which returns 3); got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// spec: spec/04-expressions.md §4.6 — the REPL mode twin of the call cell above.
+// `(let [+ (fn [a b] 0)] (+ 1 2))` MUST echo `:primitives/Int 0`.
+//
+// RED at HEAD: echoes `:primitives/Int 3` (the Num trait method). The mode twin
+// pins that the mis-dispatch is not `--run`-specific (it is shared across the one
+// resolution seam — a REPL/`--run` agreement guard).
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/infer.rs:966 post-unify call resolution keys on the raw AST name (REPL mode face) found=S114 owner=/dev
+#[test]
+fn let_shadowed_trait_operator_call_repl_resolves_to_local() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("(let [+ (fn [a b] 0)] (+ 1 2))\n")
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains(":primitives/Int 0"),
+        "`(let [+ (fn [a b] 0)] (+ 1 2))` MUST echo `:primitives/Int 0` (the LOCAL \
+         `+`), NOT `:primitives/Int 3` (the Num trait method); got:\n{c}"
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.3 — the AUTO-CURRY sibling (the review-named
+// untested position, `infer.rs:933-958`). A PARTIAL application of the shadowed
+// local `+` — `((+ 1) 2)` — MUST auto-curry the LOCAL closure and yield 0.
+//
+// RED at HEAD: the auto-curry filler block ALSO keys on the raw AST name `+` and
+// resolves the Num trait method, returning 3 (verified /testing 2026-07-20: `--run`
+// exit 3, REPL `:primitives/Int 3`). The auto-curry resolution is a distinct code
+// block from the post-unify block (item above) — a fix at one seam that leaves the
+// other names a second resolver; both must green. Failing-not-ignored.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/infer.rs:933-958 auto-curry trait-method resolution keys on the raw AST name (ignores the local shadow; the untested sibling of the post-unify block) found=S114 owner=/dev
+#[test]
+fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .run("user.cl")
+        .user(
+            "(defn f [] (let [+ (fn [a b] 0)] ((+ 1) 2)))\n\
+             (defn main [] (Pure (f)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`((+ 1) 2)` with a let-shadowed local `+` MUST auto-curry the LOCAL closure \
+         (`(fn [a b] 0)`) and yield 0 — the auto-curry filler MUST NOT dispatch the \
+         Num trait method `+` (which returns 3); got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.2 — the VALUE-REF GREEN control (the isolating
+// twin). Passing the shadowed local `+` as a VALUE to a HOF resolves to the LOCAL
+// binding correctly. `(defn ap [g] (g 1 2))` + `(ap +)` inside the let → 0. This is
+// the same contrast as the single-sig defn matrix: the value-ref position sees the
+// local binding; only the CALL and AUTO-CURRY positions mis-dispatch — isolating the
+// two call-resolution blocks (not value-position resolution) as the seam. GREEN
+// today (verified /testing 2026-07-20: exit 0 across `--run`/`--link`), must stay
+// green through the W7 fix.
+#[test]
+fn let_shadowed_trait_operator_value_ref_passed_to_hof_resolves_to_local() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .run("user.cl")
+        .user(
+            "(defn ap [g] (g 1 2))\n\
+             (defn f [] (let [+ (fn [a b] 0)] (ap +)))\n\
+             (defn main [] (Pure (f)))\n",
+        )
+        .output()
+        .assert_exit(0);
+}
