@@ -49,6 +49,20 @@ grow
 (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])))
 (size (MkBox 3 4))
 
+; impl confirms what it wired up — and it names the CANONICAL HOME of both the
+; trait and the target, not the bare spelling you typed. Extend the same trait
+; to a primitive and the confirmation resolves Int to its home, primitives/Int:
+
+(impl Sizeable Int (defn size [n] n))
+(size 42)
+
+; The receiver can be a PRELUDE trait, extended to YOUR type. show lives in
+; text.display; the confirmation names that home even though you typed a bare
+; Display — so you always know exactly which trait and type you wired together:
+
+(impl Display Box (defn show [b] (match b [(MkBox w h) (str (show w) "x" (show h))])))
+(show (MkBox 3 4))
+
 ; A function constrained on YOUR trait works for any type that implements it:
 
 (defn bigger? [a b] (> (size a) (size b)))

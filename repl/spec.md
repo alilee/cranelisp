@@ -1340,6 +1340,54 @@ Type errors MUST include:
 
 Type errors SHOULD suggest common fixes when applicable.
 
+### 5.4 Reader-Level Diagnostics Are Self-Documenting [S114]
+
+The self-documenting-REPL principle (root `CLAUDE.md` §Design Principles) reaches
+below type checking to the **reader** itself: a malformed lexical or grammatical
+construct MUST produce a **located, self-documenting** error, never a silent
+degradation to a different-but-valid form and never an opaque internal failure.
+The reader is the first thing a new user's mistakes hit, so its diagnostics are
+part of the experience contract. Two reader-level malformations are load-bearing
+here — both settled in the language spec, both surfaced at the prompt:
+
+- **Dangling module qualifier.** A `/` paired with an **empty half** — an empty
+  local half (`foo/`, `a.b/`), or the symmetric empty module half (`/bar`) — is a
+  **located compile-time error at the offending token, in every position** (value,
+  call head, operand, annotation, type). It MUST NOT silently degrade to the
+  module-less name (`foo`) or the bare local name (`bar`), and MUST NOT pass
+  through as a literal symbol. The message MUST name what a qualified name
+  requires (a non-empty module on the left of the `/` and a local name on its
+  right) and MUST distinguish this from bare-`/` division, so the fix is
+  unambiguous. (Language spec: [`spec/08-modules.md §8.5.1`](../spec/08-modules.md),
+  [`spec/02-grammar.md §2.4`](../spec/02-grammar.md).) [S114]
+
+- **Annotation reader macro `:` — whitespace-tolerant, form-binding.** The `:Type`
+  introducer is a `^`-style reader macro that **binds the immediately-following
+  form**; because it reads that following form, **whitespace between `:` and it is
+  permitted** — `: Int` is the same annotation as `:Int`, and `: (Fn [a] a)` the
+  same as `:(Fn [a] a)`. The two spellings MUST resolve identically (same value,
+  same type, same fully-qualified display); a space MUST NOT change the reading.
+  (Language spec: [`spec/01-lexical.md §1.4.5`](../spec/01-lexical.md),
+  [`spec/02-grammar.md §2.3.8`](../spec/02-grammar.md).) [S114]
+
+- **Qualified name in a binder position is rejected, locatedly.** A module
+  qualifier (or dotted path) is **reference** syntax — it reaches across modules.
+  A **binder** names a new name in the current module (or lexical scope) and
+  therefore never carries one. A qualified spelling in any binder position (a
+  definition head, a `let` binder) is a compile-time error with the span **on the
+  offending binder name**, and the message MUST say what to write instead (the
+  bare name) — the REPL never silently coins a name into another module. (Language
+  spec: [`spec/05-definitions.md §5`](../spec/05-definitions.md),
+  [`spec/04-expressions.md §4`](../spec/04-expressions.md).) [S114]
+
+These reader diagnostics are exercised end-to-end in the `06-modules` showcase
+demo (dangling `/bar`, `(defn foo/bar …)` binder reject, `: Int` ≡ `:Int`
+tolerance) as replayed sentinels. The terse empty-local-half spelling (`foo/`) and
+the degenerate no-form-to-bind spelling (`: Int` alone) have diagnostic-parity
+polish pending (frontend, tracked separately); the requirement above is on the
+**located + self-documenting + no-silent-degradation** contract, which holds for
+every case, not on any single message's exact prose. [S114]
+
 ## 6. Discoverability [Tested]
 
 ### 6.1 First Five Minutes [Tested tests/repl_lifecycle::first_session_journey_launch_to_confidence]
@@ -2124,6 +2172,18 @@ user>
 - The count is the number of restored **definitions** (the §15.7 persisted forms), not transient expressions. The count MUST be **singular-aware** — `1 definition`, `N definitions`. [S113]
 - The notice MUST be **suppressed when the backing file is absent or empty** — a first session in an empty directory MUST reach the prompt with no extra output, preserving the first-session experience (§6.2) and keeping fresh-directory session transcripts byte-identical. [S113]
 - The notice is startup-only chrome (§10.3 metadata role), never persisted and never part of a value/definition response. [S113]
+
+**Notice, not banner — the aesthetic call is settled (`/repl`, S114).** The restore
+notice is rendered as an **R6 dim-metadata line** (§13 style register R6), grouped
+with the other startup notices (the search-index notice, the `Cranelisp.toml`
+create notice, §15.2.2's siblings), and is **not** part of the startup banner (§6.2).
+The banner keeps its own identity styling and its ≤3-line budget — language name,
+version, `/help` hint — describing *what the REPL is*; the restore notice is dim
+chrome describing *what this particular startup did* (it resumed prior state).
+Keeping the two visually distinct means the banner stays byte-stable across fresh
+and resumed sessions, and the resume signal reads as the transient metadata it is,
+in the same visual class as every other `[updated: …]` / index / config notice —
+never as a headline. [S114]
 
 **Interactive chrome — TTY-gated (`/repl` ruling, S114, FIXME 0700).** The restore notice is **interactive chrome for a human at the prompt**, in the same category as terminal styling (§10.1 TTY detection and suppression), the line editor and history (§10.8), and the search-index notice. Its whole purpose — telling a human that a resumed session is *not* the fresh one they might assume — has no addressee in a non-interactive session, whose consumer is a program or a golden-transcript harness that either already knows the working directory's state or requires byte-identity. The notice is therefore emitted **only when stdout/stdin is a TTY**; a **non-TTY session (piped stdin, harness, batch) MUST NOT emit it**, keeping restore-mode and fresh-mode non-interactive transcripts byte-identical (the §10.5 batch / mode-parity output-equivalence contract). This is the correct and settled behaviour, not a limitation: emitting the notice in non-TTY mode would diverge restore-mode transcripts from fresh-mode ones and disturb the output-equivalence harness for no reader benefit. [S114]
 

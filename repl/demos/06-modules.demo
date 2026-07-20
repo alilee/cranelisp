@@ -42,6 +42,18 @@ vec-reverse
 (import [collections.vec [vec-reverse]])
 (vec-reverse (vec 1 2 3))
 
+; A qualified name has a shape: a non-empty module on the left of the `/`, a
+; non-empty local name on the right. A dangling `/` — a half missing — is a
+; located reader error at the offending token, not a silent guess:
+
+(count /bar)
+
+; Qualifiers are REFERENCE syntax: they reach ACROSS modules. A binder names a
+; NEW name in the CURRENT module, so it never carries one. Qualify a definition
+; head and the REPL rejects it, pointing at the name and saying what to write:
+
+(defn foo/bar [x] x)
+
 ; You can import just a trait's METHOD — you do not need the trait itself in
 ; scope. Dispatch follows from the method's own identity. `default` lives in
 ; the `default` module; import the method alone:
@@ -60,6 +72,11 @@ default
 :Int (default)
 :String (default)
 :Bool (default)
+
+; The `:` reads the form that follows it, so whitespace after it is fine — `: Int`
+; is the very same annotation as `:Int`, no reader surprise either way:
+
+: Int (default)
 
 ; Call it bare and nothing pins the return type, so inference cannot choose an
 ; impl. The REPL says exactly what to do — an actionable error, never an opaque
