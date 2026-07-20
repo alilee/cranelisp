@@ -731,6 +731,29 @@ impl CompilerSession {
 
 }
 
+/// Is `form` a top-level **definition** form (§15.7 persisted forms) — one the
+/// startup restore notice counts (FIXME 0674)? A definition-shaped head:
+/// `defn`/`defn-`/`def`/`def-`/`const`/`const-`/`deftype`/`deftrait`/
+/// `defmacro`/`defmacro-`/`impl`. Imports/exports/`mod`/`platform`/expressions
+/// are NOT definitions and are excluded (so an imports-only file suppresses).
+fn is_persisted_definition_form(form: &cranelisp_types::Sexp) -> bool {
+    let cranelisp_types::Sexp::List(children, _) = form else {
+        return false;
+    };
+    let Some(cranelisp_types::Sexp::Symbol(head, _)) = children.first() else {
+        return false;
+    };
+    matches!(
+        head.as_str(),
+        "defn" | "defn-"
+            | "def" | "def-"
+            | "const" | "const-"
+            | "deftype" | "deftrait"
+            | "defmacro" | "defmacro-"
+            | "impl"
+    )
+}
+
 
 impl CompilerSession {
     /// REPL `/list` — user-defined symbols in the current REPL module (excludes
@@ -1017,21 +1040,52 @@ impl CompilerSession {
     /// (`register_module` / `re_register_module`), so there is no shared sexps
     /// entry to keep current and no "no parsed sexps for module" residue to
     /// guard against.
+    /// The startup restore notice (FIXME 0674, `repl/spec.md` §15.2.2). When REPL
+    /// startup restores a **non-empty** backing file for `module`, returns
+    /// `; resumed N definitions from <file>` where N is the count of restored
+    /// **definitions** (§15.7 persisted forms — `defn`/`def`/`deftype`/`deftrait`/
+    /// `defmacro`/`impl`/`const`, not transient expressions). Returns `None`
+    /// (SUPPRESSED) when the backing file is **absent or empty**, so a first
+    /// session in an empty directory reaches the prompt with no extra output
+    /// (fresh-dir transcripts stay byte-identical, §6.2). Startup-only chrome —
+    /// never persisted, never part of a value/definition response. REPL-only.
+    pub fn startup_restore_notice(&self, module: &ModuleFullPath) -> Option<String> {
+        let file_path = self.backing_file_path_for(module);
+        let source = std::fs::read_to_string(&file_path).ok()?;
+        if source.trim().is_empty() {
+            return None; // empty backing file — suppress
+        }
+        let forms = cranelisp_frontend::parse(&source).ok()?;
+        let count = forms.iter().filter(|f| is_persisted_definition_form(f)).count();
+        if count == 0 {
+            return None; // no definitions (imports-only / expressions) — suppress
+        }
+        let name = file_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("the backing file");
+        let plural = if count == 1 { "definition" } else { "definitions" };
+        Some(format!("; resumed {count} {plural} from {name}"))
+    }
+
+    /// Resolve `module`'s backing `.cl` path — the typecheck product's recorded
+    /// path, else `{project_root}/{module}.cl` (the fresh-session default). Shared
+    /// by [`Self::regenerate_backing_file`] and [`Self::startup_restore_notice`].
+    fn backing_file_path_for(&self, module: &ModuleFullPath) -> std::path::PathBuf {
+        match self.shared.typecheck_products.get(module) {
+            Some(tp) => match &tp.file_path {
+                Some(p) => p.clone(),
+                None => self.shared.project_root.join(format!("{module}.cl")),
+            },
+            None => self.shared.project_root.join(format!("{module}.cl")),
+        }
+    }
+
     pub fn regenerate_backing_file(&mut self) {
         let module = self.current_module_path();
 
-        // Get the backing file path from typecheck product.
-        let file_path = match self.shared.typecheck_products.get(&module) {
-            Some(tp) => match &tp.file_path {
-                Some(p) => p.clone(),
-                None => {
-                    // Entry module may not have a file path yet (fresh session).
-                    // Default to {project_root}/{module}.cl.
-                    self.shared.project_root.join(format!("{}.cl", module))
-                }
-            },
-            None => self.shared.project_root.join(format!("{}.cl", module)),
-        };
+        // Get the backing file path (typecheck-product-recorded, else default).
+        let file_path = self.backing_file_path_for(&module);
 
         // Read the symbol table for this module. Sprint 58 Step 5a: structural
         // decls (imports/exports/platforms/submodules) are now fields on the
@@ -2580,5 +2634,47 @@ mod degraded_startup_tests {
         assert_eq!(first_line("  type error at 0..4: boom  \n  detail\n more"), "type error at 0..4: boom");
         assert_eq!(first_line("single line"), "single line");
         assert_eq!(first_line(""), "");
+    }
+}
+
+#[cfg(test)]
+mod restore_notice_tests {
+    use super::is_persisted_definition_form;
+
+    fn parse_one(src: &str) -> cranelisp_types::Sexp {
+        cranelisp_frontend::parse(src).unwrap().remove(0)
+    }
+
+    // FIXME 0674 — the startup restore notice counts §15.7 persisted DEFINITION
+    // forms; imports/exports/expressions are excluded (so an imports-only file
+    // suppresses the notice).
+    // spec: repl/spec.md §15.2.2 — restored-definition count.
+    #[test]
+    fn persisted_definition_forms_are_classified() {
+        for src in [
+            "(defn f [] 1)",
+            "(defn- g [] 2)",
+            "(def x 1)",
+            "(const c 3)",
+            "(deftype Color Red Green)",
+            "(deftrait Show (show [a] a))",
+            "(defmacro m [] 1)",
+            "(impl Show Int (defn show [x] x))",
+        ] {
+            assert!(is_persisted_definition_form(&parse_one(src)), "def form: {src}");
+        }
+    }
+
+    #[test]
+    fn non_definition_forms_are_excluded() {
+        for src in [
+            "(import [primitives [Int]])",
+            "(export [foo [bar]])",
+            "(mod child)",
+            "(+ 1 2)",
+            "42",
+        ] {
+            assert!(!is_persisted_definition_form(&parse_one(src)), "non-def: {src}");
+        }
     }
 }

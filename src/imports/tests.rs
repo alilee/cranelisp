@@ -924,3 +924,124 @@
             &entry,
         );
     }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0604 — the promoted terminal-closure CHOKEPOINT (§2.2 / §4 item 1).
+    //
+    // The unconditional, generalized, DIAGNOSED sibling of the prelude-only
+    // observability rider above: fires in EVERY build (returns `Err`, not a
+    // debug-only panic) and for ANY module (not just prelude). Fail-on-revert:
+    // deleting the gate call at a public-insert seam lets the phantom write land.
+    // -----------------------------------------------------------------------
+
+    // The phantom `bit-and → primitives/bit-and` into a TERMINAL prelude table
+    // (primitives has NO bit-and) is REJECTED + diagnosed — the chokepoint's core
+    // enforcement.
+    // spec: prelude-table-write-isolation.md §2.2 — export-closure gate.
+    #[test]
+    fn check_terminal_closure_rejects_out_of_closure_public_write() {
+        let tables = tables();
+        ensure(&tables, "primitives"); // exists, has NO bit-and
+        ensure(&tables, "prelude");
+        let entry = public_import_entry("primitives", "bit-and");
+        let res = check_terminal_closure(
+            &tables,
+            &ModuleFullPath::from("prelude"),
+            "bit-and",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        );
+        let err = res.expect_err("phantom out-of-closure public write must be rejected");
+        // Diagnosed: names the breached module + source edge (a located defect,
+        // not a quiet-environment hunt).
+        let msg = format!("{err:?}");
+        assert!(msg.contains("bit-and"), "diagnostic names the name: {msg}");
+        assert!(msg.contains("0604"), "diagnostic attributes to FIXME 0604: {msg}");
+    }
+
+    // GENERALIZATION vs the prelude-only rider: the phantom into a NON-prelude
+    // terminal module is ALSO rejected (the rider ignores non-prelude modules;
+    // the gate does not).
+    // spec: prelude-table-write-isolation.md §2.2 — any terminal module.
+    #[test]
+    fn check_terminal_closure_generalizes_beyond_prelude() {
+        let tables = tables();
+        ensure(&tables, "primitives"); // has NO bit-and
+        ensure(&tables, "some.terminal");
+        let entry = public_import_entry("primitives", "bit-and");
+        let res = check_terminal_closure(
+            &tables,
+            &ModuleFullPath::from("some.terminal"),
+            "bit-and",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        );
+        assert!(res.is_err(), "the gate generalizes to any module, not just prelude");
+    }
+
+    // A legitimate re-export (source genuinely provides the name) PASSES — the
+    // gate must not false-fire the build.
+    // spec: prelude-table-write-isolation.md §2.2 — never false-fire.
+    #[test]
+    fn check_terminal_closure_permits_legitimate_reexport() {
+        let tables = tables();
+        ensure(&tables, "primitives");
+        ensure(&tables, "prelude");
+        tables
+            .get_mut(&ModuleFullPath::from("primitives"))
+            .unwrap()
+            .insert("add-i64".into(), primitive_def());
+        let entry = public_import_entry("primitives", "add-i64");
+        let res = check_terminal_closure(
+            &tables,
+            &ModuleFullPath::from("prelude"),
+            "add-i64",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        );
+        assert!(res.is_ok(), "a genuine re-export must pass: {res:?}");
+    }
+
+    // The module's OWN public definition (a non-`Import` entry) is exported by
+    // §8.4 — always closure-valid.
+    // spec: prelude-table-write-isolation.md §2.2 — own definition.
+    #[test]
+    fn check_terminal_closure_permits_own_definition() {
+        let tables = tables();
+        ensure(&tables, "prelude");
+        let entry = primitive_def(); // public non-Import Def
+        let res = check_terminal_closure(
+            &tables,
+            &ModuleFullPath::from("prelude"),
+            "map",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        );
+        assert!(res.is_ok(), "own public definition is exported by §8.4: {res:?}");
+    }
+
+    // A PRIVATE write (an `import` edge) is never a cross-module phantom — the
+    // isolation invariant is PUBLIC-write-only, so the gate is a no-op even when
+    // the source lacks the name (census legal-skip for `install_imports`).
+    // spec: prelude-table-write-isolation.md §2.1 — private-only legal-skip.
+    #[test]
+    fn check_terminal_closure_noop_for_private_write() {
+        let tables = tables();
+        ensure(&tables, "primitives"); // has NO bit-and
+        ensure(&tables, "user");
+        let entry = ModuleEntry::Import {
+            source: FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: "bit-and".into(),
+            },
+            visibility: Visibility::Private,
+        };
+        let res = check_terminal_closure(
+            &tables,
+            &ModuleFullPath::from("user"),
+            "bit-and",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        );
+        assert!(res.is_ok(), "a private import edge is not a public phantom: {res:?}");
+    }

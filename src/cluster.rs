@@ -313,9 +313,9 @@ pub fn insert_cluster(
     shared: &crate::session_v4::SharedState,
     processed: ProcessedCluster,
     target: &ModuleFullPath,
-) {
+) -> Result<(), cranelisp_types::CranelispError> {
     if processed.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Wave 3a-β scaffold: `process_cluster` writes commit directly through
@@ -323,14 +323,24 @@ pub fn insert_cluster(
     // staging pivot lands (FIXME 0176), this loop drains staging into live
     // per-entry under inner-DashMap locks (target shape from `facades/int.md`
     // §"Atomicity guarantees").
-    // R7/0604 rider (index-worker-isolation.md §8): observe each committed write
-    // BESIDE the insertion, BEFORE acquiring the mutable guard (the assert reads
-    // other tables — it must not run under a held `get_mut`, DashMap shard
-    // re-entrancy). Cheap: does real work only for `target == prelude`.
+    // FIXME 0604 chokepoint (prelude-table-write-isolation.md §2.2): route each
+    // committed write through the terminal-table export-closure gate BEFORE
+    // acquiring the mutable guard (the gate reads OTHER tables — it must not run
+    // under a held `get_mut`, DashMap shard re-entrancy). A phantom out-of-
+    // closure public commit is rejected + diagnosed at the seam. The legacy
+    // prelude-only observability rider (`assert_prelude_closure`) stays as a
+    // defense-in-depth tripwire beside it.
     for (sym, entry) in &processed.entries {
         crate::imports::assert_prelude_closure(
             &shared.symbol_tables, target, sym.as_ref(), entry,
         );
+        crate::imports::check_terminal_closure(
+            &shared.symbol_tables,
+            target,
+            sym.as_ref(),
+            entry,
+            cranelisp_types::Span::SYNTHETIC,
+        )?;
     }
     if let Some(mut live) = shared.symbol_tables.get_mut(target) {
         for (sym, entry) in processed.entries {
@@ -355,6 +365,7 @@ pub fn insert_cluster(
     // and is responsible for routing them to their final homes
     // (`Sess::warnings`, `SymbolTable::install_import_bindings`). We do not
     // re-route them here; the accessor contract makes them caller-visible.
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

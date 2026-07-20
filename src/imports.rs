@@ -107,6 +107,14 @@ pub(crate) fn install_imports(
         if !symbol_tables.contains_key(current_module) {
             return Err(missing_current_module(current_module, spec.span));
         }
+        // FIXME 0604 chokepoint: route through the terminal-closure gate BEFORE
+        // delegating to the poison consumer, so a mis-targeted/materialized
+        // phantom public write is rejected at the seam and never reaches a live
+        // table. `import` edges are Private → the gate is a no-op here (census
+        // legal-skip), but routing uniformly keeps the structural guard greppable.
+        for (name, entry) in &to_add {
+            check_terminal_closure(symbol_tables, current_module, name.as_ref(), entry, spec.span)?;
+        }
         insert_detecting_ambiguity(
             symbol_tables,
             current_module,
@@ -165,6 +173,13 @@ pub(crate) fn install_exports(
 
         if !symbol_tables.contains_key(current_module) {
             return Err(missing_current_module(current_module, spec.span));
+        }
+        // FIXME 0604 chokepoint: `export` edges are Public — the gate ENFORCES
+        // the terminal-table export-closure invariant here, rejecting a phantom
+        // public re-export whose source lacks the name (the isolation-by-
+        // construction seam; a firing names the seam in production).
+        for (name, entry) in &to_add {
+            check_terminal_closure(symbol_tables, current_module, name.as_ref(), entry, spec.span)?;
         }
         insert_detecting_ambiguity(
             symbol_tables,
@@ -245,6 +260,107 @@ fn prelude_write_is_closure_valid(
         },
         // Prelude's own definition (§8.4: a public def is exported).
         _ => true,
+    }
+}
+
+// ===========================================================================
+// FIXME 0604 — the foreground public-write CHOKEPOINT (prelude-table-write-
+// isolation.md §2). Isolation by construction: every foreground writer that can
+// insert a PUBLIC entry into a module's live symbol table routes through the ONE
+// `check_terminal_closure` gate (below) or carries a named legal-skip.
+//
+// ─────────────────────────── FOREGROUND WRITER CENSUS (§2.1) ───────────────
+//
+// | Writer seam                              | Public? | Disposition            |
+// |------------------------------------------|---------|------------------------|
+// | imports.rs::install_exports (Public)     | yes     | ROUTE through gate     |
+// | imports.rs::install_imports (Private)    | no      | route (no-op: !public) |
+// | imports.rs::insert_detecting_ambiguity   | reads/  | poison consumer —      |
+// |   (§8.6.5 poison consumer)               | marks   | CORRECT, NOT TOUCHED;  |
+// |                                          |         | its writes are already |
+// |                                          |         | vetted by the install- |
+// |                                          |         | seam gate above        |
+// | cluster.rs::insert_cluster (commit gate) | yes     | ROUTE through gate     |
+// | process_form/form_dispatch (defmacro reg)| yes     | ROUTE through gate     |
+// | Code-install sites (mutate existing)     | no new  | legal-skip (no new     |
+// |                                          | entry   | public table entry)    |
+// | process_form/cache_restore.rs            | yes     | off the recipe path    |
+// |                                          |         | (--no-cache); its own  |
+// |                                          |         | restore guard          |
+// | worker::inject_prelude_if_needed /       | n/a     | legal-skip (session-   |
+// |   install_module_session_env             |         | side maps: fallback    |
+// |                                          |         | bit + aliases, NOT a   |
+// |                                          |         | symbol-table entry)    |
+//
+// The census's job is to prove the set is CLOSED: no OTHER foreground seam can
+// insert a public table entry without routing through the gate. The greppable
+// structural guard (Principle 18): a public-insert seam that bypasses
+// `check_terminal_closure` is a `/review` finding.
+// ===========================================================================
+
+/// The ONE terminal-table export-closure chokepoint (FIXME 0604, §2.2).
+///
+/// **Invariant:** a module never accepts a new PUBLIC entry outside its declared
+/// export closure. Promotes the S113 prelude-only PS-R7 `debug_assert!`
+/// ([`assert_prelude_closure`]) to an **unconditional, generalized, DIAGNOSED
+/// error** — it fires in EVERY build, for ANY module (not just `prelude`), and a
+/// firing NAMES its caller in production (module, name, source edge), turning the
+/// next phantom occurrence anywhere (`bit-and → primitives/bit-and`, FIXME 0604)
+/// into a located defect instead of another quiet-environment hunt.
+///
+/// Keys on the write's SETTLED SOURCE (Principle 26 — read the edge, not a name
+/// heuristic): a public re-export/import edge is closure-valid iff its source
+/// module genuinely PROVIDES the name; a module's own public definition is
+/// exported by §8.4; an unknown/unresolvable source is PERMITTED (the diagnostic
+/// must NEVER false-fire the build). The presence check ([`write_is_closure_valid`]
+/// uses `.is_some()`, not `.is_public()`) is deliberately false-fire-safe across
+/// legitimate **subtree-private** re-exports (`collect_specific` already validated
+/// their visibility) — only the phantom shape, a public edge whose source LACKS
+/// the name entirely, is rejected. Non-public writes are always Ok (isolation is
+/// a PUBLIC-write invariant; a private import is module-local, §8.6.5-poisoned if
+/// ambiguous but never a cross-module phantom).
+pub(crate) fn check_terminal_closure(
+    symbol_tables: &SessionTables,
+    module: &ModuleFullPath,
+    name: &str,
+    entry: &ModuleEntry<Code>,
+    span: Span,
+) -> Result<(), CranelispError> {
+    if !entry.is_public() || write_is_closure_valid(symbol_tables, entry) {
+        return Ok(());
+    }
+    let source_desc = match entry {
+        ModuleEntry::Import { source, .. } => format!("{}/{}", source.module, source.symbol),
+        _ => "own definition".to_string(),
+    };
+    if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+        eprintln!(
+            "[MODULE_TRACE] 0604 terminal-closure breach: public `{name}` written into \
+             module `{module}` from source `{source_desc}` — outside its export closure"
+        );
+    }
+    Err(CranelispError::TypeError {
+        message: format!(
+            "internal: rejected out-of-closure public binding `{name}` into module \
+             `{module}` (source `{source_desc}`) — not in the module's export closure \
+             (FIXME 0604 terminal-table write isolation)"
+        ),
+        location: ErrorLocation::from_span(span),
+    })
+}
+
+/// Generalized closure-validity predicate for [`check_terminal_closure`]. A
+/// public re-export/import edge is valid iff its source module PROVIDES the name
+/// (any visibility — `collect_specific` already vetted the exporter's right to
+/// re-export it); an unknown source is permitted (never false-fire); a module's
+/// own definition is exported by §8.4.
+fn write_is_closure_valid(symbol_tables: &SessionTables, entry: &ModuleEntry<Code>) -> bool {
+    match entry {
+        ModuleEntry::Import { source, .. } => match symbol_tables.get(&source.module) {
+            Some(src) => src.get(source.symbol.as_ref()).is_some(),
+            None => true, // unknown source module — cannot judge; permit
+        },
+        _ => true, // the module's own definition (§8.4)
     }
 }
 

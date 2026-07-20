@@ -39,6 +39,11 @@ TOPIC defn-multi-sig  [core]
     (dbl 5)                                  ; :primitives/Int 10  (1-arg variant)
     (dbl 3 4)                                ; :primitives/Int 12  (2-arg variant)
 
+  INDEPENDENT
+    Each variant type-checks ON ITS OWN — a variant needs its own annotations.
+    A param NAME shared across variants carries no shared type (matching names
+    are not a signal). `fn` is SINGLE-ARITY; multi-arity lives only in `defn`.
+
   NOT
     bare multi-sig value (no args) -> ambiguous; supply >=1 arg or wrap in (fn ...)
 

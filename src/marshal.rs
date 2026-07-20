@@ -4,6 +4,15 @@
 //! from compiled macro functions. Marshalled values are "leaked" -- their
 //! RC is never decremented, since they exist only during compilation.
 //!
+//! **Deep marshal protection (FIXME 0638).** Because the marshaller retains a
+//! reference to every cell of the arg tree it builds (it leaks the whole tree),
+//! every marshalled cell is protected with **exactly +1** at its allocation
+//! site (`protect_marshalled_cell`), so the consuming clause's parameter drop
+//! glue and any interior consumption decrement it at most to RC ≥ 1 — no
+//! marshalled cell is ever freed by the clause. Shallow top-only protection was
+//! the bug: a multi-matched / interior-aliased argument's interior cell reached
+//! RC = 0 while still reachable and double-freed (`macro-marshal-rc-protection.md`).
+//!
 //! **Known limitation:** In a long-running process (e.g. a future language
 //! server), leaked allocations accumulate without bound. Acceptable for the
 //! batch compiler and REPL where macro expansion is bounded per session.
@@ -153,6 +162,31 @@ fn read_slist_to_vec(mut slist: i64) -> Vec<Sexp> {
 // Low-level allocation helpers
 // ---------------------------------------------------------------------------
 
+/// Deep marshal protection (FIXME 0638, `macro-marshal-rc-protection.md` §2).
+///
+/// The marshaller retains a reference to **every** cell of the tree it builds —
+/// it holds the root and leaks the whole tree for the life of the session
+/// (`//!` header). The correct RC state is therefore **RC ≥ 2 on every
+/// marshalled cell** before the consuming clause runs: one count for the
+/// marshaller's own retention, one for the reference the clause's parameter drop
+/// glue (and any interior consumption) will decrement. Before this fix only the
+/// top-level arg cell was protected (`invoke_clause`'s bespoke loop), so a
+/// multi-matched / interior-aliased argument's interior cell reached RC = 0
+/// while still reachable and double-freed.
+///
+/// This is the +1 the marshaller's actual retention warrants (Principle 26 —
+/// count the reference held, not a floor heuristic). Applied at EVERY allocation
+/// site so the protection is co-located with the layout whose retention it
+/// accounts for (Principle 7/18); the completeness obligation is met by the
+/// three allocators below covering every runtime cell kind the marshaller emits
+/// — `alloc_sexp_cell` (Int/Float/Bool/Str/Sym/List/Bracket cells),
+/// `alloc_scons` (SList spine cells), `alloc_runtime_string` (the `HeapString`
+/// cells of Str/Sym). `rc_inc`'s nullary guard makes a bare tag (`SNil`) a
+/// correct no-op.
+fn protect_marshalled_cell(base: i64) {
+    rc_inc(base);
+}
+
 /// Allocate a Sexp cell with one field: `[header | tag | field]`.
 ///
 /// Total payload = 8 (tag) + 8 (field) = 16 bytes.
@@ -165,6 +199,7 @@ fn alloc_sexp_cell(tag: i64, field: i64) -> i64 {
         write_i64(base, PAYLOAD_OFFSET, tag);
         write_i64(base, FIELD0_OFFSET, field);
     }
+    protect_marshalled_cell(base); // FIXME 0638 deep protection (+1 per cell)
     base
 }
 
@@ -181,6 +216,7 @@ fn alloc_scons(head: i64, tail: i64) -> i64 {
         write_i64(base, FIELD0_OFFSET, head);
         write_i64(base, FIELD1_OFFSET, tail);
     }
+    protect_marshalled_cell(base); // FIXME 0638 deep protection (+1 per spine cell)
     base
 }
 
@@ -191,7 +227,10 @@ fn alloc_scons(head: i64, tail: i64) -> i64 {
 /// Allocate a runtime string from a Rust &str. Returns the base pointer as i64.
 fn alloc_runtime_string(s: &str) -> i64 {
     let bytes = s.as_bytes();
-    cranelisp_intrinsics::heap_string::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64)
+    let base =
+        cranelisp_intrinsics::heap_string::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64);
+    protect_marshalled_cell(base); // FIXME 0638 deep protection (+1 per HeapString cell)
+    base
 }
 
 /// Read a runtime string (HeapString) back into a Rust String.
@@ -484,6 +523,134 @@ mod tests {
         assert_eq!(slist, TAG_SNIL);
         let back = read_slist_to_vec(slist);
         assert!(back.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0638 — deep marshal protection (macro-marshal-rc-protection.md §5).
+    //
+    // The seam is unit-testable with no JIT session: marshal an arg, then read
+    // the RC of EVERY cell the marshaller allocated. With deep protection each
+    // is born at RC = 2 (the +1 for the marshaller's retention), so one consuming
+    // dec — the drop-glue teardown a clause performs on its args — leaves every
+    // cell at RC ≥ 1 (never freed while reachable). Fail-on-revert: the old
+    // top-only protection left interior cells at RC = 1, and a consuming dec
+    // freed them to 0 while still reachable (the interior-alias double-free).
+    // -----------------------------------------------------------------------
+
+    fn cell_rc(base: i64) -> i64 {
+        // SAFETY: `base` is a live heap cell allocated by the marshaller.
+        unsafe { read_i64(base, RC_OFFSET) }
+    }
+
+    /// Collect the RC of every heap cell reachable in a marshalled runtime Sexp
+    /// tree: the Sexp cell, its `HeapString` (Str/Sym), and every SList spine
+    /// SCons cell + its element cells (recursively).
+    fn collect_cell_rcs(base: i64, out: &mut Vec<(&'static str, i64)>) {
+        if base < NULLARY_THRESHOLD {
+            return; // bare nullary tag (SNil) — not a heap cell
+        }
+        out.push(("cell", cell_rc(base)));
+        // SAFETY: `base` is a live Sexp cell: tag@16, field0@24.
+        let tag = unsafe { read_i64(base, PAYLOAD_OFFSET) };
+        let field0 = unsafe { read_i64(base, FIELD0_OFFSET) };
+        match tag {
+            TAG_SEXP_STR | TAG_SEXP_SYM => {
+                if field0 >= NULLARY_THRESHOLD {
+                    out.push(("string", cell_rc(field0)));
+                }
+            }
+            TAG_SEXP_LIST | TAG_SEXP_BRACKET => collect_slist_rcs(field0, out),
+            _ => {}
+        }
+    }
+
+    fn collect_slist_rcs(mut slist: i64, out: &mut Vec<(&'static str, i64)>) {
+        while slist >= NULLARY_THRESHOLD {
+            out.push(("scons", cell_rc(slist)));
+            // SAFETY: SCons cell: head@24, tail@32.
+            let head = unsafe { read_i64(slist, FIELD0_OFFSET) };
+            let tail = unsafe { read_i64(slist, FIELD1_OFFSET) };
+            collect_cell_rcs(head, out);
+            slist = tail;
+        }
+    }
+
+    // spec: macro-marshal-rc-protection.md §5 — deep_protect_survives_consuming_teardown
+    #[test]
+    fn deep_protect_survives_consuming_teardown() {
+        // A nested arg exercising interior cells + spine + HeapStrings:
+        // (SexpList [a (SexpList [b 1]) "d"]).
+        let arg = Sexp::List(
+            vec![
+                Sexp::Symbol("a".to_string(), Span::SYNTHETIC),
+                Sexp::List(
+                    vec![
+                        Sexp::Symbol("b".to_string(), Span::SYNTHETIC),
+                        Sexp::Int(1, Span::SYNTHETIC),
+                    ],
+                    Span::SYNTHETIC,
+                ),
+                Sexp::Str("d".to_string(), Span::SYNTHETIC),
+            ],
+            Span::SYNTHETIC,
+        );
+        let rt = sexp_to_runtime(&arg);
+        let mut rcs = Vec::new();
+        collect_cell_rcs(rt, &mut rcs);
+        // The tree has interior structure (root cell, spine, element cells,
+        // nested list, HeapStrings) — many cells, not just the top.
+        assert!(rcs.len() >= 6, "expected a deep tree of protected cells: {rcs:?}");
+        for (kind, rc) in &rcs {
+            assert_eq!(
+                *rc, 2,
+                "every marshalled {kind} cell must be born at RC = 2 (deep \
+                 protection, +1 per cell) so one consuming dec leaves it ≥ 1: {rcs:?}"
+            );
+        }
+    }
+
+    // spec: macro-marshal-rc-protection.md §5 — completeness cell (every cell kind).
+    #[test]
+    fn deep_protect_completeness_over_cell_kinds() {
+        // One arg of each cell kind the marshaller can allocate.
+        let args = vec![
+            Sexp::Int(7, Span::SYNTHETIC),
+            Sexp::Float(1.5, Span::SYNTHETIC),
+            Sexp::Bool(true, Span::SYNTHETIC),
+            Sexp::Str("s".to_string(), Span::SYNTHETIC),
+            Sexp::Symbol("y".to_string(), Span::SYNTHETIC),
+            Sexp::List(vec![Sexp::Int(2, Span::SYNTHETIC)], Span::SYNTHETIC),
+            Sexp::Bracket(vec![Sexp::Symbol("z".to_string(), Span::SYNTHETIC)], Span::SYNTHETIC),
+        ];
+        for arg in &args {
+            let rt = sexp_to_runtime(arg);
+            let mut rcs = Vec::new();
+            collect_cell_rcs(rt, &mut rcs);
+            assert!(!rcs.is_empty());
+            for (kind, rc) in &rcs {
+                assert_eq!(
+                    *rc, 2,
+                    "cell kind {kind} of {arg:?} must be deep-protected at RC = 2: {rcs:?}"
+                );
+            }
+        }
+    }
+
+    // The args-SList spine (built in `invoke_clause`) is protected on build too.
+    // spec: macro-marshal-rc-protection.md §2.1 — the spine is a marshalled cell.
+    #[test]
+    fn deep_protect_covers_args_slist_spine() {
+        let items = vec![
+            sexp_to_runtime(&Sexp::Int(1, Span::SYNTHETIC)),
+            sexp_to_runtime(&Sexp::Int(2, Span::SYNTHETIC)),
+        ];
+        let slist = build_runtime_slist(&items);
+        let mut rcs = Vec::new();
+        collect_slist_rcs(slist, &mut rcs);
+        assert!(rcs.iter().any(|(k, _)| *k == "scons"), "expected spine cells: {rcs:?}");
+        for (kind, rc) in &rcs {
+            assert_eq!(*rc, 2, "args-SList {kind} cell must be protected at RC = 2: {rcs:?}");
+        }
     }
 
     // spec: 09-macros.md section 9.7 — nested List round-trip

@@ -41,6 +41,49 @@ pub(crate) fn push_fq_name(doc: &mut StyledDoc, module: &ModuleFullPath, name: &
     doc.plain(name);
 }
 
+/// Resolve a trait or type NAME to its **canonical home module** for the
+/// impl-confirmation line (FIXME 0671; `resolve-home-enumeration.md` §3 rule-1).
+///
+/// The impl line `impl <trait> for <type>` must qualify each name by the module
+/// where it actually LIVES, not the asking module the impl record sits in
+/// (`Display`'s home is `text.display`, `Int`'s is `primitives` — never `user`).
+/// Chain-follows the name from `scope` to its terminal home once (P24 "resolve
+/// once", P26 read the settled home); consults the prelude fallback for a
+/// prelude-provided name (`Display`/`Int`) not directly in scope; falls back to
+/// `fallback` only when the name is genuinely unresolvable (no worse than the old
+/// asking-module stamp).
+pub(crate) fn impl_line_home_for(
+    tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    scope: &ModuleFullPath,
+    name: &str,
+    fallback: &ModuleFullPath,
+) -> ModuleFullPath {
+    // Direct chain-follow from the asking scope to the terminal home.
+    if let Some((_, home)) = cranelisp_types::resolve_terminal_entry_and_home(tables, scope, name) {
+        return home;
+    }
+    // Prelude outer-scope hop: a prelude-provided name (Display, Int) not in the
+    // scope's own table resolves through prelude's table when the fallback bit is
+    // ON. Public-head filtered (I-1) — a private prelude head is not in scope.
+    let prelude = ModuleFullPath::from("prelude");
+    if scope != &prelude
+        && prelude_fallback.get(scope).map(|b| *b).unwrap_or(false)
+    {
+        let head_public = tables
+            .get(&prelude)
+            .and_then(|t| t.get(name).map(|e| e.is_public()))
+            .unwrap_or(false);
+        if head_public
+            && let Some((_, home)) =
+                cranelisp_types::resolve_terminal_entry_and_home(tables, &prelude, name)
+        {
+            return home;
+        }
+    }
+    fallback.clone()
+}
+
 /// Push a REPL structured-metadata `;` suffix/line as one R6 span.
 pub(crate) fn push_metadata(doc: &mut StyledDoc, text: impl Into<String>) {
     doc.push(Role::ReplMetadata, text);
@@ -334,6 +377,19 @@ pub(crate) fn append_docstring_comment(base: String, docstring: Option<&str>) ->
 }
 
 impl CompilerSession {
+    /// Canonical home of a trait/type NAME for the impl-confirmation line
+    /// (FIXME 0671) — resolves against the current REPL module + prelude fallback,
+    /// falling back to `fallback` when unresolvable. See [`impl_line_home_for`].
+    fn impl_line_home(&self, name: &str, fallback: &ModuleFullPath) -> ModuleFullPath {
+        impl_line_home_for(
+            &self.shared.symbol_tables,
+            &self.shared.prelude_fallback,
+            &self.current_module_path(),
+            name,
+            fallback,
+        )
+    }
+
     /// REPL `/info NAME` — one-shot description of a symbol resolved from
     /// `name` against the current REPL module. Returns the symbol's
     /// classification (Fn / Type / Trait / Macro / Constructor / SpecialForm),
@@ -495,10 +551,14 @@ impl CompilerSession {
                         // TraitImpl entries have `Trait.Type` names; not in symbol table.
                         let mut doc = StyledDoc::new();
                         if let Some((trait_name, target_type)) = name.split_once('.') {
+                            // FIXME 0671: qualify the trait and the type each by
+                            // its CANONICAL HOME, not the asking module.
+                            let trait_home = self.impl_line_home(trait_name, module);
+                            let type_home = self.impl_line_home(target_type, module);
                             doc.plain("impl ");
-                            push_fq_name(&mut doc, module, trait_name);
+                            push_fq_name(&mut doc, &trait_home, trait_name);
                             doc.plain(" for ");
-                            push_fq_name(&mut doc, module, target_type);
+                            push_fq_name(&mut doc, &type_home, target_type);
                         } else {
                             push_fq_name(&mut doc, &symbol.module, symbol.symbol.as_ref());
                             doc.plain(" ");
@@ -704,10 +764,14 @@ impl CompilerSession {
                 // aren't stored in the symbol table as named entries.
                 let mut doc = StyledDoc::new();
                 if let Some((trait_name, target_type)) = name.split_once('.') {
+                    // FIXME 0671: qualify the trait and the type each by its
+                    // CANONICAL HOME, not the asking module `module`.
+                    let trait_home = self.impl_line_home(trait_name, module);
+                    let type_home = self.impl_line_home(target_type, module);
                     doc.plain("impl ");
-                    push_fq_name(&mut doc, module, trait_name);
+                    push_fq_name(&mut doc, &trait_home, trait_name);
                     doc.plain(" for ");
-                    push_fq_name(&mut doc, module, target_type);
+                    push_fq_name(&mut doc, &type_home, target_type);
                 } else {
                     push_fq_name(&mut doc, module, name);
                     doc.plain(" ");
@@ -1094,5 +1158,98 @@ mod styling_colour_on_tests {
         );
         // The name bodies carry no SGR (default-styled layout, out of scope).
         assert!(!buf["\x1b[1mFns:\x1b[0m\n".len()..].contains('\u{1b}'), "body plain: {buf:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FIXME 0671 — the impl-confirmation line qualifies the trait and the type each
+// by its CANONICAL HOME, not the asking module (resolve-home-enumeration.md §3
+// rule-1; P24 "resolve once", P26 read the settled home).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod impl_line_home_tests {
+    use super::*;
+    use cranelisp_types::{Scheme, Type, UserFnState, Visibility};
+    use std::collections::HashMap;
+
+    fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+        dashmap::DashMap::new()
+    }
+    fn ensure(t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, p: &str) {
+        let path = ModuleFullPath::from(p);
+        t.entry(path.clone())
+            .or_insert_with(|| SessionSymbolTable::new_with_params(path));
+    }
+    fn scheme() -> Scheme {
+        Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int }
+    }
+    fn public_def(t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, module: &str, name: &str) {
+        let entry = ModuleEntry::def(scheme(), DefKind::UserFn { fn_state: UserFnState::NotDetermined })
+            .visibility(Visibility::Public)
+            .build();
+        t.get_mut(&ModuleFullPath::from(module)).unwrap().insert(Symbol::from(name), entry);
+    }
+    fn public_import(t: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, importer: &str, name: &str, src_mod: &str) {
+        let entry = ModuleEntry::Import {
+            source: FQSymbol { module: ModuleFullPath::from(src_mod), symbol: Symbol::from(name) },
+            visibility: Visibility::Public,
+        };
+        t.get_mut(&ModuleFullPath::from(importer)).unwrap().insert(Symbol::from(name), entry);
+    }
+
+    // The 0671 repro shape: `Display` (homed in text.display, imported into user)
+    // resolves to text.display; `W` (defined in user) resolves to user. The asking
+    // module `user` is NEVER stamped on `Display`.
+    // spec: repl/spec.md §1.3 — impl line qualifies by canonical home.
+    #[test]
+    fn impl_line_home_resolves_imported_trait_to_defining_module() {
+        let t = tables();
+        ensure(&t, "text.display");
+        ensure(&t, "user");
+        public_def(&t, "text.display", "Display"); // Display's real home
+        public_import(&t, "user", "Display", "text.display"); // user imports it
+        public_def(&t, "user", "W"); // W is user-defined
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        let user = ModuleFullPath::from("user");
+
+        let trait_home = impl_line_home_for(&t, &pf, &user, "Display", &user);
+        let type_home = impl_line_home_for(&t, &pf, &user, "W", &user);
+        assert_eq!(trait_home, ModuleFullPath::from("text.display"),
+            "Display's canonical home is text.display, not the asking module");
+        assert_eq!(type_home, ModuleFullPath::from("user"),
+            "W's canonical home is user");
+    }
+
+    // Prelude-provided name (Int) resolves through the fallback to its home
+    // (primitives), not the asking module.
+    // spec: repl/spec.md §1.3 — prelude-provided type home.
+    #[test]
+    fn impl_line_home_resolves_prelude_provided_name_to_home() {
+        let t = tables();
+        ensure(&t, "primitives");
+        ensure(&t, "prelude");
+        ensure(&t, "user");
+        public_def(&t, "primitives", "Int");
+        public_import(&t, "prelude", "Int", "primitives"); // prelude re-exports Int
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        pf.insert(ModuleFullPath::from("user"), true); // user's fallback bit ON
+        let user = ModuleFullPath::from("user");
+
+        let home = impl_line_home_for(&t, &pf, &user, "Int", &user);
+        assert_eq!(home, ModuleFullPath::from("primitives"),
+            "Int resolves through the prelude fallback to primitives, not user");
+    }
+
+    // An unresolvable name falls back to the asking module (no worse than the old
+    // behaviour) — the fix must not regress the genuinely-unknown case.
+    // spec: repl/spec.md §1.3 — fallback for unresolved.
+    #[test]
+    fn impl_line_home_falls_back_when_unresolved() {
+        let t = tables();
+        ensure(&t, "user");
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        let user = ModuleFullPath::from("user");
+        let home = impl_line_home_for(&t, &pf, &user, "Nonexistent", &user);
+        assert_eq!(home, user, "an unresolvable name falls back to the asking module");
     }
 }

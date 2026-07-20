@@ -548,7 +548,7 @@ fn repl_prologue(
     startup: Result<(), CranelispError>,
     stdout: &mut std::io::StdoutLock<'_>,
 ) {
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
 
     #[cfg(not(feature = "agent"))]
     let _ = (agent_enabled, auto_accept);
@@ -615,6 +615,21 @@ fn repl_prologue(
     // usable prompt.
     if let Some(report) = &degraded_report {
         let _ = writeln!(stdout, "{report}");
+    }
+
+    // §15.2.2 startup restore notice (FIXME 0674): when startup restored a
+    // NON-EMPTY backing file, emit `; resumed N definitions from <file>` before
+    // the banner. SUPPRESSED for an absent/empty backing file — a fresh dir
+    // reaches the prompt with no extra output. INTERACTIVE (TTY) ONLY: this is
+    // startup chrome, and the §10.8 scripted/piped contract keeps non-TTY output
+    // byte-identical (the same gate `poll_search_index_notice` uses) — a
+    // non-TTY session's restore transcript must not diverge from its fresh-mode
+    // sibling (the `output_equivalence` mode-parity harness). R6 metadata (dim).
+    if std::io::stdin().is_terminal()
+        && let Some(notice) =
+            s.startup_restore_notice(&cranelisp_types::ModuleFullPath::from(entry_module_name))
+    {
+        let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&notice));
     }
 
     s.print_banner(stdout);

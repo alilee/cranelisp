@@ -2045,7 +2045,7 @@ fn handle_typecheck_work_shared(
             // Commit the cluster-level REPL/scheduler metadata. (Per-symbol
             // staging entries already committed to live inside
             // `check_program_compat`; this drains introspection records.)
-            crate::cluster::insert_cluster(shared, processed, module);
+            crate::cluster::insert_cluster(shared, processed, module)?;
 
             // Sprint 58 Step 5b: nice workers walk
             // `symbol_tables[module].defined_symbols()` directly. The

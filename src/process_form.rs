@@ -210,7 +210,7 @@ pub fn process_cluster_once(
         ctx, module, sexps, &mut accumulator, &mut expanded_program,
     )?;
 
-    finish_pass2(ctx, module, &working_program, &expanded_program, &mut accumulator, pass2_result)
+    finish_pass2(ctx, module, sexps, &working_program, &expanded_program, &mut accumulator, pass2_result)
 }
 
 /// Cluster prologue: strategy-specific setup (active module, static import
@@ -365,6 +365,7 @@ fn pass0_peel_structural(
 fn finish_pass2(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
+    origin_sexps: &[Sexp],
     working_program: &[TopLevel],
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
@@ -375,7 +376,7 @@ fn finish_pass2(
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            let outcome = finalize_cluster(ctx, module, expanded_program, accumulator)?;
+            let outcome = finalize_cluster(ctx, module, origin_sexps, expanded_program, accumulator)?;
             // FIXME 0342 — only AFTER the parent's symbols are committed to live
             // (finalize_cluster done) do we drive declared submodules. This is
             // the deferral that lets a submodule's `(import [super [helper]])`
@@ -433,6 +434,7 @@ fn finish_pass2(
 fn finalize_cluster(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
+    origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<ClusterOnce, CranelispError> {
@@ -465,7 +467,17 @@ fn finalize_cluster(
         );
     }
 
-    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) = check_program_compat(
+    // FIXME 0650 §2.1 (macro-diagnostic-reanchoring.md) — the finalize/typecheck
+    // application site of the SAME re-anchor transform the W4 build path uses.
+    // A `def`/`const` (stdlib macros) whose EXPANSION typechecks with an error
+    // surfaces it here carrying the macro output's SYNTHETIC span (marshal
+    // `Span::SYNTHETIC` / `rewrite_spans_unique`'s ≥1M band), anchored at no
+    // source byte with no `in expansion of …` provenance. Re-anchor a
+    // synthetic-located finalize error to the origin form int holds. Keyed on
+    // the SYNTHETIC-LOCATION predicate (outside EVERY origin form's real extent),
+    // NEVER on error class — a native finalize error (its span within an origin
+    // form) passes through unchanged.
+    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) = match check_program_compat(
         ctx.symbol_tables,
         ctx.module_aliases,
         ctx.prelude_fallback,
@@ -475,7 +487,10 @@ fn finalize_cluster(
         // gate's ABI-epoch slot policy freezes superseded code into
         // (design/int/session-transaction.md §7.1).
         ctx.shared_state,
-    )?;
+    ) {
+        Ok(t) => t,
+        Err(e) => return Err(reanchor_finalize_error(e, origin_sexps)),
+    };
     if let Some(gap) = maybe_gap {
         // 0571 (B4/B5 + AL-3): the qualified-reference gap now fires
         // unconditionally on a member-absent abs module (typecheck
@@ -804,6 +819,37 @@ fn reanchor_expansion_diagnostic(
     location.line_col = None;
     location.context = None;
     rebuild_error_with(err, message, location)
+}
+
+/// Re-anchor a SYNTHETIC-located FINALIZE-path (typecheck) diagnostic to its
+/// origin form (FIXME 0650 §2.1 — the `check_program_compat` application site of
+/// the existing pure transform). The finalize check runs over the fully-expanded
+/// cluster; an error whose `location` is SYNTHETIC (outside EVERY origin form's
+/// real byte extent) came from macro-expansion output and is re-anchored to the
+/// origin form int holds. An error located WITHIN some origin form's extent is a
+/// native diagnostic — returned unchanged (the predicate must not touch located
+/// diagnostics).
+///
+/// Origin attribution: a `def`/`const` cluster is a SINGLE origin form, so the
+/// lone form is the exact anchor. For a rare multi-form cluster whose synthetic
+/// node cannot be attributed to one form, fall back to the FIRST origin form (a
+/// real, if coarse, location always beats a no-source-byte location, §2.1).
+fn reanchor_finalize_error(err: CranelispError, origin_sexps: &[Sexp]) -> CranelispError {
+    let loc = err.span();
+    // Native: the error's span falls WITHIN some origin form's real extent — the
+    // diagnostic is already located; leave it verbatim.
+    if origin_sexps
+        .iter()
+        .any(|s| !location_outside_extent(loc, s.span()))
+    {
+        return err;
+    }
+    // Synthetic (outside every origin form) — it came from expansion output.
+    // Re-anchor to the origin form (single-form cluster → that form; else first).
+    match origin_sexps.first() {
+        Some(origin) => reanchor_expansion_diagnostic(err, origin.span(), origin),
+        None => err,
+    }
 }
 
 /// Reconstruct `err` preserving its variant with a new message + location.

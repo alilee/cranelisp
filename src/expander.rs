@@ -468,19 +468,18 @@ pub(crate) fn invoke_clause(
     args: &[Sexp],
     span: Span,
 ) -> Result<Sexp, CranelispError> {
-    // Marshal each argument to a runtime Sexp ADT value.
+    // Marshal each argument to a runtime Sexp ADT value. Deep protection is now
+    // applied at every allocation site inside the marshaller (`protect_marshalled_cell`,
+    // FIXME 0638): every marshalled cell — top-level, interior, SList spine, and
+    // HeapString — is born at RC ≥ 2, accounting the reference the marshaller
+    // retains. The former bespoke top-level-only protect loop here is REMOVED (it
+    // covered only the top of each arg, leaving interiors at RC = 1 → the
+    // interior-alias double-free); the marshaller now owns the protection,
+    // co-located with the allocation whose retention it accounts for.
     let marshalled: Vec<i64> = args.iter().map(marshal::sexp_to_runtime).collect();
 
-    // Bump RC on each marshalled Sexp element. The compiled macro function
-    // uses a consuming calling convention: it decrements RC on its args
-    // parameter (SList) via drop glue, which also decrements each Sexp
-    // element inside. Without this extra inc, elements extracted from the
-    // args and stored in the result would be freed during parameter cleanup.
-    for &val in &marshalled {
-        marshal::rc_inc(val);
-    }
-
-    // Package all args as an (SList Sexp).
+    // Package all args as an (SList Sexp). The spine SCons cells are protected on
+    // build too (`alloc_scons`), so the whole args tree is uniformly RC ≥ 2.
     let args_slist = marshal::build_runtime_slist(&marshalled);
 
     // Invoke the compiled function with signal protection.
@@ -960,18 +959,27 @@ fn expand_scoped(
 /// Is `head` a binding special form whose binder positions establish a lexical
 /// scope the expander must shield (§8.6.3)? `defmacro`/`defmacro-` are excluded
 /// — their NAME position keeps the narrower CS-D1 verbatim shield above.
-fn is_binding_form(head: &str) -> bool {
+///
+/// **Shared binder-slot enumeration (FIXME 0670).** This predicate and its
+/// siblings (`is_annotation_symbol`/`starts_uppercase`/`params_scope`/
+/// `pattern_binders`) are the ONE value-level binder-slot enumeration, consumed
+/// by BOTH scope-aware walks over expansion output: `expand_scoped` (this file)
+/// and `qualify_expanded_sexp` (`process_form/macro_resolution.rs`). A second
+/// private copy in the qualify pass would be the P7 mirror the 0670 fix removes
+/// — a future binder-form addition must update this one enumeration and both
+/// walks stay in lockstep (`expansion-qualification-scope.md` §2.3).
+pub(crate) fn is_binding_form(head: &str) -> bool {
     matches!(head, "let" | "fn" | "lambda" | "defn" | "defn-" | "match")
 }
 
 /// Is `s` a `:Type`/`:Trait` annotation symbol (reader-macro-like, binds the
 /// following form)? Such symbols are held verbatim in binder brackets.
-fn is_annotation_symbol(s: &Sexp) -> bool {
+pub(crate) fn is_annotation_symbol(s: &Sexp) -> bool {
     matches!(s, Sexp::Symbol(n, _) if n.starts_with(':'))
 }
 
 /// Does `s` begin with an uppercase letter (a constructor name, not a binder)?
-fn starts_uppercase(s: &str) -> bool {
+pub(crate) fn starts_uppercase(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
@@ -993,8 +1001,9 @@ fn expand_children_clone(
 }
 
 /// The binder names introduced by a param bracket `[:Int x y]` — every bare
-/// (non-annotation) symbol. Returns `shadows ∪ params`.
-fn params_scope(param_items: &[Sexp], shadows: &HashSet<String>) -> HashSet<String> {
+/// (non-annotation) symbol. Returns `shadows ∪ params`. Shared with the qualify
+/// pass (FIXME 0670; see `is_binding_form`).
+pub(crate) fn params_scope(param_items: &[Sexp], shadows: &HashSet<String>) -> HashSet<String> {
     let mut scope = shadows.clone();
     for item in param_items {
         if let Sexp::Symbol(n, _) = item
@@ -1009,8 +1018,9 @@ fn params_scope(param_items: &[Sexp], shadows: &HashSet<String>) -> HashSet<Stri
 /// The variable binders a match pattern introduces: a bare lowercase symbol
 /// (`g`), or the non-head symbols of a constructor pattern (`(Box g)` → `g`).
 /// A wildcard `_`, a nullary constructor (uppercase), and the constructor head
-/// itself bind nothing.
-fn pattern_binders(pattern: &Sexp) -> Vec<String> {
+/// itself bind nothing. Shared with the qualify pass (FIXME 0670; see
+/// `is_binding_form`).
+pub(crate) fn pattern_binders(pattern: &Sexp) -> Vec<String> {
     match pattern {
         Sexp::Symbol(n, _) => {
             if n == "_" || starts_uppercase(n) {

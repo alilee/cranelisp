@@ -1003,3 +1003,75 @@
             out.message()
         );
     }
+
+    // FIXME 0650 §2.1 — the FINALIZE/typecheck application site. A synthetic-
+    // located TYPECHECK error over a single-form `def`/`const` cluster re-anchors
+    // to that origin form + appends `in expansion of` (a def/const typecheck
+    // error is a different CLASS than the frontend binder reject — which is why
+    // the transform keys on the synthetic-LOCATION predicate, not the error class).
+    // spec: macro-diagnostic-reanchoring.md §2.1 — finalize-path re-anchor.
+    #[test]
+    fn reanchor_finalize_typecheck_error_relocates_to_single_origin_form() {
+        use cranelisp_types::Span;
+        let origin = cranelisp_frontend::parse("(def z (bad-op 1))").unwrap().remove(0);
+        let synth = Span { start: 1_000_012, end: 1_000_020 };
+        let err = CranelispError::TypeError {
+            message: "type mismatch: expected Int, found String".to_string(),
+            location: ErrorLocation::from_span(synth),
+        };
+        let out = reanchor_finalize_error(err, std::slice::from_ref(&origin));
+        assert_eq!(
+            out.span(),
+            origin.span(),
+            "a synthetic finalize error MUST re-anchor to the origin form"
+        );
+        assert!(
+            out.message().contains("type mismatch"),
+            "the typecheck message MUST be preserved verbatim: {}",
+            out.message()
+        );
+        assert!(
+            out.message().contains("in expansion of"),
+            "expansion context MUST be appended at the finalize site: {}",
+            out.message()
+        );
+    }
+
+    // A NATIVE finalize error (its span within some origin form's real extent)
+    // passes through unchanged — even in a multi-form cluster.
+    // spec: macro-diagnostic-reanchoring.md §2.1 — native pass-through.
+    #[test]
+    fn reanchor_finalize_leaves_native_error_untouched() {
+        use cranelisp_types::Span;
+        let forms = cranelisp_frontend::parse("(defn a [] 1)\n(defn b [] x)").unwrap();
+        // A real span landing within the SECOND form's extent.
+        let second = &forms[1];
+        let real = Span { start: second.span().start + 1, end: second.span().start + 3 };
+        let err = CranelispError::TypeError {
+            message: "undefined variable: x".to_string(),
+            location: ErrorLocation::from_span(real),
+        };
+        let out = reanchor_finalize_error(err, &forms);
+        assert_eq!(out.span(), real, "a located native finalize error MUST pass through");
+        assert!(!out.message().contains("in expansion of"));
+    }
+
+    // Multi-form cluster whose synthetic node cannot be attributed to one form:
+    // fall back to the FIRST origin form (a real, if coarse, location beats a
+    // no-source-byte one).
+    // spec: macro-diagnostic-reanchoring.md §2.1 — multi-form fallback.
+    #[test]
+    fn reanchor_finalize_multi_form_falls_back_to_first_origin() {
+        use cranelisp_types::Span;
+        let forms = cranelisp_frontend::parse("(const p 1)\n(const q 2)").unwrap();
+        let err = CranelispError::TypeError {
+            message: "reject".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        let out = reanchor_finalize_error(err, &forms);
+        assert_eq!(
+            out.span(),
+            forms[0].span(),
+            "synthetic multi-form error falls back to the first origin form's span"
+        );
+    }

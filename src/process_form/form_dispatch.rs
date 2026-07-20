@@ -386,10 +386,19 @@ pub(crate) fn register_macro_in_module(
             builder = builder.docstring(doc.clone());
         }
         let entry = builder.build();
-        // R7 grep-guard (§8.3): observe the foreground macro-Def register. A `Def`
-        // (macro) entry is non-`Import`, so `assert_prelude_closure` short-circuits
-        // to valid WITHOUT a map read — safe while the `get_mut` guard is held.
+        // FIXME 0604 chokepoint (§2.1 census): route the foreground macro-Def
+        // register through the terminal-closure gate. A `Def` (macro) entry is
+        // non-`Import` → own-definition → the gate short-circuits to Ok WITHOUT a
+        // map read (provable no-op), safe while the `get_mut` guard is held. The
+        // legacy prelude observability rider stays beside it (defense-in-depth).
         crate::imports::assert_prelude_closure(env.symbol_tables, module, name.as_ref(), &entry);
+        crate::imports::check_terminal_closure(
+            env.symbol_tables,
+            module,
+            name.as_ref(),
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+        )?;
         table.insert(name.clone(), entry);
     }
     Ok(())
