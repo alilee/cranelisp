@@ -1,6 +1,6 @@
 # Sprint 114: Typed Resolution Carrier + Settlement-Consumer Drain + Binding-Indirection Contract
 
-**Status**: PHASE 6A ASSESSMENT
+**Status**: COMPLETE — closed 2026-07-20 (user approved; impl-redefinition RULED: hot-reload with defn's same-type constraint → 0714 scribe + S115 dev fix)
 
 **Goal**: Retire the S113 attributed-carry ledger (31 suite REDs) by landing the typed local/global resolution carrier (0653 prong 3), the settlement-consumer typecheck pass, the backend binding-indirection consume contract (0668/0669/0664), and the src/frontend defect drains — with the frontend-s113 audit disposed and its accepted recommendations actioned.
 
@@ -338,4 +338,28 @@ Audit rotation FIRMED: **cranelisp-typecheck** (dispatched read-only in the Phas
 
 ## Outcome (Phase 7)
 
-{pending}
+**Suite at close: 5164 run / 5153 passed / 11 attributed carries / 1 skipped** (from 4,986/4,955/31 at S113 close). **ALL 31 inherited REDs flipped**; the 11 carries are all NEW probe-discovered defects pinned this sprint, each S115-attributed with owner + class + named axis/constraints. Zero unattributed regressions across ~40 full-suite runs. Zero model-tier escalations (4th consecutive sprint); frontmatter 28/28 CLEAN; dispatch-by-shim throughout (~45 dispatches, zero fallbacks). 15 commits `fec151ef`→`69c7791e`.
+
+### Delivered
+
+- **Track A COMPLETE**: the typed resolution carrier (P24 corollary prong 3) live end-to-end — `VarRef`/`ApplyRef` closed sums, "unresolved has no constructor", absence serde-unrepresentable, ONE schema window (21→22). F-D2-10 ×4 (swallowed-error root cause), MC-X4/X4b/X5, PS-SH1 ×3, I-1 ×2, B-2 pins, F-D2-11 (probe-found wrong-accept), trait-shadow ×2 (carrier-verdict discipline at 4 post-inference seams; ONE discriminator ×5 sites), MS-P7 immediate face (ownership ProjectionOf; falsifiability-first). P26 sweep: zero out-of-window writes; SW-1 closed; SW-2 standing; harvest-window contract scribed (§11.8.10, 4th-window /arch rule); 0689 predicate fence.
+- **Track B COMPLETE**: the provenance-based consume contract (ONE liveness classifier, toggle-invariant by construction; R1/R2/R3) — BI family ×7 + BI-H-heap ×2, F-R1 scalar face, MS-P8 bare-vec face, +3 review-found regressions fixed in-wave (0691 Blocker UAF, 0692, 0695). W-B5 collapse deferred (endorsed, own change-set S115).
+- **Track C COMPLETE**: 0638 root-caused + fixed (deep marshal protection, discriminator-confirmed); 0670 fixed (scope-aware qualify, live defect unit-demonstrated, helpers one-home); 0604 chokepoint landed + MAJOR re-attribution (premise false; census gap = `commit_staging_to_live`; determinism later evaporated — S115 plan re-based on a synthesized trigger); finalize reanchor; riders 0671/0674/0675.
+- **Track D COMPLETE**: BD-A ×6 (one seam), RA reader enforcement (the user's reader-macro/dangling-qualifier rulings — `foo/`, `a.b/`, `/bar`, `:foo/`, `:a.b/` located errors; space tolerance settled; division fenced), M2-TP1, deftype-ctor, IQ-N ×4 (value-binder reject re-landed), audit batch 0677–0681.
+- **Rulings scribed**: `:` is a `^`-style reader macro (§1.4.5/§2.3.8/§2.4/§2.8.3/§8.5.1 [S114]); `/bar` symmetric (user-confirmed); Principle 16 amended; 0670 path-1; 0700 TTY-qualify (/repl authority); 0719 DEFECT per §5.1.2; 0709 settled by §7.1.
+- **Phase 6 FULL (all 5 proxies + audit)**: docs catalog +3 sections + ctor rough-edge retired; stdlib io.cl workaround retired (bare `Some`); examples 29-annotations corrected + space sub-test (120); exemplar records truth-corrected; repl demo beats + §5.4 spec row, 12/12 green; **audit landed with the zombie-0590 headline**. Six /qa 6a-FIXME dispositions incl. two complete root-causings (0720 minimal repro; 0719 axis NAMED = wrapper indirection).
+
+### Deferred / carried (all attributed; the ledger = the 11 suite REDs + open FIXMEs)
+
+- **S115 dev carries (the 11 REDs)**: MS-P7 chained faces ×2 (family-grain invariant binding; 0693 fence BEFORE/WITH); entry-payload leak + 0720 ADT-wrapped supersede ×2 (ONE backend RC-release sweep); GOT-slot carrier-loss + 0705 auto-curry ×2 (collapse question flagged); 0719 wrapper-indirection ×1 (/dev typecheck; axis named); 0709 ×2 (§7.1 enforcement); impl-redefinition ×1 — **RULED at close (user): hot-reload with defn's same-type constraint** (0714 /spec scribe; /dev src fix S115; the pin's hot-reload branch is now the required behavior).
+- **Open FIXMEs (13)**: 0604 (S115 early, re-based), 0693 (deferred, re-anchored trigger), 0694 (S115 root-cause row — flapped 1-of-4 then 0-of-2), 0696/0697 (W-B5/design), 0699 (design int), 0702 (/spec, dotted-binder matrix chain), 0703/0704 (S115 agreed), 0705 (S115), 0707 (dev src minor), 0708 (/spec user framing — annotation-in-macro-arg), 0710/0711 (frontend diagnostics); standing: 0050/0052/0463/0553/0637. **0590 = ZOMBIE per audit (disposal at S115 Phase 1 will delete it against the S110 evidence).**
+- W-B5 patch collapse; archive de-rot (18 classed); 0590-slot work stricken.
+
+### Findings
+
+- **The carrier flip IS the class-close it promised**: check-gate-leaks became located errors mechanically (MC-X3 closed by totality alone); the audit graded it "the second-time design". The sprint's structural bet paid.
+- **Probe-found > planned, 4th consecutive sprint**: both W4 regressions, F-D2-11's wrong-accept, the trait-shadow live defect, the chained MS-P7 faces, the impl-redefinition silent-ignore, 0719's real shape, and 0720's real mechanism ALL came from adversarial probes/matrix cells/outside-in passes, not planned rows.
+- **Heisenbug non-reproduction is now a pattern**: 0604's 25/25 determinism evaporated at HEAD; the ctor-crash and 0694 flap shifted the same way — the carrier/settlement window perturbs these. /qa's standing counting convention (stable-exact + named flaps) and synthesized-trigger guards are the structural answer.
+- **Record-integrity is the sprint's process headline**: the zombie 0590 (5-agent chain, nobody opened refers_to), the falsified typecheck.md, the unexecuted S108 test split, and /port's falsified "collapse when green" note are one class. Audit process feedback: **verify-against-refers_to as the disposition first act; close-checklist FIXME-table-vs-§Delivered consistency**. Candidate METHOD §2.4/§3.3 amendment for S115 Phase 1.
+- **Process incidents**: two benign read-only git violations (self-disclosed); one commit-attribution muddle (shared-tree bundling); the 0706 file briefly committed-then-deleted (dispatcher git-rm miss, corrected same turn).
+- **Audit calibration**: the S114 typecheck audit was HIGH-yield (a phantom S115 slot killed before spend; three record corrections; zero false defect claims) — the rotation continues earning its dispatch.
