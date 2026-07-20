@@ -844,3 +844,83 @@
             "redundant pair upgrades to a Public import edge (§8.4.0)",
         );
     }
+
+    // -----------------------------------------------------------------------
+    // R7/0604 prelude-export-closure seam assert (index-worker-isolation.md §8)
+    // -----------------------------------------------------------------------
+
+    fn public_import_entry(src_module: &str, src_symbol: &str) -> ModuleEntry<Code> {
+        ModuleEntry::Import {
+            source: FQSymbol {
+                module: ModuleFullPath::from(src_module),
+                symbol: src_symbol.into(),
+            },
+            visibility: Visibility::Public,
+        }
+    }
+
+    // A legitimate prelude re-export (`(export [primitives [*]])` bringing
+    // `add-i64`, which primitives genuinely provides publicly) is closure-valid —
+    // the assert is a no-op (no panic).
+    // spec: index-worker-isolation.md §8.1 — prelude-export closure invariant.
+    #[test]
+    fn assert_prelude_closure_permits_legitimate_reexport() {
+        let tables = tables();
+        ensure(&tables, "primitives");
+        ensure(&tables, "prelude");
+        tables
+            .get_mut(&ModuleFullPath::from("primitives"))
+            .unwrap()
+            .insert("add-i64".into(), primitive_def());
+        // A public re-export edge into prelude whose source (primitives) really
+        // provides `add-i64` — closure-valid, no panic.
+        let entry = public_import_entry("primitives", "add-i64");
+        assert_prelude_closure(
+            &tables,
+            &ModuleFullPath::from("prelude"),
+            "add-i64",
+            &entry,
+        );
+    }
+
+    // Prelude's OWN definition (a non-`Import` public entry) is exported by §8.4 —
+    // closure-valid regardless of source, no panic.
+    // spec: index-worker-isolation.md §8.1.
+    #[test]
+    fn assert_prelude_closure_permits_prelude_own_definition() {
+        let tables = tables();
+        ensure(&tables, "prelude");
+        let entry = primitive_def(); // a public non-Import Def
+        assert_prelude_closure(&tables, &ModuleFullPath::from("prelude"), "map", &entry);
+    }
+
+    // A non-prelude target is never checked — the assert is a no-op even for a
+    // bogus write (the invariant is prelude-specific).
+    // spec: index-worker-isolation.md §8.1.
+    #[test]
+    fn assert_prelude_closure_ignores_non_prelude_module() {
+        let tables = tables();
+        ensure(&tables, "user");
+        let entry = public_import_entry("primitives", "bit-and");
+        assert_prelude_closure(&tables, &ModuleFullPath::from("user"), "bit-and", &entry);
+    }
+
+    // The PHANTOM: a public `bit-and → primitives/bit-and` written into prelude,
+    // where primitives does NOT provide `bit-and` (it is homed in num.bits) — the
+    // FIXME 0604 write mis-targeting prelude. The seam assert TRIPS (debug), so a
+    // future firing NAMES the seam instead of a silent phantom.
+    // spec: index-worker-isolation.md §8.1 — the phantom prelude write.
+    #[test]
+    #[should_panic(expected = "R7 prelude-export-closure breach")]
+    fn assert_prelude_closure_trips_on_phantom_write() {
+        let tables = tables();
+        ensure(&tables, "primitives"); // exists but has NO bit-and
+        ensure(&tables, "prelude");
+        let entry = public_import_entry("primitives", "bit-and");
+        assert_prelude_closure(
+            &tables,
+            &ModuleFullPath::from("prelude"),
+            "bit-and",
+            &entry,
+        );
+    }

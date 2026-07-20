@@ -1,5 +1,34 @@
 # QA Risk Review
 
+## S113 risk read (2026-07-19, /qa — the W0 GLOBAL ranking is `plan/s113-risk-assessment.md`; this is the compact register form)
+
+The S113 W0 assessment (user-directed, risk-first) ranks **memory-safety
+soundness as the sprint's — and the project's — top correctness risk**: the
+only family combining silent-corruption severity, structurally-zero suite
+detection of unknown members (~97% blind, `RC_DEC_CHECK` asserted nowhere,
+oracle ≈0.6%), and 4+ confirmed-reachable live mechanisms (0641 ×8 RED incl.
+ownership-independent wrong-value faces, 0633 ×3 RED + an unguarded
+module-axis cell, 0638 uncommitted deterministic corruption, entry-`main`
+teardown leak, latent 0637) — with the only working detector (adversarial
+review) demonstrably one-layer-deep. Recommended W5 depth: build tiers 4
+(oracle lane, FIRST), 5 (quarantine/scrub/counter diagnostic modes), 3
+(RC/alloc seam asserts), and 1–2 (the §3 origin-lattice/rule-table frame
+gating the 0641 fix, + the paired backend B-2/I-2 consume fix); DEFER the
+generative harness v1 to S114. Full grounds + the honest counterweights in
+`s113-risk-assessment.md`; the user rules at the gate.
+
+Sprint-execution risks (beyond the ranking):
+
+| # | Risk | Severity | Why silent | Guard (s113 plan rows) |
+|---|---|---|---|---|
+| S113-1 | **Fence-inversion miss** — a test pinning the OLD unary "no impl" reject survives W1 and either blocks W2 (spurious RED) or, worse, is "fixed" by weakening the accept | MEDIUM-HIGH | An old-behavior pin looks like legitimate coverage | F-D2-2 flip + F-D2-3 sweep-with-table in W1, before W2 opens; F-D2-8 over-inversion fence |
+| S113-2 | **R1-variant mis-verdict via Pin-4 entanglement** — the prelude-`+` R1 variant needs BOTH the R1 fix and the carrier-loss fix; judging the R1 fix by that pin alone mis-attributes a "failed fix" | MEDIUM | The non-flip looks like the R1 fix not working | MC-E1 binding sequencing (carrier family first; check the twin's carrier face before re-attributing); the doubled `user/user/` prefix pinned separately if it survives |
+| S113-3 | **Binder-flip corpus breakage** — 8 forms' silent-accepts become rejects; a fixture/demo/example using a qualified head goes red mid-wave | MEDIUM | The accept was silent, so nothing marks its users | §1.3 corpus sweep GATES W3; fixes ship atomically with the rejects |
+| S113-4 | **W5 gate leakage** — reliability build work starting ahead of the user depth ruling (the P8 shape the track was reshaped to avoid), or conversely the defect fences stalling on the gate | MEDIUM | Schedule pressure makes both directions look reasonable | §2 probe slice DETACHABLE; §1 explicitly ungated; W4 R7 asserts ride ungated (arch revision 7) |
+| S113-5 | **Oracle-lane false confidence** — the lane lands but its seed corpus omits the shapes that fail, certifying green over the wrong space | MEDIUM | A green lane looks like coverage regardless of corpus | MS-P2 acceptance: the committed 0641 B-1 RED must go RED UNDER the lane on day one (the live counterexample proves the lane sees the class) |
+| S113-6 | **RT-4 fix pinned to the two repros, not the model** — regen "fixed" for the pinned impl shape while another persisted kind (HKT impl, defmacro) still drops | MEDIUM-HIGH | Data loss observable only at reload | PS-RT4 persisted-kind × restore matrix rooted in the D45-as-amended model; conventional/HKT twin |
+| S113-7 | **Module-locality blindness in the dispatch machinery** (W2a addendum) — carriers/mangles derived against the CALLER's module instead of the resolved base's home; imported multi-sig base fails even on the direct path (finding 8, never a green cell); the "resolve once then throw the home away" class hit 3 W2a instances (FIXME 0653 → /arch, S114 sweep) | MEDIUM-HIGH | No cross-module cell existed, so the suite could not see it; the caller-module substitution looks correct in every single-module test | s113 plan MC-X2 (pin + home-keyed fix note + base-locality axis on MC-X1) + MC-A1 (import-shape × foreign-sig-type axis on F-D2); S114 sweep row cites 0653 |
+
 ## S112 risk read (2026-07-18, /qa — shapes the depth of `plan/s112-0628-ic-wave.md`; the USER-MANDATED quality-risk assessment is §8 there)
 
 S112 is pure implementation against settled spec, but both legs rewrite

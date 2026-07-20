@@ -798,15 +798,20 @@ fn cross_module_macro_cannot_use_private_helper_neg() {
 // quasiquote (`` ` ``), unquote (`~`), unquote-splicing (`~@`) are reader
 // sugar that desugars to `macros`-module constructor calls; the result is an
 // ordinary `Sexp`-typed expression, legal in ANY position — not just defmacro
-// clause bodies. At HEAD the desugar runs only inside defmacro bodies, so quote
-// in a `defn`/`defn-`/top-level position dies at `build_form` with
-// "unexpected quote/quasiquote form — should have been expanded" (RED). The fix
-// folds the desugar into `build_form`/`build_forms` (CS-3), with int's macro
-// expander gaining a quote SHIELD in the same wave (§C interaction rows).
+// clause bodies.
+//
+// RESOLVED (0613, fold landed S111): the desugar was folded into
+// `build_form`/`build_forms`, with int's macro expander gaining a quote SHIELD in
+// the same wave (§C interaction rows). These rows are now REGRESSION GUARDS
+// (GREEN) — a quote/quasiquote in a `defn`/`defn-`/top-level position desugars to
+// an ordinary `Sexp` rather than dying at `build_form` with "unexpected
+// quote/quasiquote form — should have been expanded". The `// defect:` notation is
+// retained (greppable class-frequency signal over GREEN repros — see
+// tests/CLAUDE.md §"Defect-repro notation").
 //
 // A `Sexp` value renders `:macros/Sexp (Sexp.SexpXxx …)`; datum survival is
 // asserted on that render (`Sexp.SexpSym "m"` etc.). `run_prims` gives the
-// `--run` face (the defect is mode-uniform — a frontend desugar).
+// `--run` face (the desugar is mode-uniform — a frontend desugar).
 // =============================================================================
 
 fn run_prims(src: &str) -> helpers::e2e::CrOutput {
@@ -896,9 +901,9 @@ fn unquote_splicing_at_top_level_desugars() {
 }
 
 // QQ-4 (--run face) — the desugar is mode-uniform; a quote in a `defn` body
-// must compile under `--run` too. At HEAD the desugar dies at `build_form`
-// (parse error → nonzero exit), so `assert_ok` FAILS (RED); flips GREEN when
-// the fold lands. (`f`'s body is desugared at build regardless of being called.)
+// compiles under `--run` too. The desugar folds into `build_form`, so `f`'s body
+// is desugared at build regardless of being called and `assert_ok` holds (GREEN
+// regression guard since the 0613 fold landed).
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
@@ -931,8 +936,8 @@ fn quasiquote_in_defmacro_body_still_expands() {
 
 // QQ-I1 — `(m x)` under quote in a defn body: MUST NOT expand. The datum
 // survives as the 2-element Sexp list with head symbol `m`; `999` must NOT
-// appear. RED at HEAD (parse error, no Sexp); GREEN when fold+shield land;
-// RED (999 present) if fold lands WITHOUT the shield — the corruption alarm.
+// appear. GREEN (fold+shield landed, 0613); if `999` ever appears the fold has
+// regressed PAST the shield — the corruption alarm.
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
@@ -1018,8 +1023,8 @@ fn macro_call_under_unquote_splicing_expands_and_splices() {
 
 // QQ-I5 — nested quasiquote depth: a macro-call-shaped list inside a NESTED
 // quasiquote must stay shielded (the shield tracks nesting depth). If depth is
-// not tracked, `m` expands to 999. RED at HEAD (parse error → no Sexp); GREEN
-// with fold+depth-tracking shield; RED (999) if the shield ignores depth.
+// not tracked, `m` expands to 999. GREEN (fold+depth-tracking shield landed,
+// 0613); if `999` appears the shield has stopped tracking depth — the alarm.
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
@@ -1033,7 +1038,7 @@ fn macro_call_inside_nested_quasiquote_not_expanded() {
 // QQ-I6 — macro ARGUMENTS stay raw (the arch ruling: desugar-at-build runs
 // AFTER expansion dispatch, so a macro receives the `(quote …)` sexp the user
 // wrote). An identity macro returns its arg unchanged; the quoted datum
-// round-trips to the Sexp `(1 2)`. RED at HEAD (quote dies at build_form).
+// round-trips to the Sexp `(1 2)`. GREEN (the quote desugar landed, 0613).
 // spec: spec/09-macros.md §9.4
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]

@@ -106,6 +106,15 @@ unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
         old > 0,
         "RC underflow in drop glue: ptr={ptr:#x} had rc={old} before decrement"
     );
+    // A3 release-gate (safety-invariants §5): the underflow half fires in the
+    // release/`--link` lane too — this is the funnel every recursive drop-glue
+    // leaf routes through, so the 0633/0638 recursive-free seams inherit it.
+    // Under M2 scrub a stale dec reads a poisoned (wild-negative) rc.
+    if crate::diagnostics::rc_check_release_enabled() && old <= 0 {
+        crate::diagnostics::seam_hard_fail(&format!(
+            "atomic_dec_rc (drop glue): dec of ptr {ptr:#x} with rc={old} <= 0 (stale/poisoned dec)"
+        ));
+    }
     rc::rc_trace("dec", ptr, old - 1);
     old
 }

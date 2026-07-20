@@ -175,6 +175,11 @@
 
 pub mod alloc;
 pub mod catalog;
+/// Memory-safety diagnostic modes (M1 quarantine / M2 scrub / M3 alloc-free
+/// parity) + the release variant of the RC/alloc seam asserts. `pub(crate)` —
+/// env-gated, default-OFF allocator behaviour internal to the intrinsic funnels;
+/// no public surface, no ABI/catalog delta (`design/intrinsics/diagnostic-modes.md`).
+pub(crate) mod diagnostics;
 pub mod drop;
 /// Single-source heap-cell `i64` read/write accessors over a base+offset (MED-1,
 /// FIXME 0370). `pub(crate)` — an internal layout-access helper, not a public

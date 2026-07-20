@@ -25,24 +25,26 @@
 (impl Default String
   (defn default [] ""))
 
-;; ── Self-tests — SHIPPED at S112 6b (return-type dispatch now works) ──
+;; ── Self-tests — SHIPPED at S112 6b (return-type dispatch works) ──
 ;; S112 leg (c) landed nullary return-type dispatch. The backing self-test
 ;; `default/test.cl` (module `default.test`) exercises each impl via the
 ;; annotation-selected form `(let [x :Int (default)] …)`, which dispatches to
-;; the per-type impl and compiles + runs end-to-end — PROVIDED the `Default`
-;; TRAIT is in scope, i.e. imported alongside the method
-;; (`(import [super [Default default]])` in the backing module). The S87
-;; "language limitation" / "poisons the prelude load graph" claim is
-;; SUPERSEDED; the S87 deferral is retired.
+;; the per-type impl and compiles + runs end-to-end.
 ;;
-;; RESIDUAL COMPILER DEFECT (found S112 6a, /stdlib) — D2: a nullary
-;; return-type-dispatch method imported WITHOUT its trait —
-;; `(import [default [default]])` only — passes typecheck then leaks
-;; `codegen error … undefined function: default`, whereas the analogous UNARY
-;; method is caught cleanly at typecheck ("no impl of trait … for type …").
-;; A check-gate leak (dispatch-uniformity), NOT a stdlib bug — the backing
-;; test module sidesteps it by importing the trait (the green fence above).
-;; Pinned as a failing test (S112 /testing batch); open user normative
-;; question on whether method-only import suffices for dispatch.
+;; D2 RESOLVED (S113). The user ruled that importing a trait METHOD without its
+;; TRAIT suffices for dispatch (spec §7.11.2); the typecheck fix landed in
+;; S113 W2a. So `(import [default [default]])` (method-only — no `Default`
+;; trait in scope) now dispatches correctly, where at S112 6a it leaked
+;; `codegen error … undefined function: default`. The S112 "RESIDUAL COMPILER
+;; DEFECT" claim is SUPERSEDED. Verified end-to-end for all four impls
+;; (Int/Float/Bool/String) at S113 6a. The backing test now imports the method
+;; ONLY (`(import [super [default]])`) so the self-test is a live regression
+;; guard for the D2 dispatch path.
+;;
+;; NOTE (S113, adjacent open defect 0672): a nullary return-dispatch to a type
+;; with NO impl still leaks `codegen error: undefined function` instead of a
+;; clean typecheck reject. Our four impls cover the tested types, so the
+;; self-tests never hit it; do NOT add a no-impl negative cell here until 0672
+;; is fixed.
 
 (mod- test)

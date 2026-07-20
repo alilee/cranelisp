@@ -368,13 +368,13 @@ TOPIC traits  [core]
 
   EXAMPLE
     (import [primitives [int-to-string]])
-    (deftrait Show (show [a] String))                    ; one required method
-    (impl Show Int (defn show [x] (int-to-string x)))
-    (show 42)                                            ; :primitives/String "42"
+    (deftrait Describe (describe [a] String))            ; one required method
+    (impl Describe Int (defn describe [x] (int-to-string x)))
+    (describe 42)                                        ; :primitives/String "42"
 
   NOT
-    (deftrait Show [(show [a] String)])  -> WRONG outer bracket ("expected list")
-      -> (deftrait Show (show [a] String))               ; sigs are direct children
+    (deftrait Describe [(describe [a] String)])  -> WRONG outer bracket ("expected list")
+      -> (deftrait Describe (describe [a] String))       ; sigs are direct children
     built-ins: Num(+ - * /), Eq(= !=), Ord(< > <= >=), Display(show), Functor(fmap)
 
   SPEC  07 §7.1, §7.7; 05 §5.3
@@ -391,10 +391,10 @@ TOPIC impl  [core]
 
   EXAMPLE
     (deftype Color Red Green Blue)
-    (deftrait Show (show [a] String))
-    (impl Show Color
-      (defn show [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
-    (show Green)                             ; :primitives/String "Green"
+    (deftrait Describe (describe [a] String))
+    (impl Describe Color
+      (defn describe [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
+    (describe Green)                         ; :primitives/String "Green"
 
   NOT
     (impl- Trait Type ...)         -> impl has no private variant (always visible)

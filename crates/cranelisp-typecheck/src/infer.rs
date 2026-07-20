@@ -4,7 +4,7 @@
 //! 10-40 lines, independently testable. Addresses audit HIGH-1 (monolithic infer_expr).
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
+    CranelispError, Expr, JitSymbol, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
     Type, TypeExpr,
 };
 
@@ -218,6 +218,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     fn infer_var(&self, state: &mut CheckState, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
+        // S113 0655 (user ruling (a)) — spelling normalization at the ONE Var
+        // entry: a reference qualified with the CURRENT module (after §8.6.6
+        // alias substitution) IS the bare local. Normalize BEFORE the env
+        // consult so every read below (scheme lookup, the value/undefined
+        // diagnostics, the dotted/carrier recorders, and — via
+        // `record_reference_target`'s env consult — the §4.6 shadow + §11.8.7
+        // recursion-self carve-out) observes the bare shape. See
+        // `TypeCheckEnv::normalize_self_qualified`.
+        let name: &str = self.normalize_self_qualified(state, name.as_ref());
         let (scheme, gap) = self.lookup(state, name);
         // Record the in-band gap (if any) so a failed qualified-name resolution
         // surfaces as `CheckError::Gap` once the per-form dispatcher reports its
@@ -275,7 +284,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             let r = self.current_symbol_table(state);
             let v = r.view();
-            if let Some(ModuleEntry::SpecialForm { .. }) = v.lookup(name) {
+            if let Some(ModuleEntry::SpecialForm { .. }) = v.lookup(&Symbol::from(name)) {
                 return Err(CranelispError::TypeError {
                     message: format!("{name} is a special form, not a value"),
                     location: ErrorLocation::from_span(span),
@@ -285,7 +294,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Reject internal constructors (e.g. Bind) — they cannot be
         // constructed by user code, only by compiler-generated primitives.
-        if self.is_internal_constructor(state, name) {
+        if self.is_internal_constructor(state, &Symbol::from(name)) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot construct internal type constructor '{name}'"
@@ -344,10 +353,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (leg 3, carrier only — dotted refs are `callees` residue); every other
         // name goes through the shared bare/qualified recorder (which also owns
         // the local-shadow gate + the self-recursion carve-out, leg 2).
-        if let Some(fq) = self.resolve_dotted_member_fq(state, name.as_ref()) {
+        if let Some(fq) = self.resolve_dotted_member_fq(state, name) {
             state.method_resolutions.resolved_targets.insert(span, fq);
         } else {
-            self.record_reference_target(state, name.as_ref(), span);
+            self.record_reference_target(state, name, span);
         }
 
         let ty = self.instantiate(state, &scheme);
@@ -570,6 +579,53 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         result
     }
 
+    /// MC-X2 — lazily register an IMPORTED multi-sig base into the overload
+    /// machinery. The `overloads`/`resolved_overloads` tables are populated for
+    /// LOCALLY-defined bases (Pass-1 registration + the `form.rs` rehydration of
+    /// the current module's `Overloaded` entries); an imported base (`(import
+    /// [mlib [h]])`) is a `ModuleEntry::Import` chain-following to an `Overloaded`
+    /// entry in its HOME module, invisible to those tables. Chain-follow `name`;
+    /// if it terminates at an `Overloaded` entry in a DIFFERENT module, mirror the
+    /// local rehydration (`form.rs`) AND record the base's HOME in `overload_homes`
+    /// so the drain keys the dispatch carrier by the base's storage identity
+    /// (P24), not the caller's module. Idempotent (guards on `contains_key`).
+    ///
+    /// A base referenced BOTH bare (`h`, after import) and qualified (`mlib/h`)
+    /// double-keys `overload_homes` under both names — harmless: each key maps to
+    /// the same home, and Fix A mangles the concrete identity from the BARE base
+    /// name, so both references dispatch to the same `mlib`-keyed `h$Int`.
+    fn maybe_rehydrate_imported_overload_base(
+        &self,
+        state: &mut CheckState,
+        name: &Symbol,
+    ) {
+        if state.overloads.contains_key(name) {
+            return;
+        }
+        let Some((entry, home)) = self.resolve_terminal_entry_scoped(state, name.as_ref()) else {
+            return;
+        };
+        if home == state.current_module {
+            return; // local base — the ordinary registration path owns it
+        }
+        if let ModuleEntry::Def { kind, .. } = &entry
+            && let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref()
+            && !variants.is_empty()
+        {
+            let overload_keys: Vec<(Symbol, usize)> = variants
+                .iter()
+                .map(|v| (v.mangled_name.clone(), v.param_types.len()))
+                .collect();
+            let resolved: Vec<(Vec<Type>, Type, Symbol)> = variants
+                .iter()
+                .map(|v| (v.param_types.clone(), v.ret_type.clone(), v.mangled_name.clone()))
+                .collect();
+            state.overloads.insert(name.clone(), overload_keys);
+            state.resolved_overloads.insert(name.clone(), resolved);
+            state.overload_homes.insert(name.clone(), home);
+        }
+    }
+
     fn infer_apply(
         &self, state: &mut CheckState,
         callee: &Expr,
@@ -602,8 +658,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // in the overloads table, defer resolution to the overload pass.
         // We don't unify here because the base name's scheme may not match
         // the actual call site arity/types.
+        //
+        // MC-X2 (W2-close) — an IMPORTED multi-sig base is NOT in `state.overloads`
+        // (that table holds LOCALLY-defined bases). Lazily rehydrate it from its
+        // chain-followed `Overloaded` home entry so the SAME overload machinery
+        // (gate → drain → carrier) dispatches it, keyed by its HOME module (P24).
+        // Only for a not-locally-shadowed Var callee that is not already an overload.
+        if let Expr::Var { name, .. } = callee
+            && !state.overloads.contains_key(name)
+            && state.env.lookup(name.as_ref()).is_none()
+        {
+            self.maybe_rehydrate_imported_overload_base(state, name);
+        }
+
+        // §11.8.7 ruling 5 — LOCAL-SCOPE-FIRST guard. A `let`/`fn`/param binding
+        // that lexically shadows a multi-sig base (`(defn t1 [x] (let [m1 (fn [y]
+        // y)] (m1 x)))`, `m1` a base) MUST resolve to the LOCAL binding (spec §4.6
+        // / §5.1.2), never the global overload table. Enter the overload path
+        // ONLY when `name` is NOT locally bound at all, OR it is the genuine
+        // recursion self-reference (the §5.1.2 back-flow self-call, whose
+        // recursion binding IS a local at `current_defn_frame`). This is the
+        // composition contract with the R1 leg: during a mono recheck the
+        // self-call's base is not locally bound (`recheck_body_for_mono` binds
+        // only the instance mangle), so the guard admits R1's inline path
+        // unchanged — the guard is a strict pre-filter that never fires on R1's or
+        // a genuine self-call's inputs. A shadowed call falls through to ordinary
+        // local inference (indirect call, no carrier — no schema bump).
         if let Expr::Var { name, .. } = callee
             && state.overloads.contains_key(name)
+            && (state.env.lookup(name.as_ref()).is_none()
+                || state.is_recursion_self_ref(name.as_ref()))
         {
             // I1 fix (§11.3.1 caveat (b)): during a multi-sig template clause's
             // mono recheck, an inner self-call to the overloaded base (`(g x)`
@@ -653,6 +737,92 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     return Ok(ret_ty);
                 }
             }
+
+            // §11.8.3 leg R1 — a CROSS-ARITY (or distinct-args) sibling self-call
+            // from a genuinely-poly template clause's mono recheck. The
+            // same-instantiation gate above fires only for THIS instance's exact
+            // arity+args; a sibling at a different arity (`(g2 1 2)` from the 1-arg
+            // clause's recheck) skips it, and pre-R1 re-deferred a pending entry the
+            // sole drain has already taken → orphan → wrong-reject with the internal
+            // `$Var$Int` mangle leaking. Widen the inline match set from "this
+            // instance" to "the base's SETTLED overload clauses" (§11.3.4 recorded
+            // direction): select the sibling by arity+args from `resolved_overloads`
+            // and dispatch to its concrete mangle — a concrete clause directly, a
+            // `$Var` template clause via `monomorphise_call` at the concrete args —
+            // exactly as the standalone twin's ordinary call would. The inline path
+            // (not a post-body scan) is required so the callee node is retyped
+            // concrete for `from_expr`.
+            if let Some(base) = state.mono_recheck_self.as_ref().map(|(b, ..)| b.clone())
+                && base == *name
+            {
+                let resolved_args: Vec<Type> =
+                    arg_types.iter().map(|a| self.apply_subst(state, a)).collect();
+                if resolved_args.iter().all(Type::is_concrete)
+                    && let Some(variants) = state.resolved_overloads.get(name).cloned()
+                    && let crate::program::OverloadSelection::Unique((cparams, cret, cmangled)) =
+                        crate::program::select_unique_overload_variant(&variants, &resolved_args)
+                {
+                    let clause_params = cparams.clone();
+                    let clause_mangled = cmangled.clone();
+                    let clause_ret = cret.clone();
+                    // Resolve the selected sibling clause to a CONCRETE dispatch
+                    // target + its concrete signature.
+                    let (dispatch_name, inst_params, inst_ret) =
+                        if clause_params.iter().all(Type::is_concrete) {
+                            // Concrete sibling clause — dispatch to its mangle.
+                            (
+                                JitSymbol::from(clause_mangled.as_ref()),
+                                clause_params.clone(),
+                                self.apply_subst(state, &clause_ret),
+                            )
+                        } else {
+                            // `$Var` template sibling (constrained / genuinely-poly)
+                            // — monomorphise at the concrete args and dispatch to the
+                            // minted instance. `origin_base = Some(name)` so a nested
+                            // self-call inside it resolves as monomorphic recursion.
+                            let mono = self.monomorphise_call(
+                                state, &clause_mangled, &resolved_args, span, None, Some(name),
+                            )?;
+                            let instance = match &mono {
+                                Some(md) => md.defn.name.clone(),
+                                None => clause_mangled.clone(),
+                            };
+                            let cm = state.current_module.clone();
+                            let inst_ret = self
+                                .probe_module_entry_owned(&cm, instance.as_ref())
+                                .and_then(|e| match e {
+                                    ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+                                        Type::Fn(_, r) => Some((**r).clone()),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| self.apply_subst(state, &clause_ret));
+                            (JitSymbol::from(instance.as_ref()), resolved_args.clone(), inst_ret)
+                        };
+                    for (p, a) in inst_params.iter().zip(arg_types.iter()) {
+                        self.unify(state, p, a, span)?;
+                    }
+                    self.unify(state, &inst_ret, &ret_ty, span)?;
+                    let resolution = ResolvedCall::SigDispatch { mangled_name: dispatch_name };
+                    self.record_dispatch_target(state, span, &resolution);
+                    state.method_resolutions.resolved_calls.insert(span, resolution);
+                    for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                        self.record_expr_type(state, arg.span(), self.apply_subst(state, arg_ty));
+                    }
+                    // Retype the callee (the overloaded base `Var`) to the sibling
+                    // clause's concrete signature — `from_expr` requires every node
+                    // concrete, and the base otherwise carries the polymorphic union.
+                    self.record_expr_type(
+                        state,
+                        callee.span(),
+                        Type::Fn(inst_params.clone(), Box::new(inst_ret.clone())),
+                    );
+                    self.record_expr_type(state, span, self.apply_subst(state, &ret_ty));
+                    return Ok(ret_ty);
+                }
+            }
+
             // §5.1.2 self-call tag: a call to overloaded base `name` from inside
             // one of `name`'s OWN clause bodies (the current defn is `name` or a
             // `name__vN` clause) is a monomorphic-recursion sibling self-call — the

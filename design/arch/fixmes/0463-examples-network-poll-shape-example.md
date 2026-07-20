@@ -95,6 +95,19 @@ anywhere, and `tests/examples.rs` remains the bare exit-code umbrella. S101
 ready to headline 6b; remains deferred pending `/platform` net-leaf or `/qa`
 harness-driver infra per the resolution paths above.
 
+## S113 Phase-6a readiness re-check (2026-07-19, /examples)
+
+All three blockers re-verified STANDING at S113 Phase 6a. `platforms/` still
+contains no socket leaf (`async-demo boom poll-pool pool-demo shapes
+shapes-badabi stdio test-capture` — none binds a `TcpListener`/`accept`/`connect`;
+`grep -riE 'TcpListener|accept-conn|bind-listener|client.connect' platforms/`
+→ zero hits), no client-connect leaf exists anywhere, and `tests/examples.rs`
+remains the bare exit-code umbrella. S113 (memory-safety reliability build +
+S112 defect-family drain + frontend binder tightening + REPL impl persistence)
+touched **no** `platforms/` files and landed nothing enabling. NOT ready; remains
+deferred pending `/platform` net-leaf or `/qa` harness-driver infra per the
+resolution paths above. Trigger UNMET — defers by rationale, not habit.
+
 ## Operational implication / Context
 
 This is close-out housekeeping, not a headline gap — a learner still meets the

@@ -5,8 +5,28 @@ filed_by: /arch
 filed_at: 2026-07-10
 sprint_filed: 106
 refers_to: design/int/session-transaction.md §10 CS-1; src/redefine.rs::capture_instantiation_drivers; design/arch/ownership-inference.md §3.3 (ModeSummary implementing sprint opens cranelisp-types); design/backend/ownership-codegen.md §8.3 (pinned backend interface)
-status: open
+status: deferred
+deferred_by: /design(typecheck)
+deferred_at: 2026-07-19
+target_sprint: S114 (W5-if-deep window)
 ---
+
+> **S113 Phase-3 seam judgment (/design(typecheck), 2026-07-19 — arch revision 8).**
+> DEFERRED to the W5/S114 ownership-machinery window. The W2 mono/carrier family fix
+> (R1×2 + R2 + D3 + D2 + TB-24 + D1) does **NOT** open this seam: every W2 change is
+> producer-behaviour over EXISTING carriers (`MethodResolutions.resolved_calls`/
+> `.resolved_targets`, mono entries via `register_mono_entry`, `ResolvedCall::TraitMethod`)
+> — an internal harvest reordering/extension deriving from settled state
+> (`design/typecheck/monomorphisation.md` §11.8; `traits.md` §D2). It exposes **no**
+> new public "instantiate an FQSymbol at a recorded set of concrete type tuples" entry
+> point and touches **no** three-surface (typecheck instantiate-at-types + backend
+> codegen + src redefine consumer) contract. This FIXME's entry point is a
+> persistence/redefine capability (re-request instantiation of a captured mono-variant
+> SET post-reload) that stands orthogonal to W2's behaviour fixes. Default disposition
+> (arch revision 8) stands: co-land in the ModeSummary/ownership-machinery sprint that
+> already opens `cranelisp-types` + the typecheck/backend monomorphisation seams, with
+> explicit /arch surface approval. No W2 landing.
+
 
 # "Instantiate symbol at these types" entry point — the general SET-capture the T1 reload cure wants
 

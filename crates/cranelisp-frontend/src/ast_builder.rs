@@ -82,6 +82,49 @@ pub(crate) fn reject_reserved_binder_name(name: &str, span: Span) -> Result<(), 
     Ok(())
 }
 
+/// Reject a qualified (slash-bearing) spelling in DECLARATION-HEAD position.
+///
+/// A declaration head is a binder, not a reference (spec/05-definitions.md §5,
+/// "Declaration heads are binders") — it binds a NEW name into the CURRENT
+/// module and MUST be a bare (unqualified) symbol. A qualified head (`fmt/foo`,
+/// `fmt/Foo`) is a compile-time error; there is no mechanism for declaring a
+/// name into another module. This is the exact dual of the §8.5 reference
+/// splitters (`type_ref_from_name` / `trait_ref_from_name`) that split a
+/// *reference* at the last `/`: a reference reaches across modules; a binder
+/// never does.
+///
+/// Single-sourced (Principle 7) so every binder head site enforces the
+/// identical rule — the sibling of [`reject_reserved_binder_name`]: one gates
+/// reserved names (`trace`), one gates qualified spellings; both fire where
+/// binder-ness is decided (Principle 18).
+///
+/// A name is qualified iff splitting at the LAST `/` yields two NON-EMPTY halves
+/// — the exact guard the §8.5 reference splitters use (`type_ref_from_name` /
+/// `trait_ref_from_name`), so this is their precise dual. The both-halves-
+/// non-empty condition is load-bearing (Principle 16): a bare `/` is the
+/// legitimate division-operator name (`(deftrait Num (/ [a b] self) …)`,
+/// `stdlib/num/num.cl`), and `/`, `foo/`, `/bar` all split to an empty half and
+/// are therefore NOT qualified — a coarse `contains('/')` would wrongly reject
+/// the `/` operator binder. The predicate keys on `/` only: a dotted name
+/// (`Point.x`) is a member/accessor form, never a raw declaration head, and
+/// widening to `.` is out of scope (Principle 6).
+pub(crate) fn reject_qualified_binder_head(name: &str, span: Span) -> Result<(), CranelispError> {
+    if let Some((module, bare)) = name.rsplit_once('/')
+        && !module.is_empty()
+        && !bare.is_empty()
+    {
+        return Err(parse_err(
+            &format!(
+                "'{name}' is a qualified name, but a definition head is a binder and must be a \
+                 bare (unqualified) name — write '{bare}' (a definition binds into the current \
+                 module; use an import/qualified reference to reach another module)"
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Sexp inspection helpers
 // ---------------------------------------------------------------------------
@@ -498,6 +541,10 @@ fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
     match sexp {
         Sexp::Symbol(name, span) => {
             reject_reserved_binder_name(name, *span)?;
+            // A `defn`/`defn-` head — and, via `build_impl_method`, an impl-body
+            // method-defn head — is a binder, so a qualified spelling is a
+            // compile-time error (spec §5; S1). One seam covers both callers.
+            reject_qualified_binder_head(name, *span)?;
             Ok(name.as_str().into())
         }
         _ => Err(parse_err("expected function name", sexp.span())),
@@ -596,14 +643,29 @@ pub(crate) fn parse_deftype(
 
 fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispError> {
     match sexp {
-        Sexp::Symbol(name, _) if is_uppercase_start(name) => {
+        Sexp::Symbol(name, span) if is_uppercase_start(name) => {
+            // A `deftype`/`deftype-` head is a binder (spec §5; S2, bare arm) —
+            // a qualified spelling is a compile-time error.
+            reject_qualified_binder_head(name, *span)?;
             Ok((TypeName::from(name.as_str()), vec![]))
         }
         Sexp::List(children, span) => {
             if children.is_empty() {
                 return Err(parse_err("empty type head", *span));
             }
-            let (name, _) = expect_symbol(&children[0])?;
+            let (name, name_span) = expect_symbol(&children[0])?;
+            // The head NAME of the `(Name params…)` arm is the binder (spec §5;
+            // S2, list arm) — reject a qualified spelling before it re-roots
+            // under the current module via `TypeName::from`.
+            reject_qualified_binder_head(name, name_span)?;
+            // The parenthesized head name must start uppercase, the SAME rule the
+            // bare `Symbol` arm enforces via its match guard (spec §5.2 — a type
+            // name is uppercase). Without this the list arm silently accepted a
+            // lowercase head `(deftype (point a) …)` while the bare form
+            // `(deftype point …)` was correctly rejected (audit S113 finding 2).
+            if !is_uppercase_start(name) {
+                return Err(parse_err("type name must start with uppercase", name_span));
+            }
             let params: Vec<Symbol> = children[1..]
                 .iter()
                 .map(|s| {
@@ -623,18 +685,55 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
 fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> {
     match sexp {
         // Nullary: bare UpperName
-        Sexp::Symbol(name, span) if is_uppercase_start(name) => Ok(ConstructorDef {
-            name: name.as_str().into(),
-            docstring: None,
-            fields: vec![],
-            span: *span,
-        }),
+        Sexp::Symbol(name, span) if is_uppercase_start(name) => {
+            // A constructor name is a binder (spec §5.2.2, user ruling 2026-07-19)
+            // — it mints a module-level callable, so a qualified spelling
+            // `(deftype Shape fmt/Circle)` is a compile-time error (span at the
+            // ctor name). `is_uppercase_start` keys on the after-slash segment, so
+            // `fmt/Circle` reaches this arm; reject it here (0660 cell (b)).
+            reject_qualified_binder_head(name, *span)?;
+            Ok(ConstructorDef {
+                name: name.as_str().into(),
+                docstring: None,
+                fields: vec![],
+                span: *span,
+            })
+        }
         // Data or nullary-with-doc: (UpperName "doc"? [fields]?)
         Sexp::List(children, span) => {
             if children.is_empty() {
                 return Err(parse_err("empty constructor", *span));
             }
-            let (name, _) = expect_symbol(&children[0])?;
+            let (name, name_span) = expect_symbol(&children[0])?;
+            // A constructor name is a binder (spec §5.2.2) — a qualified spelling
+            // `(deftype Shape (fmt/Circle …))` rejects here, span at the ctor name
+            // (0660 cell (b)). Checked BEFORE the uppercase rule so a qualified
+            // name names the qualified fault regardless of its after-slash case.
+            reject_qualified_binder_head(name, name_span)?;
+            // A constructor name must start uppercase (spec §5.2), the SAME rule
+            // the bare-nullary arm enforces via its match guard. Without this the
+            // list arm silently accepted a lowercase parenthesized constructor
+            // `(deftype Shape (circle [:Int r]))` — callable but UNMATCHABLE in
+            // patterns (patterns dispatch on uppercase constructor names). Located
+            // at the name element, fix-naming (0660 cell (a)).
+            if !is_uppercase_start(name) {
+                let cap = {
+                    let mut chars = name.chars();
+                    match chars.next() {
+                        Some(first) => {
+                            first.to_uppercase().collect::<String>() + chars.as_str()
+                        }
+                        None => name.to_string(),
+                    }
+                };
+                return Err(parse_err(
+                    &format!(
+                        "constructor name `{name}` must start with uppercase so it is \
+                         matchable in patterns (spec §5.2) — write `{cap}`"
+                    ),
+                    name_span,
+                ));
+            }
             let (docstring, next) = extract_optional_docstring(children, 1);
 
             let fields = if next < children.len() {
@@ -687,6 +786,11 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
                 ));
             }
             let (name, name_span) = expect_symbol(&items[name_pos])?;
+            // A field name is a binder — it mints a module-level `Type.field`
+            // accessor (spec §5.2.6, user ruling 2026-07-19) — so a qualified
+            // field name `(deftype T [:Int fmt/r])` is a compile-time error, span
+            // at the field name (0660 field-cell).
+            reject_qualified_binder_head(name, name_span)?;
             fields.push(FieldDef {
                 name: name.into(),
                 type_expr: te,
@@ -696,6 +800,8 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
         } else {
             // Bare name -- shortcut syntax (fresh type var)
             let (name, name_span) = expect_symbol(&items[i])?;
+            // Field name is a binder (spec §5.2.6) — qualified rejects here too.
+            reject_qualified_binder_head(name, name_span)?;
             fields.push(FieldDef {
                 name: name.into(),
                 type_expr: TypeExpr::TypeVar("".into()),
@@ -854,13 +960,13 @@ pub(crate) fn parse_deftrait(
 /// names the fix.
 fn parse_trait_head_shape(
     sexp: &Sexp,
-) -> Result<(&str, Option<(Symbol, Span)>), CranelispError> {
+) -> Result<(&str, Span, Option<(Symbol, Span)>), CranelispError> {
     match sexp {
         Sexp::Symbol(name, span) => {
             if !is_uppercase_start(name) {
                 return Err(parse_err("trait name must start with uppercase", *span));
             }
-            Ok((name.as_str(), None))
+            Ok((name.as_str(), *span, None))
         }
         Sexp::List(children, span) => {
             if children.is_empty() {
@@ -910,7 +1016,14 @@ fn parse_trait_head_shape(
                             var_span,
                         ));
                     }
-                    Ok((name, Some((Symbol::from(var), var_span))))
+                    // A con_var is a BARE lowercase binder (spec §7.2 `con_var =
+                    // lowercase_symbol`; BD-M4). The uppercase gate above keys on
+                    // the after-slash segment, so a slash-bearing con_var
+                    // (`prim/x`) slips past it — reject it as a qualified binder.
+                    // This lives in the SHARED shape parser because a con_var is a
+                    // binder in BOTH `deftrait` and the `impl` echoed head.
+                    reject_qualified_binder_head(var, var_span)?;
+                    Ok((name, name_span, Some((Symbol::from(var), var_span))))
                 }
                 _ => Err(parse_err(
                     "too many elements in trait head — a higher-kinded head is `(Trait con_var)`",
@@ -933,7 +1046,14 @@ fn parse_trait_head_shape(
 /// keep the name in its home module (`TraitName::from`, no §8.5 split) and fold
 /// the con_var into `type_params` + `hkt_param_name` — stays here.
 fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
-    let (name, con_var) = parse_trait_head_shape(sexp)?;
+    let (name, name_span, con_var) = parse_trait_head_shape(sexp)?;
+    // A `deftrait`/`deftrait-` head is a binder (spec §5; S3) — reject a
+    // qualified spelling. This is the deftrait-CALLER policy: it lives here, not
+    // in the shared shape parser, because `impl` slot-1 echoes a trait
+    // REFERENCE (a qualified spelling there is legal — the D-qual splitter
+    // handles it — see `parse_impl`), exactly as `TraitName::from` (home-module,
+    // no split) already contrasts with the impl side's `trait_ref_from_name`.
+    reject_qualified_binder_head(name, name_span)?;
     match con_var {
         None => Ok((TraitName::from(name), vec![], None)),
         Some((var, _span)) => Ok((TraitName::from(name), vec![var.clone()], Some(var))),
@@ -954,7 +1074,10 @@ fn build_method_sig(
         return Err(parse_err("method signature requires name, params, and return type", span));
     }
 
-    let (name, _) = expect_symbol(&children[0])?;
+    let (name, name_span) = expect_symbol(&children[0])?;
+    // A deftrait method-signature name introduces a method name into scope
+    // (spec §5.3.3; S5) — it is a binder, so a qualified spelling is rejected.
+    reject_qualified_binder_head(name, name_span)?;
     let (docstring, next) = extract_optional_docstring(children, 1);
 
     expect_bracket(&children[next])?;
@@ -1054,7 +1177,12 @@ pub(crate) fn parse_impl(
     // `parse_trait_head_shape`, Principle 7). The impl-side name policy — apply
     // the §8.5 D-qual splitter to a qualified echoed head (`(fmt/Functor f)`) —
     // stays here, mirroring the deftrait side's home-module policy.
-    let (head_name, con_var) = parse_trait_head_shape(&children[1])?;
+    // Slot 1 is a trait REFERENCE, not a binder: a qualified echoed head
+    // (`(fmt/Functor f)`) is legal and the §8.5 D-qual splitter re-homes it, so
+    // NO `reject_qualified_binder_head` here (the shared shape parser's name span
+    // is discarded). The con_var reject inside `parse_trait_head_shape` DOES
+    // apply — a con_var is a binder in both forms (BD-M4).
+    let (head_name, _head_name_span, con_var) = parse_trait_head_shape(&children[1])?;
     let trait_name = trait_ref_from_name(head_name);
     let head_con_var = con_var.map(|(var, _span)| var);
 
@@ -1136,7 +1264,15 @@ fn build_impl_target(
                                 children[i - 1].span(),
                             ));
                         }
-                        let (var_name, _) = expect_symbol(&children[i])?;
+                        let (var_name, var_span) = expect_symbol(&children[i])?;
+                        // The constrained type variable in `(Type :Constraint var)`
+                        // is a type-var BINDER (the constraint binds to it), so a
+                        // qualified spelling (`:Eq mod/a`) is a qualified binder —
+                        // rejected exactly as a slash-bearing con_var is (spec §7.2,
+                        // design §3.1). Routing to `Named` is NOT an option here: the
+                        // constraint pair below must be keyed on a BARE var name, and
+                        // binding a type var into another module is nonsensical.
+                        reject_qualified_binder_head(var_name, var_span)?;
                         type_args.push(TypeExpr::TypeVar(Symbol::from(var_name)));
                         // §8.5: a qualified constraint trait (`:fmt/Eq a`,
                         // spec/07-traits.md:749) is canonical — split through the
@@ -1152,8 +1288,13 @@ fn build_impl_target(
                     } else {
                         // Bare type arg — uppercase becomes Named, lowercase TypeVar.
                         // §8.5: a qualified uppercase arg (`(Option primitives/Int)`)
-                        // is canonical — split through the shared splitter.
-                        let arg = if is_uppercase_start(s) {
+                        // is canonical — split through the shared splitter. A
+                        // qualified-LOWERCASE arg (`(Pair mod/x)`) is likewise NOT a
+                        // bare type var (spec §3.3) — route it through the splitter to
+                        // `Named` rather than mint a slash-carrying `TypeVar`
+                        // (Principle 18, FIXME 0589; the same routing the other
+                        // type-var decision points apply).
+                        let arg = if is_uppercase_start(s) || s.contains('/') {
                             TypeExpr::Named(type_ref_from_name(s.as_str()))
                         } else {
                             TypeExpr::TypeVar(Symbol::from(s.as_str()))
@@ -1444,6 +1585,11 @@ fn build_let_bindings(
     while i < items.len() {
         let (name, name_span) = expect_symbol(&items[i])?;
         reject_reserved_binder_name(name, name_span)?;
+        // NOTE: no qualified-binder reject here — same reason as `build_annotated_params`:
+        // int qualifies a colliding let-binder name (`name` → `primitives/name`)
+        // during macro expansion, so a build-layer reject breaks a VALID program
+        // (`(let [name …] (str … name))`). Deferred to the reader/raw-source layer
+        // (or the paired int fix) — FIXME (S113, item-3 finding).
         i += 1;
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
@@ -1630,7 +1776,11 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                     span: *span,
                 })
             } else {
-                // A bare lowercase pattern symbol is a variable binder.
+                // A bare lowercase pattern symbol is a variable binder (spec
+                // §6.2.4). NOTE: no qualified-binder reject here — this build-layer
+                // seam runs after int qualifies colliding binder names during macro
+                // expansion, so a reject would break a VALID program. Deferred to
+                // the reader/raw-source layer or the paired int fix (S113 finding).
                 reject_reserved_binder_name(name, *span)?;
                 Ok(Pattern::Var {
                     name: name.as_str().into(),
@@ -1644,8 +1794,11 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                 return Err(parse_err("empty pattern", *span));
             }
             let (name, _) = expect_symbol(&children[0])?;
-            // children[0] is the constructor name (not a binder). The remaining
-            // symbols are variable binders the pattern introduces.
+            // children[0] is the constructor name (a REFERENCE, not a binder —
+            // qualifier permitted, spec §6.2.1). The remaining symbols are variable
+            // binders (spec §6.2.4); a qualified-binder reject is deferred here for
+            // the same int-qualification reason as the other value-level binders
+            // (S113 item-3 finding).
             let bindings = children[1..]
                 .iter()
                 .map(|s| {
@@ -1750,7 +1903,14 @@ fn trait_ref_from_name(name: &str) -> TraitRef {
 fn parse_annotation_name(name: &str) -> TypeExpr {
     if name == "self" {
         TypeExpr::SelfType
-    } else if is_uppercase_start(name) {
+    } else if is_uppercase_start(name) || name.contains('/') {
+        // A qualified-lowercase annotation (`user/int`) is NOT a bare type var
+        // (spec §3.3 — a type var is a bare lowercase identifier), so route it
+        // through the §8.5 splitter (which peels the module) rather than minting
+        // a `TypeVar` that carries the slash: a `TypeVar` must NEVER carry a `/`
+        // (Principle 18, FIXME 0589). The unknown-type error then names the
+        // module. `Named` above already covers the uppercase (`mod/Type`) case;
+        // this arm adds the qualified-lowercase case.
         TypeExpr::Named(type_ref_from_name(name))
     } else {
         TypeExpr::TypeVar(name.into())
@@ -1838,6 +1998,14 @@ fn build_annotated_params(
             }
             let (name, name_span) = expect_symbol(&items[name_pos])?;
             reject_reserved_binder_name(name, name_span)?;
+            // NOTE: a qualified-param reject does NOT belong here — this build-layer
+            // seam runs AFTER int's macro-expansion name-resolution, which itself
+            // (mis-)qualifies a local binder whose name collides with an importable
+            // symbol (`name` → `primitives/name`, only when a macro is in scope).
+            // A reject here fires on int's mangled output and breaks a VALID program
+            // (`(defn f [name] (str … name))`). Enforcement for value-level local
+            // binders must live at the reader/raw-source layer, or int must stop
+            // qualifying binders first — see FIXME (S113, item-3 finding).
             params.push((name.into(), Some(annotation_run_carrier(run))));
             i = name_pos + 1;
         } else {
@@ -1887,10 +2055,20 @@ fn annotation_run_carrier(mut run: Vec<TypeExpr>) -> TypeExpr {
     }
 }
 
-/// Convert a parsed annotation `TypeExpr` to the `TraitRef` carried by
-/// `TypeExpr::Bounds`. Trait annotations parse as `Named`/`Applied` (uppercase
-/// `:Eq`, qualified `:fmt/Display`) or — defensively — `TypeVar`. The
-/// as-written qualification is preserved for typecheck to resolve.
+/// Convert a parsed annotation `TypeExpr` (a stacked-bounds run element) to the
+/// `TraitRef` carried by `TypeExpr::Bounds`. Trait annotations parse as
+/// `Named`/`Applied` (uppercase `:Eq`, qualified `:fmt/Display`) or — defensively
+/// — `TypeVar`. The module is already split off upstream; this only reshapes.
+///
+/// **No re-split here (P7).** Every name reaching this function is ALREADY
+/// module-split: `Named`/`Applied` names come from the §8.5 splitter
+/// (`type_ref_from_name`), and `parse_annotation_name` — the sole producer of a
+/// run element's `TypeVar` (`try_consume_annotation`'s simple-`:Name` arm) —
+/// never mints a slash-carrying `TypeVar` since FIXME 0589 (S113). The prior
+/// hand-rolled `rsplit_once('/')` here was a THIRD splitter copy that existed
+/// only to compensate for 0589's slash-carrying `TypeVar`; that input is now
+/// impossible, so the copy is retired and the invariant is enforced structurally
+/// (P18, `debug_assert`) rather than re-derived downstream.
 fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
     let (module, name): (Option<&str>, &str) = match &te {
         TypeExpr::Named(r) | TypeExpr::Applied(r, _) => {
@@ -1900,18 +2078,19 @@ fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
         TypeExpr::SelfType => (None, "Self"),
         TypeExpr::FnType(..) | TypeExpr::Bounds(_) => (None, ""),
     };
-    // A name may carry as-written qualification `module/Trait` (parsed into the
-    // `TypeName` whole); split it onto the `TraitRef`'s optional module.
-    match name.rsplit_once('/') {
-        Some((m, n)) if !m.is_empty() && !n.is_empty() => TraitRef::new(
-            Some(ModuleFullPath::from(m)),
-            TraitName::from(n),
-        ),
-        _ => {
-            let module = module.map(ModuleFullPath::from);
-            TraitRef::new(module, TraitName::from(name))
-        }
-    }
+    // The invariant is the EXACT dual of the §8.5 splitter guard: no *splittable*
+    // qualified spelling (two non-empty halves) survives upstream — a degenerate
+    // `foo/`/`/bar`/`/` is deliberately left unsplit by the splitters (Principle
+    // 16) and is NOT a violation (the retired `rsplit_once` fell through for it
+    // too). So assert the splitter dual, not the stronger `!contains('/')` which
+    // would panic on a degenerate name the splitters legitimately pass through.
+    debug_assert!(
+        !matches!(name.rsplit_once('/'), Some((m, n)) if !m.is_empty() && !n.is_empty()),
+        "type_expr_to_trait_ref received a splittable qualified name `{name}` — the \
+         §8.5 split must happen upstream (type_ref_from_name / parse_annotation_name), \
+         never be re-derived here (P7/FIXME 0589)"
+    );
+    TraitRef::new(module.map(ModuleFullPath::from), TraitName::from(name))
 }
 
 // ---------------------------------------------------------------------------
@@ -1950,7 +2129,15 @@ fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
         Sexp::Symbol(name, _) => {
             if name == "self" {
                 Ok(TypeExpr::SelfType)
-            } else if is_uppercase_start(name) {
+            } else if is_uppercase_start(name) || name.contains('/') {
+                // The SECOND type-var decision point (mirror of
+                // `parse_annotation_name`, FIXME 0589): a qualified-lowercase
+                // type-arg (`mod/x` in `(Option mod/x)` / `(Fn [mod/x] …)`) is
+                // NOT a bare type var (spec §3.3), so route it through the §8.5
+                // splitter (`Named`) — a `TypeVar` must never carry a `/`
+                // (Principle 18, enforced where type-var-ness is decided, not
+                // merely backstopped downstream). Uppercase `mod/Type` already
+                // took this arm; this adds the qualified-lowercase case.
                 Ok(TypeExpr::Named(type_ref_from_name(name.as_str())))
             } else {
                 Ok(TypeExpr::TypeVar(name.as_str().into()))

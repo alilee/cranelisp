@@ -1137,6 +1137,150 @@
         }
     }
 
+    // spec: 05-definitions §5.2 — a constructor name must start uppercase so it
+    // is matchable in patterns. The parenthesized (data) constructor arm now
+    // enforces this the SAME as the bare-nullary arm: a lowercase parenthesized
+    // ctor `(deftype Shape (circle [:Int r]))` was silently accepted (callable
+    // but unmatchable) — 0660 cell (a). Reject is located at the ctor name and
+    // names the fix; the uppercase twin builds.
+    #[test]
+    fn deftype_lowercase_parenthesized_ctor_rejected_uppercase_twin_accepts() {
+        let src = "(deftype Shape (circle [:Int r]))";
+        let err = parse_and_build_program(src)
+            .expect_err("a lowercase parenthesized constructor must be rejected");
+        assert!(
+            err.message().contains("must start with uppercase")
+                && err.message().contains("write `Circle`"),
+            "the reject names the uppercase rule and the fix; got: {}",
+            err.message()
+        );
+        assert_err_span_at(src, &err, "circle", 0);
+        // Uppercase-parenthesized twin builds.
+        let prog = parse_and_build_program("(deftype Shape (Circle [:Int r]))").unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef { constructors, .. } => {
+                assert_eq!(constructors[0].name, "Circle");
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
+    // spec: 05-definitions §5.2 — the bare-nullary constructor arm is consistent:
+    // a lowercase bare constructor `(deftype Shape circle)` is ALSO rejected (its
+    // match guard `is_uppercase_start` fails → the constructor-definition reject),
+    // while an uppercase bare constructor builds as nullary. Confirms both arms
+    // enforce the uppercase rule (0660 cell (a), both-arm check).
+    #[test]
+    fn deftype_lowercase_bare_ctor_rejected_uppercase_bare_twin_accepts() {
+        let err = parse_and_build_program("(deftype Shape circle)")
+            .expect_err("a lowercase bare constructor must be rejected");
+        // The bare arm rejects via guard-fallthrough (no uppercase symbol matched).
+        assert!(
+            err.to_string().to_lowercase().contains("constructor"),
+            "the bare lowercase ctor is rejected as an invalid constructor; got: {err}"
+        );
+        // Uppercase bare (nullary) twin builds.
+        let prog = parse_and_build_program("(deftype Shape Circle Square)").unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef { constructors, .. } => {
+                assert_eq!(constructors.len(), 2);
+                assert_eq!(constructors[0].name, "Circle");
+                assert_eq!(constructors[1].name, "Square");
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
+    // spec: 05-definitions §5.2.2 (user ruling 2026-07-19) — a constructor name is
+    // a BINDER (mints a module-level callable), so a qualified spelling rejects in
+    // BOTH arms (bare-nullary + parenthesized-data), located at the ctor name.
+    // Kills the degenerate-span silent accept of `(deftype Shape (fmt/Circle …))`.
+    // 0660 cell (b).
+    #[test]
+    fn deftype_qualified_ctor_name_rejected_both_arms_bare_twins_accept() {
+        // Bare-nullary arm: `is_uppercase_start` keys after the slash, so
+        // `fmt/Circle` reaches the nullary arm; the qualified reject fires.
+        let bare_src = "(deftype Shape fmt/Circle)";
+        let bare_err = parse_and_build_program(bare_src)
+            .expect_err("a qualified bare constructor name is rejected");
+        assert!(
+            bare_err.message().contains("qualified name") && bare_err.message().contains("binder"),
+            "bare arm: qualified-binder message; got: {}", bare_err.message()
+        );
+        assert_err_span_at(bare_src, &bare_err, "fmt/Circle", 0);
+        // Parenthesized-data arm.
+        let list_src = "(deftype Shape (fmt/Circle [:Int r]))";
+        let list_err = parse_and_build_program(list_src)
+            .expect_err("a qualified parenthesized constructor name is rejected");
+        assert!(
+            list_err.message().contains("qualified name") && list_err.message().contains("binder"),
+            "list arm: qualified-binder message; got: {}", list_err.message()
+        );
+        assert_err_span_at(list_src, &list_err, "fmt/Circle", 0);
+        // Bare-name twins accept.
+        assert!(parse_and_build_program("(deftype Shape Circle)").is_ok());
+        assert!(parse_and_build_program("(deftype Shape (Circle [:Int r]))").is_ok());
+    }
+
+    // spec: 05-definitions §5.2.6 (user ruling 2026-07-19) — a field name is a
+    // BINDER (mints a `Type.field` accessor), so a qualified field name rejects,
+    // located at the field name. Covers both the annotated and bare field arms.
+    #[test]
+    fn deftype_qualified_field_name_rejected_bare_twin_accepts() {
+        let ann_src = "(deftype T [:Int fmt/r])";
+        let ann_err = parse_and_build_program(ann_src)
+            .expect_err("a qualified annotated field name is rejected");
+        assert!(
+            ann_err.message().contains("qualified name") && ann_err.message().contains("binder"),
+            "annotated field: qualified-binder message; got: {}", ann_err.message()
+        );
+        assert_err_span_at(ann_src, &ann_err, "fmt/r", 0);
+        // Bare (shortcut) field arm.
+        let bare_src = "(deftype T [fmt/r])";
+        let bare_err = parse_and_build_program(bare_src)
+            .expect_err("a qualified bare field name is rejected");
+        assert!(
+            bare_err.message().contains("qualified name"),
+            "bare field: qualified-binder message; got: {}", bare_err.message()
+        );
+        assert_err_span_at(bare_src, &bare_err, "fmt/r", 0);
+        // Bare-name twins accept.
+        assert!(parse_and_build_program("(deftype T [:Int r])").is_ok());
+        assert!(parse_and_build_program("(deftype T [r])").is_ok());
+    }
+
+    // spec: 05-definitions §5 binder-positions table — of the LOCAL binder
+    // positions, only `defmacro` params are enforced at the frontend build layer
+    // (they parse from raw pre-expansion source). The VALUE-level build-layer
+    // binders (defn/fn params, let names, match patterns) are DEFERRED: their seam
+    // runs after int's macro-expansion name-resolution, which itself qualifies a
+    // colliding local binder (`name` → `primitives/name`), so a reject there would
+    // break a VALID program — S113 item-3 finding, enforcement owed at the
+    // reader/raw layer or the paired int fix. The bare twins parse here.
+    #[test]
+    fn defmacro_param_rejects_qualified_value_binders_still_accept() {
+        // defmacro param — build via `build_form` (the adapter panics on Macro entries)
+        let build_one = |src: &str| -> Result<(), CranelispError> {
+            let sexps = crate::reader::parse(src)?;
+            build_form(&sexps[0]).map(|_| ())
+        };
+        let err = build_one("(defmacro m [a/b] a/b)")
+            .expect_err("a qualified defmacro param is rejected");
+        assert!(
+            err.message().contains("qualified name") && err.message().contains("binder"),
+            "defmacro param reject names the rule; got: {}", err.message()
+        );
+        assert!(build_one("(defmacro m [ab] ab)").is_ok(), "defmacro param twin");
+        // The deferred value-level binder positions still parse (no over-reach and,
+        // pending the int fix, no false-positive on int-qualified names): bare
+        // names bind normally.
+        assert!(parse_and_build_program("(defn f [ab] ab)").is_ok(), "defn param");
+        assert!(parse_and_build_expr("(fn [ab] ab)").is_ok(), "fn param");
+        assert!(parse_and_build_expr("(let [ab 1] ab)").is_ok(), "let name");
+        assert!(parse_and_build_expr("(match x [ab ab])").is_ok(), "match var");
+        assert!(parse_and_build_expr("(match x [(Some ab) ab])").is_ok(), "match ctor binding");
+    }
+
     // -- REPL input --
 
     // spec: 02-grammar §2.1 — REPL top-level expression
@@ -1936,11 +2080,21 @@
     #[test]
     fn trait_head_grammar_parity_deftrait_and_impl_agree() {
         // Only the head shape varies; it is spliced into a well-formed deftrait
-        // and a well-formed impl. Acceptance MUST agree row by row.
+        // and a well-formed impl. Acceptance MUST agree row by row — these are
+        // the SHAPE cases the shared `parse_trait_head_shape` grammar governs.
+        //
+        // The QUALIFIED head (`(fmt/Foo f)`) is deliberately EXCLUDED from this
+        // parity set: it is the one case where the two callers' NAME policies
+        // legitimately diverge — `deftrait`'s head is a BINDER (qualified →
+        // rejected, S113), `impl` slot-1 is a trait REFERENCE (qualified →
+        // accepted, D-qual splits it). The shared shape parser still accepts it
+        // identically for both; the divergence lives entirely in the caller
+        // policy (`build_trait_head` reject vs `trait_ref_from_name` split). That
+        // divergence is pinned by
+        // `qualified_trait_head_binder_reject_diverges_deftrait_from_impl` below.
         let heads: &[&str] = &[
             "Foo",           // bare uppercase        — accepted
             "(Foo f)",       // HK head               — accepted
-            "(fmt/Foo f)",   // qualified HK head     — accepted
             "(Foo)",         // missing con_var       — rejected
             "(Foo f g)",     // too many elements     — rejected
             "()",            // empty head            — rejected
@@ -1995,6 +2149,321 @@
                 assert_eq!(n.name.as_ref(), "Int");
             }
             other => panic!("expected Named ret type, got {other:?}"),
+        }
+    }
+
+    // -- S113 qualified binder-head rejection (reject_qualified_binder_head) --
+
+    // spec: spec/05-definitions.md §5 — a declaration head is a BINDER, not a
+    // reference: it binds a NEW name into the CURRENT module and MUST be a bare
+    // (unqualified) symbol. The shared `reject_qualified_binder_head` helper gates
+    // every binder head site identically (Principle 7). This exercises the helper
+    // directly at the seam: a slash-bearing name rejects with a LOCATED,
+    // fix-naming diagnostic; a bare name passes.
+    #[test]
+    fn reject_qualified_binder_head_rejects_slash_and_names_bare_fix() {
+        let span = Span::new(3, 10);
+        let err = reject_qualified_binder_head("fmt/foo", span)
+            .expect_err("a qualified binder head is rejected");
+        let msg = err.message();
+        assert!(
+            msg.contains("qualified name") && msg.contains("binder"),
+            "message names the qualified-binder rule; got: {msg}"
+        );
+        // Fix-naming: the message names the bare after-last-slash segment.
+        assert!(msg.contains("write 'foo'"), "message names the bare fix `foo`; got: {msg}");
+        // Located at the exact span it was handed (not a degenerate 0..0).
+        assert_eq!(err.location().span, span, "reject is located at the head span");
+        // A deep-qualified name names the LAST segment as the fix.
+        let deep = reject_qualified_binder_head("a.b/Bar", span).unwrap_err();
+        assert!(deep.message().contains("write 'Bar'"), "got: {}", deep.message());
+        // A bare name passes.
+        assert!(reject_qualified_binder_head("foo", span).is_ok());
+        assert!(reject_qualified_binder_head("Foo", span).is_ok());
+        // The bare `/` division operator is a LEGITIMATE binder name (Principle
+        // 16; `(deftrait Num (/ [a b] self) …)`, stdlib/num/num.cl) — it splits
+        // to two EMPTY halves, so it is NOT qualified. A coarse `contains('/')`
+        // would wrongly reject it. `foo/` and `/bar` (one empty half) pass too.
+        assert!(reject_qualified_binder_head("/", span).is_ok(), "bare `/` operator must pass");
+        assert!(reject_qualified_binder_head("foo/", span).is_ok());
+        assert!(reject_qualified_binder_head("/bar", span).is_ok());
+    }
+
+    // spec: spec/07-traits.md §7.1 — a deftrait method NAMED `/` (the division
+    // operator, `stdlib/num/num.cl` Num trait) is a bare binder and MUST parse:
+    // the qualified-binder reject keys on a two-non-empty-half split, so the bare
+    // `/` operator (which splits to empty halves) is not treated as qualified.
+    // Regression pin for the prelude-load break the coarse predicate caused.
+    #[test]
+    fn deftrait_slash_operator_method_name_accepts() {
+        assert!(
+            parse_and_build_program("(deftrait Num (/ [a b] self))").is_ok(),
+            "the `/` division-operator method name is a bare binder and must parse"
+        );
+        // And as a top-level defn head.
+        assert!(
+            parse_and_build_program("(defn / [a b] a)").is_ok(),
+            "the `/` operator as a defn head is a bare binder and must parse"
+        );
+    }
+
+    // spec: spec/05-definitions.md §5 — the native binder-head forms
+    // (`defn`/`defn-`, `deftype`/`deftype-` bare and parenthesized, `deftrait`/
+    // `deftrait-` bare and parenthesized, deftrait method-signature name,
+    // `defmacro`/`defmacro-`) each reject a qualified head AND accept the bare
+    // twin. One reject-plus-bare-twin per form (BD-M1). Every reject is LOCATED
+    // at the offending head substring (span assertion via `assert_err_span_at`).
+    #[test]
+    fn native_binder_heads_reject_qualified_and_accept_bare_twin() {
+        // (qualified source, located head substring; bare-twin source)
+        let cases: &[(&str, &str, &str)] = &[
+            // S1: defn / defn- (get_defn_name — also the impl-body method seam).
+            ("(defn fmt/foo [x] x)", "fmt/foo", "(defn foo [x] x)"),
+            ("(defn- fmt/foo [x] x)", "fmt/foo", "(defn- foo [x] x)"),
+            // S2: deftype / deftype- — bare head arm.
+            ("(deftype fmt/Foo [:Int n])", "fmt/Foo", "(deftype Foo [:Int n])"),
+            ("(deftype- fmt/Foo [:Int n])", "fmt/Foo", "(deftype- Foo [:Int n])"),
+            // S2: deftype — parenthesized `(Name params…)` head arm.
+            ("(deftype (fmt/Pair a b) [:a x :b y])", "fmt/Pair", "(deftype (Pair a b) [:a x :b y])"),
+            // S3: deftrait / deftrait- — bare head arm.
+            ("(deftrait fmt/Foo (m [self] self))", "fmt/Foo", "(deftrait Foo (m [self] self))"),
+            ("(deftrait- fmt/Foo (m [self] self))", "fmt/Foo", "(deftrait- Foo (m [self] self))"),
+            // S3: deftrait — parenthesized `(Trait con_var)` head arm.
+            ("(deftrait (fmt/Functor f) (fmap [g self] self))", "fmt/Functor", "(deftrait (Functor f) (fmap [g self] self))"),
+            // S5: deftrait method-signature name.
+            ("(deftrait Foo (fmt/show [self] self))", "fmt/show", "(deftrait Foo (show [self] self))"),
+            // S4: defmacro / defmacro-.
+            ("(defmacro fmt/m [x] x)", "fmt/m", "(defmacro m [x] x)"),
+            ("(defmacro- fmt/m [x] x)", "fmt/m", "(defmacro- m [x] x)"),
+        ];
+        // Build a single form directly through `build_form` (the reject seam),
+        // bypassing the TopLevel test adapter which panics on `defmacro`'s Macro
+        // entries. The reject fires inside `build_form` either way.
+        let build_one = |src: &str| -> Result<(), CranelispError> {
+            let sexps = crate::reader::parse(src)?;
+            build_form(&sexps[0]).map(|_| ())
+        };
+        for (qualified, head, bare) in cases {
+            let err = build_one(qualified)
+                .expect_err(&format!("qualified head `{qualified}` must be rejected"));
+            assert!(
+                err.message().contains("qualified name") && err.message().contains("binder"),
+                "for `{qualified}` expected the qualified-binder message, got: {}",
+                err.message()
+            );
+            assert_err_span_at(qualified, &err, head, 0);
+            // The bare-head twin still parses.
+            assert!(
+                build_one(bare).is_ok(),
+                "bare-head twin `{bare}` must parse"
+            );
+        }
+    }
+
+    // spec: spec/05-definitions.md §5 — the S1 single-source guard (Principle 7):
+    // a qualified `defn` head rejects IDENTICALLY whether reached as a top-level
+    // `defn` (via `parse_defn`) or as an impl-body method defn (via
+    // `build_impl_method`), because both route through the ONE `get_defn_name`
+    // seam. This is the instrument proving no impl-method copy grew.
+    #[test]
+    fn qualified_defn_head_rejects_identically_at_toplevel_and_impl_method() {
+        let top = parse_and_build_program("(defn fmt/foo [x] x)")
+            .expect_err("top-level qualified defn head rejected");
+        let impl_method =
+            parse_and_build_program("(impl Foo Int (defn fmt/foo [self] self))")
+                .expect_err("impl-body qualified method-defn head rejected");
+        assert_eq!(
+            top.message(), impl_method.message(),
+            "the two routes must produce the identical diagnostic (one seam, Principle 7)"
+        );
+        assert!(top.message().contains("write 'foo'"), "got: {}", top.message());
+    }
+
+    // spec: spec/05-definitions.md §5 + spec/07-traits.md §7.2 — the qualified
+    // trait head diverges by caller policy: `deftrait`'s head is a binder
+    // (rejected), `impl` slot-1 is a trait reference (accepted, D-qual splits).
+    // The complement of `trait_head_grammar_parity_deftrait_and_impl_agree`,
+    // which excludes this exact case.
+    #[test]
+    fn qualified_trait_head_binder_reject_diverges_deftrait_from_impl() {
+        // deftrait: qualified head REJECTED as a binder.
+        let deftrait_err =
+            parse_and_build_program("(deftrait fmt/Foo (m [self] self))")
+                .expect_err("qualified deftrait head is a binder — rejected");
+        assert!(
+            deftrait_err.message().contains("qualified name")
+                && deftrait_err.message().contains("binder"),
+            "got: {}", deftrait_err.message()
+        );
+        // impl slot-1: qualified echoed head ACCEPTED as a reference (splits).
+        let prog = parse_and_build_program(
+            "(impl fmt/Foo Int (defn m [self] self))",
+        ).expect("qualified impl slot-1 is a reference — accepted and split");
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name.module.as_deref(), Some("fmt"));
+                assert_eq!(imp.trait_name.name.as_ref(), "Foo");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/07-traits.md §7.2 (`con_var = lowercase_symbol`) — a
+    // slash-bearing con_var is a qualified BINDER (BD-M4 / S112-F3 residual): it
+    // slips past the uppercase gate (which keys on the after-slash segment) but
+    // is rejected by `reject_qualified_binder_head` INSIDE the shared shape
+    // parser, so it rejects for BOTH the `deftrait` head and the `impl` echoed
+    // head, located at the con_var element.
+    #[test]
+    fn slash_bearing_con_var_rejected_in_both_deftrait_and_impl() {
+        let deftrait_src = "(deftrait (Functor prim/x) (fmap [g self] self))";
+        let deftrait_err = parse_and_build_program(deftrait_src)
+            .expect_err("slash-bearing con_var in a deftrait head is rejected");
+        assert!(
+            deftrait_err.message().contains("qualified name"),
+            "deftrait con_var qualified-binder message; got: {}",
+            deftrait_err.message()
+        );
+        assert_err_span_at(deftrait_src, &deftrait_err, "prim/x", 0);
+
+        let impl_src = "(impl (Functor prim/x) (Functor Option) (defn fmap [g self] self))";
+        let impl_err = parse_and_build_program(impl_src)
+            .expect_err("slash-bearing con_var in an impl echoed head is rejected");
+        assert!(
+            impl_err.message().contains("qualified name"),
+            "impl con_var qualified-binder message; got: {}",
+            impl_err.message()
+        );
+        assert_err_span_at(impl_src, &impl_err, "prim/x", 0);
+    }
+
+    // spec: spec/05-definitions.md §5.2 — a `deftype` type name must start
+    // uppercase. The `(Name params…)` head arm must enforce this the SAME as the
+    // bare `Symbol` arm's match guard; before S113 the list arm silently accepted
+    // a lowercase head `(deftype (point a) …)` (audit S113 finding 2). Reject is
+    // located at the head-name element; the uppercase-head twin still parses.
+    #[test]
+    fn deftype_parenthesized_head_lowercase_rejected_uppercase_twin_accepts() {
+        let src = "(deftype (point a) [:a x])";
+        let err = parse_and_build_program(src)
+            .expect_err("a lowercase parenthesized deftype head must be rejected");
+        assert!(
+            err.message().contains("must start with uppercase"),
+            "the reject names the uppercase-head rule; got: {}",
+            err.message()
+        );
+        assert_err_span_at(src, &err, "point", 0);
+        // The uppercase-head twin parses.
+        assert!(
+            parse_and_build_program("(deftype (Point a) [:a x])").is_ok(),
+            "the uppercase parenthesized head `(Point a)` must parse"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.5 — `type_expr_to_trait_ref` no longer
+    // re-splits (P7 / FIXME 0589): every name reaching it is already
+    // module-split upstream. This guards the RETIREMENT of its third
+    // `rsplit_once('/')` copy — a stacked qualified bound must still land the
+    // module on the `TraitRef`. `:fmt/Eq :Display a` folds a run of two into
+    // `Bounds`, and the qualified bound keeps `module = Some("fmt")`.
+    #[test]
+    fn type_expr_to_trait_ref_trusts_upstream_split_no_resplit() {
+        // Direct: a qualified-uppercase annotation is split upstream by
+        // `parse_annotation_name` (`Named`), and the reshape preserves the module.
+        let tr = type_expr_to_trait_ref(parse_annotation_name("fmt/Eq"));
+        assert_eq!(tr.module.as_deref(), Some("fmt"));
+        assert_eq!(tr.name.as_ref(), "Eq");
+        // A bare bound stays module-less.
+        let bare = type_expr_to_trait_ref(parse_annotation_name("Display"));
+        assert_eq!(bare.module, None);
+        assert_eq!(bare.name.as_ref(), "Display");
+        // Integration: a stacked run `:fmt/Eq :Display a` on a param folds into
+        // `Bounds` with the qualified module preserved on the first bound.
+        let prog =
+            parse_and_build_program("(defn f [:fmt/Eq :Display a x] x)").unwrap();
+        match &prog[0] {
+            TopLevel::Defn(d) => match &d.variants[0].params[0].1 {
+                Some(TypeExpr::Bounds(bounds)) => {
+                    assert_eq!(bounds.len(), 2, "two stacked bounds");
+                    assert_eq!(bounds[0].module.as_deref(), Some("fmt"));
+                    assert_eq!(bounds[0].name.as_ref(), "Eq");
+                    assert_eq!(bounds[1].module, None);
+                    assert_eq!(bounds[1].name.as_ref(), "Display");
+                }
+                other => panic!("expected Bounds carrier, got {other:?}"),
+            },
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    // spec: spec/03-types.md §3.3 + FIXME 0589/0661 — `build_impl_target` is the
+    // THIRD type-var decision point. A qualified-LOWERCASE type-arg in an impl
+    // target (`(impl Show (Pair mod/x) …)`) is NOT a bare type var; it routes
+    // through the §8.5 splitter to `Named`, never a slash-carrying `TypeVar`
+    // (Principle 18). The bare-lowercase twin still mints a `TypeVar`.
+    #[test]
+    fn impl_target_qualified_lowercase_arg_routes_to_named_not_typevar() {
+        let prog = parse_and_build_program(
+            "(impl Show (Pair mod/x) (defn show [s] s))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Applied(head, args) => {
+                    assert_eq!(head.name.as_ref(), "Pair");
+                    match &args[0] {
+                        TypeExpr::Named(n) => {
+                            assert_eq!(n.module.as_deref(), Some("mod"));
+                            assert_eq!(n.name.as_ref(), "x");
+                        }
+                        other => panic!("expected Named (module split off), got {other:?}"),
+                    }
+                }
+                other => panic!("expected Applied, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+        // Bare-lowercase twin: `a` stays a `TypeVar`.
+        let bare = parse_and_build_program(
+            "(impl Show (Pair a) (defn show [s] s))",
+        ).unwrap();
+        match &bare[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Applied(_, args) => {
+                    assert!(matches!(&args[0], TypeExpr::TypeVar(v) if v.as_ref() == "a"));
+                }
+                other => panic!("expected Applied, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/07-traits.md §7.2 + FIXME 0661 — the CONSTRAINED type variable in
+    // an impl target `(Type :Constraint var)` is a type-var BINDER; a qualified
+    // spelling (`:Eq mod/a`) is a qualified binder and rejects (con_var §3.1
+    // precedent), located at the var. The bare-var twin accepts and keys the
+    // constraint on the bare var name.
+    #[test]
+    fn impl_target_qualified_constrained_var_rejected_bare_twin_accepts() {
+        let src = "(impl Show (Pair :Eq mod/a) (defn show [s] s))";
+        let err = parse_and_build_program(src)
+            .expect_err("a qualified constrained type-var binder is rejected");
+        assert!(
+            err.message().contains("qualified name") && err.message().contains("binder"),
+            "the reject names the qualified-binder rule; got: {}",
+            err.message()
+        );
+        assert_err_span_at(src, &err, "mod/a", 0);
+        // Bare-var twin: accepts, constraint keyed on the bare var `a`.
+        let prog = parse_and_build_program(
+            "(impl Show (Pair :Eq a) (defn show [s] s))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.type_constraints.len(), 1);
+                assert_eq!(imp.type_constraints[0].0.as_ref(), "a");
+                assert_eq!(imp.type_constraints[0].1.name.as_ref(), "Eq");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
         }
     }
 
@@ -2907,6 +3376,37 @@
         assert!(matches!(te, TypeExpr::TypeVar(_)));
     }
 
+    // FIXME 0589 (second decision point) — a qualified-LOWERCASE name in
+    // type-expression position (`build_type_expr`, e.g. a `(Fn […])`/`(Option …)`
+    // type-arg) is NOT a bare type var (spec §3.3); it routes to `Named` with the
+    // module split off, never a `TypeVar` carrying the slash (Principle 18). The
+    // sibling of `parse_annotation_name`'s routing — both type-var decision points
+    // now enforce the invariant.
+    #[test]
+    fn parse_type_expr_qualified_lowercase_routes_to_named_not_typevar() {
+        match parse_type_expr("mod/x").unwrap() {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("mod"));
+                assert_eq!(r.name.as_ref(), "x");
+            }
+            other => panic!("expected Named (module split off), got {other:?}"),
+        }
+        // As a type-arg inside an applied form — the head splits, and the
+        // qualified-lowercase arg is `Named`, not a slash-carrying `TypeVar`.
+        match parse_type_expr("(Option mod/x)").unwrap() {
+            TypeExpr::Applied(_, args) => match &args[0] {
+                TypeExpr::Named(r) => {
+                    assert_eq!(r.module.as_deref(), Some("mod"));
+                    assert_eq!(r.name.as_ref(), "x");
+                }
+                other => panic!("expected Named type-arg, got {other:?}"),
+            },
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        // Control: a BARE lowercase name still mints a `TypeVar`.
+        assert!(matches!(parse_type_expr("a").unwrap(), TypeExpr::TypeVar(_)));
+    }
+
     // FIXME 0230 — `parse_type_expr` parses a `(Fn [..] R)` form.
     #[test]
     fn parse_type_expr_fn() {
@@ -2987,6 +3487,35 @@
                 assert_eq!(r.name.as_ref(), "Box");
             }
             other => panic!("expected Named, got {other:?}"),
+        }
+    }
+
+    // FIXME 0589 — a qualified-LOWERCASE annotation (`user/int`) is NOT a bare
+    // type var (spec §3.3 — a type var is a bare lowercase identifier). It must
+    // route to `Named` (splitting the module off) so the downstream unknown-type
+    // error names the module, NEVER to a `TypeVar` carrying the slash
+    // (Principle 18 — a `TypeVar` must never carry a `/`).
+    #[test]
+    fn parse_annotation_name_qualified_lowercase_routes_to_named_not_typevar() {
+        match parse_annotation_name("user/int") {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("user"));
+                assert_eq!(r.name.as_ref(), "int");
+            }
+            other => panic!("expected Named (module split off), got {other:?}"),
+        }
+        // A deep-qualified lowercase name splits at the LAST slash too.
+        match parse_annotation_name("a.b/int") {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("a.b"));
+                assert_eq!(r.name.as_ref(), "int");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+        // Control: a BARE lowercase name still mints a `TypeVar` (no slash).
+        match parse_annotation_name("a") {
+            TypeExpr::TypeVar(v) => assert_eq!(v.as_ref(), "a"),
+            other => panic!("expected TypeVar for a bare lowercase name, got {other:?}"),
         }
     }
 

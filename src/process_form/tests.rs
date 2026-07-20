@@ -923,3 +923,83 @@
         register_macro_named(&tables, &user, "twice", &aliases, &pf)
             .expect("redefining the module's own macro is ordinary redefinition");
     }
+
+// -----------------------------------------------------------------------
+// FIXME 0650 — macro-route diagnostic re-anchoring (macro-diagnostic-reanchoring.md)
+// -----------------------------------------------------------------------
+
+    // A diagnostic over macro-expansion output carrying a SYNTHETIC location (the
+    // ≥1M rewrite band) re-anchors to the origin form's real span and APPENDS the
+    // "in expansion of …" context — the frontend message stays verbatim.
+    // spec: spec/05-definitions.md §5 — macro-route reject span points at the written form.
+    #[test]
+    fn reanchor_synthetic_diagnostic_relocates_and_appends_context() {
+        use cranelisp_types::Span;
+        let origin = cranelisp_frontend::parse("(mkbad)").unwrap().remove(0);
+        let origin_span = origin.span();
+        // Synthetic location: the `rewrite_spans_unique` ≥1M unique band.
+        let synth = Span { start: 1_000_037, end: 1_000_044 };
+        let err = CranelispError::ParseError {
+            message: "qualified head not allowed in a binder".to_string(),
+            location: ErrorLocation::from_span(synth),
+        };
+        let out = reanchor_expansion_diagnostic(err, origin_span, &origin);
+        assert_eq!(
+            out.span(),
+            origin_span,
+            "the synthetic location MUST re-anchor to the origin form's real span"
+        );
+        assert!(
+            out.message().contains("qualified head not allowed in a binder"),
+            "the frontend message MUST be preserved verbatim: {}",
+            out.message()
+        );
+        assert!(
+            out.message().contains("in expansion of `(mkbad)`"),
+            "expansion context naming the WRITTEN form MUST be appended: {}",
+            out.message()
+        );
+    }
+
+    // The degenerate `Span::SYNTHETIC` = (0,0) flavour is caught by the same
+    // "outside the origin extent" predicate (no hard-coded 1M constant).
+    // spec: spec/05-definitions.md §5 — macro-route reject span points at the written form.
+    #[test]
+    fn reanchor_catches_degenerate_zero_width_synthetic() {
+        use cranelisp_types::Span;
+        let origin = cranelisp_frontend::parse("(def y 1)").unwrap().remove(0);
+        let origin_span = origin.span();
+        let err = CranelispError::ParseError {
+            message: "reject".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        let out = reanchor_expansion_diagnostic(err, origin_span, &origin);
+        assert_eq!(out.span(), origin_span, "the (0,0) synthetic span must re-anchor");
+    }
+
+    // A NATIVE-form diagnostic (a real span WITHIN the origin extent) passes
+    // through UNCHANGED — the predicate must not touch already-located errors.
+    // spec: macro-diagnostic-reanchoring.md §6 — native-form pass-through.
+    #[test]
+    fn reanchor_leaves_native_span_diagnostic_untouched() {
+        use cranelisp_types::Span;
+        let origin = cranelisp_frontend::parse("(defn f [] x)").unwrap().remove(0);
+        let origin_span = origin.span();
+        // A real sub-form error located within [start, end).
+        let real = Span { start: origin_span.start + 1, end: origin_span.start + 3 };
+        let err = CranelispError::TypeError {
+            message: "undefined variable: x".to_string(),
+            location: ErrorLocation::from_span(real),
+        };
+        let out = reanchor_expansion_diagnostic(err, origin_span, &origin);
+        assert_eq!(
+            out.span(),
+            real,
+            "a diagnostic already located within the origin extent MUST pass through"
+        );
+        assert!(
+            !out.message().contains("in expansion of"),
+            "no expansion context is appended to a native-form error: {}",
+            out.message()
+        );
+    }

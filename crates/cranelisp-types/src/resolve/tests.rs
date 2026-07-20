@@ -157,6 +157,79 @@ fn qualified_unknown_module_distinguished() {
     assert!(matches!(err, ResolveError::QualifiedModuleUnknown { .. }));
 }
 
+// spec: spec/08-modules.md §8.6.6 + TB-25 resolved identity (S113 0655 ruling (a)) —
+// a current-module-qualified reference is another spelling of the local name.
+#[test]
+fn qualified_current_module_resolves_through_view_like_bare_twin() {
+    // Mid-cluster shape: the entry exists ONLY in the caller's view (staging);
+    // the committed tables do not hold the current module at all. The bare
+    // spelling resolves (view first hop); the qualified spelling MUST resolve
+    // identically — the pre-0655 committed-only qualified leg missed here.
+    let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
+    let mut staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
+    staging.insert(
+        Symbol::from("qloop"),
+        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+    );
+    let view = View::single(&staging);
+    let current = ModuleFullPath::from("user");
+    let aliases = dashmap::DashMap::new();
+
+    let bare = resolve_bare(&tables, &aliases, &view, &current, "qloop", Span::SYNTHETIC)
+        .expect("bare spelling resolves through the view");
+    let qualified = resolve_bare(&tables, &aliases, &view, &current, "user/qloop", Span::SYNTHETIC)
+        .expect("qualified own-module spelling resolves through the view");
+    assert_eq!(qualified.fq, bare.fq, "one identity, two spellings");
+    assert_eq!(qualified.home, bare.home);
+    assert_eq!(qualified.storage_key, bare.storage_key);
+}
+
+// spec: spec/08-modules.md §8.6.6 (S113 0655) — a genuinely-absent member of the
+// CURRENT module is the not-found class, never `QualifiedModuleUnknown`: the
+// latter is promoted by the orchestrator to a load-and-retry gap, and a
+// current-module gap is the false "circular dependency: user -> user" mint.
+#[test]
+fn qualified_current_module_missing_member_is_not_found_never_module_unknown() {
+    let tables: SymbolTables<(), ()> = dashmap::DashMap::new(); // mid-compile: user not committed
+    let staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
+    let view = View::single(&staging);
+    let current = ModuleFullPath::from("user");
+    let err = resolve_bare(&tables, &dashmap::DashMap::new(), &view, &current, "user/ghost", Span::SYNTHETIC)
+        .expect_err("absent own-module member is a miss");
+    assert!(
+        !matches!(err, ResolveError::QualifiedModuleUnknown { .. }),
+        "own-module miss must never classify as unknown-module (the 0655 gap mint): {err:?}"
+    );
+    assert!(matches!(err, ResolveError::TypeNotFound { .. }), "bare not-found class: {err:?}");
+}
+
+// spec: spec/08-modules.md §8.6.4 — the prelude fallback applies to BARE names
+// only. Load-bearing since the 0655 own-module arm returns the not-found class
+// for qualified spellings: `user/ghost` must NOT resolve to the prelude's
+// `ghost` (a wrong-accept against the written spelling; MC-X3b).
+#[test]
+fn qualified_current_module_miss_does_not_fall_back_to_prelude() {
+    let tables = tables_with(&[(
+        "prelude",
+        "ghost",
+        def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public),
+    )]);
+    let staging = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("user"));
+    let view = View::single(&staging);
+    let current = ModuleFullPath::from("user");
+    let prelude = ModuleFullPath::from("prelude");
+    let aliases = dashmap::DashMap::new();
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &current, Some(&prelude));
+    let err = scope
+        .resolve("user/ghost", Span::SYNTHETIC)
+        .expect_err("qualified miss must not consult the prelude");
+    assert!(matches!(err, ResolveError::TypeNotFound { .. }), "the own-module miss stands: {err:?}");
+    // The bare spelling DOES fall back — the guard is qualified-only.
+    scope
+        .resolve("ghost", Span::SYNTHETIC)
+        .expect("bare spelling still falls back to the public prelude binding");
+}
+
 #[test]
 fn split_qualified_bare_operator_is_not_qualified() {
     // FIXME 0328 regression: the bare `/` division operator must NOT be

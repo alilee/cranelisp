@@ -340,3 +340,28 @@ fn multi_file_nested_directory_example_runs_with_documented_exit() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+// spec: spec/07-traits.md §7.11.2 — the method-import dispatch example is a
+//       multi-file DIRECTORY project (`37-method-import/main.cl` + `main/traits.cl`
+//       via `(mod traits)`); it dispatches trait methods with the METHOD (not the
+//       trait) in scope and runs to a documented exit 4 (1+1+1+1 sub-test pass
+//       counts). Directory-project row like 16-modules.
+#[test]
+fn method_import_directory_example_runs_exit_4() {
+    // read-only on project_root — runs the checked-in examples/37-method-import.
+    let main = examples_dir().join("37-method-import").join("main.cl");
+    assert!(
+        main.exists(),
+        "examples/37-method-import/main.cl not found at {main:?}"
+    );
+    let out = run_example(&main);
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "37-method-import (unary ×2 + nullary return-dispatch ×2, one pass each) \
+         MUST exit 4; got {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}

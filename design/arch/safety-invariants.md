@@ -8,6 +8,15 @@ the ratification. This document remains the **binding frame** for the S112
 memory-safety-soundness mechanism — the mechanism builds to it. The `/design` cascade
 (§6) is the scoped task list for the follow-up increment.
 
+**W5 execution frame (S113, user-ruled depth).** The build wave executes tiers **4 + 5 +
+3 + 1–2** (generative harness deferred S114). Tier 4 is LANDED (S113 W1 standing lane —
+see §2 tier 4); R7's tier-3 assert landed S113 W4. Every W5 change-set traces to a
+register row + ladder tier — the ladder is the only mechanism vocabulary (no parallel
+taxonomy); the per-row annotations in §4 carry the W5 trace. Named capacity fallback:
+the §3b origin split (and its schema bump) may slip to S114 — §3a/§3c do not depend on
+it (the rule table classifies May-claims in the existing representation; §3b is the
+unrepresentability hardening on top).
+
 **Motivating systemic finding (S111, user-directed).** Every memory-safety defect in the
 S111 ledger was found *incidentally* — adversarial review, a stdlib migration tripping a
 latent crash, a golden-lane audit — never *structurally prevented* and never named by an
@@ -96,6 +105,10 @@ answer is recorded in the register (§4). Each tier has an S111-proven exemplar.
    to nextest — the check must be a **standing gate**, which is the parallel `/qa`
    coverage-strategy work (this doc mandates the requirement; `tests/plan/` owns the lane
    mechanics, corpus policy, and cadence — reference, not duplicated here).
+   **LANDED S113 W1**: the standing nextest-visible lane (`tests/safety_oracle_lane.rs`
+   + the `SafetyMatrix` combinator; 0641 B-1 RED-under-lane was the acceptance proof) —
+   and it immediately earned its keep, catching MS-P7 (a `--link`-only COW-set→project
+   UAF, the 0641 class's third reaching context) with the on/off discriminator recorded.
 5. **Dynamic self-check lanes.** Properties only observable at runtime (RC balance) get a
    checking mode that converts silent corruption into diagnosed failure under test:
    DEC_CHECK stale-dec tripwires, alloc/free parity counts, checking allocator/ASan lanes.
@@ -179,19 +192,20 @@ row, never defaulted).
 
 | # | Invariant (what safety relies on) | Status today | Mechanism owed | Owner / seam |
 |---|---|---|---|---|
-| R1 | **Ownership-summary truth** — no published summary/mode lets a consumer elide a protect/inc/atomic the dynamic behavior needs | `example-tested` (adversarial repros; oracle run ad hoc) | §3 (a)–(d): monotone rule table + P20 producer split + tier-4 standing gate | `/design`(typecheck) `ownership/transfer.rs`, `fixpoint.rs`; `/qa` gate |
+| R1 | **Ownership-summary truth** — no published summary/mode lets a consumer elide a protect/inc/atomic the dynamic behavior needs | `example-tested`; tier-4 lane now standing (S113 W1) and already catching instances (MS-P7, the 0641 class's third reaching context, `--link`-only) | §3 (a)–(d): monotone rule table + P20 producer split — **W5 fix wave (tiers 1–2)**: §3a/§3c + 0641 B-1/I-1/I-2 rule-table corrections + the paired `/dev`(backend) B-2/I-2 consume fix; §3b producer split (+ its schema bump) is the named capacity fallback, may slip S114 — §3a/§3c do not depend on it | `/design`(typecheck) `ownership/transfer.rs`, `fixpoint.rs`; `/design`(backend) consume seam; `/qa` gate |
 | R2 | **Elision-consumer safe default** — unknown/new summary variants keep the safety op (`== Fresh` binaries; exhaustive `ResultMode` match, no `#[non_exhaustive]`) | `unconstructable` (P18 exhaustiveness; verified no third escape, S111 P3) — a model | maintain; `/review` re-runs the `_ =>`/`== Fresh` grep per landing | landed (types + backend) |
 | R3 | **Declared-fact truthfulness + reachability** — a primitive whose emission deviates from the consuming convention carries declared, reachable facts (§3.7 contract) | `matrix-tested` (whole-table sweep, CW-F3a/Fence-3, 5-site/1-helper pin) | evaluate P7 single-sourcing: the emission convention as one artifact consumed by both `ownership_facts.rs` and `vec_codegen` (today the declaration and the emission are un-tied prose twins in two crates) | `/design`(backend + primitives) |
 | R4 | **Keyed-identity injectivity** — every mangle semantic-identity → symbol is injective (or additionally disambiguator-keyed) | drop-glue: `witnessed` (CS-1.2 decoder + round-trip — THE tier-2 model). All other mangle families: **unaudited** | census every symbol-mint site (`LinkerSymbol` mangles, `impl$FQType$FQTrait` method keys, inner-fn discriminators [span-keyed — verify], GOT data symbols, platform export names); each row → witness or disambiguator | `/design`(backend) `resolution.rs` naming primitives + census |
-| R5 | **GOT index in range** — every slot read/write < table size; allocation fallible | `asserted` (CS-2: always-on `assert!` store/load + fallible allocate + cache-seam diagnosed error) — THE tier-3 model | extend cache-seam validation to `borrowed_sibling_slot` **with** its first consumer (FIXME 0637) | `/design`(backend) rides the borrowed-convention track |
+| R5 | **GOT index in range** — every slot read/write < table size; allocation fallible | `asserted` (CS-2: always-on `assert!` store/load + fallible allocate + cache-seam diagnosed error) — THE tier-3 model | extend cache-seam validation to `borrowed_sibling_slot` **with** its first consumer (FIXME 0637) — disposition re-affirmed S113 W5: **parked to the first consumer, NOT in-W5** (the sibling is carrier-only, zero production readers since S102; validating an unread index guards nothing, and pre-building the check ahead of its consumer is the P8 half-measure — the co-landing rule IS the mechanism) | `/design`(backend) rides the borrowed-convention track |
 | R6 | **Persisted-index trust boundary** — every index/key/slot deserialized from `.meta.json` is validated at load; violation = diagnosed `CacheStale`, never trusted into emission | partial `asserted` (`callable_got_slot` only) | **generalize 0637 to the boundary**: census every persisted index (sibling slot; `callees` FQs [feeds the future reverse index]; summary param indices — an out-of-range `MayAliasOf(k)` from corrupt bytes indexes `arg_origins[k]`; span keys) → ONE validation seam in `deserialise_meta_with_build_id`, one `CacheStale` class each | `/design`(backend, cache submodule) |
-| R7 | **Prelude export closure** — prelude's live table gains no entry outside its exports post-compile (spec §8.6.4's mechanical shadow) | **`unasserted`** — relied on by resolution + display; violated intermittently (0604); seam unlocatable ~320 runs | tier-3 `debug_assert!` + `MODULE_TRACE` emit at **every** live-table insertion seam (super-import install, publication edge, watcher reload, redefinition commit) — the S111 P5 conclusion's named first step; converts the ghost into a named seam | `/design`(int) live-table seams |
-| R8 | **RC balance** — every alloc exactly one net free; scope decs match incs | `dynamic-lane` (DEC_CHECK, alloc/free parity, checking-allocator faces) | make the lane **standing** on every emission-affecting change-set (tier-4 gate rider); production stays unasserted by design (cost) — recorded carve-out | `/qa` lanes (plan-owned) |
-| R9 | **Differential-oracle equivalence** — analysis-on ≡ analysis-off observationally + heap-balanced (the meta-invariant; reference semantics of §3d) | run ad hoc per change-set; lane rotted silently 3 sprints (CS-0.5 finding) | **standing CI gate** — the parallel `/qa` coverage strategy operationalizes; nextest-visible (the CS-0.5 lane-fold precedent) | `/qa` (mandated here, owned there) |
+| R7 | **Prelude export closure** — prelude's live table gains no entry outside its exports post-compile (spec §8.6.4's mechanical shadow) | **`asserted`** (S113 W4: `assert_prelude_closure` at the int live-table insertion seams, tier 3; no false-fires in the landing window) | maintain; the 0604 ghost now names its seam on next firing — `/qa`'s 0604 work consumes the named seam | landed (int) |
+| R8 | **RC balance** — every alloc exactly one net free; scope decs match incs | `dynamic-lane` (DEC_CHECK, alloc/free parity, checking-allocator faces) | **W5 tier-5 build**: the three diagnostic modes — no-reuse-after-free quarantine, scrub-freed poisoning, paired alloc/free hard-check — intrinsics-internal, env-gated, no ABI change; plus **W5 tier-3** assertion density at the RC/alloc seams (backend/intrinsics); modes ride the standing tier-4 lane as its detection faces; production stays unasserted by design (cost) — recorded carve-out | `/design`(intrinsics) modes; `/design`(backend) seam asserts; `/qa` lanes (plan-owned) |
+| R9 | **Differential-oracle equivalence** — analysis-on ≡ analysis-off observationally + heap-balanced (the meta-invariant; reference semantics of §3d) | **`gated`** (S113 W1: standing nextest-visible lane — `tests/safety_oracle_lane.rs` + `SafetyMatrix`; acceptance = 0641 B-1 RED-under-lane; first catch MS-P7) | maintain; W5 fix wave verifies under lane + tier-5 modes; corpus grows toward the 0623 matrix shapes | landed (`/qa`-owned lane) |
 | R10 | **Resolve-once keyed reads hard-fail** (P24) — downstream consumers never re-derive; miss = diagnosed error | `asserted` (S110 hard-error arms + KC-N1..N6 negatives) — a model | maintain; P24 sweep register covers the residual scan census | landed |
 | R11 | **Concreteness at codegen** — no `Type::Var` reaches RC-classify / slot emission / mangle | `unconstructable` (P20 S84: slot ⟺ `is_concrete()`) + backstop asserts (incl. CS-1.2's at the mangle) | maintain | landed |
 | R12 | **Published-pointer retention** (P22) / ABI-epoch slot freeze | designed (`ownership-inference.md` §5.6), pre-implementation | the R3-machinery sprint lands the slot-freeze assert WITH the mechanism, not after | `/design`(int) at the session-transaction sprint |
 | R13 | **Fork-join error-slot ferry** — worker panic reaches the join; no silent swallow (spec §12.4.3) | **`unasserted`** known pre-existing (test-discovery.md owed item) | tier-3 ferry obligation at both fork-join boundaries when actioned | `/design`(intrinsics/backend) — parked, named |
+| R14 | **COW count-truth** — the runtime rc==1 in-place branch is sound iff every live independently-owned reference is counted; an uncounted (borrowed) source reaches a COW op only under an analysis-proven bound (result does not outlive the source's scope-dec — the escape gate); the conservative (analysis-off) mode counts everything (all-Owned per `ownership-inference.md` §6.2/R7), making the runtime rc check correct by construction | **`unasserted` as-built** — the syntactic `cow_source_ownership` classifier leaks `Borrowed` into the toggle-off path (the 0664 impasse root; B-2/I-2/MS-P7 REDs, both toggle states) | the 0664 ruling, one change-set: toggle-off polarity restore (all-Owned) + analysis-on escape-gated producer inc (absent fact ⇒ inc); checks = tier-4 lane + row-6 DEC_CHECK; narrowing row in ownership-codegen §13.5/§13.7 rule table | `/design`(backend) + `/dev`(backend), W5b extension |
 
 Maintenance rule: `/arch` re-audits the register at every Phase-2 architecture review; a
 new safety-eliding surface (a new analysis, a new mangle family, a new persisted carrier,
@@ -221,6 +235,14 @@ principle governs: the S112 memory-safety-soundness mechanism builds to it.
 
 Scoped so `/sprint` can dispatch each as one narrow deployment. Ordering: task 1 gates the
 0641 fix; tasks 2–4 are independent of it and of each other.
+
+> **W5 status (S113).** Task 1 is the W5 fix-wave increment (§3a/§3c + 0641 corrections
+> + the paired backend consume fix; §3b conditional — the named capacity fallback).
+> Task 4's R7 assert LANDED S113 W4. Task 5's tier-4 lane LANDED S113 W1. Tasks 2 (i)/(ii)
+> and 3 (the backend censuses + cache-boundary generalization) are NOT in W5's ruled
+> depth — they remain the S114+ cascade. W5 increment order (ruled at W5 open): tier-5
+> modes + tier-3 seam asserts FIRST (detector multipliers), then the tiers-1–2 fix wave
+> verified under lane + modes.
 
 1. **`/design`(typecheck) — the monotone walk (gates 0641; consumes §3 as its binding
    frame).** Author the origin/provenance lattice with its explicit ⊤ (§3a) + the

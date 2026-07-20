@@ -1,5 +1,27 @@
 use super::*;
 
+/// FIXME 0653 — the ruled name-scan discipline (the Fix-1 template generalised).
+/// A name-scan mono collector's AST callee NAME is only a TRIGGER; the identity
+/// is the per-span recorded carrier. A callee whose span carries NO
+/// `resolved_targets` entry resolved to a §4.6 LOCAL — a `let`/`fn`/param binding
+/// shadowing a top-level constrained/parametric fn — because
+/// `record_reference_target`'s frame-guarded shadow gate (`is_recursion_self_ref`)
+/// declined to record it. Such a call MUST NOT be minted/dispatched by name-match
+/// (it would silently wrong-value the shadow to the top-level fn). Returns TRUE
+/// when the collector should PROCEED (a real keyed reference), FALSE to SKIP.
+///
+/// The ONE shared guard (P7): consumed by `collect_local_parametric_calls`,
+/// `collect_imported_constrained_calls`, `collect_constrained_calls_excluding_self`
+/// (pass-4 top-level collectors, reading `state.method_resolutions.resolved_targets`),
+/// and `resolve_inner_constrained_calls` / `monomorphise_inner_parametric_hops`
+/// (mono-recheck epilogue, reading the harvested `resolutions.resolved_targets`).
+pub(crate) fn callee_has_keyed_carrier(
+    resolved_targets: &HashMap<Span, FQSymbol>,
+    callee_span: Span,
+) -> bool {
+    resolved_targets.contains_key(&callee_span)
+}
+
 // --- Shared Expr child traversal (the single child-enumeration helper) ---
 
 /// Invoke `f` on each immediate child sub-expression of `expr` (immutable).
@@ -491,7 +513,7 @@ pub(super) fn types_compatible(a: &Type, b: &Type) -> bool {
 
 /// The outcome of matching an overloaded call's concrete args against the
 /// registered variants of its base name.
-pub(super) enum OverloadSelection<'v> {
+pub(crate) enum OverloadSelection<'v> {
     /// Exactly one variant's params are compatible with the args.
     Unique(&'v (Vec<Type>, Type, Symbol)),
     /// No variant matches the arity + arg types.
@@ -508,7 +530,7 @@ pub(super) enum OverloadSelection<'v> {
 /// `collect_pending_overload_result_vars` (the pre-drain read-only benign-var
 /// scan — only the `Unique` case contributes). Before CS-4.1 each consumer
 /// hand-copied the predicate — the P7 mirror `/review` flagged (I-B).
-pub(super) fn select_unique_overload_variant<'v>(
+pub(crate) fn select_unique_overload_variant<'v>(
     variants: &'v [(Vec<Type>, Type, Symbol)],
     concrete_args: &[Type],
 ) -> OverloadSelection<'v> {

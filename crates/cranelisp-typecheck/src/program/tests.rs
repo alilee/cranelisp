@@ -1094,6 +1094,26 @@
 
     // --- Ring 2: Constrained polymorphism tests ---
 
+    // A `resolved_targets` map carrying a dummy entry for EVERY `Var` span in
+    // `expr` — so the FIXME-0653 shadow guard (`callee_has_keyed_carrier`) treats
+    // every callee as a genuine keyed reference. These name-scan-mechanism tests
+    // exercise the collector's name matching, not the shadow discipline, so a
+    // full-carrier map keeps them testing exactly what they did before the guard.
+    fn all_var_carriers(expr: &Expr) -> HashMap<Span, FQSymbol> {
+        fn walk(e: &Expr, m: &mut HashMap<Span, FQSymbol>) {
+            if let Expr::Var { span, .. } = e {
+                m.insert(
+                    *span,
+                    FQSymbol { module: ModuleFullPath::from("test"), symbol: Symbol::from("x") },
+                );
+            }
+            crate::program::for_each_child_expr(e, |c| walk(c, m));
+        }
+        let mut m = HashMap::new();
+        walk(expr, &mut m);
+        m
+    }
+
     // spec: 03-types §3.6 — collect_constrained_calls finds direct call to constrained fn
     #[test]
     fn test_collect_constrained_calls_finds_direct_call() {
@@ -1111,7 +1131,7 @@
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -1136,7 +1156,7 @@
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
 
         assert!(calls.is_empty());
     }
@@ -1166,7 +1186,7 @@
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -1204,7 +1224,7 @@
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &all_var_carriers(&expr), &mut calls);
 
         assert_eq!(calls.len(), 2, "should find calls in both branches");
     }
@@ -2120,6 +2140,204 @@
         }
     }
 
+    /// Every current-module symbol name whose bare key CONTAINS `substr` — used
+    /// to locate a minted mono instance (`idpoly$Int`, `ga$Int`, …) without
+    /// hard-coding the home-qualified mangle grammar.
+    fn symbol_names_containing(tc: &TestFixture, substr: &str) -> Vec<String> {
+        tc.symbol_table()
+            .all_symbols()
+            .map(|(n, _)| n.as_ref().to_string())
+            .filter(|n| n.contains(substr))
+            .collect()
+    }
+
+    /// The `codegen_view` of the first current-module symbol whose key contains
+    /// `substr` (the minted mono instance).
+    fn mono_instance_view_containing(tc: &TestFixture, substr: &str) -> MonoDefnVariant {
+        let key = tc
+            .symbol_table()
+            .all_symbols()
+            .find(|(n, e)| {
+                n.as_ref().contains(substr)
+                    && matches!(e, ModuleEntry::Def { codegen_view: Some(_), .. })
+            })
+            .map(|(n, _)| n.as_ref().to_string())
+            .unwrap_or_else(|| panic!("no mono instance with codegen_view contains `{substr}`"));
+        main_codegen_view_of(tc, &key)
+    }
+
+    // §11.8.3 leg D3 — a poly callee (`idpoly`) reached ONLY from a MULTI-SIG
+    // clause body MUST have its concrete mono instance minted. Pre-fix the
+    // multi-sig defn was filtered out of the mono-collect (`collect_single_sig_defns`
+    // drops it; `Defn::body()` panics on it), so `idpoly$Int` was never harvested
+    // and the call reached codegen as `undefined function`. The `MultiSig` harvest
+    // family scans the clause bodies post-Phase-A.
+    #[test]
+    fn multi_sig_clause_body_poly_callee_monomorphised_d3() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn idpoly [x] x)\n\
+             (defn build ([n] (build n 0)) \
+                         ([n acc] (if (eq-i64 n 0) acc \
+                             (build (sub-i64 n 1) (add-i64 acc (idpoly n))))))",
+        );
+        assert!(
+            !symbol_names_containing(&tc, "idpoly$").is_empty(),
+            "`idpoly`'s Int mono instance MUST be minted from `build`'s multi-sig \
+             clause body (leg D3); current-module symbols: {:?}",
+            symbol_names_containing(&tc, "idpoly"),
+        );
+    }
+
+    // §11.8.3 leg R2 — a call to a MULTI-SIG BASE (`h`) inside a monomorphised
+    // body (`ga$Int`) MUST get its `resolved_target` carrier. Pre-fix the inner
+    // scans handled only constrained self-recursion and pure-parametric hops —
+    // never an overloaded-base dispatch — so `(h 1)` reached codegen with no
+    // carrier (`class=carrier-loss`). `resolve_inner_multi_sig_dispatch` writes it.
+    #[test]
+    fn multi_sig_base_dispatch_in_mono_body_carrier_r2() {
+        let mut tc = tc_with_prims();
+        // `(add-i64 (h 1) 0)` pins `(h 1)`'s node to Int (so a single-cluster
+        // batch mono of `ga$Int` settles cleanly), while `(h 1)` is still a
+        // multi-sig-BASE dispatch inside the monomorphised body — the exact
+        // carrier R2 must write.
+        check_src(
+            &mut tc,
+            "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn ga [:a x] (add-i64 (h 1) 0))\n\
+             (defn use-ga [] (ga 5))",
+        );
+        let view = mono_instance_view_containing(&tc, "ga$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        // The `(h 1)` dispatch inside `ga$Int` carries its resolved_target at the
+        // APPLY span (SigDispatch), naming the concrete clause `h$Int` — not absent
+        // (the carrier-loss shape the backend keyed read would hard-fail on).
+        let has_h_dispatch = targets.iter().any(|(l, fq)| {
+            l == "@apply"
+                && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("h$"))
+        });
+        assert!(
+            has_h_dispatch,
+            "the multi-sig-base call `(h 1)` inside the monomorphised `ga$Int` body \
+             MUST carry a resolved_target to the concrete clause `h$Int` at its \
+             Apply span (leg R2); collected: {targets:?}"
+        );
+    }
+
+    // §11.8.3 leg R2 — W2a /review Important 1a (TEMPLATE-select). A multi-sig
+    // dispatch inside a mono body that selects a genuinely-POLY clause (`(h 1 2)`
+    // → the `([a b] a)` `$Var+Var` template) MUST monomorphise that clause to a
+    // CONCRETE instance and dispatch to it — never write the slot-less `$Var+Var`
+    // TEMPLATE mangle into the frozen view (pre-fix `undefined function:
+    // h$Var+Var`). The scoped drain gives R2 the full concrete/template
+    // bifurcation. `check_src` panics on the residual/undefined path.
+    #[test]
+    fn multi_sig_dispatch_template_clause_monomorphised_r2a() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn ga [:a x] (add-i64 (h 1 2) 0))\n\
+             (defn use-ga [] (ga 5))",
+        );
+        // The `([a b] a)` template clause, selected by `(h 1 2)`, was instantiated
+        // at Int (a `h$Var+Var$…` concrete mono instance exists) — proving R2 did
+        // NOT freeze the slot-less `$Var+Var` template mangle into the view.
+        assert!(
+            !symbol_names_containing(&tc, "h$Var+Var$").is_empty(),
+            "the poly 2-arg clause selected by `(h 1 2)` MUST be monomorphised to a \
+             concrete instance (leg R2, Important 1a) — never dispatched to the \
+             slot-less `$Var+Var` template; symbols: {:?}",
+            symbol_names_containing(&tc, "h$Var+Var"),
+        );
+    }
+
+    // §11.8.3 leg R2 — W2a /review Important 1b (post-drain drop). A poly fn
+    // (`poly2`) reached ONLY from a MULTI-SIG clause body is monomorphised in the
+    // D3 harvest, which runs AFTER the single top-level drain. Its inner multi-sig
+    // dispatch `(h2 1)` defers a pending that the top-level drain has already
+    // taken — pre-fix it was DROPPED, leaving `(h2 1)` a residual unbound var →
+    // misleading residual-var wrong-reject. The scoped drain inside
+    // `recheck_body_for_mono` resolves it in-place. `check_src` panics on the
+    // residual wrong-reject, so a clean return IS the assertion.
+    #[test]
+    fn multi_sig_dispatch_in_d3_harvested_body_drained_r2b() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn h2 ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn poly2 [p] (let [q (h2 1)] p))\n\
+             (defn build3 ([n] (build3 n 0)) ([n acc] (poly2 acc)))\n\
+             (defn use-build3 [] (build3 3))",
+        );
+        // poly2 was monomorphised from build3's clause body AND its inner `(h2 1)`
+        // dispatch drained (the instance minted cleanly, no residual var).
+        assert!(
+            !symbol_names_containing(&tc, "poly2$").is_empty(),
+            "poly2 reached from build3's multi-sig clause body MUST monomorphise \
+             cleanly with its inner `(h2 1)` dispatch drained in-recheck (leg R2, \
+             Important 1b); symbols: {:?}",
+            symbol_names_containing(&tc, "poly2"),
+        );
+    }
+
+    // W2a /review Important 2 (P24 mirror in `verify_constraints`). A constrained
+    // fn whose bound trait is imported METHOD-ONLY (not the trait) must
+    // monomorphise: `verify_constraints` roots the impl lookup at the trait's HOME
+    // (`fq_trait.module`, held on the constraint) via `has_impl_in_home`, NOT a
+    // bare re-resolve of the trait NAME in the caller's scope (`has_impl_with_state`)
+    // — the caller has no in-scope trait name. Pre-fix: `(wrap 1)` monomorphises
+    // wrap$Int → `verify_constraints` → "no impl of trait blib/Bump for type Int".
+    // `check_src` panics on that wrong-reject.
+    #[test]
+    fn method_only_import_constrained_fn_verify_constraints_home_rooted_d2() {
+        let mut tc = tc_with_prims();
+        // blib: trait Bump (method `bump`) + Int impl.
+        let blib = ModuleFullPath::from("blib");
+        tc.set_current_module(blib.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        register_int_returning_trait(&mut tc, "Bump", "bump");
+        // user: import ONLY the method `bump` — NOT the trait `Bump`.
+        let user = ModuleFullPath::from("user");
+        tc.set_current_module(user.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        seed_specific_import(&mut tc, &blib, &["bump"]);
+        // Submission 1 — `wrap` is a genuine constrained-poly fn (Bump a). Checked
+        // in its OWN cluster so it commits constrained (a same-cluster concrete
+        // call would collapse it to Int before pass-4 ever mono'd it — the batch
+        // regeneralize). This mirrors the REPL multi-submission the e2e reproduces.
+        check_src(&mut tc, "(defn wrap [x] (bump x))");
+        // Submission 2 — `(wrap 1)` monomorphises wrap$Int → `verify_constraints`
+        // checks the Bump/Int impl. Home-rooted (blib, held on the constraint), so
+        // it resolves. Pre-fix: bare re-resolve of "Bump" in user scope →
+        // "no impl of trait blib/Bump for type Int". `check_src` panics on it.
+        check_src(&mut tc, "(defn use-int [] (wrap 1))");
+        assert!(
+            !symbol_names_containing(&tc, "wrap$").is_empty(),
+            "wrap$Int must be minted (proving verify_constraints ran + passed \
+             home-rooted); symbols: {:?}",
+            symbol_names_containing(&tc, "wrap"),
+        );
+    }
+
+    // §11.8.3 leg R1 — a CROSS-ARITY sibling self-call from a genuinely-poly
+    // multi-sig clause, monomorphised at a call site, MUST resolve (dispatch to
+    // the concrete sibling clause) rather than wrong-reject with an internal-name
+    // leak. `(g2 5)` monomorphises the 1-arg poly clause at Int; its body's
+    // `(g2 1 2)` targets the concrete 2-arg sibling. `check_src` panics on the
+    // wrong-reject, so a clean return IS the assertion.
+    #[test]
+    fn cross_arity_sibling_self_call_resolves_r1() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn g2 ([:a x] (g2 1 2)) ([:primitives/Int a :primitives/Int b] (add-i64 a b)))\n\
+             (defn use-g2 [] (g2 5))",
+        );
+    }
+
     // Leg 1 (dispatch/operator): an operator call — a trait method the primitive
     // short-circuit collapses to `add-i64` — carries its dispatch-leg carrier at
     // the APPLY span (`primitives/add-i64`). `(+ 1 2)` is the named W1 failure
@@ -2337,6 +2555,314 @@
             Some(enclosing_test_fq("f")),
             "genuine self-call `f` Var must still carry resolved_target test/f; \
              collected: {targets:?}"
+        );
+    }
+
+    // §11.8.7 ruling 5 — the overload-gate LOCAL-SCOPE-FIRST guard. A `let`
+    // binding shadows a MULTI-SIG base `m1`; the shadowed call `(m1 x)` inside
+    // the let body MUST resolve to the LOCAL binding (an indirect call, no
+    // dispatch carrier), NOT enter the global overload path. On HEAD the
+    // `infer.rs:604` gate consulted `state.overloads` by name without checking
+    // local scope, so the call deferred past the drain and t1 wrong-rejected
+    // (`undefined variable: t1`). The `add-i64` wrapper forces t1 concrete so it
+    // carries a `codegen_view` to inspect. The `(m1 x)` callee `Var` must carry
+    // NO `resolved_target` (a local indirect call), unlike a genuine overload
+    // dispatch which would carry a `SigDispatch` mangle.
+    #[test]
+    fn overload_gate_skips_let_shadowed_multi_sig_base() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn m1 ([x] x) ([a b] a))\n\
+             (defn t1 [x] (add-i64 (let [m1 (fn [y] y)] (m1 x)) 1))",
+        );
+        // t1 defined (not wrong-rejected) and concrete → has a codegen_view.
+        let view = main_codegen_view_of(&tc, "t1");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        // The `(m1 x)` callee `Var m1` must resolve to the LOCAL let binding —
+        // no dispatch carrier (the shadowed base is not the overload dispatch).
+        let m1_carrier = targets
+            .iter()
+            .find(|(l, _)| l == "m1")
+            .map(|(_, fq)| fq.clone());
+        assert_eq!(
+            m1_carrier,
+            Some(None),
+            "the let-shadowed `(m1 x)` callee `Var` must carry NO resolved_target \
+             (it is the LOCAL `(fn [y] y)`, an indirect call — the overload gate \
+             MUST NOT bypass local scope); collected: {targets:?}"
+        );
+    }
+
+    // Fix 1 (/arch-directed) — during a mono recheck, a `(s1 x)` whose callee is a
+    // `let`-binding SHADOWING the base MUST record NO self-recursion dispatch: the
+    // frame-guarded `is_recursion_self_ref` verdict (via record_reference_target)
+    // left the callee carrier absent, so `record_self_recursion_dispatch` skips it.
+    // Pre-fix it recorded `SigDispatch{s1$Int}` on the shadowed inner call → the
+    // backend emitted a self-call (TCO loop → hang). The `add-i64` wrapper forces
+    // `s1` concrete so `(s1 5)` mints an inspectable `s1$Int`. TAIL cell.
+    #[test]
+    fn mono_recheck_shadowed_self_call_records_no_dispatch() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))\n\
+             (defn use-s1 [] (add-i64 (s1 5) 0))",
+        );
+        let view = mono_instance_view_containing(&tc, "s1$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        // No node in s1$Int's body may dispatch to a `s1$…` mono instance (the
+        // shadowed `(s1 x)` is the LOCAL identity, an indirect call).
+        let leaks_self_dispatch = targets.iter().any(|(_, fq)| {
+            matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))
+        });
+        assert!(
+            !leaks_self_dispatch,
+            "the let-shadowed `(s1 x)` inside `s1$Int` MUST NOT record a \
+             self-recursion dispatch to `s1$Int` (Fix 1 — it is the LOCAL \
+             identity); collected: {targets:?}"
+        );
+    }
+
+    // Fix 1 non-tail sibling (/arch-required, typecheck half). Same shadow, but the
+    // shadowed `(s1 x)` is NOT in tail position (`(add-i64 (… (s1 x)) 1)`) — no TCO
+    // loop, but a mis-recorded self-dispatch would give the WRONG VALUE (call
+    // `s1$Int` instead of the local identity). Typecheck assertion: still no
+    // self-dispatch. (/testing lands the wrong-value e2e cell.)
+    #[test]
+    fn mono_recheck_shadowed_self_call_non_tail_records_no_dispatch() {
+        let mut tc = tc_with_prims();
+        // `(s1 x)` is bound to `r` (non-tail), keeping `s1` poly so it still
+        // monomorphises to an inspectable `s1$Int`.
+        check_src(
+            &mut tc,
+            "(defn s1 [x] (let [s1 (fn [y] y)] (let [r (s1 x)] r)))\n\
+             (defn use-s1 [] (s1 5))",
+        );
+        let view = mono_instance_view_containing(&tc, "s1$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("s1$"))),
+            "the non-tail let-shadowed `(s1 x)` MUST NOT record a self-recursion \
+             dispatch (Fix 1 non-tail cell); collected: {targets:?}"
+        );
+    }
+
+    // Fix 2 (MC-X2) — an IMPORTED multi-sig base `h` (defined in `mlib`) called
+    // from `user` must dispatch AND its carrier must be keyed by the base's HOME
+    // module (`mlib`), not `current_module` (`user`). Pre-fix the imported base
+    // never entered the overload machinery → `undefined function: h`; and the
+    // `SigDispatch` carrier hard-coded `current_module`. The `(h 1)` Apply must
+    // carry a resolved_target `{mlib, h$Int}`.
+    #[test]
+    fn imported_multi_sig_base_carrier_keyed_by_home_mc_x2() {
+        let mut tc = tc_with_prims();
+        let mlib = ModuleFullPath::from("mlib");
+        tc.set_current_module(mlib.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))");
+        let user = ModuleFullPath::from("user");
+        tc.set_current_module(user.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        seed_specific_import(&mut tc, &mlib, &["h"]);
+        // Simulate fresh per-cluster overload state (the real pipeline builds a
+        // fresh CheckState per cluster; TestFixture reuses one, leaking `mlib`'s
+        // local `h` overload into `user`'s cluster and masking the imported-base
+        // rehydration path this test exercises).
+        tc.state.overloads.clear();
+        tc.state.resolved_overloads.clear();
+        tc.state.overload_homes.clear();
+        // `(add-i64 (h 1) 0)` pins use-h concrete → inspectable codegen_view.
+        check_src(&mut tc, "(defn use-h [] (add-i64 (h 1) 0))");
+        let view = main_codegen_view_of(&tc, "use-h");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let home_keyed = targets.iter().any(|(l, fq)| {
+            l == "@apply"
+                && matches!(fq, Some(fq)
+                    if fq.module == mlib && fq.symbol.as_ref().contains("h$"))
+        });
+        assert!(
+            home_keyed,
+            "the imported multi-sig base call `(h 1)` MUST carry a resolved_target \
+             keyed by the base's HOME module `mlib` (MC-X2, P24 storage identity — \
+             NOT `user`); collected: {targets:?}"
+        );
+    }
+
+    // Fix A (MC-X2 qualified face) — a QUALIFIED imported multi-sig call
+    // `(mlib/h 1)` must dispatch to the STORED mangled identity `h$Int` keyed by
+    // `mlib`, NOT re-derive from the written name (`mangle_sig("mlib/h",…)` =
+    // `mlib/h$Int` → the bad `mlib/mlib/h$Int` no-entry). The `(mlib/h 1)` Apply
+    // must carry `{mlib, h$Int}` — the symbol MUST NOT contain the `mlib/` prefix.
+    #[test]
+    fn imported_multi_sig_base_qualified_call_stored_identity_fix_a() {
+        let mut tc = tc_with_prims();
+        let mlib = ModuleFullPath::from("mlib");
+        tc.set_current_module(mlib.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        check_src(&mut tc, "(defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))");
+        let user = ModuleFullPath::from("user");
+        tc.set_current_module(user.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        // Fresh per-cluster overload state (see the bare-face test).
+        tc.state.overloads.clear();
+        tc.state.resolved_overloads.clear();
+        tc.state.overload_homes.clear();
+        // Qualified reference `mlib/h` — resolves directly to the committed module
+        // (no import needed).
+        check_src(&mut tc, "(defn use-h [] (add-i64 (mlib/h 1) 0))");
+        let view = main_codegen_view_of(&tc, "use-h");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let good = targets.iter().any(|(l, fq)| {
+            l == "@apply"
+                && matches!(fq, Some(fq)
+                    if fq.module == mlib
+                        && fq.symbol.as_ref() == "h$Int")
+        });
+        assert!(
+            good,
+            "the qualified imported call `(mlib/h 1)` MUST carry the STORED identity \
+             `{{mlib, h$Int}}` (Fix A) — NOT the re-derived `mlib/h$Int` (which \
+             renders `mlib/mlib/h$Int`, no entry); collected: {targets:?}"
+        );
+    }
+
+    // Fix 1 / ruling-5 composition (/arch-flagged): §11.8.7's "during a mono
+    // recheck the base is not locally bound" is FALSIFIED by a let-rebinds-base
+    // case. A multi-sig base `m` shadowed by a `let` INSIDE a mono recheck
+    // (`poly$Int`) must skip BOTH the overload gate AND the self-call classifier.
+    // The ruling-5 gate does NOT rely on "base not locally bound" — it checks
+    // `env.lookup(m).is_none() || is_recursion_self_ref(m)`: here env.lookup(m) is
+    // Some (the let) and is_recursion_self_ref is false → gate false → the overload
+    // path is skipped and `(m p)` resolves to the LOCAL. `check_src` panics if it
+    // wrong-rejects; the mono instance's `(m p)` must carry no `m$…` dispatch.
+    #[test]
+    fn ruling5_composition_let_shadowed_multi_sig_base_in_mono_recheck() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn m ([x] x) ([a b] a))\n\
+             (defn poly [p] (let [m (fn [y] y)] (m p)))\n\
+             (defn use-poly [] (poly 5))",
+        );
+        let view = mono_instance_view_containing(&tc, "poly$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("m$"))),
+            "the let-shadowed multi-sig base call `(m p)` inside `poly$Int` MUST \
+             resolve to the LOCAL (no `m$…` overload dispatch) — the ruling-5 gate \
+             composes under a mono recheck even when the base IS locally bound; \
+             collected: {targets:?}"
+        );
+    }
+
+    // Fix 1 control — a GENUINE monomorphic self-recursion (no shadow) MUST still
+    // record its self-dispatch to the mono instance (the carrier is present via
+    // the frame-guarded verdict). `cnt` is poly in `x`; `(cnt 5 3)` mints
+    // `cnt$Int+Int` whose body's `(cnt x (sub-i64 n 1))` self-call dispatches to it
+    // — the fix must not disable genuine self-recursion.
+    #[test]
+    fn mono_recheck_genuine_self_recursion_still_records() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn cnt [x n] (if (eq-i64 n 0) x (cnt x (sub-i64 n 1))))\n\
+             (defn use-cnt [] (cnt 5 3))",
+        );
+        let view = mono_instance_view_containing(&tc, "cnt$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cnt$"))),
+            "the genuine self-call `(cnt x (sub-i64 n 1))` MUST still dispatch to \
+             the mono instance `cnt$Int+Int` (Fix 1 must not break genuine \
+             self-recursion); collected: {targets:?}"
+        );
+    }
+
+    // Fix B / FIXME 0653 — site 1 (pass-4 collector over a CONCRETE caller). A
+    // let-shadowed parametric fn `(idp n)` MUST resolve to the LOCAL — the
+    // name-scan collector (`collect_local_parametric_calls`) MUST NOT mint the
+    // top-level `idp`'s mono (its callee has no keyed carrier — the shadow gate
+    // declined it). Control: the UNSHADOWED call DOES mint `idp$Int`.
+    #[test]
+    fn shadowed_parametric_in_concrete_caller_no_mint_fix_b() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn idp [x] x)\n\
+             (defn caller [n] (add-i64 (let [idp (fn [y] (add-i64 y 1))] (idp n)) 0))\n\
+             (defn use-c [] (caller 5))",
+        );
+        assert!(
+            symbol_names_containing(&tc, "idp$").is_empty(),
+            "the let-shadowed `(idp n)` MUST NOT mint the top-level `idp`'s mono \
+             (FIXME 0653); symbols: {:?}",
+            symbol_names_containing(&tc, "idp"),
+        );
+        // Control — an UNSHADOWED `(idp n)` mints `idp$Int`.
+        let mut tc2 = tc_with_prims();
+        check_src(
+            &mut tc2,
+            "(defn idp [x] x)\n\
+             (defn caller2 [n] (add-i64 (idp n) 0))\n\
+             (defn use-c2 [] (caller2 5))",
+        );
+        assert!(
+            !symbol_names_containing(&tc2, "idp$").is_empty(),
+            "the UNSHADOWED `(idp n)` control MUST still mint `idp$Int`; symbols: {:?}",
+            symbol_names_containing(&tc2, "idp"),
+        );
+    }
+
+    // Fix B / FIXME 0653 — site 4 (mono-recheck epilogue, parametric hop). Inside a
+    // monomorphised `poly$Int` body, a let-shadowed parametric `(tgt p)` MUST
+    // resolve to the LOCAL — `monomorphise_inner_parametric_hops` MUST NOT record a
+    // `tgt$…` dispatch. Control: the unshadowed twin.
+    #[test]
+    fn shadowed_parametric_in_mono_body_no_record_fix_b() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn tgt [x] x)\n\
+             (defn poly [p] (let [tgt (fn [y] y)] (tgt p)))\n\
+             (defn use-poly [] (poly 5))",
+        );
+        let view = mono_instance_view_containing(&tc, "poly$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("tgt$"))),
+            "the shadowed `(tgt p)` in `poly$Int` MUST NOT record a `tgt$…` dispatch \
+             (FIXME 0653 site 4); collected: {targets:?}"
+        );
+    }
+
+    // Fix B / FIXME 0653 — site 3 (mono-recheck epilogue, constrained call). Inside
+    // `poly$Int`, a let-shadowed constrained `(cadd p)` MUST resolve to the LOCAL —
+    // `resolve_inner_constrained_calls` MUST NOT record a `cadd$…` dispatch.
+    #[test]
+    fn shadowed_constrained_in_mono_body_no_record_fix_b() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn cadd [x] (add-i64 x x))\n\
+             (defn poly [p] (let [cadd (fn [y] y)] (cadd p)))\n\
+             (defn use-poly [] (poly 5))",
+        );
+        let view = mono_instance_view_containing(&tc, "poly$");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        assert!(
+            !targets.iter().any(|(_, fq)| matches!(fq, Some(fq) if fq.symbol.as_ref().contains("cadd$"))),
+            "the shadowed `(cadd p)` in `poly$Int` MUST NOT record a `cadd$…` \
+             dispatch (FIXME 0653 site 3); collected: {targets:?}"
         );
     }
 
@@ -6862,6 +7388,112 @@
     //   error (which is exactly the wall 0354's isolation hit). The companion
     //   e2e `tests/spec_07_traits.rs::cross_module_stacked_trait_bound_call_runs_to_clean_exit`
     //   upgrades to "runs to exit 2" once /backend wires the GOT.
+    // W2a /review Suggestion 7 — the fn-value-rewrite multi-sig corner, PINNED as
+    // BENIGN. A poly fn-value (`mk`) passed as a HOF argument inside a CONCRETE
+    // multi-sig clause body is collected + monomorphised (`mk$Int` minted — the
+    // `mono_scan_bodies` D3 extension reaches the clause bodies) and its span
+    // carrier (`resolved_targets → mk$Int`) is written UNCONDITIONALLY. Only the
+    // belt-and-braces AST `Var`-rename skips (its target `st.symbols.get_mut(base)`
+    // is the `Overloaded` base entry with `ast: None` — the clause bodies live
+    // under the MANGLED variant entries). That skip is benign: the mangled
+    // variant's `codegen_view` is rebuilt from `resolved_targets`, so the backend
+    // keyed-read resolves `mk → mk$Int` (BC §3 inv. 10) without the name rewrite.
+    // This test pins BOTH facts (mint + carrier), so a regression that drops
+    // either — turning the benign skip into a real slot-less leak — goes RED.
+    #[test]
+    fn fn_value_in_concrete_multi_sig_clause_minted_and_carried_sugg7() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn mk [x] x)\n\
+             (defn thru [f n] (f n))\n\
+             (defn ms ([:primitives/Int a] (thru mk a)) ([a b] a))\n\
+             (defn use-ms [] (ms 5))",
+        );
+        // 1. The poly fn-value `mk` was monomorphised to `mk$Int` from the
+        //    multi-sig clause body (the D3 clause-body scan reached it).
+        assert!(
+            !symbol_names_containing(&tc, "mk$Int").is_empty(),
+            "the poly fn-value `mk` in `ms`'s concrete clause body MUST be \
+             monomorphised to `mk$Int`; symbols: {:?}",
+            symbol_names_containing(&tc, "mk"),
+        );
+        // 2. The carrier covers the base-entry AST-rename skip: `ms$Int`'s
+        //    codegen_view resolves the `mk` fn-value `Var` to `mk$Int` (benign).
+        let view = mono_instance_view_containing(&tc, "ms$Int");
+        let mut targets = Vec::new();
+        collect_resolved_targets(&view.body, &mut targets);
+        let mk_carrier = targets.iter().any(|(l, fq)| {
+            l == "mk" && matches!(fq, Some(fq) if fq.symbol.as_ref().contains("mk$Int"))
+        });
+        assert!(
+            mk_carrier,
+            "`ms$Int`'s codegen_view MUST carry `mk → mk$Int` (the keyed carrier \
+             covers the belt-and-braces AST-rename skip on the Overloaded base — \
+             benign, Suggestion 7); collected: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn find_trait_method_decl_home_hop_finds_self_returning_method_d2() {
+        let mut tc = tc_with_prims();
+        let zlib = ModuleFullPath::from("zlib");
+        tc.set_current_module(zlib.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        // Trait `Zero` with a nullary Self-returning method `z` (`(z [] self)`).
+        let decl = TraitDecl {
+            name: TraitName::from("Zero"),
+            docstring: None,
+            type_params: vec![],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("z"),
+                docstring: None,
+                params: vec![],
+                ret_type: TypeExpr::SelfType,
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&decl).unwrap();
+        tc.clear_transient_state();
+        // user imports ONLY the method `z` — NOT the trait `Zero`.
+        let user = ModuleFullPath::from("user");
+        tc.set_current_module(user.clone());
+        seed_specific_import(&mut tc, &zlib, &["z"]);
+        let state = CheckState::new(user.clone());
+        assert!(
+            tc.env().method_self_in_return(&state, "z"),
+            "a method-only-imported Self-returning method MUST be found via the \
+             D2 home-hop in find_trait_method_decl (Suggestion 6)"
+        );
+    }
+
+    // W2a /review Important 3 — a trait method imported METHOD-ONLY whose
+    // dispatch type is NOT in the caller's scope must still dispatch. The seam is
+    // `try_resolve_trait_method` building the impl type's `FQTypeName`: pre-fix it
+    // re-resolved the dispatch type's NAME (`Int`) in the CALLER's scope
+    // (`resolve_type`) → "unknown type Int (from module user)" when user imported
+    // only `sh`. The fix roots that resolution at the trait's HOME (zlib, where
+    // the trait was declared and its impl mangle formed) via
+    // `resolve_type_in_module` (D2/§7.0.1 P24). `check_src` panics on the
+    // wrong-reject; a clean check is the assertion.
+    #[test]
+    fn method_only_import_foreign_dispatch_type_resolves_at_home_d2() {
+        let mut tc = tc_with_prims();
+        let zlib = ModuleFullPath::from("zlib");
+        tc.set_current_module(zlib.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        register_int_returning_trait(&mut tc, "Show", "sh");
+        let user = ModuleFullPath::from("user");
+        tc.set_current_module(user.clone());
+        // user imports ONLY `sh` — NOT `Int`, NOT the trait `Show`.
+        seed_specific_import(&mut tc, &zlib, &["sh"]);
+        check_src(&mut tc, "(defn get-s [] (sh 5))");
+    }
+
     #[test]
     fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
         let mut tc = tc_with_prims();
@@ -8547,6 +9179,56 @@
         );
     }
 
+    // TB-24 (§3.2) — a conventional (kind-`*`) trait impl over a POLY-APPLIED
+    // target `(Box a)` MUST accept: the lowercase con-var `a` binds as a fresh
+    // type var through the ONE shared type-expr resolver, NOT reject as
+    // `unknown type a` before the §7.3.5 arity gate (the pre-fix bare-head
+    // NAMED lookup). `check_src` panics on any check error, so a clean return
+    // IS the assertion (the impl registers a polymorphic impl over every
+    // `(Box a)`).
+    #[test]
+    fn conventional_impl_poly_applied_target_binds_con_var() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype (Box a) (Box [:a val]))\n\
+             (deftrait Disp (dp [x] :primitives/Int))\n\
+             (impl Disp (Box a) (defn dp [x] 7))",
+        );
+    }
+
+    // TB24b (§7.3.3 + §8.5) — an UNKNOWN trait in the impl-target constraint slot
+    // (`(Box :NoSuchTrait a)`) MUST be rejected. The constraint rides
+    // `impl_.type_constraints` (typecheck-reachable) but pre-fix was never routed
+    // through trait resolution → silent-accept. A KNOWN trait (`:Disp`) still
+    // accepts (the accept fence). `check_program_self` returns Err on the reject.
+    #[test]
+    fn impl_target_unknown_trait_constraint_rejected_tb24b() {
+        // Known trait in the constraint slot — ACCEPTS.
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(deftype (Box a) (Box [:a val]))\n\
+             (deftrait Disp (dp [x] :primitives/Int))\n\
+             (impl Disp (Box :Disp a) (defn dp [x] 7))",
+        );
+        // Unknown trait `NoSuchTrait` in the constraint slot — REJECTS.
+        let mut tc2 = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(
+            "(deftype (Box a) (Box [:a val]))\n\
+             (deftrait Disp (dp [x] :primitives/Int))\n\
+             (impl Disp (Box :NoSuchTrait a) (defn dp [x] 7))",
+        )
+        .expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        let result = tc2.check_program_self(&program);
+        assert!(
+            result.is_err(),
+            "an unknown trait `:NoSuchTrait` in the impl-target constraint slot \
+             MUST be rejected (TB24b), not silently accepted; got Ok"
+        );
+    }
+
     // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 1(b) — a user fn
     //   passed as a HOF argument (value position) records the edge; the HOF
     //   call itself also records its (call-position) edge.
@@ -9424,4 +10106,186 @@
              concrete (no residual result var); got {:?} (FIXME 0488 sig c secondary)",
             scheme.ty,
         );
+    }
+
+    // ---- S113 0655 (user ruling (a)): qualified own-module self-reference is
+    // another spelling of the bare local. Normalization at the ONE Var entry
+    // (`normalize_self_qualified`) + the collapsed candidate-order twin
+    // (`qualified_candidate_modules`). ----
+
+    // spec: spec/08-modules.md §8.6.6 + S113 0655 — `test/x` in module `test`
+    // (after §8.6.6 alias substitution) IS the bare `x`; a genuine cross-module
+    // qualifier and Principle-16 literal `/`-names are left untouched. Direct
+    // unit of the normalization seam.
+    #[test]
+    fn normalize_self_qualified_collapses_current_module_spelling() {
+        let tc = tc_with_prims(); // current module = "test"
+        // An alias `t -> test` so the alias-spelled current module also collapses
+        // (§8.6.6 longest-prefix substitution applied BEFORE the current-module
+        // comparison).
+        tc.module_aliases.insert(
+            ModuleFullPath::from("t"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("test"),
+                Visibility::Public,
+                cranelisp_types::Span::SYNTHETIC,
+            ),
+        );
+        let env = tc.env();
+        // Current-module-qualified → bare local.
+        assert_eq!(env.normalize_self_qualified(&tc.state, "test/qloop"), "qloop");
+        // Alias-spelled current module → bare local (MC-X3c).
+        assert_eq!(env.normalize_self_qualified(&tc.state, "t/qloop"), "qloop");
+        // Bare name → unchanged.
+        assert_eq!(env.normalize_self_qualified(&tc.state, "qloop"), "qloop");
+        // Genuine cross-module qualifier → NOT normalized.
+        assert_eq!(
+            env.normalize_self_qualified(&tc.state, "other/qloop"),
+            "other/qloop"
+        );
+        // A submodule-child qualifier names `test.util`, NOT the current module —
+        // NOT normalized (left for the child-first qualified leg).
+        assert_eq!(
+            env.normalize_self_qualified(&tc.state, "util/helper"),
+            "util/helper"
+        );
+        // Principle-16 literal `/`-names → unchanged (never a qualified form).
+        assert_eq!(env.normalize_self_qualified(&tc.state, "foo/"), "foo/");
+        assert_eq!(env.normalize_self_qualified(&tc.state, "/bar"), "/bar");
+        assert_eq!(env.normalize_self_qualified(&tc.state, "/"), "/");
+    }
+
+    // spec: spec/08-modules.md §8.6.6 + S113 0655 — the ONE candidate-order source
+    // both `lookup` and `resolve_ref_target` walk: child-of-current-module BEFORE
+    // absolute (Principle 7 — the former hand-rolled `resolve_ref_target` mirror
+    // is retired). Guards the twin collapse.
+    #[test]
+    fn qualified_candidate_modules_child_before_absolute() {
+        let tc = tc_with_prims(); // current module = "test"
+        let env = tc.env();
+        let (name_part, [child, abs]) = env
+            .qualified_candidate_modules(&tc.state, "util/helper")
+            .expect("a two-part qualified name yields candidates");
+        assert_eq!(name_part, "helper");
+        assert_eq!(child, ModuleFullPath::from("test.util"), "child-of-current first");
+        assert_eq!(abs, ModuleFullPath::from("util"), "absolute path second");
+        // A bare name / Principle-16 literal has no qualified candidates.
+        assert!(env.qualified_candidate_modules(&tc.state, "helper").is_none());
+        assert!(env.qualified_candidate_modules(&tc.state, "foo/").is_none());
+    }
+
+    // spec: spec/04-scoping.md §4.6 + S113 0655 (ruling (a)) — a self-qualified
+    // reference `test/helper` is another spelling of the bare `helper` and is
+    // therefore SUBJECT to lexical shadowing: a `let`-bound local `helper`
+    // shadows the module `helper`, so `test/helper` resolves to the LET-LOCAL.
+    // FAILING-FIRST: without the Var-entry normalization, `test/helper` resolved
+    // through the qualified leg to the MODULE `helper` (`(Fn [c] Bool)`), making
+    // `caller` return `Bool`; with it, the identity let-local wins and `caller`
+    // is the identity `(Fn [a] a)`.
+    #[test]
+    fn self_qualified_ref_let_shadow_wins_sec_4_6() {
+        let mut tc = tc_with_prims();
+        let src = "(defn helper [y] true)\n\
+                   (defn caller [x] (let [helper (fn [z] z)] (test/helper x)))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .expect("a self-qualified ref under a let-shadow MUST type-check");
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("caller") else {
+            panic!("caller not found");
+        };
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    params[0], **ret,
+                    "§4.6: the let-shadowed `test/helper` MUST resolve to the \
+                     identity let-local (ret == param), NOT the module `helper` \
+                     which returns Bool; got {:?}",
+                    scheme.ty
+                );
+            }
+            other => panic!("expected caller: (Fn [a] a); got {other:?}"),
+        }
+    }
+
+    // spec: spec/04-scoping.md §4.6 + S113 0655 (ruling (a)) — the same §4.6
+    // shadow rule for a MATCH-arm binding: a var-pattern `helper` binds the
+    // scrutinee, and the self-qualified `test/helper` in the arm body resolves to
+    // that binding (the whole-value pattern var), NOT the module `helper`.
+    // FAILING-FIRST: without normalization `test/helper` typed as the module
+    // `helper` `(Fn [c] Bool)` → `caller: (Fn [a] (Fn [c] Bool))`; with it the arm
+    // binding wins → `caller: (Fn [a] a)`.
+    #[test]
+    fn self_qualified_ref_match_arm_shadow_wins_sec_4_6() {
+        let mut tc = tc_with_prims();
+        let src = "(defn helper [y] true)\n\
+                   (defn caller [x] (match x [helper test/helper]))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .expect("a self-qualified ref under a match-arm shadow MUST type-check");
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("caller") else {
+            panic!("caller not found");
+        };
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    params[0], **ret,
+                    "§4.6: the match-arm-bound `test/helper` MUST resolve to the \
+                     whole-value pattern binding (ret == param), NOT the module \
+                     `helper`; got {:?}",
+                    scheme.ty
+                );
+            }
+            other => panic!("expected caller: (Fn [a] a); got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.6.6 + S113 0655 (ruling (a)) — an UNSHADOWED
+    // self-qualified defn-body self-call `(test/qloop x)` type-checks (the
+    // normalized bare `qloop` hits the recursion-local env binding), the seam the
+    // §4.6 shadow cells above share with the top-level path. The CARRIER the
+    // backend keys its ONE fetch on (whose mid-graph absence is the batch
+    // `undefined function: user/qloop` leak, FIXME 0655) is drained from the
+    // transient `method_resolutions` into the codegen_view at finalize and is
+    // observed END-TO-END by the e2e cell
+    // `qualified_self_reference_mc_x3::qualified_own_module_self_ref_batch_no_codegen_leak`
+    // (the fixture's committed view resolves the qualified spelling the batch
+    // module-graph path cannot, so the carrier drop is only an e2e-visible fault).
+    #[test]
+    fn self_qualified_defn_body_self_call_type_checks() {
+        let mut tc = tc_with_prims();
+        let src = "(defn qloop [x] 0)\n\
+                   (defn qloop [x] (if true 0 (test/qloop x)))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).expect(
+            "a self-qualified defn-body self-call MUST type-check (ruling (a): \
+             `test/qloop` in module `test` IS the recursion-local `qloop`)",
+        );
+        let table = tc.symbol_table();
+        let Some(ModuleEntry::Def { scheme, .. }) = table.get("qloop") else {
+            panic!("qloop not found");
+        };
+        // Body `(if true 0 (test/qloop x))`: the `0` branch fixes the return to
+        // Int; `x` is otherwise unconstrained (passed only to the recursive
+        // self-call), so the param stays a free var — `(Fn [a] Int)`. The
+        // load-bearing fact is that the self-call RESOLVED (the recursion is
+        // well-typed with an Int result), not that it errored on `test/qloop`.
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    **ret,
+                    Type::Int,
+                    "the self-referencing `qloop` MUST return Int; got {:?}",
+                    scheme.ty
+                );
+            }
+            other => panic!("expected qloop: (Fn [a] Int); got {other:?}"),
+        }
     }

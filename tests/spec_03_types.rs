@@ -1158,9 +1158,12 @@ fn qualified_lowercase_annotation_unknown_type_not_minted_neg() {
     let out = repl_prims("(defn f [:user/int x] x)\n");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.contains("unknown type") && combined.contains("user/int"),
+        combined.contains("unknown type")
+            && combined.contains("from module")
+            && combined.contains("user"),
         "a QUALIFIED lowercase annotation `:user/int` is a named-type reference \
-         and MUST error as an unknown type naming `user/int` (§3.9.3); it MUST \
+         and MUST error as an unknown type naming the module (the landed 0589 \
+         diagnostic renders `unknown type `int` (from module `user`)`); it MUST \
          NOT be minted as a var (§3.3 is bare-lowercase only); got:\n{combined}"
     );
     assert!(

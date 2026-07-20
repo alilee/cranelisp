@@ -175,6 +175,8 @@ Imports all methods of trait `Display` (or all constructors of a type) as bare n
 
 Imports `concat` and `join` as bare names, and registers `str` as an alias for `core.string`. The alias can then be used for qualified references: `str/split`.
 
+The **alias name** (`str` here) is a **local binder** — it introduces a new module-alias name into the current module — so it MUST be a **bare (unqualified) symbol**; a qualified or dotted alias (`(import [(core.string a/str) …])`) is a compile-time error, span at the alias. The same holds for the **local-name** of a renamed import (`Maybe-Just` in §8.3.5), which binds a fresh bare name, and for **export mount aliases** (§8.4.4). Only the *source* side of a rename or mount is a reference (and MAY be qualified/dotted); the introduced local name is a binder (§5, *Binder positions* — you cannot bind a name into another module, only reference one). [S113]
+
 ### 8.3.5 Renamed Import
 
 ```clojure
@@ -646,6 +648,8 @@ The following conflicts MUST produce compile-time errors:
   ```clojure
   (import [math [add] util [add]])    ; error: ambiguous bare name 'add'
   ```
+
+  This rule reads over **trait method** names too — a trait method imports "like any other symbol" (§7.11). Under the method-import dispatch ruling ([§7.11.2](07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)), importing a method `m` directly (without its trait) is sufficient to dispatch it, so importing the same method name `m` from two different modules — two different traits' `m` — is this same duplicate-bare-name conflict, not a shadow. The method import is itself the disambiguator: a program picks which trait's `m` it dispatches by choosing which module's `m` it imports (or by a fully-qualified reference, §8.6.6). [S113]
 
 - **Definition over a name in scope (via `import`, `export`, or the implicit prelude)** [Tested+Neg tests/spec_08_name_shadowing::def_over_import_run_rejected]: **It is ALWAYS a compile-time error to redefine or shadow a name that is in scope — whether via `import` (private), `export` (public), or the implicit prelude import (§8.8.1). There are NO exceptions; the prelude carries no exemption.** A definition (`defn`, `deftype`, etc.) in the current module that has the same name as a name already in the module's scope — brought in **private via `import`**, **public via `export`** (§8.4.0), or **via the implicit prelude import** (§8.8.1, an implicit `(import [prelude [*]])`) — is unconditionally rejected. The error does not depend on textual order (def-before-import or import-before-def), on import shape (specific, renamed, member, glob, or glob re-export), or on visibility (private import or public export):
 

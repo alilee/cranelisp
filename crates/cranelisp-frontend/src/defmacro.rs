@@ -133,11 +133,15 @@ fn parse_param_items(
                 // Reader produces "&rest" as a single symbol.
                 let rest_name = &s[1..];
                 crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
+                // A defmacro param is a local binder (spec §5 binder-positions
+                // table) — a qualified spelling rejects.
+                crate::ast_builder::reject_qualified_binder_head(rest_name, *sym_span)?;
                 rest_param = Some(rest_name.into());
                 i += 1;
             }
             Sexp::Symbol(pname, sym_span) => {
                 crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
+                crate::ast_builder::reject_qualified_binder_head(pname, *sym_span)?;
                 fixed_params.push(MacroParam::Name(pname.as_str().into()));
                 i += 1;
             }
@@ -176,11 +180,13 @@ fn parse_bracket_pattern(
             Sexp::Symbol(s, sym_span) if s.starts_with('&') && s.len() > 1 => {
                 let rest_name = &s[1..];
                 crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
+                crate::ast_builder::reject_qualified_binder_head(rest_name, *sym_span)?;
                 rest = Some(rest_name.into());
                 j += 1;
             }
             Sexp::Symbol(pname, sym_span) => {
                 crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
+                crate::ast_builder::reject_qualified_binder_head(pname, *sym_span)?;
                 fixed.push(pname.as_str().into());
                 j += 1;
             }
@@ -239,6 +245,9 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
     let name: Symbol = match &children[1] {
         Sexp::Symbol(n, n_span) => {
             crate::ast_builder::reject_reserved_binder_name(n, *n_span)?;
+            // A `defmacro`/`defmacro-` head is a binder (spec §5; S4) — reject a
+            // qualified spelling.
+            crate::ast_builder::reject_qualified_binder_head(n, *n_span)?;
             n.as_str().into()
         }
         _ => {

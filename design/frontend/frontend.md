@@ -143,6 +143,29 @@ fold]** → `build_form_inner`/`build_expr`. Key contracts, elaborated in
 
 The implicit pipeline contract — unexpanded macros reaching `build_ast` become silent generic applications — is preserved (the spec needs it for forward-compatibility with new macros that expand to function-shaped applications) but is documented in the target-state `crates/cranelisp-frontend/CLAUDE.md` (`/dev`-narrow follow-up).
 
+### 4.2 Qualified binder-head rejection (S113, SPRINT §Scope-C)
+
+**Every declaration head is a binder, not a reference** (spec §5, user ruling
+2026-07-18, generalized to all binder heads S112) — it binds a NEW name into the
+CURRENT module and MUST be bare; a qualified head (`(defn fmt/foo …)`,
+`(deftype fmt/Point …)`, `(deftrait (fmt/Foo f) …)`, `(defmacro fmt/m …)`) is a
+compile-time error. Fix shape (`/arch` Q3): ONE shared
+`reject_qualified_binder_head` primitive beside `reject_reserved_binder_name`,
+applied at every head site — `get_defn_name` (defn/defn- **and** impl-body method
+defns), `build_type_head`, `build_trait_head`, `parse_defmacro` name, and
+`build_method_sig` (deftrait method-signature name — beyond arch Q3's list, per
+BD-M1 + §5.3.3, spec-enumeration gap routed to /spec) — never per-form copies
+(Principle 7). `def`/`const` are stdlib macros (no native `def`);
+their heads flow through the SAME seam **post-expansion** (§5 macro-surface rule).
+Full design — the helper, the exhaustive head-site enumeration, the con_var
+sibling cell (BD-M4), the spec-diff, and the **load-bearing span-provenance
+finding** (int's macro-expansion pipeline discards source provenance, so the
+macro-route span MUST needs a paired int-side re-anchoring seam) — in
+`design/frontend/binder-head-reject.md`. The **0589** sibling (qualified-lowercase
+annotation `:user/int` mints a `TypeVar` carrying `/`) is folded in as a distinct
+**annotation-path** seam (`parse_annotation_name` routing, §5 of that doc), NOT
+the binder-head seam.
+
 ---
 
 ## 5. Macro expansion moved OUT (S76 W-Macro)
@@ -322,6 +345,7 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | S66 slice (overall) | `design/frontend/implementation-slice-s66.md` | **Partially superseded.** Rows 5 + 6 (per-form `build_ast` / `build_expr` pair) are SUPERSEDED by `design/frontend/wave-3a-build-form.md` — collapsed into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156 resolution + Decision 44. Rows 3, 4, 7, 16 remain authoritative |
 | S66 Wave 3a-β (`build_form` + `expand`) | `design/frontend/wave-3a-build-form.md` | **Current.** Authored 2026-05-12 for FIXME 0156 + FIXME 0098 Phase 2 under Decision 44 (amended 0167, 0168) — `/dev` implementation target |
 | Quasiquote/quote desugar fold | `design/frontend/quasiquote-fold.md` | **Current (authored S111 Phase 3).** The FIXME 0613 fold of `expand_quasiquotes` into `build_forms`/`build_form`: fold point + chokepoint set, idempotence/fixpoint contract, backstop invariant, family coverage, `lib.rs:48` currency fix, and the named int quote-shield seam. `/dev` Phase-5 target. Makes `s76-syntactic-only.md:74`'s aspirational "quasiquote desugaring runs before `build_form`" literally accurate |
+| Qualified binder-head rejection (S113) | `design/frontend/binder-head-reject.md` | **Current (authored S113 Phase 3).** The W3 binder-family seam: ONE shared `reject_qualified_binder_head` at the four head sites (S1–S4), the con_var BD-M4 fold, the empty spec-diff, and the load-bearing span-provenance finding (macro-route heads carry synthetic spans — int marshal + `rewrite_spans_unique` discard source provenance — so BD-M2/M3's span MUST needs a paired int re-anchoring seam, filed `target: /arch`). Folds 0589 (annotation-path routing sibling) + disposes 0590 (typecheck-crate, re-targeted). `/dev`(frontend) + `/review` W3 target |
 | Trait/impl head parse (S112 b0) | `design/frontend/trait-impl-head-parse.md` | **Current (authored S112 Phase 3, leg b0).** The echo-the-head `impl` slot-1 change: `parse_impl` accepts bare `Display` (`head_con_var: None`) OR `(Functor f)` (`head_con_var: Some`), slot 2 rides the existing `build_impl_target`; NO kind classification / echo validation in the parser (typecheck's §7.3.5 Case-3 seam — Principle 24). Single-sources the head-shape grammar with `build_trait_head` (Principle 7); malformed-slot-1 diagnostics; additive-green at b0; pretty/​save form-agnostic round-trip (no change). `/dev`(frontend) + `/review` target. Consumer: `design/typecheck/hkt.md` §5.4 |
 
 Refresh order, in priority of audit blast radius:

@@ -3957,18 +3957,18 @@ fn ls1_bare_type_display_invariant_to_session_history() {
 }
 
 // =============================================================================
-// S106 — FIXME 0542: bare trait lookup MUST surface the `; impl:` section
+// FIXME 0647 (landed W4): bare trait lookup OMITS the empty `; impl:` drawer
 // =============================================================================
 
-// spec: repl/spec.md §4.1.4 — a bare user-module trait lookup MUST surface the
-// `; impl:` (implementing-types) section per §4.1.4, even when the trait has no
-// impls yet. RED on HEAD (FIXME 0542): the bare-lookup path emits `; defn:` but
-// omits `; impl:` entirely when there are no impls.
+// spec: repl/spec.md §4.1.4 — a bare user-module trait lookup OMITS the `; impl:`
+// (implementing-types) drawer when the trait has no implementations, matching the
+// `deftype` `; match:` omit-when-empty precedent (the echo and the lookup now
+// agree). FIXME 0647 (W4) reversed the earlier 0542 always-show rule. The
+// `; deftrait` + `; defn:` sections stay present; only the EMPTY `; impl:` drawer
+// is omitted. The non-empty twin (`…impl_section_lists_type_not_others`) shows the
+// drawer when an impl exists.
 #[test]
-fn bare_user_trait_lookup_shows_impl_section() {
-    // b1-migration (S112): `(Display a)` never-applied head → bare-head + `self`.
-    // Assertion subject UNCHANGED: `; deftrait` + `; defn:` (method `show`) +
-    // `; impl:` section present even with no impls.
+fn bare_user_trait_lookup_omits_empty_impl_section() {
     let out = repl_prims("(deftrait Display (show [self] String))\nDisplay\n");
     assert!(
         out.stdout.contains("; deftrait"),
@@ -3981,9 +3981,10 @@ fn bare_user_trait_lookup_shows_impl_section() {
         out.stdout
     );
     assert!(
-        out.stdout.contains("; impl:"),
-        "a bare user-module trait lookup MUST surface the '; impl:' section per \
-         §4.1.4 (FIXME 0542), even when the trait has no impls yet; got:\n{}",
+        !out.stdout.contains("; impl:"),
+        "a bare user-module trait lookup MUST OMIT the empty '; impl:' drawer when \
+         the trait has no impls (§4.1.4, FIXME 0647 — the `; match:` omit-when-empty \
+         precedent; echo and lookup agree); got:\n{}",
         out.stdout
     );
 }

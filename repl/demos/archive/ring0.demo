@@ -1,5 +1,10 @@
 ; Cranelisp Ring 0 — Core Language
 
+; The raw integer primitives live in the `primitives` module. Import the ones
+; this tour uses; the curated prelude wraps these behind the operators + - * = <.
+
+(import [primitives [add-i64 sub-i64 mul-i64 eq-i64 lt-i64 not]])
+
 add-i64
 (add-i64 2 3)
 (sub-i64 10 4)

@@ -1332,6 +1332,50 @@ fn deftrait_qualified_parenthesized_head_rejected_binder_neg() {
     );
 }
 
+// BD-M1 (deftrait METHOD-name position) — a deftrait method-signature name is a
+// BINDER: §5.3.3 "A trait declaration introduces method names into scope", so a
+// qualified method name `(deftrait Foo (fmt/show [x] Int))` is a qualified binder
+// and a compile-time error on the same §5 principle (FIXME 0651 scribes the §5
+// enumeration completeness; the principle is already settled). Silent-accept today
+// → RED; flips at W3 with the shared reject seam (`build_method_sig`,
+// ast_builder.rs). Site set completeness: this is the enumeration item the §5 head
+// list omits, so it is the highest-signal cell for the ONE-seam guarantee.
+// spec: spec/05-definitions.md §5 + spec/07-traits.md §7.1 — method-signature
+// names are binders (qualified method name rejected).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::build_method_sig found=S113 owner=/dev
+#[test]
+fn deftrait_qualified_method_name_rejected_binder_neg() {
+    let out = repl_prims("(deftrait Fooo (fmt/show [x] Int))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a qualified deftrait METHOD name `fmt/show` MUST be a compile-time error \
+         (§5 binder principle, §5.3.3 method names introduced into scope); got:\n{c}"
+    );
+    assert!(
+        !c.contains("not found"),
+        "the qualified method name MUST be a LOCATED binder reject, NOT an incidental \
+         `module 'fmt' … not found` resolution error; got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("; deftrait"),
+        "the qualified method name MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 (deftrait method-name) — bare-method-name accept TWIN.
+// spec: spec/07-traits.md §7.1 — a bare method-signature name binds normally.
+#[test]
+fn deftrait_bare_method_name_accepts_twin() {
+    let out = repl_prims("(deftrait Foob (show2 [x] Int))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare deftrait method name `show2` MUST bind without error; got:\n{c}"
+    );
+}
+
 // ---- I1: the conventional over-applied axis (§7.3.5 Case 1) -------------------
 
 // spec: spec/07-traits.md §7.3.5 Case 1 — the conventional over-applied target
@@ -1984,6 +2028,67 @@ fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
     );
 }
 
+// MC-TB24b (S113 W2a) — the constrained applied impl-target form `(Box :Disp a)`
+// on a USER type constructor, design-named equally valid to the bare poly-applied
+// form. Positive cell + its reject twin `(Box :NoSuchTrait a)`. Rides the TB-24
+// family (same impl-target con-var resolver).
+// spec: spec/07-traits.md §7.3.3 — constrained applied impl-target `(Box :Disp a)`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution (constrained applied user-ctor target con-var) found=S113 owner=/dev
+#[test]
+fn constrained_applied_user_ctor_impl_target_accepts_and_dispatches() {
+    let out = repl_prims(
+        "(deftype (Box a) (MkBox [:a v]))\n\
+         (deftrait Disp (dp [x] :Int))\n\
+         (impl Disp (Box :Disp a) (defn dp [x] 7))\n\
+         (dp (MkBox 3))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.contains("unknown type"),
+        "the constrained applied user-ctor target `(impl Disp (Box :Disp a))` MUST \
+         NOT reject the con-var `a` as an `unknown type` (§7.3.3, TB-24 family); \
+         got:\n{c}"
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "`(dp (MkBox 3))` MUST dispatch to the `(Box :Disp a)` impl and yield 7; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
+// MC-TB24b reject TWIN — the SAME applied form naming a NON-EXISTENT trait
+// `NoSuchTrait` in the constraint slot MUST be rejected (the trait reference must
+// resolve, §8.5). Guards the accept above against over-acceptance. Was RED pre-W2:
+// the impl-target con-var resolver SILENTLY ACCEPTED the unknown-trait constraint —
+// `(impl Disp (Box :NoSuchTrait a) …)` echoed `impl user/Disp for user/Box` with
+// no error (the constraint slot's trait reference was never resolved). Coverage-
+// caught negative gap (the accept cell landed GREEN with W2a but its reject twin
+// was authored only at W2-close, surfacing this). FIXED in the W2 window: the
+// constraint trait ref now resolves. GREEN regression fence.
+// spec: spec/07-traits.md §7.3.3 + spec/08-modules.md §8.5 — a constraint naming an
+// unknown trait is rejected.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck impl-target con-var constraint trait reference never resolved found=S113 owner=/dev
+#[test]
+fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
+    let out = repl_prims(
+        "(deftype (Box a) (MkBox [:a v]))\n\
+         (deftrait Disp (dp [x] :Int))\n\
+         (impl Disp (Box :NoSuchTrait a) (defn dp [x] 7))\n",
+    );
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a constraint naming an unknown trait `:NoSuchTrait` MUST be rejected; \
+         got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("; impl"),
+        "the impl with an unknown-trait constraint MUST NOT silently accept; got:\n{}",
+        out.stdout
+    );
+}
+
 // =============================================================================
 // FIXME 0434 sweep (this sprint) — deftrait/deftype TYPE REFERENCE name-position,
 // qualified vs bare. The impl-TARGET position was already covered by the S91
@@ -2271,5 +2376,35 @@ fn trait_head_uppercase_convar_rejected_both_forms_neg() {
         "an uppercase con_var in an `impl` echoed head `(Functor F)` MUST be a \
          located parse error naming the lowercase rule (same shared seam as \
          deftrait); got:\n{ic}"
+    );
+}
+
+// BD-M4 (con_var qualification, S112 F3) — the constructor variable must be a
+// BARE lowercase identifier (§7.2 `con_var = lowercase_symbol`). A slash-bearing
+// con_var `(Functor prim/x)` is qualified — malformed — and MUST be rejected, the
+// binder-family sibling of the uppercase-con_var reject above (same seam). The con
+// var is applied (`(prim/x a)`) so this is unambiguously the HK-head shape, not the
+// never-applied malformed case. Silent-accept today → RED; rides the shared seam
+// family (W3).
+// spec: spec/07-traits.md §7.2 — con_var is a bare lowercase symbol (qualified rejected).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::parse_trait_head_shape found=S113 owner=/dev
+#[test]
+fn trait_head_qualified_convar_rejected_binder_neg() {
+    let out = repl_prims("(deftrait (Functor prim/x) (fmap [:(Fn [a] b) func :(prim/x a) y] (func b)))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a slash-bearing con_var `prim/x` in a `deftrait` head MUST be a compile-\
+         time error (§7.2 con_var = bare lowercase symbol); got:\n{c}"
+    );
+    assert!(
+        !c.contains("not found"),
+        "the qualified con_var MUST be a LOCATED reject at the head, NOT an incidental \
+         `module 'prim' … not found` resolution error; got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("; deftrait"),
+        "the qualified con_var head MUST NOT silently bind a trait; got:\n{}",
+        out.stdout
     );
 }

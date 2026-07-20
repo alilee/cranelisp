@@ -759,6 +759,87 @@ fn verbatim_source_slice(
     crate::save::verbatim_slice(form, text)
 }
 
+/// `true` iff `loc`'s byte range is OUTSIDE the origin form's real source extent
+/// — the FIXME 0650 synthetic-location predicate (`macro-diagnostic-reanchoring.md`
+/// §3). A synthetic span maps to no real source byte, so it is never a useful
+/// diagnostic location; a real span WITHIN the origin form's extent passes the
+/// predicate and is left untouched. Structural, NOT classificatory — it catches
+/// BOTH synthetic flavours (`Span::SYNTHETIC` = `(0,0)`, and the
+/// `rewrite_spans_unique` ≥1M band) without hard-coding the 1M constant: any
+/// zero/negative-width span, or one starting before / ending after the origin's
+/// `[start,end)`, is outside the extent.
+fn location_outside_extent(loc: Span, origin: Span) -> bool {
+    loc.end <= loc.start || loc.start < origin.start || loc.end > origin.end
+}
+
+/// Re-anchor a SYNTHETIC-located diagnostic from macro-expansion output to the
+/// origin form's real span, appending expansion provenance (FIXME 0650,
+/// `macro-diagnostic-reanchoring.md`). A diagnostic already located WITHIN the
+/// origin extent (a native-form error) passes through UNCHANGED — the predicate
+/// must not touch already-located diagnostics. int enriches the LOCATION and
+/// APPENDS context; it never re-phrases the frontend message (Principle 7/19).
+///
+/// Pure `(error, origin_span, origin_form) → error` transform (Principle 5,
+/// unit-testable with no session).
+fn reanchor_expansion_diagnostic(
+    err: CranelispError,
+    origin: Span,
+    origin_form: &Sexp,
+) -> CranelispError {
+    if !location_outside_extent(err.span(), origin) {
+        return err; // already located within the origin form — leave verbatim
+    }
+    // Name the written form (the origin int holds), truncated so a large form
+    // does not flood the diagnostic. Never the synthesized head — the origin.
+    let mut head = origin_form.format_flat();
+    if head.chars().count() > 48 {
+        head = head.chars().take(45).collect::<String>() + "…";
+    }
+    let context = format!("\n  in expansion of `{head}`");
+    let message = format!("{}{}", err.message(), context);
+    // Re-anchor the location to the origin span; clear the stale synthetic
+    // `line_col`/`context` so the formatter recomputes from the origin span.
+    let mut location = err.location().clone();
+    location.span = origin;
+    location.line_col = None;
+    location.context = None;
+    rebuild_error_with(err, message, location)
+}
+
+/// Reconstruct `err` preserving its variant with a new message + location.
+/// `Platform(p)` passes through unchanged (its coordinates are rewritten at the
+/// loader seam, not here).
+///
+/// Every current variant is matched EXPLICITLY. `CranelispError` is
+/// `#[non_exhaustive]` (it lives in `cranelisp-types`), so a wildcard arm is
+/// mandatory — but it must not SILENTLY lose re-anchoring: a future message-
+/// bearing variant reaching here trips a `debug_assert!` (so it is wired
+/// explicitly) and still preserves the re-anchored diagnostic in release rather
+/// than dropping the provenance (0667).
+fn rebuild_error_with(
+    err: CranelispError,
+    message: String,
+    location: ErrorLocation,
+) -> CranelispError {
+    match err {
+        CranelispError::ParseError { .. } => CranelispError::ParseError { message, location },
+        CranelispError::TypeError { .. } => CranelispError::TypeError { message, location },
+        CranelispError::CodegenError { .. } => CranelispError::CodegenError { message, location },
+        CranelispError::ModuleError { .. } => CranelispError::ModuleError { message, location },
+        CranelispError::MacroError { .. } => CranelispError::MacroError { message, location },
+        CranelispError::Platform(p) => CranelispError::Platform(p),
+        _ => {
+            debug_assert!(
+                false,
+                "rebuild_error_with: unhandled CranelispError variant — re-anchoring \
+                 would be silently lost; add an explicit arm (0667)"
+            );
+            // Release: preserve the re-anchored diagnostic rather than drop it.
+            CranelispError::ModuleError { message, location }
+        }
+    }
+}
+
 /// Process a regular (non-module-declaration) form in Pass 2.
 ///
 /// Tries macro expansion via the SymbolTableMacroResolver, builds AST,
@@ -838,7 +919,24 @@ fn process_regular_form(
         return Ok(None);
     }
 
-    let built = build_program_compat(&regular_sexps)?;
+    // FIXME 0650 (macro-diagnostic-reanchoring.md) — the int-side re-anchoring
+    // seam. When this build is over MACRO-EXPANSION OUTPUT (`effective_sexp` is
+    // `Some`), every sexp carries a SYNTHETIC span (marshal `Span::SYNTHETIC` +
+    // `rewrite_spans_unique`'s ≥1M band), so a frontend fold reject (e.g. the W3
+    // qualified-binder-head reject on `(defn fmt/x-def …)`) surfaces a diagnostic
+    // whose `location` maps to no source byte. Re-anchor it to the ORIGIN form's
+    // real span (`sexp`, the pre-expansion form int holds) and APPEND expansion
+    // context — never re-phrase the frontend message (Principle 7/19). Keyed on
+    // the SYNTHETIC-LOCATION predicate ("outside the origin form's real source
+    // extent"), NEVER on error class/message sniffing (a `/review` REJECT). A
+    // native form (`effective_sexp == None`) keeps its real span untouched.
+    let built = match build_program_compat(&regular_sexps) {
+        Ok(built) => built,
+        Err(e) if effective_sexp.is_some() => {
+            return Err(reanchor_expansion_diagnostic(e, sexp.span(), sexp));
+        }
+        Err(e) => return Err(e),
+    };
     let working = wrap_exprs_as_defns(&built);
 
     // Per Decision 44's 2026-05-13 third amendment, the per-form

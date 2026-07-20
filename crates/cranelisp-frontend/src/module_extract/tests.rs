@@ -121,6 +121,26 @@
         assert_eq!(ms.import_specs[0].names, ImportNames::None);
     }
 
+    // spec: 05-definitions §5 binder-positions table + §8.3.4 — a module ALIAS is
+    // a local binder, so a qualified spelling rejects; the module PATH (elems[0])
+    // is a reference and a dotted/qualified path is permitted there. The bare
+    // alias twin accepts.
+    #[test]
+    fn import_module_alias_qualified_rejected_bare_twin_accepts() {
+        let sexps = parse("(import [(core.string a/b) [concat]])");
+        let err = extract_module_declarations(&ModuleFullPath::from("test"), &sexps)
+            .expect_err("a qualified module alias is rejected");
+        assert!(
+            err.to_string().contains("qualified name") && err.to_string().contains("binder"),
+            "the alias reject names the qualified-binder rule; got: {err}"
+        );
+        // Bare alias twin accepts — and the DOTTED module PATH is permitted (it is
+        // a reference, not a binder).
+        let (ms, _) = extract("(import [(core.string str) [concat]])");
+        assert_eq!(&*ms.import_specs[0].module_path, "core.string");
+        assert_eq!(ms.import_specs[0].alias.as_ref().unwrap().as_ref(), "str");
+    }
+
     // spec: 08-modules §8.3.7 — super import rewritten to parent module path
     //
     // Per the super-import arbitration (design/arch/super-import-arbitration.md),
@@ -288,6 +308,36 @@
         assert!(result.is_err());
     }
 
+    // spec: 05-definitions §5.8 — a `mod`/`mod-` name MUST be a simple symbol
+    // (not qualified, not dotted). A `/` (module qualifier) or `.` (dotted path)
+    // in the head is a compile-time error, located at the name element (audit
+    // S113 finding 2 — enforcement was missing entirely). Both `mod` and `mod-`
+    // route through the one `parse_mod_decl` seam; the simple twins accept.
+    #[test]
+    fn mod_head_must_be_simple_symbol_rejects_qualified_and_dotted() {
+        let cases: &[&str] = &[
+            "(mod foo/bar)",   // qualified
+            "(mod- foo/bar)",  // qualified, private
+            "(mod a.b)",       // dotted
+            "(mod- a.b)",      // dotted, private
+        ];
+        for src in cases {
+            let sexps = parse(src);
+            let err = extract_module_declarations(&ModuleFullPath::from("test"), &sexps)
+                .expect_err(&format!("`{src}` must be rejected (§5.8 simple-symbol rule)"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("simple symbol") && msg.contains("§5.8"),
+                "for `{src}` the reject names the simple-symbol rule; got: {msg}"
+            );
+        }
+        // Simple-name twins (both visibilities) accept.
+        let (pub_ms, _) = extract("(mod math)");
+        assert_eq!(&*pub_ms.mod_decls[0].name, "math");
+        let (priv_ms, _) = extract("(mod- internal)");
+        assert_eq!(&*priv_ms.mod_decls[0].name, "internal");
+    }
+
     // spec: 08-modules §8.3 — import with missing names list is an error
     #[test]
     fn test_import_missing_names() {
@@ -358,6 +408,29 @@
             &sexps,
         );
         assert!(result.is_err());
+    }
+
+    // spec: 10-io §10.9.1 + 05-definitions §5.10 — a `platform` name composes the
+    // `platform.<name>` module path, so it MUST be a simple symbol: a qualified
+    // (`/`) or dotted (`.`) name corrupts the path composition and is rejected
+    // (0660 cell (c-platform); mirrors the §5.8 mod-head guard). The simple twin
+    // accepts. (§5.10 needs the "not qualified, not dotted" prose — /spec rider,
+    // FIXME 0660.)
+    #[test]
+    fn platform_name_must_be_simple_symbol_rejects_qualified_and_dotted() {
+        for src in &["(platform io/stdio)", "(platform a.b)"] {
+            let sexps = parse(src);
+            let err = extract_module_declarations(&ModuleFullPath::from("test"), &sexps)
+                .expect_err(&format!("`{src}` must be rejected (simple-symbol rule)"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("simple symbol") && msg.contains("platform"),
+                "for `{src}` the reject names the simple-symbol rule; got: {msg}"
+            );
+        }
+        // Simple-name twin accepts.
+        let (ms, _) = extract("(platform stdio)");
+        assert_eq!(ms.platform_specs[0].name, "stdio");
     }
 
     // spec: 10-io §10.9.1 — platform forms don't appear in remaining sexps

@@ -72,12 +72,62 @@ drops annotation support.
 
 ## Qualified-name splitting (§8.5) — split at the LAST `/`, guard both halves
 
-`type_ref_from_name`, `trait_ref_from_name`, and `type_expr_to_trait_ref`
-(`ast_builder.rs`) split a written `module/Name` onto `Some(module)` only when
-both halves are non-empty; otherwise `module: None`. Stuffing a whole slash-name
-into the bare-name slot re-roots it under the current module (the **D-qual**
-defect class, S91). Every impl trait-name / target / constraint / applied-head
-position routes through the splitter (`build_impl_target`). See RED defects below.
+`type_ref_from_name` and `trait_ref_from_name` (`ast_builder.rs`) split a written
+`module/Name` onto `Some(module)` only when both halves are non-empty; otherwise
+`module: None`. Stuffing a whole slash-name into the bare-name slot re-roots it
+under the current module (the **D-qual** defect class, S91). Every impl
+trait-name / target / constraint / applied-head position routes through the
+splitter (`build_impl_target`). See RED defects below.
+
+`reject_qualified_binder_head` is the **dual** of these splitters: a reference
+splits `module/Name` and reaches across modules; a declaration binder MUST be
+bare, so a qualified spelling rejects (spec §5 binder-positions table, S113). It
+uses the SAME both-halves-non-empty predicate — a bare `/` (division operator)
+splits to empty halves and is NOT qualified (Principle 16).
+
+**Landed binder-reject sites** (all see raw pre-int source, so the reject is
+sound): the §5 native heads (defn / deftype-both-arms / deftrait-caller /
+defmacro / method-sig / con_var); `deftype` **constructor names** (both arms) and
+**field names** (both arms); `defmacro` **params** (`parse_param_items` +
+`parse_bracket_pattern`); the `import`/`export` **module alias**
+(`module_extract`). `mod`/`mod-` and `platform` names enforce their own
+simple-symbol rule (reject `/` AND `.`) at `module_extract.rs` (spec §5.8/§5.10 —
+module-phase decls).
+
+**DEFERRED — value-level local binders** (`defn`/`fn` params, `let` names,
+`match` var-patterns): the reject is NOT applied at their `build_form` seams
+(`build_annotated_params`, `build_let_bindings`, `build_pattern` — see the NOTEs
+there). Those seams run AFTER int's macro-expansion name-resolution, which itself
+(mis-)qualifies a local binder whose name collides with an importable symbol
+(`name` → `primitives/name`, only with a macro in scope). A build-layer reject
+there fires on int's mangled output and breaks a VALID program
+(`(defn f [name] (str … name))`). Enforcement is owed at the reader/raw layer or
+via the paired int fix — **FIXME 0670** (`target: /arch`). Do not re-add a reject
+at these three seams without that fix.
+
+`type_expr_to_trait_ref` (the stacked-bounds `:Eq :Display a` reshaper) **does
+NOT re-split** — it trusts the upstream split and only reshapes `TypeRef`→
+`TraitRef`. Every name reaching it is already module-split (`Named`/`Applied`
+names via `type_ref_from_name`; `parse_annotation_name` never mints a
+slash-carrying `TypeVar` since FIXME 0589). A `debug_assert` enforces the
+**splitter dual** — no *splittable* qualified spelling (two non-empty halves)
+survives (a degenerate `foo/` is legitimately passed through, Principle 16). Its
+former hand-rolled `rsplit_once` was downstream compensation for 0589's
+slash-`TypeVar` and was retired at S113 (P7).
+
+**Invariant: a `TypeVar` never carries a qualified (`module/name`) spelling**
+(Principle 18, FIXME 0589), enforced at EVERY point where type-var-ness is
+decided — a qualified-lowercase name (`mod/x`) is NOT a bare type var (spec §3.3)
+and routes to `Named(type_ref_from_name(…))`, or (in a binder slot) rejects. The
+decision points, each carrying its own routing/reject: `parse_annotation_name`
+(simple `:name` annotations → Named), `build_type_expr` (compound type-expression
+positions — `(Fn […])`/`(Option a)` args, return types → Named), and
+`build_impl_target` (impl-target type args → Named; the `:Constraint var` arm
+rejects a qualified constrained var as a binder, like con_var §3.1). The S109
+typecheck mint guard (`!contains('/')`) stays as the downstream backstop; these
+frontend legs make the routing correct where the decision is made. When you add a
+new type-var/type-arg decision point, it enforces this same invariant — do not
+re-list a count here, honor the invariant.
 
 ## Known open defects (RED guards — the test is the record, no FIXME file)
 

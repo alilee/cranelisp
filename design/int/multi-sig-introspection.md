@@ -70,11 +70,65 @@ This matches the `map` example in the spec (`§4.1.1` quoted above): first line 
 
 Rationale: matches the user's mental model of "the order I wrote the clauses." Alternatives (sort by arity, sort by some canonical type ordering) add complexity without clear benefit.
 
-### 2.4 What about constraints?
+### 2.4 What about constraints? — CORRECTED (S113, D1 defect)
 
-`DefKind::Overloaded` variants don't carry `Scheme`-level constraints in the current `OverloadVariant` shape (`{ param_types, ret_type, mangled_name }`). If the variants were constrained polymorphic, each variant's constraints would already be reflected in the `param_types` themselves (e.g., a variant `[:Num a :a]` would have a type-var `a` in `param_types[0]`). The display path uses the existing `format_type_qualified` on each variant's reconstructed `Type::Fn { params, ret }` — no new constraint formatting needed.
+> **This subsection's original claim was WRONG and is the D1 defect.** The
+> original text asserted "a constrained variant's constraints would already be
+> reflected in `param_types` themselves … no new constraint formatting needed."
+> That is false: a constrained-poly variant `(Fn [:Num a :Num a] a)` has the
+> constraint `:Num` on the **type var `a`**, which is a `Scheme`-level fact — the
+> bare `Type::Fn` reconstructed from `{param_types, ret_type}` carries only the
+> var `a`, NOT its `:Num` bound. So the current render at
+> `src/repl/format_type.rs:42` (`Type::Fn(v.param_types.clone(), box
+> v.ret_type.clone())` → `format_type_qualified`) prints `(Fn [a a] a)` where the
+> settled scheme is `(Fn [:Num a :Num a] a)` — the pinned D1 defect
+> (`tests/multi_sig_variant_display_constraint_drop.rs`, `class=display-envelope-mirror`).
+> The single-sig echo (which renders the full `Scheme`) and the multi-sig variant
+> render diverge for the same inferred scheme — the classic envelope-mirror.
 
-If a future shape change adds per-variant constraints, the display path adapts via the existing `format_scheme_display` helper. Out of scope for Step 5d (ii).
+**The D1 fix — keyed read-follow of the recorded template `Scheme` (S113 W4,
+arch-confirmed).** `/arch` ruled the fix is int-side (option B — a P7 second home
++ the forbidden schema bump were rejected; D1 moved W2→W4 on this re-attribution).
+The constraint-bearing scheme is **already recorded by typecheck** on the mangled
+variant `Def`: `register.rs:345` builds each variant entry via
+`ModuleEntry::def(scheme.clone(), DefKind::UserFn { … })`, where `scheme` carries
+the `:Num` constraints for a genuinely-poly variant. `OverloadVariant.mangled_name`
+is the key. So the render **fetches the recorded scheme and renders IT**, never
+re-deriving from the bare `param_types`:
+
+```
+for each variant v in variants:
+    match st.get(v.mangled_name) {
+        Some(ModuleEntry::Def { scheme, .. }) => render scheme    // constraints intact
+        _ => { debug_assert!(false, "multi-sig variant {mangled} has no template scheme");
+               render bare Type::Fn(v.param_types, v.ret_type) }  // release fallback ONLY
+    }
+```
+
+This reads typecheck's **settled record** (Principle 26 — render from settled
+state, never re-derive at the echo; the same discipline the eval.rs
+`impl_echo_type_name` defect taught). A concrete (unconstrained) variant's scheme
+has empty constraints and renders byte-identical to the current bare `Type::Fn`, so
+the change is constraint-restoring for poly variants and a no-op for concrete ones.
+
+**Binding arch pin (confirmed here).** The fetch miss is an **invariant breach**,
+not a normal path: `debug_assert!` fires in dev (an `OverloadVariant.mangled_name`
+that resolves to no scheme means the variant table and the symbol table
+disagree), and the release fallback is the **bare render** (current behaviour) —
+NEVER a silent constraint-stripped render treated as correct, and NEVER a
+re-derivation dressed up as the answer. The scheme is rendered via the existing
+`format_scheme_display` (constraint-aware); `format_type_qualified` on a bare
+`Type::Fn` is retained ONLY as the asserted-against fallback.
+
+**Signature impact (int-only, no `cranelisp-types`, no schema bump).**
+`format_overloaded_variants_doc` (`format_type.rs:42`) currently takes `(name,
+module, variants, docstring)` and has no table access. It gains the symbol-table
+view for the keyed lookup (or the caller `format_def_entry`, which already holds
+the entry+table, pre-resolves `Vec<&Scheme>` and passes it). Either shape stays
+inside `src/repl/` — the D1 defect and its fix are wholly int-surface. The
+`/typecheck` §7 note below (which said "no change required — the existing fields
+suffice") stands: typecheck already records the constraint scheme; the miss was
+int **not reading it**.
 
 ### 2.5 What about `format_entry_sig` (the `/sig` slash command path)?
 

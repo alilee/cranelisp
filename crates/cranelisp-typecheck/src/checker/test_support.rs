@@ -340,7 +340,9 @@ impl TestFixture {
 
     /// Method to trait (test convenience). State-rooted.
     pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
-        self.env().method_to_trait_with_state(&self.state, method_name)
+        self.env()
+            .method_to_trait_with_state(&self.state, method_name)
+            .map(|(tn, _home)| tn)
     }
 
     /// Bind local (test convenience).

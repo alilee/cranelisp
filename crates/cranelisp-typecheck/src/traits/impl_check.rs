@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall,
     Span, Symbol, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
-    TypeName, UserFnState, Visibility, apply,
+    UserFnState, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -618,6 +618,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         home: Option<&ModuleFullPath>,
         fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
+        // TB24b (§7.3.3 + §8.5) — the impl-target constraint slot's trait
+        // references (`(Box :Disp a)` → `type_constraints = [(a, Disp)]`) MUST
+        // resolve, exactly as a param-position bound (`:C x`) does — an unknown
+        // trait there is an error, NOT a silent accept (`(Box :NoSuchTrait a)`).
+        // The constraint rides `impl_.type_constraints`, typecheck-reachable but
+        // previously never routed through trait resolution. Resolve each ref
+        // honouring qualification, mirroring `resolve_bound_param`; a bare unknown
+        // trait fails `resolve_trait` (TraitNotFound). Run before the HK branch so
+        // it covers every impl kind.
+        for (_var, tref) in &impl_.type_constraints {
+            // Compose the as-written reference (qualified `fmt/Disp` or bare
+            // `Disp`) and resolve it through the ONE trait resolver — `resolve_trait`
+            // routes qualified names through `scope_resolve`'s `/`-split and errors
+            // (`TraitNotFound`) on an unknown trait or a non-`TraitDecl` terminal.
+            let name: String = match &tref.module {
+                Some(m) => format!("{m}/{}", tref.name),
+                None => tref.name.to_string(),
+            };
+            self.resolve_trait(state, &name, impl_.span)
+                .map_err(CranelispError::from)?;
+        }
+
         // Kind is read from the DECLARATION alone: `type_params` non-empty ⟺
         // higher-kinded (§5.1; Principle 24 — the same single declaration fact
         // the §7.3.5 Case-3 seam reads, no method-body usage re-scan). A
@@ -638,26 +660,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `Type::ADT(target_fqtn, type_args)`. The dispatch is centralised
         // in `concrete_type_for_impl_target`. C-4: `type_args` child
         // structure lives inside `impl_.target` (TypeExpr).
+        // TB-24 (§3.2): resolve the conventional impl target's ARGS through the
+        // ONE shared type-expr resolver (P7), mirroring the HKT pairing path
+        // (`resolve_hkt_impl_type_expr`). A poly-applied target `(Option a)` then
+        // binds its lowercase con-var `a` as a fresh `Type::Var` (mint-on-miss)
+        // for co-reference — instead of the hand-rolled bare-head NAMED lookup
+        // (`concrete_type_for_impl_target(TypeName("a"), …)`), which reduced each
+        // arg to its head string and rejected `a` as `unknown type a` before the
+        // §7.3.5 arity gate (the 0590-tightening blast-radius on a position that
+        // legitimately holds a var). A concrete arg (`Int` in `(Option Int)`)
+        // resolves byte-identically — both route the head through the symbol table.
+        // The `var_map` is the SAME map the method sigs mint into below, so a
+        // target var co-refers with a like-named sig var (spec §3.3.1).
+        let module = state.current_module.clone();
+        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let target_args: Vec<cranelisp_types::TypeExpr> = match &impl_.target {
             cranelisp_types::TypeExpr::Applied(_, args) => args.clone(),
             _ => Vec::new(),
         };
         let resolved_type_args: Vec<Type> = target_args
             .iter()
-            .map(|arg| -> Result<Type, cranelisp_types::CranelispError> {
-                let head_name = arg.head_ref().map(|r| r.name.as_ref()).unwrap_or_else(|| {
-                    match arg {
-                        cranelisp_types::TypeExpr::TypeVar(name) => name.as_ref(),
-                        _ => "_",
-                    }
-                });
-                self.concrete_type_for_impl_target(
-                    state,
-                    &TypeName::from(head_name),
-                    Vec::new(),
-                    impl_.span,
-                )
-                .map_err(cranelisp_types::CranelispError::from)
+            .map(|arg| {
+                self.resolve_annotation_type_expr_in_module(arg, &mut var_map, &module, impl_.span)
+                    .map_err(cranelisp_types::CranelispError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let concrete_self = self
@@ -669,13 +694,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .map_err(cranelisp_types::CranelispError::from)?;
 
-        // FIXME 0590: route through the ONE resolver via the trait-sig wrapper.
-        // `Self` and every trait type-parameter name (`decl.type_params`)
-        // substitute `concrete_self` (here a concrete ADT). Free lowercase names
-        // mint into `var_map` for co-reference; a qualified type ref resolves
-        // canonically through `scope_resolve_in` (FIXME 0436 / spec §8.5).
-        let module = state.current_module.clone();
-        let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
+        // FIXME 0590: route method sigs through the ONE resolver via the trait-sig
+        // wrapper. `Self` and every trait type-parameter name (`decl.type_params`)
+        // substitute `concrete_self` (here a concrete ADT, possibly poly-applied).
+        // Free lowercase names mint into the same `var_map` for co-reference; a
+        // qualified type ref resolves canonically (FIXME 0436 / spec §8.5).
 
         // Build concrete param types
         let param_types: Vec<Type> = method_sig

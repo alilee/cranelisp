@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, FQTraitName, JitSymbol, MethodResolutions, ModuleAliases,
+    CranelispError, FQSymbol, JitSymbol, MethodResolutions, ModuleAliases,
     ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
     Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
     Warning, apply,
@@ -181,6 +181,16 @@ pub struct CheckState {
     /// Resolved overloads: base name → [(param_types, ret_type, mangled_name)].
     /// Built during overload resolution after pass 2.
     pub(crate) resolved_overloads: HashMap<Symbol, Vec<(Vec<Type>, Type, Symbol)>>,
+    /// The HOME module of each overload base name (MC-X2, W2-close). For a
+    /// LOCALLY-defined base the home is `current_module` and no entry is recorded
+    /// (the default). For an IMPORTED multi-sig base (`(import [mlib [h]])`), the
+    /// base's `Overloaded` entry + its concrete mangled clause `Def`s live in the
+    /// DEFINING module (mlib), so its dispatch carrier's `resolved_target` module
+    /// must be that home — NOT `current_module` (the 0621 `storage_fq()` lesson,
+    /// P24: key by the base's storage identity, not the caller's). Populated when
+    /// an imported base is rehydrated into `overloads`/`resolved_overloads`
+    /// (`form.rs`); read at the drain's carrier-write to home-qualify the target.
+    pub(crate) overload_homes: HashMap<Symbol, ModuleFullPath>,
     /// Pending overload dispatch resolutions from call sites.
     /// `(call_span, base_name, arg_types, ret_type_var, is_self_call)`.
     ///
@@ -313,6 +323,7 @@ impl CheckState {
             pending_auto_curry: Vec::new(),
             overloads: HashMap::new(),
             resolved_overloads: HashMap::new(),
+            overload_homes: HashMap::new(),
             pending_overload_resolutions: Vec::new(),
             deferred_self_call_dispatch: Vec::new(),
             mono_recheck_self: None,
@@ -335,6 +346,24 @@ impl CheckState {
     /// be checked.
     pub fn current_module(&self) -> &ModuleFullPath {
         &self.current_module
+    }
+
+    /// Is `name` the GENUINE self-recursive reference to the enclosing defn —
+    /// its own recursion binding, resolving at `current_defn_frame` — as opposed
+    /// to a `let`/`fn`/param binding that shadows it at a deeper frame?
+    ///
+    /// The ONE discriminator (Principle 7): the same test the
+    /// [`TypeCheckEnv::record_reference_target`] self-recursion carve-out uses
+    /// (FIXME 0619 item 2). TRUE iff `name` is `current_defn` AND resolves at the
+    /// recursion-binding frame `check_defn_body` captured; FALSE for a `let`/`fn`
+    /// binding at a deeper frame or a param of a differently-named enclosing defn.
+    /// Consumed both there and by the `infer.rs:604` overload-gate
+    /// local-scope-first guard (§11.8.7 ruling 5), so a let-shadowed multi-sig
+    /// base skips the overload path while a genuine self-recursive multi-sig
+    /// self-call (the §5.1.2 back-flow) still enters it.
+    pub(crate) fn is_recursion_self_ref(&self, name: &str) -> bool {
+        self.current_defn.as_deref() == Some(name)
+            && self.env.lookup_frame(name) == self.current_defn_frame
     }
 }
 
@@ -1156,6 +1185,41 @@ where
         }
     }
 
+    /// Module-rooted variant of [`Self::resolve_type`] — resolves a bare type
+    /// name in `module_path`'s scope rather than `state.current_module`.
+    ///
+    /// D2 (§7.0.1 / W2a Important 3): trait-method dispatch builds the impl
+    /// type's `FQTypeName` by resolving the dispatch type's name in the trait's
+    /// HOME (where the trait was declared and its impls written), NOT the caller's
+    /// scope — a method-only import has no in-scope name for a foreign dispatch
+    /// type (`Int` in a user module that imported only the method), and the
+    /// impl-definition mangle was itself formed in the home's scope, so the
+    /// dispatch mangle must match it (P24 — resolve once, at the home).
+    pub(crate) fn resolve_type_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        type_name: &TypeName,
+        span: Span,
+    ) -> Result<cranelisp_types::FQTypeName, ResolveError> {
+        let type_not_found = || ResolveError::TypeNotFound {
+            name: type_name.clone(),
+            from_module: module_path.clone(),
+            span,
+        };
+        let resolved = self
+            .scope_resolve_in(module_path, type_name.as_ref(), span)
+            .map_err(|e| project_not_found(e, type_not_found))?;
+        if let Some(info) = type_def_view_of(&resolved.entry) {
+            return Ok(info.name.clone());
+        }
+        match resolved.entry {
+            ModuleEntry::IntrinsicType { .. } => {
+                Ok(cranelisp_types::FQTypeName::new(resolved.home, type_name.clone()))
+            }
+            _ => Err(type_not_found()),
+        }
+    }
+
     /// Resolve the concrete `Type` for an impl target's bare type name.
     ///
     /// Phase B Part 1.4(3): the impl machinery needs to produce
@@ -1235,21 +1299,6 @@ where
             .unwrap_or_else(|_| type_name.to_string())
     }
 
-    /// Best-effort fully-qualified render of a bare `TraitName` for a
-    /// diagnostic message — sibling of [`Self::fq_type_name_for_diagnostics`].
-    /// Chain-follows the trait reference to its defining module and renders
-    /// `module/Trait`; falls back to the bare name on resolution failure.
-    pub(crate) fn fq_trait_name_for_diagnostics(
-        &self,
-        state: &CheckState,
-        trait_name: &TraitName,
-        span: Span,
-    ) -> String {
-        self.resolve_trait(state, trait_name.as_ref(), span)
-            .map(|home| FQTraitName::new(home, trait_name.clone()).to_string())
-            .unwrap_or_else(|_| trait_name.to_string())
-    }
-
     /// Resolve a constructor name to its parent type's `FQTypeName` via
     /// chain-follow from `state.current_module`. Phase B Part 5 successor
     /// to the `lookup_constructor_type[_in_module/_with_state]` triple.
@@ -1308,6 +1357,74 @@ where
 
     /// Look up a name in scope stack, falling back to current module's symbol table.
     ///
+    /// §8.6.6 + S113 0655 (user ruling (a)) — spelling normalization at the ONE
+    /// Var entry. A reference QUALIFIED with the CURRENT module — after §8.6.6
+    /// longest-prefix alias substitution — is another spelling of the bare local
+    /// name (`user/qloop` inside module `user` IS `qloop`; §4.6/§5.1.2). Applied
+    /// at [`TypeCheckEnv::infer_var`] BEFORE the env consult so that the whole
+    /// name-keyed machinery observes the bare shape: the recursion-local binding,
+    /// the §4.6 lexical-shadow gate + §11.8.7 overload gate
+    /// (`is_recursion_self_ref`), carrier recording (`record_reference_target`'s
+    /// self-recursion carve-out), the value/undefined diagnostics, and — through
+    /// the recorded carrier — the backend self-call predicate. The /arch
+    /// view-arm (`cranelisp_types::resolve_qualified` → `resolve_current_via_view`)
+    /// already answers the scope QUERY through the caller's staging view; this
+    /// keeps the local env-keyed gates from missing the self-reference on the
+    /// qualified spelling (the batch carrier-drop, FIXME 0655).
+    ///
+    /// Returns the bare member for a `<current>/member` spelling; `name`
+    /// unchanged otherwise — a genuine cross-module or submodule-child qualifier
+    /// is left for the qualified leg, and Principle-16 literal names (bare `/`,
+    /// `foo/`, `/bar`) never normalize.
+    pub(crate) fn normalize_self_qualified<'n>(
+        &self,
+        state: &CheckState,
+        name: &'n str,
+    ) -> &'n str {
+        let Some(slash_pos) = name.find('/') else {
+            return name;
+        };
+        let (module_part, name_part) = (&name[..slash_pos], &name[slash_pos + 1..]);
+        if module_part.is_empty() || name_part.is_empty() {
+            return name;
+        }
+        let resolved = cranelisp_types::substitute_module_alias(
+            self.module_aliases,
+            &ModuleFullPath::from(module_part),
+        );
+        if resolved == state.current_module {
+            name_part
+        } else {
+            name
+        }
+    }
+
+    /// The ordered qualified-candidate module paths for a two-part `module/name`
+    /// reference (spec §8.6.6): child-of-current-module first (`util/x` in `main`
+    /// names the submodule `main.util`), then the absolute path the user wrote
+    /// (alias substitution is applied by the downstream resolver). The ONE source
+    /// of the child-before-absolute candidate order both the scheme lookup
+    /// ([`Self::lookup`]) and the reference-recording resolver
+    /// ([`Self::resolve_ref_target`]) walk (Principle 7 — the former hand-rolled
+    /// mirror on `resolve_ref_target` is retired). Returns `(name_part, [child,
+    /// abs])`, or `None` when `name` is not a two-part qualified form (a bare
+    /// name, or a Principle-16 literal `/`-name).
+    pub(crate) fn qualified_candidate_modules<'n>(
+        &self,
+        state: &CheckState,
+        name: &'n str,
+    ) -> Option<(&'n str, [ModuleFullPath; 2])> {
+        let slash_pos = name.find('/')?;
+        let (module_part, name_part) = (&name[..slash_pos], &name[slash_pos + 1..]);
+        if module_part.is_empty() || name_part.is_empty() {
+            return None;
+        }
+        let child =
+            ModuleFullPath::from(format!("{}.{}", state.current_module, module_part));
+        let abs = ModuleFullPath::from(module_part);
+        Some((name_part, [child, abs]))
+    }
+
     /// Resolution order per spec §8.6.1:
     /// 1. Local environment (let bindings, fn params, match vars)
     /// 2. Module scope (current module's defs + imports, following chains)
@@ -1346,16 +1463,16 @@ where
             return (Some(scheme), None);
         }
 
-        // Try qualified name resolution: "module/name" -> resolve_qualified
-        if let Some(slash_pos) = name.find('/') {
-            let module_part = &name[..slash_pos];
-            let name_part = &name[slash_pos + 1..];
-            if !module_part.is_empty() && !name_part.is_empty() {
+        // Try qualified name resolution: "module/name" -> resolve_qualified.
+        // The candidate order (child-of-current before absolute) is the ONE
+        // `qualified_candidate_modules` source `resolve_ref_target` also walks
+        // (Principle 7).
+        if let Some((name_part, [child_path, abs_path])) =
+            self.qualified_candidate_modules(state, name)
+        {
+            {
                 // Try child-of-current-module first: "util" in module "main"
                 // resolves to "main.util" (submodule reference).
-                let child_path = ModuleFullPath::from(
-                    format!("{}.{}", state.current_module, module_part),
-                );
                 let child = self.resolve_qualified(state, &child_path, name_part);
                 if let Ok((Some(scheme), _)) = child {
                     // A winning candidate carries no gap, even if it probed a
@@ -1368,7 +1485,6 @@ where
                 // The absolute path is the module the user actually named, so
                 // its gap (if any) supersedes the child probe's — last-writer-
                 // wins, matching the prior side-slot semantics.
-                let abs_path = ModuleFullPath::from(module_part);
                 let abs = self.resolve_qualified(state, &abs_path, name_part);
                 if let Ok((Some(scheme), _)) = abs {
                     return (Some(scheme), None);
@@ -1475,6 +1591,14 @@ where
             // in the call graph, yet the self-call IS a table reference the
             // backend keys. `resolved_targets` only; never `callees`.
             //
+            // CONSUMER back-pointer (FIXME 0653): the carrier presence/absence
+            // this carve-out records IS the verdict the mono-recheck self-call
+            // classifier (`record_self_recursion_dispatch`) and the name-scan
+            // collectors (`collect_local_parametric_calls` & siblings) read — the
+            // frames are dead at those seams, so they consume this record rather
+            // than re-evaluating `is_recursion_self_ref`. A shadowed call recorded
+            // NO carrier here ⇒ those consumers skip it (§4.6 local, not a mint).
+            //
             // The carve-out fires ONLY for a GENUINE self-recursive reference —
             // the enclosing defn's OWN recursion binding, which resolves at
             // `current_defn_frame` (`check_defn_body`'s frame). A same-named
@@ -1486,9 +1610,7 @@ where
             // it). Recording the enclosing fn's FQ on a local Var over-matched
             // (FIXME 0619 item 2) — harmless only by the backend's
             // locals-before-keyed-read ordering; now provenance-correct here.
-            if state.current_defn.as_deref() == Some(name)
-                && state.env.lookup_frame(name) == state.current_defn_frame
-            {
+            if state.is_recursion_self_ref(name) {
                 let fq = FQSymbol {
                     module: state.current_module.clone(),
                     symbol: Symbol::from(name),
@@ -1513,30 +1635,28 @@ where
     }
 
     /// Resolve `name` to its terminal storage `Resolved` for the
-    /// reference-recording feeds, mirroring [`Self::lookup`]'s qualified
-    /// candidate order (child-of-current-module before absolute path) so the
-    /// recorded identity agrees with the scheme the reference type-checked
-    /// against. Resolves ONCE (Principle 24); the caller projects the kind
-    /// filter each feed needs. Returns `None` for a non-`Def` terminal (a
-    /// local, a type, a special form, an unresolved name).
+    /// reference-recording feeds, walking [`Self::lookup`]'s qualified candidate
+    /// order (child-of-current-module before absolute path) through the ONE
+    /// shared [`Self::qualified_candidate_modules`] source (Principle 7 — the
+    /// former hand-rolled mirror is retired) so the recorded identity agrees with
+    /// the scheme the reference type-checked against. Resolves ONCE (Principle
+    /// 24); the caller projects the kind filter each feed needs. Returns `None`
+    /// for a non-`Def` terminal (a local, a type, a special form, an unresolved
+    /// name).
     fn resolve_ref_target(
         &self,
         state: &CheckState,
         name: &str,
         span: Span,
     ) -> Option<cranelisp_types::Resolved<C>> {
-        if let Some(slash_pos) = name.find('/') {
-            let module_part = &name[..slash_pos];
-            let name_part = &name[slash_pos + 1..];
-            if !module_part.is_empty() && !name_part.is_empty() {
-                let child = format!(
-                    "{}.{}/{}",
-                    state.current_module, module_part, name_part,
-                );
-                if let Some(r) = self.def_resolved(state, &child, span) {
+        if let Some((name_part, candidates)) = self.qualified_candidate_modules(state, name) {
+            for module in &candidates {
+                let qualified = format!("{module}/{name_part}");
+                if let Some(r) = self.def_resolved(state, &qualified, span) {
                     return Some(r);
                 }
             }
+            return None;
         }
         self.def_resolved(state, name, span)
     }
@@ -2404,15 +2524,25 @@ where
     /// fallback bit is ON (S78 §2.7.5 / FIXME 0315) — so a bare operator backed
     /// by a prelude `deftrait` (e.g. `(+ a b)` against a prelude `Num`) is
     /// recognised as a trait method.
+    /// D2 (§7.0.1) — returns the method's owning trait AND that trait's HOME
+    /// module, both read off `trait_origin`'s full `FQTypeName`. The home was
+    /// discarded pre-D2 (the P24 "resolve once then throw the home away"
+    /// anti-pattern): `try_resolve_trait_method` then re-resolved the BARE trait
+    /// name in current scope, which fails when only the METHOD is imported. A
+    /// method reference carries its FQ identity, which names the one trait that
+    /// declares it and hence the trait's home (§7.11.2 ¶2); reaching the method
+    /// reaches the home reaches the impl by keyed lookup, no re-resolution.
     pub(crate) fn method_to_trait_with_state(
         &self,
         state: &CheckState,
         method_name: &Symbol,
-    ) -> Option<TraitName> {
+    ) -> Option<(TraitName, ModuleFullPath)> {
         let (entry, _home) =
             self.resolve_terminal_entry_scoped(state, method_name.as_ref())?;
         match entry {
-            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
+            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => {
+                Some((fqtn.name.clone(), fqtn.module.clone()))
+            }
             _ => None,
         }
     }
@@ -2454,6 +2584,12 @@ where
     /// current module or the prelude), the `TraitImpl` scan runs over that home
     /// only (Decision 45 Pattern B) — so a prelude `impl Num Int` is discovered
     /// for a bare `(+ …)` in a user module that misses the trait locally.
+    ///
+    /// The production dispatch/verify paths now root at the trait's threaded HOME
+    /// (`has_impl_in_home`, D2/§7.0.1 + Important 2 — reaching the method reaches
+    /// the home, no bare re-resolution); this bare-name-rooted variant is retained
+    /// for the chain-follow coverage tests (`checker::tests`, `TestFixture::has_impl`).
+    #[allow(dead_code)] // exercised via TestFixture chain-follow tests in `#[cfg(test)]`.
     pub(crate) fn has_impl_with_state(
         &self,
         state: &CheckState,

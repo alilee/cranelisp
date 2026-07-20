@@ -3850,3 +3850,45 @@ are working detail). This section is the durable index:
   under-enumerated axes were RELATIONAL (call topology, pairing-head slot,
   shadowing, carrier×reaching-context), not form variants; twin rows are the
   instrument that catches unenumerated topology cells.
+
+## Sprint 113 — risk-first reliability + S112 defect-family drain (Phase-3, 2026-07-19, /qa)
+
+**The full S113 plan lives in `plan/s113-test-plan.md`; the W0 USER-GATE
+risk assessment (memory-safety vs the global correctness-risk landscape)
+lives in `plan/s113-risk-assessment.md`.** Durable index:
+
+- **W0 verdict**: memory-safety soundness IS the top correctness risk
+  (silent-corruption severity × ~97% suite blindness × 4+ live reachable
+  mechanisms × one-layer-deep adversarial detection). Recommended W5 depth:
+  tiers 4 (oracle lane FIRST) + 5 (quarantine/scrub/counter modes) + 3
+  (RC/alloc seam asserts) + 1–2 (§3 origin-lattice frame gating the 0641
+  fix, paired with the backend B-2/I-2 consume fix); generative harness v1
+  DEFERRED → S114. User rules at the gate.
+- **Row families**: F-D2-1..9 (spec §7.11.2 method-import-dispatch cells
+  (a)–(e), incl. the FENCE INVERSION of the old unary "no impl" pin —
+  `unary_arg_dispatch_method_only_import_clean_typecheck_error_green_fence`
+  flips to must-accept — + the sweep for other old-behavior pins);
+  BD-M1..M5 + BD-X (binder-generalization matrix: native forms × macro-route
+  × polarity, span-at-written-form cell, con_var qualification, 0589/0613);
+  the qualified-head corpus sweep GATES W3; 0605 stdlib smoke gate; 0638
+  repro capture (ungated defect pin); MS-P1..P6 (memory-safety probe slice,
+  DETACHABLE, gated on the W0 user decision); MC-D1/D2/D3/R1v (the four
+  owed S112 rows with final attributions) + MC-E1 (Pin-4 entanglement:
+  prelude-`+` R1 variant needs R1 AND carrier-loss; carrier family lands
+  first) + MC-X1 (carrier × reaching-context sweep — trigger FIRED: R2+D3 =
+  two producer misses) + MC-N1 inversion fences; PS-RT4 (persisted-kind ×
+  restore matrix vs the D45-amended model) + PS-SH1 (shadowing matrix) +
+  PS-R7 (0604 seam-assert rider consumption).
+- **FIXME dispositions actioned** (s113 plan §7): 0632 DELETED (all three
+  asks live in `s111-principle24-register.md`; open legs remain
+  register-tracked — frontend leg rides this sprint's /audit rotation);
+  0633 DELETED (reachability record + committed DG-R1a/b/c REDs are the
+  trigger; module-axis cell re-author = MS-P4; re-key = W5 R4); 0638
+  UPDATED (attribution done per §S111 I.4; deletes when the W1 repro pin
+  lands); 0604 KEPT (W4 R7 rider is the plan of record; no-stable-RED
+  exception stands).
+- **Standing-category calibration folded in** (S112 finding): axes are
+  RELATIONS, not just forms; twin-row-per-axis is binding on every S113
+  matrix (each family names its twin explicitly).
+- **Risk read**: `risks.md` §"S113 risk read" (S113-1..6 execution risks;
+  the global ranking is the W0 artifact).

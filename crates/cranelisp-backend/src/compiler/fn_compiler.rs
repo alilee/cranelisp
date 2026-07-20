@@ -10,7 +10,7 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
-    CranelispError, Defn, MonoExpr, ModuleEntry, ResolvedCall, Span, Symbol, Type,
+    CranelispError, Defn, ModuleFullPath, MonoExpr, ModuleEntry, ResolvedCall, Span, Symbol, Type,
 };
 
 use crate::heap::{self, HeapCategory};
@@ -322,6 +322,13 @@ where
     /// once on every path. `None` ⇒ every COW site keeps its `Borrowed` polarity,
     /// byte-identical to pre-fix.
     pub(crate) return_cow_source: Option<Symbol>,
+    /// The recorded escape fact (`node_escapes`) of the COW `Apply` currently
+    /// being lowered — stashed by `compile_builtin_fn_call` immediately before
+    /// `compile_vec_op` (after the args are compiled, so a nested-arg apply cannot
+    /// clobber it), read by `cow_source_ownership` for the §13.7 escape gate
+    /// (FIXME 0664 /arch ruling). `None` ⇒ absent fact ⇒ the UAF-safe inc default
+    /// (P25). Analysis-OFF ignores it (toggle-off is all-Owned, R14).
+    pub(crate) pending_cow_escapes: Option<bool>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -381,6 +388,7 @@ where
             in_spark_thunk: false,
             elide_vecget_span: None,
             return_cow_source: None,
+            pending_cow_escapes: None,
         }
     }
 
@@ -488,7 +496,7 @@ where
         // a stack slot (one per frame) reused across iterations would clobber a
         // loop-carried value. Decline stack placement for the whole function when
         // the body self-calls (conservative — see `body_has_self_call`).
-        let fn_has_self_call = body_has_self_call(body, &defn.name);
+        let fn_has_self_call = body_has_self_call(body, &defn.name, &ctx.current_module);
 
         let mut compiler = FnCompiler {
             builder,
@@ -523,6 +531,7 @@ where
             in_spark_thunk: false,
             elide_vecget_span: None,
             return_cow_source: None,
+            pending_cow_escapes: None,
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -742,6 +751,9 @@ where
                 // value to the caller and stays heap.)
                 let stack = self.constructor_call_stack_eligible(expr, args);
                 let apply_type = ty.to_type();
+                // §13.7 (FIXME 0664): this Apply's recorded escape fact, threaded
+                // to the COW seam (`cow_source_ownership`'s escape gate).
+                let apply_escapes = node_escapes(expr);
                 self.compile_apply(
                     callee,
                     args,
@@ -756,6 +768,7 @@ where
                     resolved_target.as_ref(),
                     Some(&apply_type),
                     stack,
+                    apply_escapes,
                 )
             }
             MonoExpr::Match {
@@ -1412,49 +1425,67 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// over-approximates the set of TCO back-edges (a non-tail self-call is a real
 /// call, not a back-edge, and is harmless — but declining is free correctness),
 /// which eliminates any chance of a per-flow scanner error placing a
-/// loop-carried value on the stack. Matches the two self-call shapes the TCO
-/// lowering detects (`compile_apply`): a `Var` callee naming the function, or a
-/// `SigDispatch` whose mangled name is the function. The sharper per-flow check
-/// ("only decline when the value flows into a `recur` arg") is a noted follow-on.
-pub(crate) fn body_has_self_call(body: &MonoExpr, fn_name: &Symbol) -> bool {
+/// loop-carried value on the stack.
+///
+/// **Self-call detection uses the SHARED [`is_self_call`] predicate** (FIXME
+/// 0654) so gate 3 can never diverge from what the TCO lowering treats as a
+/// back-edge: the carrier-keyed identity (fp1) + the `SigDispatch` mangled-name
+/// shape (fp2). Before S113 W2b this gate scanned by BARE written name, which
+/// MISSED fp1's carrier-matching / name-differing self-call (e.g. a qualified
+/// `(user/qloop x)` self-ref) — for which the TCO lowering emits a back-edge but
+/// the bare-name gate reported "no self-call", permitting a loop-carried stack
+/// slot: a hard use-after-free. The bare written-name `Var` arm is RETAINED,
+/// OR'd in as a documented over-approximation (declining stack alloc for a
+/// non-back-edge is free correctness), so gate 3 stays a strict SUPERSET of the
+/// TCO back-edge set AND of its own historical behaviour (the corpus is
+/// byte-identical — the carrier-match / name-differ case is unreachable today,
+/// see FIXME 0654 reachability probes). The sharper per-flow check ("only
+/// decline when the value flows into a `recur` arg") is a noted follow-on.
+pub(crate) fn body_has_self_call(
+    body: &MonoExpr,
+    fn_name: &Symbol,
+    current_module: &ModuleFullPath,
+) -> bool {
     use cranelisp_types::MonoExpr as E;
-    fn is_self(callee: &E, resolved: Option<&ResolvedCall>, fn_name: &Symbol) -> bool {
-        if let E::Var { name, .. } = callee
-            && name == fn_name
-        {
-            return true;
-        }
-        matches!(
-            resolved,
-            Some(ResolvedCall::SigDispatch { mangled_name }) if mangled_name.as_ref() == fn_name.as_ref()
-        )
-    }
-    fn walk(e: &E, fn_name: &Symbol) -> bool {
+    fn walk(e: &E, fn_name: &Symbol, current_module: &ModuleFullPath) -> bool {
         match e {
             E::Apply { callee, args, resolved_call, .. } => {
-                is_self(callee, resolved_call.as_deref(), fn_name)
-                    || walk(callee, fn_name)
-                    || args.iter().any(|a| walk(a, fn_name))
+                // The shared TCO-agreeing predicate OR the historical bare-name
+                // over-approximation (always sound to decline).
+                is_self_call(callee, resolved_call.as_deref(), current_module, Some(fn_name))
+                    || matches!(callee.as_ref(), E::Var { name, .. } if name == fn_name)
+                    || walk(callee, fn_name, current_module)
+                    || args.iter().any(|a| walk(a, fn_name, current_module))
             }
             E::Let { bindings, body, .. } => {
-                bindings.iter().any(|(_, v)| walk(v, fn_name)) || walk(body, fn_name)
+                bindings.iter().any(|(_, v)| walk(v, fn_name, current_module))
+                    || walk(body, fn_name, current_module)
             }
             E::If { cond, then_branch, else_branch, .. } => {
-                walk(cond, fn_name) || walk(then_branch, fn_name) || walk(else_branch, fn_name)
+                walk(cond, fn_name, current_module)
+                    || walk(then_branch, fn_name, current_module)
+                    || walk(else_branch, fn_name, current_module)
             }
-            E::Lambda { body, .. } => walk(body, fn_name),
+            E::Lambda { body, .. } => walk(body, fn_name, current_module),
             E::Match { scrutinee, arms, .. } => {
-                walk(scrutinee, fn_name) || arms.iter().any(|a| walk(&a.body, fn_name))
+                walk(scrutinee, fn_name, current_module)
+                    || arms.iter().any(|a| walk(&a.body, fn_name, current_module))
             }
-            E::VecLit { elements, .. } => elements.iter().any(|el| walk(el, fn_name)),
-            E::Trace { body, .. } => walk(body, fn_name),
+            E::VecLit { elements, .. } => {
+                elements.iter().any(|el| walk(el, fn_name, current_module))
+            }
+            E::Trace { body, .. } => walk(body, fn_name, current_module),
             E::ParBind { bindings, body, .. } => {
-                bindings.iter().any(|(_, v)| walk(v, fn_name)) || walk(body, fn_name)
+                bindings.iter().any(|(_, v)| walk(v, fn_name, current_module))
+                    || walk(body, fn_name, current_module)
             }
             E::LaunchContinue { launched, continuation, .. } => {
-                walk(launched, fn_name) || walk(continuation, fn_name)
+                walk(launched, fn_name, current_module)
+                    || walk(continuation, fn_name, current_module)
             }
-            E::ConstrADT { fields, .. } => fields.iter().any(|f| walk(f, fn_name)),
+            E::ConstrADT { fields, .. } => {
+                fields.iter().any(|f| walk(f, fn_name, current_module))
+            }
             E::IntLit { .. }
             | E::FloatLit { .. }
             | E::BoolLit { .. }
@@ -1462,7 +1493,55 @@ pub(crate) fn body_has_self_call(body: &MonoExpr, fn_name: &Symbol) -> bool {
             | E::Var { .. } => false,
         }
     }
-    walk(body, fn_name)
+    walk(body, fn_name, current_module)
+}
+
+/// The ONE self-call identity predicate (Principle 7 single-source-of-truth /
+/// Principle 24 "Resolve once") — consumed by the TCO fast-path (`compile_apply`,
+/// `apply.rs`), the B3.4 stack-allocation gate 3 ([`body_has_self_call`]), and
+/// the spark SCC classifier (`classify_spark_callee`, `utilization.rs`). Before
+/// S113 W2b (FIXME 0654) these three answered "is this a self-call?" three
+/// divergent ways — carrier-keyed (fp1) vs bare written-name (gate 3 + spark) —
+/// a Principle-7 violation whose gate-3 face is a latent loop-carried stack-slot
+/// UAF (a carrier-matching / name-differing self-call TCO-loops while a bare-name
+/// gate permits the stack slot).
+///
+/// A call is a self-call iff EITHER:
+/// - **carrier-keyed (fp1 shape):** the callee `Var`'s `resolved_target` storage
+///   FQ equals the current fn's storage identity `{current_module,
+///   current_fn_name}` — module AND symbol (the S113 W2b carrier fix). A match
+///   requires the recorded storage target to BE the current fn's identity, so a
+///   false positive is impossible; a carrier-absent callee (e.g. a `let`/`fn`/
+///   param local shadowing the fn name) never matches here; OR
+/// - **`SigDispatch`-mangled (fp2 shape):** `resolved_call` is `SigDispatch {
+///   mangled_name }` and `mangled_name == current_fn_name` — the monomorphised
+///   constrained-poly self-recursion shape, where the callee's written name is
+///   the base name but the current fn is the `{home}/{bare}${sig}` mono variant.
+///   The `{home}/` prefix embeds the module, so a cross-module same-signature
+///   dispatch fails to match by construction (`backend.md` §2.7.1).
+///
+/// Decides by the KEYED carrier / resolved dispatch, NEVER by bare written-name
+/// equality (the 0632 name-as-identity class). `None` `current_fn_name` ⇒ never.
+pub(crate) fn is_self_call(
+    callee: &MonoExpr,
+    resolved_call: Option<&ResolvedCall>,
+    current_module: &ModuleFullPath,
+    current_fn_name: Option<&Symbol>,
+) -> bool {
+    let Some(fn_name) = current_fn_name else {
+        return false;
+    };
+    if let MonoExpr::Var { resolved_target: Some(fq), .. } = callee
+        && fq.module == *current_module
+        && fq.symbol == *fn_name
+    {
+        return true;
+    }
+    matches!(
+        resolved_call,
+        Some(ResolvedCall::SigDispatch { mangled_name })
+            if mangled_name.as_ref() == fn_name.as_ref()
+    )
 }
 
 #[cfg(test)]
@@ -1478,16 +1557,29 @@ mod b34_stack_eligibility_tests {
         body_has_self_call, node_escapes, stack_alloc_enabled, stack_alloc_gate_value,
         STACK_ALLOC_ESCAPE_FACT_SOUND,
     };
+    use super::is_self_call;
     use cranelisp_types::{
-        ConcreteType, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
-        TypeName,
+        ConcreteType, FQSymbol, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall,
+        Span, Symbol, TypeName,
     };
 
     fn int() -> ConcreteType {
         ConcreteType::Int
     }
+    /// The enclosing module for the gate-3 fixtures. The bare-name / SigDispatch
+    /// arms are module-agnostic; only the carrier arm consults it.
+    fn m() -> ModuleFullPath {
+        ModuleFullPath::from("user")
+    }
     fn var(name: &str) -> MonoExpr {
         MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(), resolved_target: None }
+    }
+    /// A `Var` carrying a `resolved_target` storage FQ — the fp1 carrier shape.
+    fn var_with_target(name: &str, module: &str, symbol: &str) -> MonoExpr {
+        MonoExpr::Var {
+            name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(),
+            resolved_target: Some(FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }),
+        }
     }
     fn constr(escapes: Option<bool>) -> MonoExpr {
         MonoExpr::ConstrADT {
@@ -1535,7 +1627,7 @@ mod b34_stack_eligibility_tests {
     fn detects_direct_self_call() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — self-call present
         let f = Symbol::from("f");
-        assert!(body_has_self_call(&apply("f", vec![], None, None), &f));
+        assert!(body_has_self_call(&apply("f", vec![], None, None), &f, &m()));
     }
     #[test]
     fn detects_self_call_nested_in_let_if_match_and_arg() {
@@ -1543,26 +1635,57 @@ mod b34_stack_eligibility_tests {
         let call = || apply("f", vec![], None, None);
         // in a let body
         assert!(body_has_self_call(
-            &MonoExpr::Let { bindings: vec![], body: Box::new(call()), span: Span::new(0, 4), ty: int() }, &f));
+            &MonoExpr::Let { bindings: vec![], body: Box::new(call()), span: Span::new(0, 4), ty: int() }, &f, &m()));
         // in an if branch
         assert!(body_has_self_call(
-            &MonoExpr::If { cond: Box::new(var("c")), then_branch: Box::new(var("a")), else_branch: Box::new(call()), span: Span::new(0, 5), ty: int() }, &f));
+            &MonoExpr::If { cond: Box::new(var("c")), then_branch: Box::new(var("a")), else_branch: Box::new(call()), span: Span::new(0, 5), ty: int() }, &f, &m()));
         // in an ARGUMENT position (non-tail self-call — still declined, conservative)
-        assert!(body_has_self_call(&apply("g", vec![call()], None, None), &f));
+        assert!(body_has_self_call(&apply("g", vec![call()], None, None), &f, &m()));
     }
     #[test]
     fn detects_sig_dispatch_mangled_self_call() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — mono self-call by mangled name
         let f = Symbol::from("f$Int");
         let e = apply("f", vec![], None, Some(ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("f$Int") }));
-        assert!(body_has_self_call(&e, &f));
+        assert!(body_has_self_call(&e, &f, &m()));
     }
     #[test]
     fn no_self_call_for_foreign_callee() {
         // spec: design/backend/ownership-codegen.md §4.1 gate 3 — a different name is not self
         let f = Symbol::from("f");
-        assert!(!body_has_self_call(&apply("g", vec![var("x")], None, None), &f));
-        assert!(!body_has_self_call(&var("x"), &f));
+        assert!(!body_has_self_call(&apply("g", vec![var("x")], None, None), &f, &m()));
+        assert!(!body_has_self_call(&var("x"), &f, &m()));
+    }
+
+    // spec: design/backend/ownership-codegen.md §4.1 gate 3 — FIXME 0654: gate 3
+    // and the TCO lowering must decide self-call by the SAME (carrier-keyed)
+    // predicate. A callee whose `resolved_target` storage FQ equals the current
+    // fn's identity but whose WRITTEN name differs (e.g. a qualified
+    // `(user/qloop x)` self-ref where the fn is `s1`) IS a TCO back-edge (fp1
+    // fires on the carrier); gate 3 MUST therefore decline stack allocation for
+    // it. The pre-S113 bare-name scan MISSED this (name differs) → the fp1/gate-3
+    // divergence that is a latent loop-carried stack-slot UAF. This pins that the
+    // two decisions cannot diverge: `body_has_self_call` returns true here exactly
+    // because it now consults `is_self_call`, and `is_self_call` (the predicate
+    // fp1 also calls) returns true for the same node.
+    #[test]
+    fn gate3_agrees_with_tco_on_carrier_matching_name_differing_self_call() {
+        let f = Symbol::from("s1");
+        // callee written `qloop` but carrier == the current fn's storage FQ.
+        let callee = var_with_target("qloop", "user", "s1");
+        let node = MonoExpr::Apply {
+            resolved_target: None,
+            callee: Box::new(callee.clone()), args: vec![], span: Span::new(0, 3),
+            resolved_call: None, ty: int(),
+            escapes: None, confined: None, unique_static: None, provenance: None,
+        };
+        // The TCO lowering's predicate fires (carrier match, module+symbol)…
+        assert!(is_self_call(&callee, None, &m(), Some(&f)));
+        // …so gate 3 MUST also fire (no divergence → no loop-carried stack UAF).
+        assert!(body_has_self_call(&node, &f, &m()));
+        // Guard the module-precision: a carrier in a DIFFERENT module is NOT self.
+        let foreign = var_with_target("qloop", "other", "s1");
+        assert!(!is_self_call(&foreign, None, &m(), Some(&f)));
     }
 
     // --- the composed method is ACTIVATED (2026-07-05, FIXME 0525 ruling) -------

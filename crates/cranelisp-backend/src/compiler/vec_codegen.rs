@@ -52,17 +52,32 @@ pub(crate) struct VecSetCow {
 /// Consumed-source RC polarity for the shared COW cores
 /// (`design/backend/ownership-codegen.md` §13.3 Ruling 2).
 ///
-/// A COW op has three runtime branches: **mutate** (rc==1, `vec-set`) /
-/// **grow** (rc==1, `vec-push`) return the *same* Vec pointer, so the consumed
-/// source reference transfers into the returned value — nothing to release; the
-/// **copy** branch (rc>1) allocates a *new* Vec and returns it, so any owned
-/// reference to the source that the op consumed becomes unreachable at the call
-/// and MUST be released there or it leaks (FIXME 0474).
+/// A COW op has three runtime branches: **mutate** (rc==1, `vec-set`) / **grow**
+/// (rc==1, `vec-push`) return the *same* Vec pointer; the **copy** branch (rc>1)
+/// allocates a *new* Vec. The polarity is R14 COW count-truth (`safety-invariants.md`
+/// §4; the FIXME-0664 /arch ruling): the runtime rc==1 in-place branch is sound
+/// iff every live independently-owned reference is counted.
 ///
-/// This is a *contract* (Principle 18), not a spot dec: every call site states
-/// its truth explicitly, so a new call-site shape cannot silently re-open the
-/// leak. It is a leak-only class — the polarity errs on the retain side, never
-/// a UAF/double-free.
+/// - **copy branch** — `release_consumed_source`: `Owned` releases the consumed
+///   source (dec via `vec_drop`; a new Vec left the source unreachable, FIXME 0474);
+///   `Borrowed` releases nothing (the scope binding owns + dec's it).
+/// - **mutate/grow branch** — `retain_reused_source`: the returned same pointer
+///   aliases the source. `Owned` transfers the consumed reference (no inc). A
+///   `Borrowed` live-Var binding incs iff the result ESCAPES the source's scope
+///   (`retain_reused`, from `node_escapes`) — an escaping alias outlives the
+///   binding's scope-dec and must own its own reference (the 0641 B-2/I-2 UAF); a
+///   recur-transfer / in-frame consume does NOT escape (`retain_reused: false`),
+///   preserving the loop in-place reuse (l_c3).
+///
+/// **Toggle-off (`CRANELISP_NO_OWNERSHIP`) = all-Owned, `Borrowed` UNREACHABLE**
+/// (R14 / the ruled §6.2 conservative definition): every live-binding COW source
+/// is COUNTED (the caller-side inc at the COW site), so its rc≥2 ⇒ the runtime
+/// takes the copy branch ⇒ correct by construction (only the loop's per-iteration
+/// alloc degrades — that is what conservative MEANS, monotone soundness). A fresh
+/// producing temporary is never `Borrowed` in either toggle (it has no separate
+/// owner — its sole reference transfers; `Owned`, no caller count).
+///
+/// This is a *contract* (Principle 18), not a spot dec.
 pub(crate) enum SourceOwnership {
     /// The caller handed the core an owned reference the op consumes — wrapper
     /// and curry bodies whose params arrive owned under the consuming-closure
@@ -73,11 +88,19 @@ pub(crate) enum SourceOwnership {
         vec_drop_func_id: cranelift_module::FuncId,
         elem_dec_fn_ptr: Value,
     },
-    /// The source reference is owned elsewhere (a live scope binding / borrow):
-    /// the caller's arg compilation emitted no consuming inc, so the copy branch
-    /// releases nothing (scope cleanup dec's the binding). Static in-place COW
-    /// sites (`compile_vec_set` / `compile_vec_push` last-use arm) pass this.
-    Borrowed,
+    /// The source is a live scope `Var` binding — owned elsewhere (scope cleanup
+    /// dec's it), uncounted at this COW (the caller emitted no consuming inc).
+    /// Reachable ONLY analysis-ON (toggle-off restores all-Owned, R14). The copy
+    /// branch releases nothing.
+    Borrowed {
+        /// The mutate/grow-branch escape gate (§13.7, escape-gated per the
+        /// FIXME-0664 ruling): inc the returned same pointer iff the result
+        /// ESCAPES the source binding's scope (`node_escapes(cow_apply) !=
+        /// Some(false)` — escape OR absent-fact ⇒ inc, the UAF-safe P25 default).
+        /// `false` for a recur-transfer / in-frame consume (not an escape) ⇒ no
+        /// inc ⇒ the loop in-place reuse is preserved (l_c3).
+        retain_reused: bool,
+    },
 }
 
 /// Emit the copy-branch consumed-source release for a COW core (§13.3 Ruling 2).
@@ -96,6 +119,29 @@ fn release_consumed_source<M: Module>(
     } = source_ownership
     {
         emit_vec_rc_dec_with_drop(builder, module, vec_val, *vec_drop_func_id, *elem_dec_fn_ptr);
+    }
+}
+
+/// Emit the mutate/grow-branch reused-source retention (§13.7, escape-gated per
+/// the FIXME-0664 /arch ruling). The mutate (`vec-set` rc==1) and unique
+/// (`vec-push` rc==1 fast+grow) branches return the SAME pointer as the source.
+/// A `Borrowed { retain_reused: true }` source is a live scope `Var` binding
+/// whose result ESCAPES its scope — the returned alias outlives the binding's
+/// scope-dec, so it MUST take one independent reference or it dangles (the 0641
+/// B-2/I-2 UAF). Every other case transfers (no inc): `Owned` consumed the
+/// reference; `retain_reused: false` is a recur-transfer / in-frame consume (not
+/// an escape) — inc'ing it would break the loop in-place reuse (l_c3) or leak.
+///
+/// The symmetric partner of [`release_consumed_source`] (copy branch, dec iff
+/// `Owned`). Reachable only analysis-ON — toggle-off has no `Borrowed` (R14).
+fn retain_reused_source<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    vec_val: Value,
+    source_ownership: &SourceOwnership,
+) {
+    if matches!(source_ownership, SourceOwnership::Borrowed { retain_reused: true }) {
+        heap::emit_rc_inc(builder, module, vec_val);
     }
 }
 
@@ -162,7 +208,32 @@ where
         ); // data_ptr: i64 (ptr-width)
 
         // Store each element into the data buffer at data_ptr + i * 8.
-        for (i, &val) in elem_vals.iter().enumerate() {
+        //
+        // Consuming discrimination (FIXME 0668 sub-fix — the vec-lit element store
+        // routed through the SAME rule the call seam uses, `element_consuming_inc`
+        // / DEF-2/DEF-3, Principle 7): a heap-typed `Var` element is an owned scope
+        // binding whose scope-dec STILL fires, so the container must take its own
+        // count (inc) — else the binding's scope-dec frees the element the returned
+        // container holds (`(let [q [7 8 9]] [q])` → garbage BOTH toggles). A
+        // temporary (literal / ctor call / fn result / COW result) starts at rc=1
+        // and transfers its single reference into the Vec — no inc. The
+        // discriminator is STRUCTURAL (Var-rootedness), analysis-independent, so
+        // one rule is correct in BOTH toggles by construction; leak-side-safe (only
+        // owned bindings inc); no loop interaction (recur args ride
+        // `tail_transfer_skip`, not vec-lit). The match/alias-forward direction is
+        // 0668's S114 design iteration — NOT touched here.
+        for (i, (&val, elem)) in elem_vals.iter().zip(elements.iter()).enumerate() {
+            let elem_category =
+                signature_heap_category(&elem.ty().to_type(), Some(self.ctx.symbol_tables));
+            match element_consuming_inc(elem, elem_category) {
+                Some(HeapCategory::AlwaysHeap) => {
+                    heap::emit_rc_inc(&mut self.builder, self.module, val);
+                }
+                Some(HeapCategory::Mixed) => {
+                    emit_guarded_rc_inc(&mut self.builder, self.module, val);
+                }
+                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
+            }
             let offset = (i * 8) as i32;
             heap::heap_store(&mut self.builder, val, data_ptr, offset);
         }
@@ -257,6 +328,17 @@ where
         // `None` (analysis off, or any read the consumer did not request) ⇒ inc
         // verbatim — byte-identical-off (§2.2).
         let elide_elem_inc = self.elide_vecget_span == Some(span);
+        // §15 row 5 (tier-3 category-A, P25 "narrowing carries its check"): the
+        // projection-inc elision is a narrowing; its check is the site fact. Pin
+        // that elision fires ONLY with `elide_vecget_span` present — a future
+        // refactor that sets `elide_elem_inc` from any other source (a bare /
+        // analysis-off read) would drop a live element's inc → a UAF. Debug-only,
+        // release-compiled-out, zero CLIF change.
+        debug_assert!(
+            !elide_elem_inc || self.elide_vecget_span == Some(span),
+            "vec-get projection-inc elision fired without the `elide_vecget_span` \
+             site fact (§3.3) — the borrowed-in-place consumer proof is absent"
+        );
         emit_vec_get_core(
             &mut self.builder,
             self.module,
@@ -336,10 +418,11 @@ where
             // the dynamic rc==1 probe is dead — take the in-place arm and elide
             // the check. Read off the fresh node, NEVER a consuming-use Var.
             let elide_rc_check = node_unique_static(vec_expr) == Some(true);
-            // vec-assoc UAF fix: `Owned` when this COW's source is moved into the
-            // function return (`return_cow_source`); else `Borrowed` (default,
-            // byte-identical). The `Owned` copy branch releases the source that
-            // scope cleanup no longer dec's.
+            // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
+            // copy branch ⇒ conservative + correct. No-op analysis-ON.
+            if self.cow_source_needs_toggle_off_count(vec_expr) {
+                heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
+            }
             let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
             emit_vec_set_cow_core(
                 &mut self.builder,
@@ -410,9 +493,11 @@ where
             // Increment-II static-uniqueness proof (§6.4): elide the dynamic
             // rc==1 probe when the Vec arg is a fresh node proven unique.
             let elide_rc_check = node_unique_static(vec_expr) == Some(true);
-            // vec-assoc UAF fix: `Owned` when this COW's source is moved into the
-            // function return (`return_cow_source`); else `Borrowed` (default,
-            // byte-identical).
+            // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
+            // copy branch ⇒ conservative + correct. No-op analysis-ON.
+            if self.cow_source_needs_toggle_off_count(vec_expr) {
+                heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
+            }
             let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
             // Shared core with the §12.7 wrapper emission (Principle 7).
             emit_vec_push_cow_core(
@@ -538,29 +623,55 @@ where
     /// Returns iconst(0) for NeverHeap types (runtime skips the call).
     /// For ADT element types with heap fields, builds a drop glue function
     /// so that fields are dec'd when the element reaches rc=0.
-    /// The COW source-release polarity for an in-place `vec-set`/`vec-push`
-    /// site (vec-assoc UAF fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
+    /// The COW source-ownership polarity for an in-place `vec-set`/`vec-push`
+    /// site (R14 COW count-truth; the FIXME-0664 /arch ruling).
     ///
-    /// `Owned` when this COW's source `Var` is the function's recorded
-    /// [`FnCompiler::return_cow_source`] — the tail COW moves the source's
-    /// reference into the returned Vec, so its scope-exit dec is suppressed
-    /// (`skip_var`) and the **copy** branch (which returns a FRESH Vec, leaving
-    /// the source unreferenced) must release the source itself. Otherwise
-    /// `Borrowed` (scope cleanup releases the binding — the default, emitting
-    /// nothing here, so a program that never hits this pattern is byte-identical).
+    /// `Owned` (transfer on mutate / release on copy) in three cases:
+    /// 1. the return-cow-source `Var` — the tail COW moves the source into the
+    ///    returned Vec, its scope-exit dec suppressed (`skip_var`), so the copy
+    ///    branch must release it (vec-assoc UAF fix);
+    /// 2. a fresh producing temporary (non-`Var`) — it has no separate owner, its
+    ///    sole reference transfers; classified `Owned`, never `Borrowed` (this
+    ///    kills the fresh-temp over-retain leak at classification, not at the core);
+    /// 3. **analysis-OFF, ANY `Var` source** — R14: toggle-off is the conservative
+    ///    all-Owned lowering, `Borrowed` is UNREACHABLE. The COW site COUNTS the
+    ///    source (`cow_source_needs_toggle_off_count`), so its rc≥2 ⇒ the runtime
+    ///    takes the copy branch ⇒ correct by construction (the loop's per-iteration
+    ///    alloc is the accepted conservative cost — monotone soundness).
+    ///
+    /// `Borrowed { retain_reused }` only analysis-ON, for a live-`Var` binding: the
+    /// escape-gated mutate/grow inc (see the field doc). `retain_reused` reads the
+    /// recorded escape fact of the COW `Apply` (`self.pending_cow_escapes`, stashed
+    /// by `compile_builtin_fn_call`): escape or absent ⇒ inc (P25 safe); a
+    /// recur-transfer / in-frame consume (`Some(false)`) ⇒ no inc ⇒ l_c3 in-place
+    /// reuse preserved.
     fn cow_source_ownership(
         &mut self,
         vec_expr: &MonoExpr,
         elem_type: &Option<Type>,
         span: Span,
     ) -> Result<SourceOwnership, CranelispError> {
+        let is_var_source = matches!(vec_expr, MonoExpr::Var { .. });
         let is_return_source = matches!(
             vec_expr,
             MonoExpr::Var { name, .. } if self.return_cow_source.as_ref() == Some(name)
         );
-        if !is_return_source {
-            return Ok(SourceOwnership::Borrowed);
+        if is_return_source || !is_var_source || cranelisp_types::ownership_analysis_off() {
+            return self.build_owned_source_release(elem_type, span);
         }
+        // analysis-ON live-`Var` binding: escape-gated (escape OR absent-fact ⇒ inc).
+        let retain_reused = self.pending_cow_escapes != Some(false);
+        Ok(SourceOwnership::Borrowed { retain_reused })
+    }
+
+    /// Build the `SourceOwnership::Owned` release descriptor (the `vec_drop` fn-id
+    /// + per-element dec fn ptr the copy-branch release needs). Shared by the
+    /// return-source, fresh-temp, and toggle-off-all-Owned classifications.
+    fn build_owned_source_release(
+        &mut self,
+        elem_type: &Option<Type>,
+        span: Span,
+    ) -> Result<SourceOwnership, CranelispError> {
         let vec_drop_func_id =
             self.ctx.vec_drop_func_id.ok_or_else(|| CranelispError::CodegenError {
                 message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
@@ -568,6 +679,22 @@ where
             })?;
         let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(elem_type, span)?;
         Ok(SourceOwnership::Owned { vec_drop_func_id, elem_dec_fn_ptr })
+    }
+
+    /// R14 count-truth (toggle-off caller-side arg convention): a live-`Var` COW
+    /// source under `CRANELISP_NO_OWNERSHIP` must be COUNTED — inc'd at the COW
+    /// site so its rc reflects BOTH the scope binding (which scope-dec's it) and
+    /// this COW use ⇒ rc≥2 ⇒ the runtime copy branch fires ⇒ the in-place mutate
+    /// never aliases a still-referenced vector. Excludes the return-source (its
+    /// scope-dec is suppressed, so no separate owner to count) and non-`Var` fresh
+    /// temps (no separate owner — they transfer). Off ⇒ never (analysis-ON uses
+    /// the escape-gated mutate inc instead).
+    fn cow_source_needs_toggle_off_count(&self, vec_expr: &MonoExpr) -> bool {
+        cranelisp_types::ownership_analysis_off()
+            && matches!(
+                vec_expr,
+                MonoExpr::Var { name, .. } if self.return_cow_source.as_ref() != Some(name)
+            )
     }
 
     fn resolve_elem_dec_fn_ptr(
@@ -1495,6 +1622,10 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         .ins()
         .store(MemFlags::trusted(), new_val, elem_addr, 0);
 
+    // §13.7 escape-gated retention: a Borrowed live-Var source whose result
+    // escapes takes one independent reference on this same-pointer return.
+    retain_reused_source(builder, module, vec_val, &source_ownership);
+
     builder.ins().jump(merge_block, &[vec_val]);
 
     // Copy path: call vec-set-copy extern.
@@ -1567,6 +1698,11 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     // Vec struct — whether the fast in-place store or the grow realloc — a reuse
     // HIT. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
+
+    // §13.7 escape-gated retention: both the fast and grow sub-paths return the
+    // same pointer as the source; one inc in `unique_block` covers both. Fires
+    // only for a Borrowed live-Var source whose result escapes (`retain_reused`).
+    retain_reused_source(builder, module, vec_val, &source_ownership);
 
     let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
     let cap = heap::heap_load(builder, vec_val, HeapVec::CAP_OFFSET);
@@ -1669,6 +1805,12 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     use cranelift_codegen::ir::AtomicRmwOp;
 
     let cont_block = builder.create_block();
+
+    // §15 row 6 (tier-3 category-B): route the Vec-aware dec through the shared
+    // `CRANELISP_RC_DEC_CHECK` seam so the DEC_CHECK lane sees the COW copy-branch
+    // source release + every vec teardown/scope-exit dec — not only the header-dec
+    // inline. Off by default ⇒ no emitted call ⇒ byte-identical codegen.
+    crate::heap::emit_rc_dec_check_gated(builder, module, vec_val);
 
     // Dec RC — atomic_rmw, or the non-atomic plain load/isub/store arm on a
     // Confined vec cell (B3.3). The pre-decrement value stands in for the
@@ -1837,6 +1979,9 @@ mod temp_drop_rc_tests;
 
 #[cfg(test)]
 mod reuse_proof_tests;
+
+#[cfg(test)]
+mod vec_lit_consume_tests;
 
 #[cfg(test)]
 mod tests;

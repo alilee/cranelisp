@@ -27,10 +27,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Option<ResolvedCall>, CranelispError> {
         // Check if this name is a trait method (via trait_origin on ModuleEntry::Def).
         // State-rooted: chain-follow from the current module's view per Principle 17.
-        let trait_name = match self.method_to_trait_with_state(state, callee_name) {
-            Some(tn) => tn,
-            None => return Ok(None),
-        };
+        //
+        // D2 (§7.0.1) — the method reference carries its FQ identity, which names
+        // the one trait that declares it AND that trait's HOME module. Thread the
+        // home (P24 "Resolve once") and root the impl lookup / FQ construction at
+        // it, instead of re-resolving the BARE trait name in current scope (which
+        // fails when only the METHOD is imported — the pre-D2 leak, §7.11.2(a)/(e)).
+        let (trait_name, trait_defining_module) =
+            match self.method_to_trait_with_state(state, callee_name) {
+                Some(pair) => pair,
+                None => return Ok(None),
+            };
 
         // Use hkt_param_index for dispatch argument selection (defaults to 0)
         let param_idx = self.hkt_param_idx_for_method(state, callee_name);
@@ -58,14 +65,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Check if an impl exists — if the name IS a trait method and the
         // type IS concrete but the impl DOESN'T exist, that's a type error.
-        // State-rooted: chain-follow the trait reference from the current
-        // module's view to the trait's defining module per Decision 45.
-        if !self.has_impl_with_state(state, &trait_name, &impl_type_name) {
+        // D2: root the impl lookup at the trait's chain-followed HOME (the
+        // discarded `trait_origin` module), where D45 writes every `TraitImpl`
+        // shell — reaching the method reaches the home reaches the impl by keyed
+        // lookup, no second bare-name re-resolution. When only the method is
+        // imported, `has_impl_with_state`'s bare re-resolution missed and this
+        // wrong-rejected a spec-valid dispatch (§7.11.2(e)); `has_impl_in_home`
+        // succeeds.
+        if !self.has_impl_in_home(&trait_defining_module, &trait_name, &impl_type_name) {
             // Render both halves fully-qualified so the message disambiguates
             // a missing impl under two same-named ADTs from different modules
-            // (S87-1). Best-effort — falls back to the bare name if the FQ
-            // resolution fails.
-            let fq_trait = self.fq_trait_name_for_diagnostics(state, &trait_name, span);
+            // (S87-1). The trait name is on `trait_origin` and thus available
+            // even when the trait itself is not in scope (§7.11.2(c), F-D2-7).
+            let fq_trait =
+                FQTraitName::new(trait_defining_module.clone(), trait_name.clone()).to_string();
             let fq_impl_type = self.fq_type_name_for_diagnostics(state, &impl_type_name, span);
             return Err(CranelispError::TypeError {
                 message: format!(
@@ -91,19 +104,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }));
         }
 
-        // Build FQTraitName — chain-follow the trait reference to its
-        // defining module per Decision 45 Pattern B. `has_impl_with_state`
-        // succeeded just above, so the chain-follow is guaranteed.
-        let trait_defining_module = self
-            .resolve_trait(state, trait_name.as_ref(), span)
-            .map_err(cranelisp_types::CranelispError::from)?;
+        // Build FQTraitName from the trait's already-threaded HOME (D2 — the
+        // `trait_origin` module), NOT a bare re-resolution: a method-only import
+        // has no in-scope trait name to re-resolve, so `resolve_trait` would fail
+        // exactly on the cell D2 must accept.
         let fq_trait_name = FQTraitName::new(trait_defining_module.clone(), trait_name.clone());
 
-        // Build FQTypeName for the impl type — works for both ADT and
-        // intrinsic targets (Phase B Part 5).
-        let fq_impl_type = self
-            .resolve_type(state, &impl_type_name, span)
-            .map_err(cranelisp_types::CranelispError::from)?;
+        // Build FQTypeName for the impl type WITHOUT re-resolving the bare name in
+        // the CALLER's scope (D2/§7.0.1, W2a Important 3 — a method-only import has
+        // no in-scope name for a foreign dispatch type, `Int` → "unknown type
+        // Int"). Two cases, each P24 "resolve once":
+        //  - ADT: the resolved dispatch arg ALREADY carries its `FQTypeName` — use
+        //    it directly (a user ADT `Widget` impl'd on a prelude trait lives in
+        //    the USER module, NOT the trait home, so home-rooting would wrong-miss
+        //    it; the fqtn is authoritative and needs no resolution).
+        //  - intrinsic scalar (`Int`/…): no embedded fqtn — resolve in the trait's
+        //    HOME, which reaches `primitives` (the home declared the trait using
+        //    these types, and the impl mangle was formed there).
+        let fq_impl_type = match &resolved_arg {
+            Type::ADT(fqtn, _) => fqtn.clone(),
+            _ => self
+                .resolve_type_in_module(&trait_defining_module, &impl_type_name, span)
+                .map_err(cranelisp_types::CranelispError::from)?,
+        };
 
         // FQ type identity for the dispatch mangle (S102 — 4th lossy-head cure,
         // extends the 0519 unification to the trait-method grain), then mangle
@@ -121,7 +144,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // method `Def` is the impl-WRITER's module, recorded on the
         // `ModuleEntry::TraitImpl` shell at the trait's home (`impl_module`).
         // Read it off the shell via the exact canonical key (bare-name fallback
-        // for an intrinsic-receiver head skew). `has_impl_with_state` succeeded
+        // for an intrinsic-receiver head skew). `has_impl_in_home` succeeded
         // above, so the shell exists; degrade to `current_module` only on a
         // pathological miss. Consumers (`dispatch_target_fq`,
         // `resolved_call_to_fqsymbol`) READ this — never re-derive.
@@ -411,13 +434,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         read: impl Fn(&TraitMethodSig) -> R,
     ) -> Option<R> {
         if let Some(r) =
-            self.find_trait_method_decl_in_module(state, &state.current_module, method_name, false, &read)
+            self.find_trait_method_decl_in_module(state, &state.current_module, method_name, false, None, &read)
         {
             return Some(r);
         }
         // Inner miss — consult the prelude fallback iff the bit is ON.
-        let prelude = self.prelude_fallback_target(&state.current_module)?;
-        self.find_trait_method_decl_in_module(state, &prelude, method_name, true, &read)
+        if let Some(prelude) = self.prelude_fallback_target(&state.current_module)
+            && let Some(r) =
+                self.find_trait_method_decl_in_module(state, &prelude, method_name, true, None, &read)
+        {
+            return Some(r);
+        }
+        // D2 (§7.0.1) — method-only import: the trait DECL lives at the method's
+        // `trait_origin` HOME, invisible to the current-module + prelude scan when
+        // only the method (not its trait) is imported. Root the decl scan at that
+        // home too (P24 — reaching the method reaches its trait's home), so a
+        // nullary return-type-dispatch method imported method-only still finds its
+        // `Self`-in-return decl and dispatches (else `method_self_in_return`
+        // defaults `false`, the call defers unresolved, and codegen leaks
+        // `undefined function` — the §7.11.2(e) accept-side leak).
+        let (tn, home) =
+            self.method_to_trait_with_state(state, &Symbol::from(method_name))?;
+        if home != state.current_module {
+            // Tighten to the method's OWN trait `tn` (Suggestion 6): read the
+            // method off that specific trait's decl, not any home-resident trait.
+            return self.find_trait_method_decl_in_module(
+                state, &home, method_name, false, Some(&tn), &read,
+            );
+        }
+        None
     }
 
     /// Iterate `module_path`'s symbol table for a `TraitDecl` carrying
@@ -428,12 +473,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `public_only` filters the scanned `module_path` bindings to PUBLIC heads
     /// only — set for the prelude fallback hop so a Private prelude
     /// `TraitDecl` does not leak its methods as bare names (`/review` I-1).
+    ///
+    /// `trait_filter` (Some in the D2 home-hop) additionally requires the
+    /// carrying `TraitDecl`'s name to match — the home-hop reached this module
+    /// via the method's `trait_origin`, so it MUST read the method off THAT trait,
+    /// not merely any home-resident trait that happens to declare a same-named
+    /// method (defence-in-depth even though §8.6.4 makes a method name unique per
+    /// module). `None` keeps the current-module / prelude scans method-name-only.
     fn find_trait_method_decl_in_module<R>(
         &self,
         state: &CheckState,
         module_path: &ModuleFullPath,
         method_name: &str,
         public_only: bool,
+        trait_filter: Option<&TraitName>,
         read: &impl Fn(&TraitMethodSig) -> R,
     ) -> Option<R> {
         // Staging-aware (FIXME 0179): iterate the unioned View when probing the
@@ -461,6 +514,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(terminal) =
                 self.resolve_terminal_entry_and_home(module_path, name.as_ref()).map(|(e, _home)| e)
                 && let ModuleEntry::TraitDecl { info, .. } = terminal
+                && trait_filter.is_none_or(|tn| &info.name == tn)
             {
                 for method in &info.methods {
                     if method.name.as_ref() == method_name {

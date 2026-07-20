@@ -36,6 +36,27 @@
 ;; two's-complement, but the candidate masks are always 9-bit (bits 0-8,
 ;; positive), so the sign bit never participates — verified behaviour-identical
 ;; to the old arithmetic sim across all 512 masks × 9 digits.
+;;
+;; ── multi-sig showcase (S113) ───────────────────────────────────────────
+;; The S113 §5.1.2 back-flow + D3 fix (poly callee reached from a clause body
+;; entered via a cross-arity self-call now monomorphises) unblocked collapsing
+;; an "entry seeds the accumulator" helper pair into ONE idiomatic multi-sig
+;; `defn`. `is-solved` is collapsed this way (see its site): the 1-arg clause
+;; seeds the scan index and delegates cross-arity to the 2-arg clause.
+;;
+;; `make-grid`/`make-grid-helper` and `peers`/`peers-helper` are DELIBERATELY
+;; kept two-function — collapsing them hits a still-open multi-sig residual: a
+;; multi-sig fold whose accumulator element type is not pinned by an annotation
+;; (the exemplar's `Grid`/`SolveResult` fields are deliberately UNTYPED,
+;; inference-driven) leaves the fold's result type carrying a free type var
+;; when consumed downstream, so a caller that USES the built value (not merely
+;; matches it) hits `ambiguous type … residual unbound type variable`
+;; (`make-grid` → `user/report`), and a bare-`(Vec _)` return consumed by a
+;; polymorphic Vec verb hits codegen `undefined function` (`peers` → `count`/
+;; `get`). Pinned as MC-X4 (`tests/mc_x4_multi_sig_return_consumer.rs`) — the
+;; consumer-side sibling of the carrier-loss family. `is-solved` is exempt
+;; because its return is a plain `Bool` (no polymorphic consumer). Collapse
+;; `make-grid`/`peers` once MC-X4 is green (see `plan-exemplar.md`).
 
 (import [collections.vec [count get assoc conj]])
 (import [primitives [char-at str-len str-concat not]])
@@ -151,6 +172,12 @@
 ;;
 ;; Strategy: iterate all 81 indices, collect those that share
 ;; row, column, or box with idx (but are not idx itself).
+;;
+;; NOTE: kept two-function (NOT collapsed to a multi-sig entry+scan like
+;; `is-solved`) because `peers` returns a bare `(Vec Int)` consumed by the
+;; solver's polymorphic Vec verbs (`count`/`get`) — the MC-X4 return-consumer
+;; residual (`tests/mc_x4_multi_sig_return_consumer.rs`). Collapse once MC-X4
+;; is green (see the header "multi-sig showcase" note + `plan-exemplar.md`).
 (defn peers-helper [idx i acc]
   (if (= i 81) acc
     (if (= i idx)
@@ -202,15 +229,23 @@
 ;; ── Grid solved check ──────────────────────────────────────────────────
 
 ;; Check if all cells are determined (Given or Solved).
-(defn is-solved-helper [g i]
-  (if (= i 81) true
-    (match (cell-at g i)
-      [(Given _) (is-solved-helper g (+ i 1))
-       (Solved _) (is-solved-helper g (+ i 1))
-       (Candidates _) false])))
-
-(defn is-solved [g]
-  (is-solved-helper g 0))
+;; Multi-signature showcase (S113): `is-solved` + its `is-solved-helper` scan
+;; are collapsed into one multi-sig `is-solved`. The 1-arg clause seeds the
+;; scan index and delegates cross-arity to the 2-arg scanning clause — the
+;; idiomatic Clojure "public entry seeds the accumulator" shape, expressed as
+;; a single multi-sig `defn` (spec §5.1.2: clauses are inference-equivalent to
+;; separate mutually-recursive functions). Return is a plain `Bool`, so no
+;; polymorphic Vec consumer is involved — this is why `is-solved` collapses
+;; cleanly where `make-grid`/`peers` cannot (see the header "multi-sig
+;; showcase" note for the return-consumer residual that blocks those two).
+(defn is-solved
+  ([g] (is-solved g 0))
+  ([g i]
+   (if (= i 81) true
+     (match (cell-at g i)
+       [(Given _) (is-solved g (+ i 1))
+        (Solved _) (is-solved g (+ i 1))
+        (Candidates _) false]))))
 
 ;; ── Cell value extraction ──────────────────────────────────────────────
 

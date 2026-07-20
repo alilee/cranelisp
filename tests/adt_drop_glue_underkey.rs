@@ -132,8 +132,18 @@ fn adt_vec_drop_glue_concrete_args_axis_link_r1() {
 // the RC alloc/free imbalance (5 allocs / 4 frees today; balanced when GREEN).
 // -----------------------------------------------------------------------------
 
+// RE-ATTRIBUTION (PLAN §I.4, /qa 2026-07-17 — DG-R2 4th re-attribution): the
+// alloc/free imbalance this fixture witnesses is NOT the drop-glue collision
+// (CS-1.1 proved) — it survives with ONE ADT / ONE module / no vec
+// (`(defn main [] (let [s "hi"] (Pure 9)))` → 2 allocs / 1 free), is ownership-
+// independent, and the leaked box is always the chronologically-LAST allocation
+// (the IO result box). It is an ENTRY-`main` teardown leak of the final IO/result
+// allocation, triggered by any heap-valued let in `main`'s body. The narrow 2-line
+// guard (`entry_main_heap_let_teardown_balances_r2`, below) supersedes this fixture
+// as the canonical guard; the module-axis COLLISION itself is guarded on its
+// corruption face by `safety_oracle_lane.rs` (MS-P4).
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
+// defect: class=rc-miscount locus=entry-main IO-teardown seam found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_module_axis_leak_r2() {
     let out = Cranelisp::new()
@@ -169,6 +179,57 @@ fn adt_vec_drop_glue_module_axis_leak_r2() {
          collides in the importing module's batch, reusing the non-heap Int \
          glue for the String-field instantiation, leaking its heap string; got \
          {allocs} allocs / {frees} frees.\nstderr:\n{}",
+        out.stderr
+    );
+}
+
+// F-R1 (§1.6) — the NARROW 2-line guard for the DG-R2 re-attribution (PLAN §I.4):
+// an entry-`main` teardown leak of the final IO/result allocation, triggered by
+// ANY heap-valued let in `main`'s body. `(defn main [] (let [s "hi"] (Pure 9)))`
+// leaks the LAST allocation (the IO result box) — 2 allocs / 1 free today —
+// ownership-independent; the heap let value `s` IS freed, only the result box
+// leaks. No ADTs, no vecs, no modules: this isolates the leak from the drop-glue
+// collision (guarded separately on its corruption face by safety_oracle_lane.rs
+// MS-P4). RED until the main-epilogue / IO-trampoline result-dec seam is fixed.
+//
+// R-3 CHARACTERIZATION (W5b discriminator, /qa reconciliation §2.2): this family is
+// the shared record for the `ownership_reuse` +6 parity-abort delta cases and the
+// standalone ALLOC=3/DEALLOC=1 case. Two discriminator runs (2026-07-19), BOTH
+// confirming a scale-INVARIANT (fixed-residual) signature, NOT a per-value/-iteration
+// leak:
+//   (a) entry-main heap-let scaling: delta stays 1 (2/1 → 3/2 → 4/3) — only the
+//       final IO/result box leaks (the let values ARE freed);
+//   (b) `ownership_reuse` CHAIN_SRC under `CRANELISP_RC_STATS` at N=8/64/256:
+//       allocs=6 / deallocs=2 — delta 4 INVARIANT across scale (a fixed set of
+//       intermediate/result allocations, not per-element), and it aborts under
+//       `CRANELISP_ALLOC_PARITY` (one of the +6). Fixed-residual, teardown-family.
+// W5b runs (no modes set) read all of these as this family's residual, never as
+// regressions; the flip trigger is the one teardown / fixed-residual fix, not a
+// per-test leak fix. (`chaining_toggle_off_allocates_intermediate` is separately
+// RED for the reuse-token differential, not this residual.)
+// spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
+// defect: class=rc-miscount locus=entry-main IO-teardown seam found=S111 owner=/dev
+#[test]
+fn entry_main_heap_let_teardown_balances_r2() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .env("CRANELISP_RC_TRACE", "1")
+        .user("(defn main [] (let [s \"hi\"] (Pure 9)))\n")
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(9),
+        "the program must exit 9:\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "a heap-valued let in `main`'s body must not leak the final IO/result \
+         allocation on entry-`main` teardown; got {allocs} allocs / {frees} frees \
+         (PLAN §I.4 DG-R2 re-attribution — entry-main IO-teardown seam).\nstderr:\n{}",
         out.stderr
     );
 }

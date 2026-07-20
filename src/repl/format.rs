@@ -451,7 +451,7 @@ impl CompilerSession {
     /// lines (FIXME 0363).
     fn format_eval_result_body_doc(&self, result: &EvalResult) -> StyledDoc {
         match result {
-            EvalResult::Def { symbol, defined, .. } => {
+            EvalResult::Def { symbol, .. } => {
                 let name = symbol.symbol.as_ref();
                 let module = &symbol.module;
 
@@ -507,12 +507,11 @@ impl CompilerSession {
                         return doc;
                     }
                 };
-                // FIXME 0542: a bare LOOKUP (`defined == false`) is pure
-                // introspection — a trait's `; impl:` section is structural
-                // (§4.1.4), shown even when empty. A definition ECHO
-                // (`defined == true`) follows §1.1 and omits the empty section.
+                // FIXME 0647: a trait's empty `; impl:` section is omitted for
+                // BOTH the definition echo and the bare lookup (matching the
+                // deftype `; match:` precedent); no bare-lookup-vs-echo flag.
                 let mut body =
-                    self.format_def_entry_doc(&entry, name, &resolved_module, !*defined);
+                    self.format_def_entry_doc(&entry, name, &resolved_module);
                 // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
                 // self-documenting — the ordinary per-class display (last-good
                 // signature) plus the provenance comment line (R6 metadata).
@@ -569,23 +568,22 @@ impl CompilerSession {
         entry: &ModuleEntry<Code>,
         name: &str,
         module: &ModuleFullPath,
-        full_trait_sections: bool,
     ) -> String {
-        render(&self.format_def_entry_doc(entry, name, module, full_trait_sections))
+        render(&self.format_def_entry_doc(entry, name, module))
     }
 
     /// Build the `:Type module/name ; classification` introspection `StyledDoc`
     /// (spec §1.1, §4.1) — R4 type annotation, R7 module prefix, R6 metadata.
+    ///
+    /// FIXME 0647: the former `full_trait_sections` flag (0542 — force an EMPTY
+    /// `; impl:` drawer on bare trait lookup) is RETIRED; a trait's empty
+    /// `; impl:` section is now omitted uniformly (echo and lookup agree, matching
+    /// the `deftype` `; match:` precedent).
     pub(crate) fn format_def_entry_doc(
         &self,
         entry: &ModuleEntry<Code>,
         name: &str,
         module: &ModuleFullPath,
-        // FIXME 0542: when set, a trait entry's `; impl:` section is emitted
-        // even when empty (§4.1.4 pure-introspection displays: bare lookup,
-        // `/sig`, `/info`). A definition echo passes `false` (§1.1 omits the
-        // empty section). Ignored for every non-trait entry.
-        full_trait_sections: bool,
     ) -> StyledDoc {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
@@ -593,8 +591,15 @@ impl CompilerSession {
                     // Multi-sig: emit one line per variant per repl/spec.md
                     // §1.3 + §4.1.1.
                     DefKind::Overloaded { variants } if !variants.is_empty() => {
+                        // D1 (traits.md §7.0.2): render each variant from its
+                        // recorded template `Scheme` (constraints intact), keyed
+                        // by `mangled_name` in this module's OWN table. `entry` is
+                        // an OWNED clone here (not borrowed from the table), so the
+                        // read guard cannot deadlock against it.
+                        let module_table = self.shared.symbol_tables.get(module);
                         return format_overloaded_variants_doc(
                             name, module, variants, docstring.as_deref(),
+                            module_table.as_deref(),
                         );
                     }
                     DefKind::Constructor { type_name, type_def, .. } => {
@@ -692,7 +697,7 @@ impl CompilerSession {
                 // HOME `module` (the fn param, produced by the gate) so the trait
                 // sections root at the home — where the `TraitDecl` is local
                 // (depth 0) and the prelude outer-scope question cannot arise.
-                self.format_trait_display_doc(name, docstring.as_deref(), full_trait_sections, module)
+                self.format_trait_display_doc(name, docstring.as_deref(), module)
             }
             _ => {
                 // TraitImpl entries have `Trait.Type` symbol names and

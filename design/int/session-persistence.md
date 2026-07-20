@@ -109,7 +109,9 @@ SharedState is required.** Currently, sexp data is scattered:
 | `deftype` | `sexp` on `TypeDef` | — | on symbol table |
 | `deftrait` | `sexp` on `TraitDecl` | — | on symbol table |
 | `defmacro` | `sexp` on `Macro` | — | on symbol table |
-| `impl` | no sexp field anywhere | — | **gap** |
+| `impl` | no sexp field anywhere | verbatim `source` at the defining turn (§12) | **gap — closed by §12 via introspection, NOT a new sexp field** |
+
+> **§2.1 amendment (S113, RT-4).** The "impl needs an `sexp` field on `ModuleEntry::TraitImpl`" prerequisite (§9.1, and Option B below) is **superseded for regen** by §12: the impl form's **verbatim source is already captured** in the REPL introspection map at the defining turn (`eval::record_defining_turn_source`, keyed `FQSymbol{writer_module, "Trait.Type"}`), on identical terms to how `deftrait`/`deftype` REPL-defined decls are captured (the `(None, Some(source))` arm of `emit_decl_or_source`). The regen fix reads that record; it needs **no `cranelisp-types` change and no schema bump** — it stays inside the W4 binary surface. The one case introspection does NOT cover is cache-restore-then-regen (introspection is REPL-only) — the single named edge in §12.4, where a cache-surviving `sexp`-on-shell would be an S114 `/arch` follow-on. Do **not** add the field speculatively (Principle 6/8).
 
 The goal is **one copy in the right place**. Options:
 
@@ -625,3 +627,160 @@ canonical `Def.docstring`; the stored sexp stays a faithful source capture.
 **Principle 6 (complexity has a budget)** — the renderer gains one optional slot
 argument + the §5.12 slot rule (already encoded in the parser), not a new edit-time
 mutation path.
+
+---
+
+## 12. `impl` regeneration — the RT-4 impl-source data-loss close (S113 W4)
+
+**Status: DESIGN (S113 Phase 3, `/design`(src/)).** Closes the RT-4 ×2 pins
+(`tests/repl_persist.rs::impl_regen_written_to_user_cl` +
+`impl_dispatches_after_restart_without_cache`, `class=enumeration-miss`, data-loss
+class). `/dev`(src/) implements in W4; `/review` checks against the
+enumeration-completeness discipline (`design/arch/resolve-home-enumeration.md` §3).
+Arch seam flag iv: root the design in the **D45-as-amended** storage model.
+
+### 12.1 Root-cause verdict — the enumeration site that drops the family
+
+The drop site is **`generate_impls` in `src/save.rs:723`**, a literal stub:
+
+```rust
+fn generate_impls(st: &crate::code::SessionSymbolTable) -> String {
+    // TraitImpl entries currently don't have an sexp field (see §2.1 gap).
+    // For now, skip impl regeneration …
+    let _ = st;
+    String::new()      // ← the whole `impl` section is silently skipped
+}
+```
+
+Section 7 of `generate_module_source` (§1.3) calls it, gets `""`, and the
+`if !impl_section.is_empty()` guard drops the section. So **every** `impl` — the
+whole persisted-content kind — is unconditionally absent from the regenerated
+`.cl`. This is precisely the illegal skip `resolve-home-enumeration.md` §3 rule 2
+forbids: a whole *source kind* marked "complete" by producing zero rows for a
+reason that is **not** a legal row-less outcome ("no sexp field yet" is
+"someone/something else should own this", never an empty-module skip). It is the
+inconsistent-resurrection face — `deftrait`/`deftype`/`defn` survive regen (they
+have working section generators), `impl` vanishes.
+
+**Compounding gap (now dissolved):** §2.1 recorded "impl — no sexp field
+anywhere" as the reason for the stub. The `/design`(src/) re-investigation
+(S113) finds the impl form's **verbatim source is already captured** — the impl
+defining turn produces `EvalResult::Def { symbol: FQSymbol{module, "Trait.Type"},
+defined: true }` (`eval.rs:552,567` — the label is `format!("{}.{}",
+trait_name.name, impl_echo_type_name(t))`), which `record_defining_turn_source`
+(`eval.rs:38`) writes into introspection as `source`. So the render source exists
+on identical terms to a REPL-defined `deftrait`/`deftype` (the `(None,
+Some(source))` arm of `emit_decl_or_source`, §"generate_traits"). The stub is not
+blocked on a missing field; it was never wired.
+
+### 12.2 The D45-amended storage model the fix roots in
+
+Under Decision 45 **as amended** (`design/arch/backend-keyed-consumer.md` §1.1.1;
+`traits.md` §1.3): for an impl **written in module M**,
+
+- the **`TraitImpl` shell** (the discovery/metadata entry, key
+  `impl${FQType}${FQTrait}`) lives at the **trait's defining module's** table,
+  carrying `impl_module = M` (the writer back-pointer);
+- the **mangled method `Def`s** (`dp$W`, with their GOT slots) live at **M's own
+  table** (the writer's module — structurally forced by `compile_to_module`);
+- the impl form's **verbatim source** lives in M's introspection under
+  `FQSymbol{M, "Trait.Type"}`.
+
+The consequence for enumeration: **"the impls written in M" is NOT "the shells in
+M's table."** M's table holds shells only for traits **homed in M**; a shell in M
+with `impl_module = N` is an impl of M's trait written *elsewhere* (belongs in
+N's regen, not M's). This is the completeness decomposition the fix must honour.
+
+### 12.3 The fix — enumerate the impls written in M, render from the defining-turn source
+
+`generate_impls` gains the introspection map + `module_path`, mirroring
+`generate_traits`/`generate_types` exactly (**one reader per kind**, Principle 7):
+
+```rust
+fn generate_impls(
+    st: &SessionSymbolTable,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
+    module_path: &ModuleFullPath,
+) -> String
+```
+
+**Completeness requirement (binding on `/dev` + `/review`).** The set "impls
+written in M" decomposes into three sources; the enumeration lands a row for the
+first two and *legally* excludes the third:
+
+| Source | Reached via | Disposition |
+|---|---|---|
+| impl of an **M-homed** trait, written in M | `st`'s `TraitImpl` shells filtered `impl_module == module_path` | **row** — the RT-4 pins live here (trait `Disp` + impl both in `user`) |
+| impl of an **imported** trait, written in M | introspection keys `FQSymbol{M, "Trait.Type"}` whose shell is at the trait's home (not in `st`) | **row** — the §12.4 union backstop |
+| impl of an **M-homed** trait, written in **N** | `st` shell with `impl_module == N` | **legal exclusion** — belongs to N's regen (its own `impl_module == N` scan) |
+
+For each enumerated impl, the render key is reconstructed from the shell as
+`format!("{}.{}", trait_name.name, impl_type.name)` — which equals the
+`record_defining_turn_source` key, because `impl_type` is the **settled effective
+target** and `impl_echo_type_name` extracts that same settled name (conventional:
+the bare target head; HKT: the constructor argument — both verified equal to
+`impl_type.name`, `eval.rs:75` rustdoc). Fetch `(sexp, source)` via
+`introspection_sexp_and_source` and emit via `emit_decl_or_source` — the **same
+re-parse-gated reader** the decl sections use, so a stale/garbage source can never
+corrupt the file (it is skipped, per `sexp_matches_source`). Sort by
+`(trait, type)` for deterministic output.
+
+Recommended single-reader shape (Principle 7, strongest completeness): drive the
+enumeration from the **introspection impl-label records in M** (which cover BOTH
+written-in-M sub-cases in one reader) and cross-check liveness against a resolvable
+shell where the symbol-table reach is available; the `st`-shell-filtered form above
+is the concrete path for the pinned local case and is the minimum W4 must ship.
+`/dev` picks the cleaner implementation; the **completeness requirement — every
+written-in-M impl contributes a row or a legal exclusion — is the acceptance**, not
+the specific traversal.
+
+### 12.3.1 The fail-loud guard (arch-directed: a later-added kind must not silently skip)
+
+The stub is dangerous precisely because a whole kind disappeared **silently**.
+The fix installs a section-completeness `debug_assert!` in `generate_module_source`
+(the R7 "assertion density" discipline applied to regen): after the eight section
+generators run, sweep `st.all_symbols()` and assert **every persisted-content
+entry kind is claimed by exactly one section generator** — `TraitDecl`→traits,
+`TypeDef`/product-ctor→types, `TraitImpl`(with `impl_module == module_path`)→impls,
+`UserFn`/`Macro`→fns — and any entry of a persisted kind NOT claimed trips the
+assert (with `MODULE_TRACE` emit in release). Non-persisted kinds
+(`Import`/`Reexport`/`Ambiguous`/mangled `$`-names/`__expr`/primitives/ctors that
+ride their type) are the enumerated *legal* exclusions, listed in the guard so the
+exclusion is deliberate, not accidental. This converts "a future persisted kind
+silently dropped from regen" from a silent data-loss into a loud test/CI failure —
+the structural close the RT-4 class asks for (Principle 18).
+
+### 12.4 The one named edge — cache-restore-then-regen (parked, S114 `/arch`)
+
+Introspection is **REPL-only** (absent on cache restore). If a session
+cache-restores a module carrying impls (introspection empty) and *then*
+regenerates (a later definition turn triggers `regenerate_backing_file`), the
+impl-source records are gone and the impls would drop again — the SAME shape the
+macro path solved by storing a cache-surviving `macro_sexp` on the entry. The
+durable cure is a cache-surviving impl source: an `sexp: Option<Sexp>` on the
+`TraitImpl` shell (the §2.1 Option B / §9.1 prerequisite — a `cranelisp-types`
+change + schema bump, `/arch`-gated). **This edge is NOT hit by the RT-4 pins**
+(session 1 is a fresh REPL — introspection present at regen; session 2 reads the
+already-regenerated `.cl`, no re-regen). Per "document movable boundaries
+decisively, then park": named as a PS-RT4 matrix row (persisted-kind × survives
+cache-restore-then-regen), dispositioned as an S114 `/arch` follow-on, **not built
+this sprint** (Principle 8 — no interface ahead of a forcing scenario). If W1's
+PS-RT4 matrix surfaces a pin in this cell, it re-opens as an `/arch` FIXME.
+
+### 12.5 Testability (Principle 5) — the PS-RT4 enumeration matrix
+
+`/qa`'s PS-RT4 acceptance is a persisted-content matrix, not the two pins alone:
+every persisted kind (`defn`/`deftype`/`deftrait`/`impl` conventional/`impl`
+HKT/`defmacro`) × {survives regen, survives schema-bump-or-no-cache restore},
+with the conventional-impl-vs-HKT-impl **twin** (same invariant, two impl shapes,
+same assertion — a divergence names the shape that grew its own path). The fix's
+`generate_impls` is a pure `(st, introspection, module_path) → String`, unit-
+testable with no session (mirrors the existing `merge_imports_*` unit tier).
+
+Principle citations: **Principle 7** — `generate_impls` reuses the one
+`introspection_sexp_and_source` + `emit_decl_or_source` reader every decl section
+uses; no impl-specific render path. **Principle 18** — the completeness
+`debug_assert!` enforces "every persisted kind is claimed" where the sections are
+assembled. **Principle 26** — the render key is reconstructed from the **settled**
+`TraitImpl.impl_type`, not re-derived from surface syntax (the `impl_echo_type_name`
+precedent).

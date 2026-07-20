@@ -86,7 +86,11 @@ doc is subordinate.
 `repl-decomposition.md` (S110, FIXME 0606 — the `repl.rs` module-cut sign-off),
 `quote-shield.md` (S111, FIXME 0613 — `expand_scoped` holds quoted data out of Pass-1
 macro expansion; the int leg of the quasiquote-legal-everywhere wave),
-`multi-sig-introspection.md`, `private-submodule-import.md`, `symbol-table-generics.md`,
+`macro-diagnostic-reanchoring.md` (S113, FIXME 0650 — the int-side re-anchoring seam:
+synthetic-span diagnostics over macro-expansion output relocate to the origin form;
+paired with `design/frontend/binder-head-reject.md`),
+`multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
+read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.
 
 **Reference lineage** (heavy race/audit records — load-bearing as precedent, not day-to-day

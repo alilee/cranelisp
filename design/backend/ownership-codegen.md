@@ -2337,6 +2337,105 @@ per-visit phrasing:
   row on both sides (typecheck §13.7 transfer matrix; the §13.5 `compute_last_uses`
   matrix here).
 
+### 13.7 The COW mutate/grow-branch aliasing gap — the 0641 B-2/I-2 ownership-independent consume fix (S113 W5)
+
+**Scope (arch-narrowed W5, `safety-invariants.md` §6 W5-status).** The ownership-INDEPENDENT
+backend half of the 0641 family — the two residuals (B-2, I-2) whose wrong-VALUE face the
+typecheck provenance axis (§3a/§3c monotone walk) CANNOT flip alone (`tests/plan/PLAN.md`
+§I.4; `s113-risk-assessment.md` §3a). The elision + R4-mint censuses (`safety-invariants.md`
+§6 tasks 2/3) are explicitly NOT in W5's ruled depth — S114+ cascade.
+
+**The repros (committed failing-not-ignored, `tests/false_fresh_provenance_residual.rs`):**
+- **B-2** `(defn f [v] (match (vec-set v 1 99) [r r]))` then `(vec-get (f [1 2 3]) 1)` MUST be
+  99 — toggle-OFF yields 55 (`--link`: `corrupted double-linked list` SIGABRT).
+- **I-2** `(defn f [v] [(vec-set v 0 9)])` then `(vec-get (vec-get (f [1 2 3]) 0) 0)` MUST be
+  9 — toggle-OFF yields 190 (`--link` SIGABRT).
+
+Both fail with `CRANELISP_NO_OWNERSHIP=1` (the all-Owned conservative lowering) — so the
+fault is in the conservative lowering itself, not an elision. That toggle-off probe is
+exactly what splits the family: B-1/I-1 (inference-half — `/dev` typecheck under the §3
+frame) recover toggle-off; B-2/I-2 do not (`/qa` PLAN §I.4 owner split).
+
+**Call-chain evidence — the mutate/grow branch under `Borrowed` returns a borrow
+masquerading as owned.** A COW op has three runtime branches (`vec_codegen.rs`
+§"SourceOwnership"; `emit_vec_set_cow_core` / `emit_vec_push_cow_core`): **copy** (rc>1 →
+new box) and **mutate/grow** (rc==1 → the SAME pointer). §13.3 Ruling 2's contract handles
+only the copy branch's source release (`release_consumed_source`: dec iff `Owned`) and
+declares "the mutate/grow branches are unchanged (ownership transfers into the returned
+pointer)." **That transfer claim is UNSOUND for the `Borrowed` polarity:**
+- Under `Owned`, the op received the source's owned reference; the mutate branch reuses that
+  box and the reference genuinely transfers into the result — correct.
+- Under `Borrowed` (the polarity static in-place sites pass — `vec_codegen.rs:78`: "source
+  owned elsewhere … the copy branch releases nothing, scope cleanup dec's the binding"), the
+  op received NO owning reference. The mutate branch returns the same borrowed box **without
+  an inc** — the result owns zero references of its own, while the source binding (`v`) still
+  holds the sole reference and IS scope-dec'd at frame exit. When the result ESCAPES
+  (returned via the match var-binding `r`; stored as a vec-literal element; projected out),
+  the source's scope-dec frees the box under the still-live escaped result → the projection
+  reads freed/reused heap (55, 190), or `--link` aborts.
+
+Both repros trace to the ONE producer seam:
+- **B-2:** `(vec-set v 1 99)`, `v` param, rc==1 at the `f [1 2 3]` call ⇒ mutate branch ⇒
+  same pointer `P` (== `v`), no inc. `compile_var_pattern_arm` (`match_codegen.rs:133`) binds
+  `r = P`, the arm body returns `P`; `f`'s scope cleanup dec's `v` (== `P`) ⇒ `P` freed ⇒ the
+  returned value dangles.
+- **I-2:** same mutate branch yields `P`; `compile_vec_lit` (`vec_codegen.rs:129`) MOVES each
+  element into the container by raw `heap_store` (`:167`, no inc — a producing-temp's
+  reference transfers). But `P` aliases `v`, it is not a genuine owned temp. Container holds
+  `P`; scope-dec of `v` frees `P` ⇒ the element dangles.
+
+The two consume shapes {match var-binding return, vec-literal element store} — plus
+projection-out (the third §I.4 shape) — are the OBSERVATION points; the single ROOT is the
+producer (the mutate/grow branch minting a borrow-as-owned). Fixing at the producer covers
+all three consumers uniformly (Principle 7); patching each consume seam would be three
+spot-fixes of one contract gap — the §13.3 Ruling-2 anti-pattern the polarity contract
+exists to prevent.
+
+**Fix shape (the contract correction).** Extend §13.3 Ruling 2: **the mutate/grow
+(same-pointer) branch under `SourceOwnership::Borrowed` must yield an independently-owned
+reference — emit one `rc_inc` on the returned pointer in that branch.** Then:
+- mutate + Borrowed: `P` inc'd ⇒ result owns one reference, `v` owns one; scope-dec of `v`
+  leaves the escaped result live; its own consumer dec's it later. Balanced.
+- mutate + Owned: unchanged (the op consumed the source's reference; no separate scope-dec —
+  transfer stands).
+- copy branch: unchanged (both polarities).
+
+This is the leak-side-safe direction made correct: the Borrowed mutate branch previously
+UNDER-retained (UAF); the inc makes the escaping result independently owned. It is **NOT
+byte-identical-off** — it corrects the conservative all-Owned lowering, which is required
+(the toggle-off path is the wrong one). The differential oracle still holds: both toggle
+polarities get the corrected branch.
+
+**`/dev` root-cause obligation before landing (the §13.3 twice-burned discipline).** §13.3
+records Ruling 1 AND Ruling 2 each naming a plausible-but-wrong seam that investigation
+corrected. This producer-seam hypothesis is strong (it explains both repros, both toggle
+states, and the `--link` face from one mechanism), but `/dev` MUST confirm it against
+`CRANELISP_RC_STATS` + `CRANELISP_CODEGEN_DUMP` on the two repros toggle-off BEFORE landing —
+specifically that (a) the mutate branch is the taken branch at the `f [1 2 3]` call, and
+(b) the missing inc (not a consume-seam spurious dec) is the imbalance. If the evidence
+instead lands the imbalance at a consume seam (e.g. `compile_var_pattern_arm` emitting a
+scrutinee dec), the fix moves there — but stays ONE seam (P7), pinned by the matrix cell
+below. `MonoExpr::from_expr` / typecheck are exonerated for B-2/I-2 by the toggle-off
+reproduction (the value is wrong with the analysis OFF).
+
+**§13.5 matrix cell (the acceptance pin — `/dev` unit + `/qa` lane).** Add the row
+**{mutate, grow} × Borrowed × result-escapes {return, vec-lit store, projection-out}** →
+exact RC balance (allocs−deallocs = 0) AND **value-correct under `MALLOC_PERTURB_`** (a
+leak-balance guard reads green over corrupt memory — the B3.1a-R lesson above; the repro
+asserts the RESULT, not balance). Negative cell {mutate × Borrowed × result-does-NOT-escape,
+e.g. `(vec-len (vec-set v 0 9))`} stays balanced (the inc is paired by the temporary drop).
+
+**Joint acceptance with the typecheck W5b frame.** The 8 committed 0641 REDs flip under the
+differential-oracle lane + diagnostic modes ONLY when BOTH halves land: B-1/I-1 need the
+`/design`(typecheck) §3a/§3c monotone-walk frame (provenance ⊤ + enumerated rule table +
+the B-1/I-1 rule-table corrections); B-2/I-2 need this §13.7 producer fix. Acceptance =
+analysis-on == analysis-off == correct value on all four × {REPL, `--link`}. Neither half
+alone flips B-2/I-2 (toggle-off wrong value proves the typecheck axis insufficient) nor
+B-1/I-1 (provenance laundering survives a correct consume seam).
+
+**No schema / types / public-api delta** — a codegen-internal RC-emission correction at the
+COW core, all `pub(crate)`.
+
 ---
 
 ## §14. Increment-II implementation staging (S103 Phase 3)
@@ -2493,3 +2592,68 @@ obligation. `/qa`'s e2e lanes (F2v witness, II-G measurement, L-C3) sit above th
   §14.6 seam contract.
 - `/sprint` — wave the §14.2 ladder; hold the close-short protocol after II-B2 (region arena
   defers per §4.4; II-B3 is a rider); route the stale-cured 0474/0483 deletions to `/backend`.
+
+---
+
+## §15. Tier-3 RC/alloc seam assertion density — the backend half (S113 W5, register R8)
+
+**Scope (arch-narrowed).** `safety-invariants.md` R8's W5 tier-3 increment: "assertion
+density at the RC/alloc seams (backend/intrinsics)." This section designs the BACKEND half
+only. The intrinsics diagnostic MODES (no-reuse-after-free quarantine, scrub-freed poison,
+paired alloc/free counters — env-gated allocator-internal) are `/design`(intrinsics)'s tier
+5; **0656's intrinsics-crate citation residual is `/design`(intrinsics)'s enumeration — not
+duplicated here.** Register trace: R8 (RC balance) primarily; the COW/drop-glue asserts also
+witness R1 (ownership-summary truth / the consuming convention) and the 0633
+drop-glue-underkey rows.
+
+**The byte-identical-off discipline — two categories, two mechanisms (the load-bearing
+rule).** A backend "assert at an RC/alloc seam" is one of two structurally different things,
+and the byte-identical-CLIF obligation (`crates/cranelisp-backend/CLAUDE.md`) resolves
+differently for each:
+
+- **(A) Codegen-invariant asserts — Rust `debug_assert!` in the emitter.** Guard the
+  COMPILER's own decision at the seam (operand is heap-categorized; the drop-glue fn-id is
+  the type's keyed identity; the COW polarity is consistent). They execute IN the compiler,
+  emit NOTHING into the generated code, and compile OUT in release. Byte-identical-off is
+  automatic and total: release CLIF is unchanged; debug/test builds carry the check ALWAYS
+  (not env-gated — a compiler-invariant breach is a located hard-fail in every debug run, the
+  S111 R7 `store_slot`/`load_slot` `assert!` precedent). This is the DEFAULT tier-3 mechanism
+  for the backend.
+- **(B) Emitted-runtime RC checks — env-gated at the emitter boundary.** A check baked INTO
+  the generated code (e.g. `runtime/rc_dec_check(ptr)` before an inline dec) CHANGES the
+  emitted CLIF, so it MUST be gated by an env var read once into a `OnceLock`, default OFF ⇒
+  the emitter emits nothing ⇒ byte-identical CLIF (the existing `CRANELISP_RC_DEC_CHECK` /
+  `CRANELISP_RC_STATS` pattern). W5 tier-3 density here means EXTENDING those existing gates
+  to more seams — never adding an always-on emitted check.
+
+  **Binding rule: anything emission-adjacent (changes CLIF) is category B and MUST be
+  env-gated at the emitter boundary; a category-A `debug_assert!` may never straddle into
+  emitting CLIF.** Emission-adjacency is the test, not debug-vs-release.
+
+**The backend seam inventory (register-traced).**
+
+| # | Seam | Cat. | Assert | Register / class |
+|---|---|---|---|---|
+| 1 | `heap.rs::emit_rc_inc` / `emit_rc_dec` | A | operand is a heap-categorized value, never a nullary bare-i64 tag (CLAUDE: "nullary ADT ctors are bare i64 tags" — an inc/dec on a tag corrupts a non-header word) | R8; tag/pointer confusion |
+| 2 | COW consumed-source seam — `release_consumed_source` / `emit_vec_rc_dec_with_drop` (`vec_codegen.rs:87`) | A | the polarity invariant: `Owned` carries drop materials (fn-id + elem-dec-ptr non-null); `Borrowed`'s mutate/grow branch carries the §13.7 independent-ownership inc | R8 + R1; guards the 0641 B-2/I-2 regression |
+| 3 | Drop-glue builders — `adt_drop_glue` / closure / curry (naming via `resolution.rs`, S111 R6) | A | the glue fn-id resolved for a value == the keyed identity for that value's concrete type (module + concrete-args), never a bare-`fqtn.name` collision | R8; guards 0633 drop-glue-underkey (a P24 keyed-identity miss) |
+| 4 | `compile_vec_lit` element MOVE-in (`vec_codegen.rs:165–167`) | A | a heap element moved into the container is a producing-temp (no other live owner), not a borrow — the §13.7 invariant made checkable at the store | R8; guards I-2 |
+| 5 | `compile_vec_get` element inc-elision (`vec_codegen.rs:259`) | A | the projection-inc elision fires ONLY with the `elide_vecget_span` site fact present (§3.3) — never on a bare / analysis-off read | R1/R8; the §3.3 elision self-check (P25 "narrowing carries its check") |
+| 6 | Inline dec seams — the COW copy-branch source dec (#2), the drop-glue per-element decs (#3), vec-lit / match teardown decs | B | extend `CRANELISP_RC_DEC_CHECK` (`runtime/rc_dec_check`) to these dec sites so the DEC_CHECK lane sees EVERY backend-emitted dec, not only the inline heap-dec | R8; the dynamic UAF signal, byte-identical-off via the `OnceLock` gate |
+
+Rows 1–5 are category A (always-on-in-debug `debug_assert!`, release-compiled-out, zero CLIF
+change). Row 6 is category B (env-gated CLIF extension, byte-identical when off). Together
+they raise the RC/alloc-seam assertion density the R8 row calls for with NO always-on
+emitted-runtime cost — production stays unasserted by design (`safety-invariants.md` R8's
+recorded carve-out).
+
+**Observability pairing.** `CRANELISP_RC_TRACE` already narrates every alloc/inc/dec/free
+(CLAUDE diagnostic table); the category-A asserts turn a silent codegen-decision breach into
+a located debug hard-fail, and the category-B `RC_DEC_CHECK` extension turns a runtime
+dec-of-freed into a caught abort under the differential lane. These are the detection
+multipliers `safety-invariants.md` §6 W5-order lands FIRST — before the tiers-1–2 fix wave —
+so a re-break during that wave trips loudly in the gated/debug runs.
+
+**No schema / types / public-api delta** — category-A asserts are `debug_assert!` in
+`pub(crate)` emitters; category-B is a gated extension of existing env-var emission. No
+interface change.

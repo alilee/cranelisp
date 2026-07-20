@@ -1,6 +1,6 @@
 # Sprint 112: The 0628/I-C Compiler Wave — corrected §5.1.2 multi-sig inference + the settled trait/impl form
 
-**Status**: PHASE 6a USER-FACING (rulings rider in flight) — Phase 5 CLOSED by user 2026-07-18; rulings: R1 CARRY; M1 = WRITTEN signatures + spec carve-out; TB-25 = RESOLVED identity; TB-27 = REJECT, extended to defn; P26 RATIFIED (user-approved)
+**Status**: PHASE 7 CLOSE — outcome authored 2026-07-19; awaiting user close approval (archive + ROADMAP update follow approval)
 
 **Goal**: Implement the two S111-settled normative resolutions — I-C (multi-sig `defn` inference-equivalent to separate mutually-recursive functions, §5.1.2) and the 0628 trait/impl redesign (kind-by-usage traits, `self` as the implementing type, echo-the-head impl form, §7.3.5 kind-matching) — as one coordinated typecheck + backend + test-migration wave, unwinding every superseded asset.
 
@@ -242,4 +242,34 @@ Ordering constraints honored: (1) source-editing agents STRICTLY SERIAL (worktre
 
 ## Outcome (Phase 7)
 
-{Pending.}
+**Status: authored 2026-07-19; awaiting user close approval.** Nine commits: `b5fa3f14` (leg a), `c08e68fc` (b0), `191124a3` (b1), `40f19693` (b2), `710bc454` (W6+leg-c), `b191e162` (rulings rider), `384d824b` (Phase 6) + the two mid-sprint SPRINT.md rides. Suite 4702→4790 tests; REDs 32 (start, incl. 20 intended)→25, every one attributed.
+
+### Delivered
+
+- **Leg (a) — §5.1.2 multi-sig back-flow, complete.** Clause inference ≡ separate mutually-recursive functions; `ClauseIndependence` scan deleted; two-pass drain (self-call unify / external monomorphise) with post-drain single-sourced dispatch across all six carriers (the B1 deferral fix); constrained-poly×multi-sig cell (user-directed in-sprint); MS-6 definition-site check; diagnostics re-grounded to §3.11. `rp4` anchor holds. `CACHE_SCHEMA_VERSION` 20→21 (0644: leg (a) carried the one bump).
+- **Leg (b) — settled trait kind model, complete.** Kind derived ONCE at declaration (3 usage-scans collapsed — P24); declaration-time never-applied reject with fix-naming diagnostic; echo-the-head impl form with shape + spelling + pairing-head-resolved-identity + slot-2 kind/arity validation at the one Case-3 seam; b0→b1→b2 staging held (no committed red); whole corpus migrated (tests, examples, repl, primers, fixtures — zero premise loss); `:a 7` display defect + 0628 codegen leak dead; `TraitImpl.head_con_var` carrier (additive, schema-exempt).
+- **Leg (c) — closed by evidence: NO defect.** Return-type dispatch green in every cell (2 contexts × 3 modes × fresh/cached × 2 impls); the S111 leak claim does not reproduce; landed as green cross-mode coverage. The 0628 "Not this" observation vindicated.
+- **Five user rulings scribed + implemented** (M1 written-signatures carve-out; TB-25 resolved-identity incl. the R-1 qualifier fix — which killed a live wrong-accept-under-wrong-trait; TB-27+defn binder principle; R1 carry; Phase-5 close). **Principle 26 "Record from settled state" authored and RATIFIED** (user, 2026-07-18); classification sweep parked as S113 Phase-1 candidate.
+- **Phase 6**: all five proxies assessed + executed. PTY harness fixed (2 root causes; 08-sudoku 120s→1s; 38-demo sweep all complete); S112 demo beats live; example 36 now teaches back-flow (was teaching the dead model as fact — likewise `user/guide/functions.md`, corrected); stdlib `Default` self-test shipped (stale S87 deferral retired); exemplar `Display Cell` affordance; prelude naming-reservation table.
+- **FIXMEs resolved+deleted this sprint**: 0621, 0639, 0642, 0644, 0645, 0615 — six retired (0628 remains open as the wave tracker; see Deferred).
+
+### Deferred / carried (all attributed, each with a failing-not-ignored pin where it's a defect)
+
+- **25 suite REDs**: 11 pre-sprint durable carries (memory-safety family ×8+1, ownership_reuse, deftype silent-accept) + 14 S112-pinned: R1 ×2 variants (cross-arity poly-clause self-call — primitive + prelude-`+`; fix direction §11.3.4, P26-shaped), R2 (carrier loss for multi-sig dispatch in mono bodies — /qa-ruled producer-side, P26 fix shape), TB-24 (poly-applied impl targets wrong-reject — spec-admissible, never tested), shadowing ×2 (hang + overload-gate), RT-4 ×2 (impls lost from regenerated user.cl — data-loss class), binder ×3 (qualified defn/deftrait heads silently accept), D1 (multi-sig display drops constraints), D2 (nullary method-only-import codegen leak), D3 (poly callee in cross-arity-reached clause never monomorphised).
+- **Open FIXMEs**: 0628 (retires when /design judges the matrix+leg-c record sufficient — recommend S113 Phase 1), 0646–0649 (Phase-6 gap captures), plus the pre-S112 out-of-scope set.
+- **Memory-safety-soundness track** → S113 (deferral count 1, user-approved). **Frontend audit rotation**: twice-declined; escalate presentation at S113 Phase 1. **Default prelude promotion** → S113 (awaits D2 ruling). **Archive demo de-leak rot** → /repl S113 candidate.
+- **OPEN USER QUESTION (D2)**: does importing a trait METHOD without its TRAIT suffice for dispatch (impl coherence is global), or is trait-in-scope required? Pin is ruling-agnostic; Default prelude promotion and the D2 fix both wait on it.
+- **VETO-VISIBLE (stand unless user objects)**: binder-principle generalization to `def`/`def-`/`deftype`/`deftype-`/`defmacro`/`defmacro-`/`const`/`const-` (scribed from the stated principle); TB-27 qualified-deftrait reject (/qa spec-derived ruling).
+
+### Findings
+
+- **The sprint's defect signature was RELATIONAL cells** (call topology, pairing slot, scope shadowing, carrier×context): both wave Blockers (W2 delegation-chain SigDispatch, W5 pairing-head) plus I1/R1/R2/D3 sat in cells no form-variant matrix enumerated. The instrument that caught them was the **standalone-twin/equivalence discipline** and adversarial review probing, not the matrices. /qa's standing category gains "axes are relations, not just forms" + twin-row-per-axis; this is the S112 calibration datum for the S108 coverage-matrix directive.
+- **P26 earned ratification empirically**: five instances in one sprint (B1, I1, R1, R2, eval.rs display), two fixed by the deferral mechanism it names, before it was even ratified.
+- **Review discipline > model escalation** (S110 finding re-confirmed): zero tier escalations; both BLOCK verdicts + every residual came from default-tier /review with probes. Frontmatter-vs-§II.3 audit: 28/28 CLEAN. Dispatch-by-shim held throughout (zero fallbacks).
+- **QA-first held its bar**: W1's 20 intended REDs flipped exactly as designed; wrong-accept inversion (the dominant modeled hazard) never materialized — the twin discipline was the cure that held.
+- **User-proxy phase earned its keep**: 3 of the sprint's 4 genuinely new defects (D1/D2/D3 — the 4th being the binder silent-accepts) were found by outside-in assessment AFTER the compiler waves closed green, and two teaching surfaces were still teaching the dead independence model as fact.
+- **Process wrinkle (recorded)**: the leg-(a) design under-specified the self-call/external split (§11.3 concreteness-only) and the §5.4 rejection list (3 of the spec's 4) — both caught downstream at cost. The pattern "design enumerates fewer cases than the spec names" is a /design checklist candidate: diff the design's case list against the spec's before Phase-3 exit.
+
+### Audit line
+
+Declined by user at Phase-1 scope selection (recorded); `cranelisp-frontend` rotation debt now longest-standing — re-present at S113 Phase 1 with the twice-declined escalation.

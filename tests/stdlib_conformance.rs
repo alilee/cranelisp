@@ -194,3 +194,83 @@ fn stdlib_all_public_modules_compile_and_run() {
         );
     }
 }
+
+// =============================================================================
+// BD-M3 — the STDLIB-ROUTE conformance row (binder matrix, sanctioned stdlib
+// exception). `def`/`const` are stdlib macros (`stdlib/defs.cl`) that expand to
+// native `defn`/`defmacro`, so the §5 binder rule reaches them AFTER expansion
+// (spec §5 intro: "a qualified head such as `(def fmt/x 1)` … is rejected on the
+// same principle"). This is the real user-facing route (the forms users actually
+// write), exercised behind the ONE sanctioned workspace-stdlib gate. Reject cell
+// is RED today (silent-accept) → flips at W3; the located-span provenance shares
+// the BD-M2 int re-anchoring seam (W4, FIXME 0650). Bare-head positive is GREEN.
+// =============================================================================
+
+// A REPL session with the workspace stdlib (its prelude auto-loads, so `def`/
+// `const` are in scope without an explicit import — an explicit `(import …)` would
+// suppress the implicit prelude glob and lose the macros). REPL mode also sidesteps
+// the batch-`main` shape (`Pure` is not in the prelude glob).
+fn stdlib_repl(stdin: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(stdin)
+        .timeout(Duration::from_secs(90))
+        .output()
+}
+
+// BD-M3 (reject cell) — `(def fmt/x 1)` via the stdlib `def` macro: a qualified
+// head reaches the binder reject after expansion. RED today (silent-accept /
+// incidental); flips at W3. The located span provenance shares the BD-M2 int
+// re-anchoring seam (W4, FIXME 0650).
+// spec: spec/05-definitions.md §5 + §5.7 — `def` expands to a native binder; a
+// qualified head is rejected on the binder principle.
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs (post-expansion binder reject, def macro route) found=S113 owner=/dev
+#[test]
+fn stdlib_def_qualified_head_rejected_binder_neg() {
+    let out = stdlib_repl("(def fmt/x 1)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the stdlib `def` route with a qualified head `fmt/x` MUST be a compile-\
+         time error (§5 binder principle reaches macro expansion); got:\n{c}"
+    );
+    assert!(
+        !c.contains("undefined function") && !out.stdout.contains("user/fmt/x"),
+        "the reject MUST NOT surface as an `undefined function` codegen leak nor \
+         silently bind `user/fmt/x`; got:\n{c}"
+    );
+}
+
+// BD-M3 (bare-head positive TWIN) — `(def x 1)` via the stdlib `def` macro binds
+// normally; `x` reads back `:primitives/Int 1`. GREEN.
+// spec: spec/05-definitions.md §5.7 — a bare `def` head binds normally.
+#[test]
+fn stdlib_def_bare_head_accepts_twin() {
+    let out = stdlib_repl("(def x 1)\nx\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains(":primitives/Int 1"),
+        "a bare `def x 1` head MUST bind and `x` read back `:primitives/Int 1`; \
+         got:\n{c}"
+    );
+}
+
+// BD-M3 (const reject cell) — the `const` macro route, same principle.
+// spec: spec/05-definitions.md §5 + §5.6 — `const` expands to a native binder.
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs (post-expansion binder reject, const macro route) found=S113 owner=/dev
+#[test]
+fn stdlib_const_qualified_head_rejected_binder_neg() {
+    let out = stdlib_repl("(const fmt/PI 3)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the stdlib `const` route with a qualified head `fmt/PI` MUST be a compile-\
+         time error (§5 binder principle); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/PI"),
+        "the qualified `const` head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}

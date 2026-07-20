@@ -41,9 +41,10 @@ skill; the authoritative inventory is the on-disk file set itself.
 
 ## 2. The Learning Sequence (current on-disk set)
 
-35 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
-is the **capability taught**. Exit code is the documented `main` return
-(sum of sub-test passes); it is the value `tests/examples.rs` asserts.
+35 top-level `.cl` files plus two multi-file projects (`16-modules/`,
+`37-method-import/`). Each row is the **capability taught**. Exit code is the
+documented `main` return (sum of sub-test passes); it is the value
+`tests/examples.rs` asserts.
 
 | # | File | Capability taught | Exit |
 |---|------|-------------------|------|
@@ -83,6 +84,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 34 | `34-async-io-leaf.cl` | Poll-shape platform IO leaf: an async effect (`async-read`) that SUSPENDS on the host reactor and RESUMES with its result, vs. the blocking effects of 21–24; independent poll-shape leaves overlap on one reactor thread. Teaches the poll-shape leaf MECHANISM the network "server-with-no-spawn" shape is built on | 4 |
 | 35 | `35-ctor-disambiguation.cl` | Same-named constructors across two in-scope types: the bare ctor name is ambiguous, the dotted `Type.Ctor` form disambiguates in VALUE position, and the dotted prefix in PATTERN position pins the scrutinee type (a cross-type dotted pattern is a compile-time type error). Builds on 06/10 | 100 |
 | 36 | `36-multi-arity.cl` | Multi-signature `defn` dispatch (§5.1.2): ARITY dispatch (clauses differ by parameter count), TYPE dispatch (same arity, different concrete param types `:Int`/`:Blob`/`:(Vec Int)`), and the arity-overload-for-defaults idiom (a shorter clause supplies a default and delegates to a longer one). The function-level counterpart to the multi-clause `defmacro` of 18/19; distinct from currying (25). Builds on 05/06/10/14/25 | 8 |
+| 37 | `37-method-import/` | Method-import dispatch (§7.11.2): to CALL a trait method you only need the METHOD in scope — the trait itself need not be imported. A submodule declares a trait `Describe` (a unary arg-dispatched `describe` and a nullary return-dispatched `blank`) with impls for two types; the entry module imports the METHODS ONLY (not the trait) and dispatches — unary by argument type, nullary by `:Type` annotation (let-binding and inline forms), same method name reaching two impls. Builds on 15/16. Multi-file. | 4 |
 
 ### Notes on specific entries
 
@@ -253,6 +255,30 @@ is the **capability taught**. Exit code is the documented `main` return
   argument count mismatch") and `:(Vec a)` is rejected (parameter unpinned) —
   only `:(Vec Int)` pins.
 
+- **37-method-import** (S113 Phase 6b) — the first learning-sequence example of
+  **method-import dispatch** (spec §7.11.2, settled S113 D2). Unblocked by the
+  S113 W2 accept-side fix: importing a trait *method* without its *trait* now
+  suffices to dispatch it (the method's fully-qualified identity names its trait's
+  home module, where the impl is found by keyed lookup — "reaching the method
+  reaches everything dispatch needs"). Multi-file so the trait can live in a
+  *different* module (`main/traits.cl`, module `main.traits`) from the dispatch
+  site: the entry `main.cl` imports the methods `describe`/`blank` and the two
+  types `Shape`/`Circle` but **never** the trait `Describe`, and every call still
+  dispatches. Four pass=1 sub-tests → exit **4** (verified `--run` == `--link`,
+  fresh cache): unary arg-dispatch (Shape), same-method-name multi-impl dispatch
+  (Circle), nullary return-dispatch driven by a let-binding `:Shape` annotation,
+  and nullary return-dispatch driven by an inline `:Circle` annotation on the
+  call. Teaches BOTH `:Type` annotation positions for return dispatch. Declaring
+  the impls needs the trait head in scope (§7.11.2 edge (d)) — that is why the
+  impls sit in `main/traits.cl` where `Describe` is declared, and the example
+  comment states this. **No no-impl teaching comment** is included: the
+  nullary-no-impl diagnostic currently leaks `undefined function` at codegen
+  (open defect 0672, /dev), so the example teaches only impl-present behavior;
+  every dispatched type has an impl. Free-standing (zero stdlib, zero exemplar):
+  `primitives` only (`Pure`/`add-i64`/`eq-i64`/`mul-i64`/`Int`). Builds on 15
+  (traits) + 16 (multi-file modules). Multi-file, so `tests/examples.rs` drives
+  `37-method-import/main.cl` (like `16-modules/main.cl`), not a bare top-level file.
+
 ## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
 
 > Both 6b candidates below were executed the same day: `33-redefinition.cl`
@@ -352,7 +378,8 @@ the spec when annotating coverage.)
 | Higher-order functions, composition | 13 |
 | Vec (incl. vec primitives as first-class values) | 14 |
 | Traits + operator dispatch + constrained poly | 15, 17, 20 |
-| Modules / imports / exports | 16 |
+| Modules / imports / exports | 16, 37 |
+| Method-import dispatch (call a trait method with only the method in scope; §7.11.2) | 37 |
 | Macros (defmacro, quasiquote, multi-clause) | 18 |
 | Threading macros | 19 |
 | Auto-currying + partial application | 25 |
@@ -387,6 +414,12 @@ to reconcile that table.
 
 ## Next skills
 
+- `/qa` + `/testing` (S113 Phase 6b) — reconcile the `tests/examples.rs`
+  expected-exit table: NEW multi-file project `37-method-import/main.cl` => **4**
+  (verified `--run` == `--link`, fresh cache, 2026-07-19). It is driven the same
+  way as `16-modules/main.cl` (a directory project, not a bare top-level file) —
+  discovery via the existing `CRANELISP_PLATFORM_PATH=target/debug` the harness
+  already sets; no platform wiring needed (pure `primitives` + local `deftype`s).
 - `/qa` (S110 Phase 6b) — reconcile the `tests/examples.rs` expected-exit table:
   NEW file `36-multi-arity.cl` => **8** (verified stable over 5 `--run`
   invocations 2026-07-16; `--run` == `--link`). No platform wiring needed

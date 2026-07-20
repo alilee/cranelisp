@@ -16,15 +16,16 @@
 ; Type inference
 /sig double
 
-; ADTs work through the v4 path
-(deftype (Option a) None (Some [:a val]))
-(Some 42)
+; ADTs work through the v4 path. (Option/Some/None now ship in the prelude, so
+; this tour defines its own Maybe to show deftype without a prelude conflict.)
+(deftype (Maybe a) Nada (Just [:a val]))
+(Just 42)
 
 ; Pattern matching
 (defn unwrap-or [opt default]
-  (match opt [(Some v) v None default]))
-(unwrap-or (Some 10) 0)
-(unwrap-or None 99)
+  (match opt [(Just v) v Nada default]))
+(unwrap-or (Just 10) 0)
+(unwrap-or Nada 99)
 
 ; Modules and imports
 /list

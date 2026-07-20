@@ -42,6 +42,31 @@ vec-reverse
 (import [collections.vec [vec-reverse]])
 (vec-reverse (vec 1 2 3))
 
+; You can import just a trait's METHOD — you do not need the trait itself in
+; scope. Dispatch follows from the method's own identity. `default` lives in
+; the `default` module; import the method alone:
+
+(import [default [default]])
+
+; /imports now lists `default` under Fns — the `Default` trait name is NOT in
+; scope (it is not among the prelude names), yet the method dispatches:
+
+/imports
+default
+
+; `default` yields a type's zero value, chosen by the RETURN type. Annotate the
+; type you want and dispatch resolves to that impl — no trait import needed:
+
+:Int (default)
+:String (default)
+:Bool (default)
+
+; Call it bare and nothing pins the return type, so inference cannot choose an
+; impl. The REPL says exactly what to do — an actionable error, never an opaque
+; failure:
+
+(default)
+
 ; This is how the Sudoku exemplar is built: grid, solver, html, and form
 ; are four modules, each importing only what it needs from the others and
 ; from the prelude. `cranelisp exemplar/user.cl` wires them together.

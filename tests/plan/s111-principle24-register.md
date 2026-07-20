@@ -154,3 +154,53 @@ landing, arch §7); its findings append here.
 - The register's end-state at S111 close: every grep-class hit either
   verdicted here (with grounds) or pre-filtered `non-identity` by the part-(a)
   test; zero unclassified `symbol_tables.iter()` sites compiler-wide.
+
+## 3. S113 W2 class extension — "identity from written-name comparison" (the sprint's headline class)
+
+Appended by `/qa` at S113 W2 close (2026-07-19). A sibling of the acid test
+one level down: instead of scanning a collection, the site derives a
+compile-necessary identity by **string-comparing WRITTEN names** (or
+re-composing them) where a RESOLVED identity (storage key / keyed carrier)
+already exists upstream — the "resolve once then throw the home away" shape.
+FIXME 0653 (`target: /arch`) carries the P24 corollary + the S114
+helper-classification sweep; this register section is the confirmed-instance
+battery it seeds. Verdict vocabulary extension: **`written-name-identity`** —
+DEFECT class, cure = consume the keyed carrier / storage identity.
+
+Confirmed instances (W2b backend review + fix cycle):
+
+| # | Site | Status | Cure shape |
+|---|---|---|---|
+| 1 | backend TCO fp1 name-match | **DELETED** | site removed |
+| 2 | mono-recheck self-call classifier | **FIXED** | carrier-presence template (presence of the keyed carrier IS the classification) |
+| 3 | drain `mangle_sig(base_name…)` qualified face | **FIXED** | bare storage name via the ONE `mangle_sig` |
+| 4–5 | inner scanners + pass-4 collectors | **FIXED** | shared `callee_has_keyed_carrier` guard at 6 sites (one predicate, never per-site copies) |
+| 6 | backend gate-3 `body_has_self_call` + spark classifier | **FIXED** | shared `is_self_call` predicate; fp1+fp2 merged |
+
+**Fenced conditionally-sound row (standing tripwire — NOT closed):**
+
+| Site | Verdict | Grounds + tripwire |
+|---|---|---|
+| Fix A bare-name normalization (imported-base qualified face, MC-X2) | `written-name-identity (conditionally sound — FENCED)` | Sound **iff** (a) the post-slash segment of a qualified reference == the storage `defn.name` — **breaks silently if per-symbol RENAME imports ever land** (the §8.3.5 Renamed variant, PLAN §S111 I.4 "I-3": currently unimplemented, which is exactly why the equality holds today); and (b) the module half always comes from `overload_homes`, never from the written prefix. **Tripwire**: the I-3 renamed-import increment MUST revisit this site in its change-set (cite this row). Retirement path: carry the storage BASE NAME as resolved data on the carrier — then the normalization deletes and the row closes |
+
+**W3/W4 verification note (2026-07-19)**: the class HELD — no new
+`written-name-identity` instances surfaced through the W3/W4 windows beyond
+the enumerated set (rows 1–6 all cured; the Fix-A conditional row remains
+fenced with its I-3 tripwire). First clean interval for the class; the S114
+0653 sweep confirms compiler-wide.
+
+**MC-X3 dual-path audit additions (2026-07-19, `s113-test-plan.md` §3.5 —
+the user-directed qualified-own-module audit).** New sweep rows:
+
+| # | Site | Verdict | Notes |
+|---|---|---|---|
+| 7 | Self-identity recognition ×2: `check_defn_body` recursion local bound under the written BARE name (a qualified spelling of the same identity misses `env.lookup` + `is_recursion_self_ref`, checker.rs:1515/:1546); backend shared `is_self_call` predicate (written-name compare) | `written-name-identity` (live instance — the 0655/MC-X3 face-3 mechanism) | Cured by the MC-X3 fix shape (spelling normalization at the ONE Var entry); the backend predicate then never sees a qualified self spelling |
+| 8 | Child-vs-absolute qualified candidate-order policy duplicated: `checker.rs::lookup` leg (~:1400) vs `resolve_ref_target` hand-rolled mirror (:1583) | P7 twin (benign-by-mirroring today; drift risk) | Collapse onto one helper inside the MC-X3 fix change-set; 0590's mirror-family convergence gains this fifth member |
+| 9 | `cranelisp_types::resolve.rs::resolve_qualified` (:694) resolves via committed `symbol_tables` only — the qualified leg never received the S109 AN-5 first-hop-VIEW (staging∪live) arm the unqualified path has | staging-visibility asymmetry (the MC-X3 root seam; not a name-compare, but the same one-chain-two-behaviors family) | Supporting fix (types crate, /arch approval) per §3.5; the S114 0653 sweep verifies no OTHER committed-only reads sit on the qualified leg |
+
+Cross-references: FIXME 0653 (P24 corollary; the S114 sweep row cites this
+table as its seed register); `s113-test-plan.md` §6 recurring-class record
+(the three W2a instances: D2 dispatch rooting, `verify_constraints`,
+dispatch-type resolution — those were fixed at the resolve-once seam in W2a
+and are subsumed by rows 2–6's cures); MC-X2 (`current_module` carrier-keying
+face, fixed via home-module keying).

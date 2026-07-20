@@ -399,6 +399,54 @@ Constructor variables (e.g., `:Functor f`, where `f` is a type-constructor varia
 
 FIXME 0043 (`typecheck-resolved-call-autocurry-total-count`) is open — `ResolvedCall::AutoCurry` is missing `total_count` per the sketch; either extend the type or look up at codegen time. `/typecheck` and `/backend` coordinate the resolution.
 
+### 9.7 Principle 26 carrier → pass → settlement-window classification (S113 SEED; full sweep needs its own slot)
+
+Principle 26 "Record from settled state" (ratified S112) says every span/entry-keyed
+producer carrier must be **derived once from settled state, never patched after record**.
+The classification the sweep produces is, per carrier: (1) the PASS that produces it, (2)
+the settlement WINDOW it must record from, (3) whether the as-built producer records at or
+after that window. The S112 defect family is the empirical case FOR the principle — every
+one of R2/D3/D1 is a carrier recorded (or read) OUTSIDE its settled window.
+
+**W2-family seed (the carriers this sprint's mono/carrier fix touches).** Classified here
+because the W2 design (`monomorphisation.md` §11.8; §7.0.1/§3.2/§7.0.2 in `traits.md`) IS
+the worked P26 exemplar:
+
+| Carrier | Producing pass | Settlement window (record-from) | As-built verdict |
+|---|---|---|---|
+| `MethodResolutions.resolved_calls` (`SigDispatch`) for a multi-sig-dispatch call in a mono/clause body | pass-4 mono recheck / drain | **post-drain**, after `finalize_multi_sig_variant_types` Phase-A concrete promotion | **VIOLATED** (R1/R2): recorded at pass-4, pre-drain — the overload set is not settled → carrier missing/`$Var`-mangled. §11.8 fix records post-settlement. |
+| mono instance + its `SigDispatch` for a poly hop in a multi-sig CLAUSE body (`idpoly$Int`) | pass-4 `collect_mono_call_sites` | after clause bodies settle concrete (Phase A) | **VIOLATED** (D3): the clause body is never scanned (`collect_single_sig_defns` filter). §11.8 fix scans settled clause bodies. |
+| `OverloadVariant.{param_types,ret_type,mangled_name}` | Pass 2.5 register + Phase-A finalize | post-drain (back-flow-pinned clause → Concrete) | OK (leg-a landed the two-pass ordering; §11.3(B)). |
+| `ConstrainedFn`/template `Scheme.constraints` for a constrained multi-sig clause | body check (`body.rs:479`) | body-inference settlement | OK — it IS the settled record; **D1's display READS the wrong carrier** (bare `OverloadVariant`, not this scheme), an int-side read-target defect, not a record defect (`traits.md` §7.0.2). |
+| `ResolvedCall::TraitMethod` for a method-only-import nullary cell | `try_resolve_trait_method` | method-home resolved once (P24) | **VIOLATED** (D2): rooted at trait-in-scope, so never recorded for the method-only-import cell; the home is resolved then discarded (`checker.rs:2415`). §7.0.1 fix roots at the home. |
+
+**Full-surface sweep — SCOPED to its own slot, NOT completed here.** A P26
+carrier→pass→window classification of the *entire* typecheck producer surface —
+`resolved_targets`, `callees`/`user_fn_refs`, `codegen_view`, `unresolved_dispatch`,
+`pattern_ctors`/`MonoMatchArm.resolved_ctor`, `deferred_self_call_dispatch`,
+`pending_auto_curry`, the `defn_type_vars`/scheme writebacks, `TraitImpl.impl_module` —
+is a substantial standing analysis (each carrier's settled window, its producing pass, and
+a record-vs-window verdict), and it is the natural home for the RG-P24 register's typecheck
+leg (`tests/plan/s111-principle24-register.md` leg 1, open) **and FIXME 0653** (the P24
+corollary that surfaced from the S113 W2a D2 landing — "a resolution product carrying FQ
+identity narrowed to its bare name, later re-resolved in ambient scope, is a defect marker";
+three W2a instances shared that `(&CheckState, &bare-name)` shape). The sweep should adopt
+0653's recommendation — audit typecheck's remaining bare-name+state helpers into
+pre-resolution seams vs re-resolvers to delete — as an explicit axis. **The enumeration seed
+for the sweep is the written-name-identity battery** (`tests/plan/s111-principle24-register.md`
+§3, 7 rows) — start the carrier→pass→window classification from those seven written-name cells
+rather than a blank surface scan. The W2-close instances already classified: the shared
+`callee_has_keyed_carrier` guard (`monomorphisation.md` §11.8.8 — name is a TRIGGER, carrier is
+the IDENTITY; 0653 second prong) and the `overload_homes` bare-name re-derivation
+(`monomorphisation.md` §11.8.9 — 0632 tripwire, retire by carrying the storage base name as
+resolved data). It deserves a dedicated
+`/design`(typecheck) slot rather than a rider on the W2 defect dispatch — squeezing it in
+would under-serve it (the S112 "design enumerates fewer cases than the spec/surface names"
+wrinkle this very sprint adopts a guard against). **Recommendation to /sprint:** schedule
+the full P26 typecheck-surface classification as a standalone Phase-1/3 /design slot (S114
+candidate), seeded by this table; its findings append to the P24 register per
+`tests/plan/s111-principle24-register.md` §2.3.
+
 ---
 
 ## 10. Subordinate topic docs

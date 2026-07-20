@@ -48,6 +48,22 @@ call, and signature changes recompile the functions that depend on the changed
 one and report exactly which survived. See the
 [live development guide](guide/live-development.md).
 
+### A REPL session resumes prior state — a sharp edge for piped input
+
+A REPL persists your definitions to a `user.cl` file in the working directory, and
+a REPL started in a directory that already holds one **resumes** those definitions.
+Everything you then type or **pipe in** is *session input*, evaluated against the
+restored state — not a fresh, self-contained program. So `cranelisp < script.cl`
+run in a directory carrying prior state will resolve any name the script does not
+itself redefine to the **previous session's** binding; the same script piped into
+an **empty** directory can give a different result. (Redefinitions always win — a
+`(defn f …)` in the piped input takes effect over the stored one.)
+
+If you want fresh-program semantics — a self-contained program with no resumed
+state — use `cranelisp --run script.cl` (see the
+[CLI reference](cli-reference.md)) or run the REPL in an empty directory. The
+normative model is [`repl/spec.md §15.2.1`](../repl/spec.md).
+
 ## Your first program
 
 A runnable program defines a zero-argument `main` and runs under `--run`. The

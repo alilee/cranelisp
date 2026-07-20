@@ -1578,6 +1578,365 @@ mode/context-dependent and fires only backend-side, it is `/design(backend)`'s. 
 pinned cross-mode repro comes first (standing dual-path rule); attribution follows
 evidence.
 
+### 11.8 The W2 mono/carrier family — one settled-overload-derived producer change-set (R1×2 + R2 + D3)
+
+**Status:** DESIGN (S113 Phase 3, /design(typecheck)). The S112-pinned family
+(`tests/multi_arity_clause_param_51_2.rs` R1×2, `tests/multi_sig_base_mono_carrier_loss.rs`
+R2, `tests/multi_sig_poly_callee_cross_arity_mono.rs` D3) shares ONE root and lands
+as ONE producer change-set (arch Q2/revision 3; SPRINT §Scope B). This section
+records the D3 call-chain evidence (the arch-Q2 obligation, produced BEFORE the fix),
+the settled-state ordering finding that unifies the three, and the fix shape. TB-24,
+D1, and the D2 accept path are producer-side siblings recorded in `traits.md` §D2/§TB-24
+(dispatch/impl-target seams) — they are NOT part of this mono-harvest change-set.
+
+#### 11.8.1 D3 call-chain evidence — where the mono request is dropped (attribution VERDICT)
+
+The D3 repro (primitives-only):
+```lisp
+(defn idpoly [x] x)                              ; genuinely-poly single-sig callee
+(defn build ([n]     (build n 0))                ; 1-arg clause delegates cross-arity
+             ([n acc] (if (eq-i64 n 0) acc
+                          (build (sub-i64 n 1) (add-i64 acc (idpoly n))))))
+(build 3)   ; → codegen error … undefined function: idpoly
+```
+
+Both `build` clauses settle **concrete** (`build$Int`, `build$Int+Int`): the 2-arg
+clause is pinned `Int` by the primitive ops, the 1-arg clause by its `(build n 0)`
+self-call to the 2-arg clause. Neither is a `$Var` template, so neither is
+monomorphised via `monomorphise_call`/`recheck_body_for_mono` — they register as
+concrete mangled variants directly (`register_mangled_variants`, §11.3(B) Phase A).
+
+**The drop point.** `pass4_monomorphise` (`finalize.rs:1015`) is the ONLY seam that
+mints a mono instance for a poly callee and records its `SigDispatch`. Its work list
+comes from `collect_mono_call_sites` (`mono_collect.rs:119`), which iterates the defn
+set `single_sig_defns = collect_single_sig_defns(working_program)` (`finalize.rs:999`).
+`collect_single_sig_defns` (`finalize.rs:1391`) **filters out every multi-sig defn**
+(`if defn.is_multi_sig() { None }`). Therefore `build`'s clause bodies are never
+scanned; the inner call `(idpoly n)` in the 2-arg clause body is never collected by
+`collect_local_parametric_calls`; `idpoly$Int` is never minted; the concrete variant
+`build$Int+Int` reaches codegen with a bare `idpoly` call whose name has no GOT slot
+→ backend keyed read misses → `undefined function: idpoly`.
+
+The filter is **retained by design** — `Defn::body()`/`params()` assert single-variant
+and panic on a multi-sig defn (`cranelisp-types/src/ast.rs:460`; §11.4 step 3) — so the
+multi-sig path was routed through the DRAIN instead. But the drain
+(`resolve_pending_overloads`) records `SigDispatch` for **overloaded-base dispatch
+calls** only; it does **not** mint mono instances for a *distinct poly callee* reached
+from a clause body. So a poly hop in a multi-sig clause body falls into the gap between
+the two mechanisms: the single-sig mono-collect (excluded by the filter) and the drain
+(which does not mint leaf instances).
+
+**Verdict: CONFIRMED typecheck-only, producer-side, P26-shaped, same family as R2
+(`class=carrier-loss`).** The backend is a pure keyed consumer (BC §3 invariant 10) —
+the fix is architecturally excluded from it; the sole admissible backend delta is
+**diagnostic hardening** (raw Cranelift `undefined function` → the located P24
+hard-fail at the keyed seam, `backend-keyed-consumer.md` §1.2). No `cranelisp-types`
+diff. The "cross-arity" framing in the repro is the /port-found shape, **not** the
+load-bearing mechanism: the excluded-body fault fires for a poly hop in *any* multi-sig
+clause body; the cross-arity delegation is why the clause is *reached* at all in the
+/port program. /dev verifies the minimal-firing form during implementation (the fix
+covers both).
+
+#### 11.8.2 The unifying root — the harvest does not cover multi-sig dispatch, and where it partially does it runs PRE-drain
+
+R1, R2, D3 are three faces of one gap: **the monomorphisation harvest does not cover
+multi-sig dispatch/bodies, and the one place it partially does — the pass-4 mono
+recheck — runs before the overload set is settled.**
+
+- **D3** — a concrete multi-sig CLAUSE body's inner poly hop is never scanned
+  (`collect_single_sig_defns` filter, §11.8.1).
+- **R2** — a multi-sig-BASE dispatch call `(h 1)→h$Int` inside a monomorphised body
+  (`ga$Int`, minted at pass-4). During `recheck_body_for_mono`, the inner scans handle
+  only CONSTRAINED self-recursion (`resolve_inner_constrained_calls`) and
+  monomorphisable-poly hops (`monomorphise_inner_parametric_hops`) — **neither handles
+  an overloaded-base dispatch**, so `(h 1)` gets no `SigDispatch`/`resolved_target`
+  carrier and the backend keyed read misses (`class=carrier-loss`).
+- **R1** — a cross-arity sibling self-call from a poly TEMPLATE clause's mono recheck.
+  The inline `mono_recheck_self` gate (`infer.rs:608–655`) fires only for the
+  SAME-instantiation self-call; a cross-arity sibling's args differ (different arity),
+  the gate skips, the call re-defers a pending entry the drain has taken, and it orphans
+  as a wrong-reject with an internal-name leak (§11.3.4 R1 boundary).
+
+The **ordering** is the structural cause. In `finalize_check_result_inner`:
+`pass4_monomorphise` (line 1015) → `regeneralize_defn_schemes` (1024) → drain
+`resolve_pending_overloads` (1046, **the multi-sig settlement point**) →
+`regeneralize_only_polymorphic` (1073) → ambiguity scan (1088) →
+`finalize_multi_sig_variant_types` (1122, **Phase A promotes back-flow-pinned clauses
+to Concrete — the final settled overload state**) → re-annotate (1137+). Pass-4, where
+R1/R2's mono rechecks happen, runs **pre-drain**: the base `OverloadVariant`s are
+registered (Pass 2.5, line 990) but back-flow promotions have not run, so a self-call
+to a back-flow-pinned sibling would resolve to its `$Var` template mangle, not the
+concrete one — the exact pre-settlement hazard §11.3.2 (B1) fought. **This is why the
+§11.3.4 R1 direction says the settled overload set "is not reachable at the recheck
+seam."**
+
+#### 11.8.3 The fix — a settled-overload-derived harvest for multi-sig-touching cases
+
+One change-set, one settled source (P26 "Record from settled state"; P24 "Resolve
+once"): every multi-sig-touching mono resolution derives from the **post-drain,
+post-Phase-A overload set** — the base `OverloadVariant`s after
+`finalize_multi_sig_variant_types` (the concrete mangles the drain already recorded in
+each caller's `SigDispatch`, so the harvest agrees with the drain by construction).
+Three legs off that one source:
+
+**AS-LANDED (S113 W2a, review APPROVE — records the settled state, P26).** The design's
+three legs were implemented, and the R1/R2 pair was **superseded in review** by a cleaner
+P7 unification (see below). What landed:
+
+- **Leg D3 — a SECOND `pass4_monomorphise` at the post-Phase-A settlement point** (option
+  (i) below, `finalize.rs:1132–1160`). The single-sig pass-4 collector
+  `collect_single_sig_defns` was generalised to `collect_defns_for_mono(program,
+  MonoDefnFamily::{SingleSig|MultiSig})` — **one parameterized fn at two settlement
+  points, not a forked sibling** (arch W2a pin). The `MultiSig` family iterates each
+  concrete clause variant's body (never `defn.body()`, which panics on a multi-sig defn)
+  and feeds it to the SAME `pass4_monomorphise`, run AFTER `finalize_multi_sig_variant_types`
+  (so every clause is settled concrete) and BEFORE the sweep/re-annotate (so the minted
+  `idpoly$Int` + its `SigDispatch` reach the accumulator that rebuilds each variant's
+  `codegen_view`). A `debug_assert_eq!` pins that `SingleSig + MultiSig` **partition every
+  top-level `Defn` exactly once** (P18 — a later-added defn family reaching neither fails
+  loudly).
+- **Legs R1 + R2 — ONE scoped invocation of the real drain** (`recheck_body_for_mono`,
+  `monomorphise.rs:784–843`), replacing BOTH the design's bespoke `resolve_inner_multi_sig_dispatch`
+  scan (R2) AND the inline-gate widening (R1). The design's bespoke scan was implemented
+  and **rejected in review** as a partial re-implementation of the drain (it wrote the
+  template `$Var` mangle into a frozen mono view, did no return-var unification, and
+  orphaned post-drain pendings). The landed shape: `recheck_body_for_mono` **isolates the
+  outer `pending_overload_resolutions` via `mem::take`**, runs the body check (which defers
+  the body's own overloaded-base dispatch calls), invokes the **one real drain**
+  `resolve_pending_overloads` scoped to just those deferrals, then restores the outer
+  pendings (`register.rs`'s drain widened to `pub(crate)`). This gives **full
+  concrete/template bifurcation + return-var unification by construction** (P7 — one drain,
+  no second implementation). It subsumes R1's cross-arity boundary: the same-instantiation
+  self-call still resolves **inline** (the `mono_recheck_self` gate, unchanged, `infer.rs:615`
+  — never pushed, so drain pass 1 is a no-op in a mono recheck), while a **cross-arity**
+  sibling self-call now simply **defers and the scoped drain resolves it** against the
+  settled overloads — so the §11.3.4 "widen the inline gate" direction was **not needed**;
+  the scoped drain covers it. Because `recheck_body_for_mono` fires at BOTH pass-4
+  settlement points, R1/R2 hold for any minted body regardless of which point drove it.
+
+**Ordering — option (i) landed.** These resolutions MUST read the **settled** overload
+set; the design offered **(i)** a post-`finalize_multi_sig_variant_types` harvest vs **(ii)**
+threading the settled set to pre-drain pass-4. **(i) landed** for D3 (the second
+`pass4_monomorphise` at `finalize.rs:1132`) — the P26/P24 "record once from settled state"
+shape, leaving the single-sig pass-4 (line ~1015) and its 0349 → `regeneralize_defn_schemes`
+chain untouched. The recheck-seam scoped drain (R1/R2) needed no relocation at all — it
+settles the body's own deferrals in place via the mem::take isolation, so the pre-settlement
+`$Var` hazard §11.3.2 closed never reopens (a genuinely-poly selected clause monomorphises
+to a concrete instance, never a slot-less `$Var` template mangle).
+
+#### 11.8.4 Pin-4 entanglement — carrier family lands before R1-variant flips are judged
+
+The prelude-`+` R1 variant (MC-R1v) is entangled: the trait-`+` standalone twin itself
+hits carrier-loss (the doubled `user/user/fb$Int+Int` prefix — R2-family evidence,
+`tests/plan/s113-test-plan.md` MC-E1). **Binding sequencing for W2** (a design
+constraint on the change-set, not on the code): land/verify the carrier family (R2 +
+D3, legs above) BEFORE judging the R1-variant flips. A non-flip of MC-R1v after the R1
+inline-gate widening is NOT a failed fix — check the carrier face first (does the twin
+now run under the R2 leg?), and only then re-attribute. If the doubled `user/user/`
+prefix survives the carrier fix it is a distinct mangle/keying defect (R4 register-row
+candidate) — pin it separately, do not fold silently.
+
+#### 11.8.5 Inversion fences — what must STILL reject after the accept/carrier fixes land (spec-diff)
+
+The W2 family is accept-side (D2, TB-24) and carrier-side (R1/R2/D3) — it mints
+instances and writes carriers for calls in **already-accepted** programs, and roots
+dispatch differently. It touches **no reject seam**, so every §5.1.2/§3.11/§8.6.4
+rejection is preserved by construction. Named so /dev + /review do not overshoot into a
+wrong-accept (the S112-1 dominant hazard):
+
+- **§5.1.2 same-arity-unifiable definition-site ambiguity STILL rejects.** The
+  unifiability judgment on WRITTEN clause signatures (the pre-drain MS-6/M1 check,
+  §11.3.3) is untouched — the mono harvest runs post-drain over already-accepted clauses
+  and cannot resurrect a definition rejected earlier. `(defn t ([x] x) ([:Int y] y) …)`
+  stays rejected (§5.1.2, settled M1).
+- **§3.11 bare-`(zed)` ambiguity STILL fires.** The D2 home-rooting changes only WHERE
+  the impl is looked up; a return-type-dispatch call with no concrete dispatch type still
+  returns `None` at `try_resolve_trait_method` step 3 (`concrete_type_name` = `None`) and
+  defers to the §3.11 gate. Only the RESOLVED cell (`:Int (zed)`) accepts.
+  (`spec_07_traits.rs::return_type_dispatch_unresolved_bare_call_clean_ambiguity_neg`
+  stays GREEN.)
+- **§8.6.4 duplicate method-import conflict STILL rejects** (traits.md §7.0.1 watch-cell
+  (b)) — a different, earlier seam than dispatch.
+
+This is the spec-diff (arch process rule, S112 finding): the spec cases touched — §7.11.2
+(a)–(e), §5.1.2 (cross-arity self-call / clause-as-separate-fn / same-arity-unifiable
+reject), §3.11 (resolved-vs-ambiguous) — are each covered by a design cell (§11.8.3 legs
++ traits.md §7.0.1/§3.2) or a named inversion fence above. The diff is **empty**: no spec
+case touched by this family is unaddressed, and every must-still-reject cell is named.
+
+#### 11.8.6 No schema bump — carrier + settlement check (arch Q5/revision 4)
+
+All three legs write only to existing carriers — `MethodResolutions.resolved_calls`
+(`SigDispatch`) and `.resolved_targets` (`FQSymbol`), and mono entries via
+`register_mono_entry` — with **no shape change**, so **W2 = no `CACHE_SCHEMA_VERSION`
+bump** (the expectation SPRINT §Scope B pins). Writing MORE span→resolution entries for
+a program that previously **failed to compile** is additive population, not a
+meaning-change to a persisted field. There is no stale-cache resurrection hazard: unlike
+leg (a) — whose 20→21 bump was forced because old-compiler-ACCEPTED programs had bogus
+`$Var`-`Concrete` persisted entries (§11.5) — all three W2 programs were **rejected /
+codegen-failed** by the old compiler (D3/R2 codegen `undefined function`; R1
+wrong-reject typecheck error), so no successful `.meta.json` was ever persisted for them
+and no AG-1 stale-cache cell arises. **If** implementation discovers any persisted-carrier
+shape change is required (e.g. an `OverloadVariant` field), STOP and file FIXME
+`target: /arch` — do NOT design around it (SPRINT §Scope B constraint).
+
+#### 11.8.7 Let-shadowing at the call head — rulings 4 & 5 (re-routed into W2, /sprint 2026-07-19)
+
+Two S112 shadowing pins (`tests/shadowing_scope_lookup.rs`) were re-routed from src/ into
+W2. Both assert the §4.6/§5.1.2 rule: **a `let`/`fn`/param binding lexically shadows a
+same-named top-level defn — a call to that name inside the binding's scope MUST resolve to
+the LOCAL binding.** Ruling 5 is typecheck (designed here, at R1's gate); ruling 4's
+evidence contradicts the typecheck routing (reported below).
+
+**Spec-diff — the lexical-shadow class vs the §8.6.4 conflict class (requirement (b)).**
+These pins are the **§4.6 lexical-shadow** class, categorically DISTINCT from the §8.6.4
+def-over-binding conflict class:
+- **§4.6/§5.1.2 — lexical shadow (local WINS, always legal).** A `let`/`fn`/param binding
+  is an ephemeral LEXICAL binding, not a module registration. It shadows any outer binding
+  of the same name within its scope — including the module's own top-level defn. This is
+  the fundamental lexical-scoping rule; the inner reference resolves to the nearest
+  enclosing binding. `(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))` — the inner `(s1 x)` is
+  the local identity, full stop.
+- **§8.6.4 — def-over-in-scope-binding conflict (error, never a shadow).** A top-level
+  DEFINITION (`defn`/`deftype`/…) over a name already in scope via IMPORT/export/prelude
+  is a compile-time CONFLICT (`reject_def_over_binding`; the "no outer scope — prelude is
+  an implicit import" ruling). A same-MODULE prior def is redefinition (allowed).
+- **The boundary is binder KIND, not name-collision.** §8.6.4 governs *definitions*
+  (registering binders) colliding with *imports*; §4.6 governs *lexical bindings* (let/fn/
+  param) shadowing *anything*. A `let` is neither a definition nor subject to §8.6.4 — so
+  a `let` shadowing the module's own defn is a pure §4.6 shadow, doubly-not-a-conflict (not
+  a def; and even a def would be same-module redefinition). No overlap with the pins.
+
+**Ruling 5 — the multi-sig overload gate bypasses local scope (DESIGNED, typecheck).** The
+gate at `infer.rs:604` — `if Expr::Var { name } && state.overloads.contains_key(name)` —
+consults the GLOBAL overloads table by name **without first consulting local scope**, so a
+let-shadowed multi-sig base (`(defn t1 [x] (let [m1 (fn [y] y)] (m1 x)))`, `m1` a base)
+enters the overload-dispatch path, defers past the drain, and wrong-rejects
+(`undefined variable: t1`) — the local binding never gets a look-in.
+
+**Fix — local-scope-first, reusing the recursion-self-ref discriminator (composes with the
+R1 leg).** The guard must skip the overload path for a USER shadow while STILL admitting a
+genuine self-recursive multi-sig self-call (the §5.1.2 back-flow path) AND the R1 mono
+recheck's cross-arity self-call. The exact discriminator already exists — it is the same
+one `record_reference_target`'s self-recursion carve-out uses (`checker.rs:1489`):
+
+> `is_recursion_self_ref(state, name)` ≝ `state.current_defn.as_deref() == Some(name) &&
+> state.env.lookup_frame(name) == state.current_defn_frame` — TRUE iff `name` resolves at
+> the enclosing defn's recursion-binding frame (the self-reference), FALSE for a `let`/`fn`
+> binding that resolves at a DEEPER frame or a param of a differently-named enclosing defn.
+
+Gate the outer `if` with `(state.env.lookup(name).is_none() || is_recursion_self_ref(state,
+name))`: enter the overload path iff `name` is NOT locally bound at all, OR it is the
+genuine recursion self-reference. **No schema bump:** a shadowed call SKIPS the overload
+gate and falls through to ordinary local inference (callee infers as the local `fn` value →
+indirect call, no carrier) — no new carrier, no shape change (requirement (d) ✓).
+
+**AS-LANDED (S113 W2a→W2 close, `infer.rs:604`+, review APPROVE).** The guard landed as
+designed. One composition-argument correction (recorded honestly for P26): my Phase-3 text
+claimed "during a mono recheck the self-call's base is NOT locally bound (`recheck_body_for_mono`
+binds only the instance mangle)" — **that claim is FALSIFIED**: a `let`-rebind of the BASE
+name inside a mono-recheck body DOES locally bind the base, so `env.lookup(base)` is `Some`
+there. The **ruling-5 gate composition survives the correction** — a let-rebound base in a
+mono recheck is exactly the case the guard is FOR (local wins), and it is pinned by
+`ruling5_composition_let_shadowed_multi_sig_base_in_mono_recheck`. The other verified
+composition facts hold: a locally-shadowed call never defers (so the §11.8.3 scoped drain
+never sees it — `monomorphise.rs:809`), R1 same-instantiation self-calls resolve inline
+without pushing, and nested rechecks see an empty pending list (the `mem::take` isolation).
+
+**Ruling 4 — single-sig hang: LANDED as a typecheck PRODUCER fix (correcting my Phase-3
+"not typecheck" verdict).** My Phase-3 evidence — that `record_reference_target`'s
+frame-guarded shadow gate (`checker.rs:1489`) correctly records **no** `resolved_targets`
+carrier for a let-rebind (the `lookup_frame("s1")` = let frame `F+1` ≠ `current_defn_frame`
+= `F` discrimination) — was CORRECT, but its conclusion ("therefore the fault is downstream
+in `MonoExpr`/backend") was wrong. The producer fix consumes exactly that frame-guarded
+verdict, in typecheck:
+
+- **`record_self_recursion_dispatch` (`monomorphise.rs:387`) consumes the verdict via
+  CARRIER-PRESENCE on the callee span.** The mono self-recursion carrier writer collects
+  self-`Apply` calls (`collect_self_apply_calls` — which now carries the **callee span**
+  alongside the arg/self spans, `monomorphise.rs:1189`) and, before minting a `SigDispatch`,
+  checks `resolutions.resolved_targets.contains_key(callee_span)`. A genuine self-call
+  recorded a callee carrier (the base resolves at the recursion frame → `record_reference_target`
+  wrote it); a **deeper-frame `let`/`fn`/param shadow recorded NONE** (the shadow gate
+  returned early). So a self-apply whose callee span carries **no** carrier is a shadow:
+  record **no** `SigDispatch`, **no** carrier → the `Apply` reaches the backend fully bare →
+  `compile_var_apply` → `variables` → **indirect local call** — fixing both the TCO-self-loop
+  hang and the non-tail wrong-value sibling.
+- **Why carrier-presence, not re-evaluating the frame guard (review ruling — the faithful
+  consumption).** `record_self_recursion_dispatch` runs in the recheck EPILOGUE, when the
+  scope frames of the body check are already **torn down** — the frames are dead at the
+  classifier, so directly re-running `is_recursion_self_ref` there would be unsound (it has
+  no live frames to consult). The `resolved_targets` carrier, recorded DURING the body check
+  when the frames were live, is the durable materialisation of that same verdict. Reading it
+  is the faithful, resolve-once (P24) consumption — the shadow discriminator is computed
+  ONCE (at `infer_var`) and every downstream consumer reads the carrier, never re-derives.
+
+**Verdict (ruling 4): a typecheck producer defect, FIXED in typecheck.** The Phase-3
+"downstream / not typecheck" verdict is retracted — the carrier-absence IS the signal, and
+the mono self-recursion writer was the producer that ignored it (minting a name-matched
+`SigDispatch` for a shadow). The `MonoExpr`/backend local-before-name path was never the
+locus; the producer simply must not emit a keyed dispatch for a carrier-absent (shadowed)
+self-apply. This is the same discipline generalised to the pass-4 collectors in §11.8.8.
+
+#### 11.8.8 The scan discipline realised — name is a TRIGGER, carrier is the IDENTITY (FIXME 0653 second prong)
+
+Ruling 4's producer fix (§11.8.7) is one instance of a general rule the W2 close generalised
+across every name-scanning mono collector, closing **FIXME 0653's second prong**: a name-scan
+collector's AST callee **name** is only a TRIGGER for consideration; the reference's
+**identity** is the per-span recorded `resolved_targets` carrier. A callee whose span carries
+NO carrier resolved to a §4.6 **local** — a `let`/`fn`/param binding shadowing a top-level
+constrained/parametric fn — because `record_reference_target`'s frame-guarded shadow gate
+declined to record it. Minting/dispatching such a call by name-match would silently wrong-value
+the shadow to the top-level fn (the same class as the ruling-4 hang, one hop out).
+
+**The ONE shared guard (P7): `program::support::callee_has_keyed_carrier(resolved_targets,
+callee_span)`** (`support.rs:18`) — returns TRUE (proceed) iff the callee span carries a
+`resolved_targets` entry, FALSE (skip — it is a shadow) otherwise. Consumed at **six** sites:
+the five pass-4/mono-recheck collectors — `collect_local_parametric_calls`,
+`collect_imported_constrained_calls`, `collect_constrained_calls_excluding_self` (top-level,
+reading `state.method_resolutions.resolved_targets`), and `resolve_inner_constrained_calls` /
+`monomorphise_inner_parametric_hops` (mono-recheck epilogue, reading the harvested
+`resolutions.resolved_targets`) — plus the self-apply collector (§11.8.7). This is the
+P26/P24 shape at its cleanest: the shadow verdict is computed ONCE (the frame guard at
+`infer_var`), materialised ONCE (the carrier), and every collector reads the carrier rather
+than re-deriving from a name — the name-scan is a candidate generator, the carrier is the
+authority. Cross-ref FIXME 0653 (the corollary this realises: resolved identity, not a bare
+name, is the currency past a resolution seam).
+
+#### 11.8.9 MC-X2 — imported multi-sig bases: lazy rehydration + carrier home-override (P24, review conditionally-sound)
+
+A multi-sig base IMPORTED from another module is invisible to the local `state.overloads` /
+`resolved_overloads` tables (those are seeded from the local registration path), so a call
+`(h 1)` to an imported base `h` — bare after import, or qualified `mlib/h` — never entered
+the overload-dispatch path and mis-resolved. Landed cure:
+
+- **Lazy rehydration** — `infer.rs::maybe_rehydrate_imported_overload_base` (`infer.rs:588`,
+  called at the `infer_apply` callee seam) chain-follows `name` to its terminal entry; when
+  that terminates at an `Overloaded` entry in a DIFFERENT module, it mirrors the local
+  rehydration into `state.overloads` + `state.resolved_overloads` AND records the base's HOME
+  in a new transient `CheckState.overload_homes: HashMap<Symbol, ModuleFullPath>` (`checker.rs:193`).
+  Idempotent (guards on `contains_key`); a base referenced both bare and qualified double-keys
+  `overload_homes` harmlessly (both map to the same home).
+- **Carrier home-override at the ONE drain** — `resolve_pending_overloads` (`register.rs:868`)
+  keys the `SigDispatch` mangle by the BARE base name via the ONE `mangle_sig`
+  (`register.rs:861–862` — Phase-A-consistent: the stored concrete clause `Def` is `h$Int` in
+  `mlib`, and the bare-name mangle serves both the bare and qualified faces), then **overrides
+  the `resolved_target`** to `{home, mangled}` from `overload_homes` — because
+  `record_dispatch_target`'s `SigDispatch` arm assumes the mono lives in `current_module`
+  (true only for a LOCAL base). A local base has no `overload_homes` entry → no override. This
+  also cures the same current-module face for the W2a scoped-drain carrier (§11.8.3 — it is
+  the ONE drain both paths use, P7).
+
+**Review verdict: conditionally sound.** The qualified-face mangle re-derives the bare base
+name from the qualified reference (`rsplit('/')`) rather than carrying the storage base name
+as resolved data — the P24-corollary smell (FIXME 0653: a bare name re-derived past a
+resolution seam). It is sound TODAY (the storage entry is uniformly bare-mangled, Phase-A
+consistent), so it landed with a **tripwire row in the 0632 register** rather than a redesign.
+**Retirement path:** carry the storage base name as resolved data (an FQ on the rehydrated
+overload record) so the mangle reads it rather than re-splitting the reference — folds into the
+0653 "resolved identity is the currency" sweep. Recorded here so the S114 P26 sweep (typecheck.md
+§9.7) picks up `overload_homes` and this re-derivation as classified carriers.
+
 ### 11.7 Cross-references
 
 - `spec/05-definitions.md` §5.1.2 (settled back-flow) + §5.1.1 (dispatch coherence)

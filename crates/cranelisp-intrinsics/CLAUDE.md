@@ -117,6 +117,22 @@ the consuming dec sequences (those stay per-module by design).
 | `CRANELISP_SPARK_BUDGET=N` / `_CORE_MULT=k` / `_SATURATION_GATE=1` | in-flight-spark cap; default `k=2 × threads` (M-dynamic, default-on; `k=4` = pre-S104 static budget, `k=0`/`BUDGET=0` = fully serial); saturation gate = `1×` | S104 W2 §2.8.3 |
 | `CRANELISP_NO_LENIENT` / `_SPARK_MAX_DEPTH` / `_HIER_DECLINE` / `_IVAR_SPIN=1` | disable lenient eval / depth cap / hierarchical decline / restore pure busy-spin wait | `ivar.rs` |
 | `CRANELISP_DRIVE_MODE=server` / `_REACTOR_BACKSTOP_MS` / `_DEGREE` | reactor drive mode (default OneShot w/ 30s hang guard), scaled backstop, program-degree throttle | FIXME 0479 / `reactor.md` §8.3 |
+| `CRANELISP_QUARANTINE_FREED` (+ `_MAX_BYTES=N`) | M1 — withhold freed blocks from the system allocator so `is_live` stays false forever (stale-dec/inc asserts fire deterministically); FIFO-release the coldest past `N` bytes (unset = unbounded) | S113 W5a / `design/intrinsics/diagnostic-modes.md` §3 |
+| `CRANELISP_SCRUB_FREED` | M2 — poison header+payload with `0xDEAD2FEE_DEAD2FEE` at the free seam (a stale read is wild-negative / non-canonical ptr / underflow-tripping rc) | S113 W5a / diagnostic-modes.md §3 |
+| `CRANELISP_ALLOC_PARITY` (+ `_DUMP`) | M3 — atexit hard-check `ALLOC_COUNT==DEALLOC_COUNT` (+ empty live-set in debug); dump then non-zero abort on imbalance. `_DUMP` = print-and-continue ledger, no abort | S113 W5a / diagnostic-modes.md §3 |
+| `CRANELISP_RC_DEC_CHECK` | ALSO release-gates the intrinsic-body RC/alloc seam checks (A1 inc `rc>0` / A2 `consume_shallow` / A3 drop-glue `atomic_dec_rc` underflow / A4 dealloc size-sanity) — a located hard-fail, not just the codegen dec-check hook | S113 W5a / diagnostic-modes.md §5 |
+
+The three memory-safety diagnostic modes (M1/M2/M3) + the seam asserts (A1–A4)
+live in `src/diagnostics.rs`. **Byte-identical-off**: all-off = today's code (one
+cached bool load per gate, no list constructed, no atexit registered). They hook
+the two existing funnels (`alloc::alloc_with_rc`, `alloc::dealloc`) + the two
+always-on counters — no ABI/catalog/`cranelisp-types` surface, no emitted-IR
+change, identical in `--run`/REPL/`--link`. Fixed order in `dealloc`: capture
+`FREED_TRACKED` identity → (M2) scrub → (M1) quarantine-or-release → count. The
+A1 debug `is_live` assert is the always-on inc-half of the FIXME-0494 dec-half
+check; A2–A4's release variants read only the RC field / size (the `is_live` /
+double-free / header-integrity halves stay debug-only — they need `LIVE_ALLOCS`;
+M2 poison + M3 parity are their release faces).
 
 The **fork-join error-slot ferry** (`ivar.rs`, `panic.rs`, `test-discovery.md`
 §6): a spark thunk's runtime panic lands in the *worker's* `RUNTIME_ERROR`

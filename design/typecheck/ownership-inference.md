@@ -2141,3 +2141,156 @@ constraint 1: byte-identical backend work lands BEFORE this wave). This is the s
    `/testing` builds. The typecheck-side guarantee: `MayAliasOf` keeps protect on EVERY body
    shape (the summary is body-shape-agnostic), so all shapes are safe-by-summary; the direct-body
    recognizer's re-scope to a leak-exactness optimization is backend-side (spine §3.7).
+
+## §16. The monotone provenance frame — the 0641 sound-narrowing cure (S113 W5)
+
+**Status:** DESIGN (S113 W5, `/design`(typecheck)). Realizes `design/arch/safety-invariants.md`
+§3 (a)/(b)/(c) — the arch-binding frame FIXME 0641 is gated on — as the concrete typecheck
+mechanism. **The false-`Fresh` class closes by making the transfer walk lattice-monotone with
+an enumerated, classified rule table; B-1/I-1/I-2 land as rule-table corrections INSIDE this
+frame, never as a `VecLit` spot-fix** (safety-invariants §3e; the CS-1.1 → 0640 lesson). This
+section supersedes the ad-hoc origin reasoning scattered across §3.3/§15.3; §15 (the COW
+schema-20 landing) is the first correction this frame generalizes.
+
+### 16.1 §3a — the provenance lattice and its explicit ⊤
+
+The walk's provenance state is the internal `Origin` enum (`transfer.rs:138`; NOT the persisted
+`ResultMode`). Its four points, ordered by **claim strength** (how much elision each licenses):
+
+```
+        Fresh                        Root(i) / Projection(i)      ← STRONG claims (license elision:
+       (no param reaches)            (UNCONDITIONALLY param i)       a dec-transfer / no-protect)
+              \                          /
+               \                        /
+                MayParam{rep=i, projection}      ← the CONSERVATIVE point
+             (MAY reach param i on some path)
+                        |
+                        ⊤ = MayParam over the JOIN of all reachable param-roots
+```
+
+The **conservative point is `MayParam` — "the result may reach anything the inputs reach."**
+`Fresh` and unconditional `Root`/`Projection` are the *strong* claims: `Fresh` says "no param
+reaches this, free it on scope exit"; `Root(i)`/`Projection(i)` say "this IS param i's
+reference on **every** path, transfer/borrow it." Each licenses a safety-op elision. **⊤ is
+`MayParam` joined over every param-root the inputs could reach** — the absence of a stated ⊤
+on this axis (the mode lattice has `Owned`; the origin axis had none) is exactly where the
+0641 bugs live.
+
+**The normative monotone rule (safety-invariants §3a):** *information loss in the walk MUST
+move toward `MayParam`, never toward `Fresh` or toward an unconditional `Root`/`Projection`.*
+Losing per-element or per-path detail is fine (widen to `MayParam`); losing the **reach**
+(collapsing to `Fresh`) or **strengthening** a conditional reach to an unconditional claim is
+the unsound direction — and is precisely a *rule violation visible at design review*, not a
+fact someone must adversarially discover.
+
+### 16.2 §3c — the enumerated, classified transfer-rule table
+
+One row per construct the walk visits. **Classification:** *widening* (joins toward ⊤/`MayParam`
+— always admissible), *precision-preserving* (carries provenance exactly), or *narrowing*
+(publishes a claim stronger than the join of its inputs — admissible ONLY with a named
+justification: a provably-unconditional structural argument recorded on the row). `/review`
+rejects a `transfer.rs` change that adds or alters a rule absent from this table — the same
+discipline as an unjustified `pub`.
+
+| # | Construct (walk arm) | Rule — the result Origin | Class | Justification / 0641 correction |
+|---|---|---|---|---|
+| 1 | **Var / reference** (`walk_var`, `:544`) | the binding's recorded Origin; a param ref → `Root(i)` | precision-preserving | `param_root` chain-follow; unconditional because a direct param ref IS the param on every path |
+| 2 | **Let / ParBind binding** (`:362`) | binds the value's Origin unchanged into the new scope | precision-preserving | a `let r = e` alias carries `e`'s exact Origin (the `Root`/`MayParam` chain extends) |
+| 3 | **Match-arm var-pattern binding** | the SCRUTINEE's Origin — **`MayParam` when the scrutinee is conditional, NEVER unconditional `Projection`/`Root`** | **narrowing-forbidden → widening** | **0641 B-2 CORRECTION.** As-built binds an unconditional `Origin::Projection`/`Root` for a COW `MayParam` scrutinee (`(match (vec-set v 1 99) [r r])` publishes hard `ProjectionOf(0)`) — a narrowing with no justification (the scrutinee is conditional). Rule: an arm var-pattern binds the scrutinee's Origin verbatim; a `MayParam` scrutinee yields a `MayParam` binding. A destructuring sub-pattern that PROJECTS binds `Projection` of the scrutinee root — unconditional only if the scrutinee root itself is unconditional, else `MayParam{projection:true}` |
+| 4 | **If / Match branch join** (`join_origin`, `:298`) | join of the arms' Origins — `MayParam` if either reaches a param, `Fresh` iff neither does | widening | already correct (FIXME 0520): the join never collapses a param-reaching arm to `Fresh`. The completeness anchor for the ⊤ rule |
+| 5 | **VecLit / ConstrADT element-store** (`:436`) | **the JOIN of the container's element Origins** (`MayParam{rep=i}` if any element reaches param i), not unconditional `Fresh` | **narrowing → widening** | **0641 B-1 + I-2 CORRECTION.** As-built returns `Origin::Fresh` UNCONDITIONALLY (`:442`), discarding that an element reaches a param — the clearest anti-monotone rule (`(vec-get [v] 0)` launders `v`→`Fresh`; `[(vec-set v 0 9)]` returns a fresh container whose escaping element is a COW alias). Rule: the container Origin is `join_origin` folded over its element Origins (losing per-element detail is fine — reach is not). A projection-OUT of the container (row 6) then yields the aliased element's origin, not `Fresh` |
+| 6 | **Projection-out** (`vec-get` / accessor / field read, ProjectionOf consume, `walk_apply` `:591`) | roots at the container's Origin: `Projection(i)` if the container is unconditional `Root(i)`, else `MayParam{projection:true}` over the container's reach | precision-preserving | depends on row 5 being correct — with the container carrying its element-join, a projection-out inherits the alias reach. Never strengthens: a projection of a `MayParam` container stays `MayParam` |
+| 7 | **Capture (closure free-var)** (`walk_lambda`, `:445`; `classify_capture_escape`) | a captured local that `param_root`-reaches param i is a **param escape** (retain param i's reference past the enclosing frame); the captured Origin roots THROUGH the let/alias chain | **narrowing → widening** | **0641 I-1 CORRECTION.** As-built capture-accounting laundries a let-bound param alias (`(let [r v] (fn [] (vec-get r 1)))`) — it treats the captured `r` as a fresh local rather than a `Root(v)` param alias, so param `v`'s reference isn't retained past `mk`'s return (freed heap read). Rule: `classify_capture_escape` roots each captured free var through `param_root`; a param-rooted capture escapes the param, exactly as a directly-captured param does |
+| 8 | **Apply — static call** (`walk_apply`, `:568`) | per the callee's `ResultMode`: `AliasOf(k)`/`ProjectionOf(k)` → arg k's Origin; `MayAliasOf(k)` → `join(Fresh, arg_k)` (= `MayParam` if arg reaches a param); `Fresh` → `Fresh` | precision-preserving (widening on `MayAliasOf`) | the §15.4 consumer arm; `MayAliasOf` reuses the 0520 join, keeps protect. Unconditional `AliasOf`/`ProjectionOf` are trusted only because the callee summary earned them (row 9's publish gate) |
+| 9 | **Return — origin → `ResultMode` publish** (`origin_to_result_mode`, `:237`) | unconditional `Root(i)`→`AliasOf(i)`, unconditional `Projection(i)`→`ProjectionOf(i)`, **`MayParam`→`MayAliasOf(i)` (both projection arms)**, `Fresh`→`Fresh` | precision-preserving | the §15.3 producer arm — the hard-claim arms match ONLY the unconditional variants (§16.3). A `MayParam` can never publish a hard claim (safety-invariants §3b) |
+| 10 | **Suspension — ParBind / spark escape edge** (R6, §5.5.2) | a value crossing a suspension point escapes its frame — its root materializes (inc at the escape edge); result Origin widens to the crossing classification | widening | suspension is an escape edge, never a borrow-widening; already the confinement axis's job |
+
+**Ten rows.** Rows 3, 5, 7 are the 0641 corrections; rows 4, 8, 9 are the already-correct
+monotone anchors the corrections must compose with; the rest are precision-preserving.
+Completeness argument = the *table*, not the example pins (safety-invariants §3c). The 0623
+behavioral matrix extends with the container-store × projection-out × capture axes (each row
+gets its example pins — §16.5), but the table is the soundness argument.
+
+### 16.3 §3b — the conditional/unconditional producer split (P20 shape)
+
+The safety-invariants §3b requirement: make "publish a hard claim from a conditional origin"
+**unconstructable**, not a prose contract (B-2 violated the reservation one level above the
+arm §15.3 fixed). The shape:
+
+**The distinction already exists at the `Origin` level** — `Root`/`Projection` are the
+unconditional variants, `MayParam` the conditional one. The P20 reshape makes the invariant
+*structural*: regroup so an unconditional Origin is **only constructable from a
+provably-unconditional source**, e.g.
+
+```
+enum Origin {
+    Fresh,
+    Unconditional { root: Symbol, projection: bool },   // Root(s)=projection:false, Projection(s)=projection:true
+    Conditional  { rep:  Symbol, projection: bool },     // today's MayParam
+}
+```
+
+with the constructors that handle a conditional input (row 3 arm-var binding, row 4 `join_origin`,
+row 5 element-store fold, row 6 conditional-container projection) able to build **only**
+`Conditional`, and `origin_to_result_mode`'s hard-claim arms (`AliasOf`/`ProjectionOf`)
+pattern-matching **only** `Origin::Unconditional`. Publishing a hard claim from a conditional
+origin then has no representation — B-2 becomes a compile error, not a review finding. The
+exact enum is `/dev`'s to settle; the requirement is the structural reservation.
+
+**§3b shape verdict — NOT types-touching (W5 = no schema bump).** This reshape lives entirely
+in the **internal** `transfer.rs::Origin` enum. The persisted carrier `ResultMode`/`ModeSummary`
+(`cranelisp-types`) **already carries the conditional point** — `MayAliasOf` (schema 20, S111
+§15) — and needs no new variant for the 0641 class: a may-projection collapses to `MayAliasOf`
+(§15.3), so soundness needs no persisted may-projection variant. Therefore the §3b split for
+the 0641 cure is **internal-only, no `cranelisp-types` edit, no `CACHE_SCHEMA_VERSION` bump** —
+consistent with the arch W5-status "§3a/§3c do not depend on the §3b producer split (+ its
+schema bump)". The schema-bump §3b fallback arch named is a **future capacity** concern (S114):
+it is needed only if a later consumer (a projection-provenance last-use elision) must
+distinguish may-projection from may-alias *in the persisted summary*, forcing a `ResultMode`
+split into persisted `Unconditional`/`Conditional`. That is NOT the 0641 fix. **If `/dev`
+implementation finds the internal `Origin` reshape insufficient and needs a persisted
+`ResultMode` split, STOP and file FIXME `target: /arch`** (schema bump — do not design around
+it; arch W5-status names it the capacity fallback).
+
+### 16.4 Joint acceptance with the paired `/dev`(backend) consume fix
+
+B-1/I-1/I-2/B-2 do NOT all flip on the typecheck provenance fix alone:
+
+- **B-1** (`(vec-get [v] 0)`) is a **pure false-`Fresh`** defect — cured toggle-OFF already
+  (clean exit under `CRANELISP_NO_OWNERSHIP=1`); the row-5 element-store fix flips it (and the
+  MS-P7 lane cell) GREEN.
+- **B-2** (`(match (vec-set v 1 99) [r r])`) and **I-2** (`[(vec-set v 0 9)]`) **fail
+  toggle-OFF too** — an **ownership-INDEPENDENT** backend crash is stacked under the
+  scrutinee/COW-set-into-container shapes (`/qa`-attributed, the paired `/dev`(backend)
+  vec-set-result consume-seam fix, safety-invariants §6 task 1). The row-3/row-5 provenance
+  corrections remove the false-`Fresh` protect-elision; the backend consume fix removes the
+  ownership-independent crash. **Neither alone flips B-2/I-2.**
+- **I-1** (capture) — the row-7 capture-rooting fix flips the ownership arm; verify against
+  toggle-off.
+
+**Joint acceptance (the two change-sets compose):** all **8 committed RED pins**
+(`tests/false_fresh_provenance_residual.rs` — B-1/B-2/I-1/I-2 × {REPL value, `--link` no-heap-
+corruption}) **plus MS-P7** (`tests/safety_oracle_lane.rs` — the COW-set→project `--link`
+mode-divergent cell, the 0641 class's third reaching context) flip GREEN **under the tier-4
+differential lane + the three modes**, and ONLY when BOTH change-sets land. The tier-4 oracle
+(analysis-on ≡ analysis-off byte + RC balance) is the standing end-to-end discharge
+(safety-invariants §3d): an elision is correct iff equivalent to the all-`Owned` lowering. W5
+increment order (arch-ruled): tier-5 modes + tier-3 seam asserts FIRST (detector multipliers),
+then this tiers-1–2 fix wave verified under lane + modes.
+
+### 16.5 Riders and cross-refs
+
+- **0623 matrix axes** (`/qa` authors, `/testing` builds): extend with **container-store ×
+  projection-out × capture** (rows 5/6/7), each cell × {in-place, shared} × {REPL, `--link`} ×
+  {ownership-on, ownership-off} — the on/off discriminator is what separates the pure-provenance
+  B-1 face from the backend-stacked B-2/I-2 faces (MS-P7's discriminator, generalized).
+- **CS-5 rustdoc over-claim (`/dev`(backend) rider):** `fn_compiler.rs` §B3.2 claims the
+  `==Fresh` return-protect elision is sound iff **leaf** facts are truthful+reachable — the
+  review disproved it (the WALK launders provenance with truthful, reachable leaf facts). `/dev`
+  scopes the claim honestly to the covered axes when landing the row-5/7 corrections
+  (safety-invariants §6 task 1's named small item). Design-side flag; the edit is backend code.
+- **Spec-diff (§2.3.8/§12):** EMPTY. The ownership analysis is a spec-invisible optimization —
+  the memory model's observable behavior (`spec/10-io.md` §12.4.3 fork-join, §2.3.8) is defined
+  by the all-`Owned` reference semantics, and every rule above is sound iff equivalent to it
+  (the tier-4 oracle IS that equivalence check). No spec case changes; correctness is the
+  oracle, not a new observable.

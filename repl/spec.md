@@ -438,6 +438,8 @@ user> (impl Sizeable Circle (defn size [c] ...))
 impl user/Sizeable for user/Circle
 ```
 
+**Canonical-home qualification.** In `impl Trait for Type`, the trait name and the target type MUST each be qualified by **its own canonical home module** — the module that defines it — not by the module in which the `impl` is written. In the example above both `Sizeable` and `Circle` are user-defined, so both read `user/`. When either name belongs to another module the qualifier follows it there: an impl of the prelude trait `Display` for a user type reads `impl text.display/Display for user/Widget`, and an impl of a user trait for a primitive reads `impl user/Foo for primitives/Int`. Stamping the writing module on a name whose home is elsewhere (`impl user/Display for user/Int`) is a defect — the qualifier is a fully-qualified name and MUST name the real home (the self-documenting-REPL principle; resolve each name's home once per Principle 24). [S113]
+
 A function definition MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure. `<closure>` is reserved for anonymous function *values* (§1.2, §1.5).
 
 | Requirement | Test |
@@ -447,6 +449,7 @@ A function definition MUST NOT display `<closure>` — the user defined a *named
 | deftype shows qualified type name | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
 | deftrait shows trait name | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
 | impl shows `impl Trait for Type` | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| impl qualifies trait + type by canonical home, not the writing module | [S113] |
 | constrained fn shows inline constraints | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
 | overloaded fn shows all variants | [Tested tests/repl_introspection::display_overloaded_fn_shows_all_variants] |
 
@@ -2098,6 +2101,31 @@ Definitions that fail to compile MUST NOT trigger regeneration — the backing f
 On REPL startup, the entry module's backing `.cl` file MUST be loaded through the normal module graph pipeline (with cache hit for fast restore). Definitions from the previous session MUST survive restart — the user resumes where they left off. [R4 S52]
 
 If the backing file does not exist (first session, or user deleted it), the REPL MUST start with an empty module. [R4 S52]
+
+#### 15.2.1 Persistence Authority — Restoration Governs, Redefinition Wins [S113]
+
+The backing `.cl` file is **authoritative for restoration only** — it establishes the definitions the session *starts with*, never overriding what the user enters next. The authority model is precise: [S113]
+
+1. **Restoration.** On startup the backing file's definitions are loaded and become the session's initial state (§15.2). A directory holding a persisted `user.cl` (+ `.cranelisp-cache`) therefore **resumes the prior session**, not a fresh program. [S113]
+2. **Redefinition wins.** Any definition entered in the session **replaces** a restored definition of the same name (§15.6) — just-entered source always governs. On-disk authority never overrides live input. [S113]
+3. **Input is session input, not a fresh program.** Both interactive typing and **piped stdin** (`cranelisp < script.cl` run in a directory with a persisted `user.cl`) are evaluated **against the restored definitions**. A script that references a name it does not itself (re)define resolves that name to the **previous session's** binding — the input augments a resumed session, it does not start a clean one. This is the correct behaviour, but it is a **sharp edge** for anyone applying the `--run` mental model (a self-contained program) to a piped REPL session: the same script piped into an empty directory versus a directory carrying prior state can produce different results. Fresh-program semantics are `cranelisp --run script.cl` (§0.2) or a REPL launched in an **empty** working directory. [S113]
+
+(Ruling record: `tests/plan/s113-test-plan.md` PS-C1 — the discriminator run settled that redefinition wins; the compiler behaves as designed. A companion note lives in the user guide's getting-started material.) [S113]
+
+#### 15.2.2 Startup Restore Notice [S113]
+
+Because a resumed session is not visually distinct from a fresh one, the self-documenting-REPL principle requires the session to **say** it resumed prior state. When startup restores a **non-empty** backing file, the REPL SHOULD emit a single R6-metadata line before the first prompt, naming how much state was restored and from where: [S113]
+
+```
+; resumed 7 definitions from user.cl
+user>
+```
+
+- The count is the number of restored **definitions** (the §15.7 persisted forms), not transient expressions. [S113]
+- The notice MUST be **suppressed when the backing file is absent or empty** — a first session in an empty directory MUST reach the prompt with no extra output, preserving the first-session experience (§6.2) and keeping fresh-directory session transcripts byte-identical. [S113]
+- The notice is startup-only chrome (§10.3 metadata role), never persisted and never part of a value/definition response. [S113]
+
+**Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, and empty-suppression rule above; `/dev` implements it at the session-restore seam and lands the guard (a directory with a persisted `user.cl` shows the line; an empty directory does not). [S113]
 
 ### 15.3 Unified Development Model [R4 S52]
 

@@ -352,6 +352,35 @@ fn rc_dec_check_enabled() -> bool {
     *E.get_or_init(|| std::env::var_os("CRANELISP_RC_DEC_CHECK").is_some())
 }
 
+/// Emit `runtime/rc_dec_check(ptr)` immediately before an inline dec, gated on
+/// the codegen-time `CRANELISP_RC_DEC_CHECK` switch (§15 row 6, the tier-3
+/// category-B seam). A dec of an already-freed heap pointer then aborts AT the
+/// stale dec (with the pointer + JIT stack) instead of silently corrupting a
+/// reused chunk. Off by default ⇒ no emitted call ⇒ **byte-identical codegen**.
+///
+/// The ONE seam (Principle 7) every backend-emitted inline dec routes its check
+/// through: the header-dec path ([`emit_rc_dec_guarded_atomicity`]) AND the
+/// Vec-aware dec (`vec_codegen::emit_vec_rc_dec_with_drop_atomicity` — the COW
+/// copy-branch source release + every vec teardown/scope-exit dec), so the
+/// DEC_CHECK lane sees EVERY backend dec, not only the header-dec inline.
+pub(crate) fn emit_rc_dec_check_gated<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    ptr: Value,
+) {
+    if rc_dec_check_enabled() {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        if let Ok(check_id) =
+            module.declare_function("runtime/rc_dec_check", cranelift_module::Linkage::Import, &sig)
+        {
+            let check_ref = module.declare_func_in_func(check_id, builder.func);
+            builder.ins().call(check_ref, &[ptr]);
+        }
+    }
+}
+
 /// S99 Wave 0 (arch Phase-2 ruling R4). Codegen-time gate for the NON-ATOMIC RC
 /// measurement build. When `CRANELISP_NONATOMIC_RC` is set, the inline RC inc/dec
 /// helpers emit a plain load-modify-store (`iadd`/`isub`) instead of an
@@ -467,22 +496,12 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
         builder.seal_block(dec_block);
     }
 
-    // FIXME 0494 localization: when the codegen-time gate is on, emit a call to
-    // `runtime/rc_dec_check(ptr)` immediately before the inline atomic sub, so a dec
-    // of an already-freed heap pointer aborts AT the stale dec (with the pointer +
-    // JIT stack) instead of silently corrupting a reused chunk. Off by default ⇒ no
-    // emitted call ⇒ byte-identical codegen.
-    if rc_dec_check_enabled() {
-        let mut sig = module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.returns.push(AbiParam::new(types::I64));
-        if let Ok(check_id) =
-            module.declare_function("runtime/rc_dec_check", cranelift_module::Linkage::Import, &sig)
-        {
-            let check_ref = module.declare_func_in_func(check_id, builder.func);
-            builder.ins().call(check_ref, &[ptr]);
-        }
-    }
+    // FIXME 0494 localization (§15 row 6 — via the shared `emit_rc_dec_check_gated`
+    // seam): when the codegen-time gate is on, emit `runtime/rc_dec_check(ptr)`
+    // immediately before the inline atomic sub, so a dec of an already-freed heap
+    // pointer aborts AT the stale dec instead of silently corrupting a reused
+    // chunk. Off by default ⇒ no emitted call ⇒ byte-identical codegen.
+    emit_rc_dec_check_gated(builder, module, ptr);
 
     // S99 stats: count the dec (placed after the nullary skip so bare tags,
     // which never reach here, are not counted).

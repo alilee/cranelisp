@@ -153,3 +153,38 @@ fn let_shadowed_multi_sig_base_call_resolves_to_local_not_overload() {
          not the ambiguous overload base); got:\n{c}"
     );
 }
+
+// PS-SH1 matrix completion — the MULTI-sig-base × VALUE-REF cell (the missing
+// {multi-sig} × {value-ref} corner of {single,multi} × {call,value-ref}). A `let`
+// shadows a multi-sig base `h` with a local closure, and the shadowed name is used
+// in VALUE position (passed to a HOF). The value-ref MUST resolve to the LOCAL
+// closure `(fn [y] 100)` → `(use-hof h)` = 100.
+//
+// RED at HEAD: the value-ref resolves to the module-level multi-sig BASE (not the
+// let-local) → `multi-sig function 'h' cannot be used as a value` — the shadowing
+// fix (PS-SH1 call cell, closed W2) did not cover the value-ref position. The
+// single-sig value-ref twin is GREEN; this multi-sig sibling is the residual.
+// spec: spec/05-definitions.md §5.1.2 + §4.6 — a let binding shadows a multi-sig
+// base in VALUE position; the value-ref sees the local binding.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck value-ref of a let-shadowed multi-sig base resolves to the module overload base, not the local binding found=S113 owner=/dev
+#[test]
+fn let_shadowed_multi_sig_base_value_ref_resolves_to_local_not_overload() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
+             (defn use-hof [f] (f 5))\n\
+             (defn g [] (let [h (fn [y] 100)] (use-hof h)))\n\
+             (defn main [] (Pure (g)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.status.code() == Some(100) && !c.contains("cannot be used as a value"),
+        "the VALUE-REF of a let-shadowed multi-sig base `h` MUST resolve to the \
+         LOCAL closure `(fn [y] 100)` (passed to `use-hof` → 100), NOT the module \
+         overload base ('cannot be used as a value'); got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}

@@ -247,6 +247,8 @@ method_def   = '(' 'defn' method_name '[' param* ']' body ')'
 
 **Slot 1 is fixed, not inferable.** For a higher-kinded impl, slot 1 reproduces the `deftrait` head **verbatim as declared** — the same constructor-variable spelling `(Functor f)`; it is neither renamed nor omitted. A conventional impl's slot 1 is likewise fixed to the bare trait name — it has no binder to vary.
 
+**Declaration requires the trait in scope. [S113]** Slot 1 is a trait *reference*, so the trait it names MUST be in scope at the impl site (resolved per §8.5, §7.3.5 step 1); importing only a *method* of the trait is **not** sufficient to declare an impl of it. This is the declaration side of the method-import ruling: **declaration reaches the trait; dispatch reaches the method** (a method reference alone suffices to *call* a trait method — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices) — but not to *declare* an impl).
+
 There are three forms of trait implementation, presented below.
 
 ### 7.3.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, crates/cranelisp-typecheck/src/traits/tests.rs::test_register_trait_impl, tests/spec_05_definitions::deftrait_impl_and_dispatch]
@@ -401,6 +403,8 @@ When the typechecker encounters a trait method call:
 4. Record a **pending resolution**: the call site, method name, and the (possibly still-unresolved) dispatch type.
 5. After all expressions in the compilation unit are type-checked, apply the final substitution to resolve the dispatch type to a concrete type.
 6. Look up the matching impl for the concrete dispatch type and record the resolved mangled name.
+
+**A method reference suffices for dispatch (§7.11.2). [S113]** The method looked up in step 1 need only be *in scope* — its trait need not separately be in scope. Resolution roots at the method's fully-qualified home, and the impl for the resolved dispatch type (step 6) is found there by keyed lookup on the method's identity and the concrete type (impl coherence is global, §7.11.2 edge (a)). Where an impl for the concrete dispatch type cannot be found or is ambiguous, the diagnostic MUST name the owning trait even when that trait is not in the current module's scope (§7.11.2 edge (c)).
 
 ### 7.4.2 Name Mangling
 
@@ -829,8 +833,8 @@ Trait declarations and implementations participate in the module system (see sec
 
 - A `deftrait` form registers the trait and all its method names in the declaring module.
 - An `impl` form's method implementations are visible per the rule in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) (visibility = reachability of the trait + type names). Where the implementation internally records the impl entry — which module's symbol table holds it — is **implementation-defined**, not pinned by this spec.
-- Trait methods are accessible via import like any other symbol.
-- Method names from different traits MAY collide. If two traits declare methods with the same name and both are in scope, the result is an ambiguous name error at the call site.
+- Trait methods are accessible via import like any other symbol. Importing a method **without** its trait is sufficient to dispatch it — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices).
+- Method names from different traits MAY collide. If two traits declare methods with the same name and both are in scope, the result is an ambiguous name error at the call site; and importing the same method name directly from two modules is a duplicate-import conflict (§8.6.4, §7.11.2 edge (b)).
 
 Note: There is no mechanism for disambiguating same-named methods from different traits at a call site. Users SHOULD choose distinct method names across traits, or use qualified references (`module/method`) to avoid ambiguity.
 
@@ -845,6 +849,24 @@ This rule has three consequences for trait method resolution (see §7.4):
 3. **Impl visibility is determined by the visibility of the trait + type pair.** An impl becomes invisible from a module only when at least one of the trait or the type is unreachable. Private declarations (`deftrait-`, `deftype-`) bound impl reach the same way they bound name reach.
 
 The full normative statement and worked example live in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure). The lookup mechanism (pre-computed index vs. on-demand walk) is implementation-defined.
+
+### 7.11.2 Method-Import Dispatch — a method reference suffices [S113]
+
+**Settled 2026-07-19 (user ruling).** A trait method is dispatchable whenever the **method** is in scope: **importing a trait method without importing its trait is sufficient for dispatch.** A call `(m …)` — or a return-type-dispatched `(m)`, §7.1.1 — resolves and compiles when `m` resolves to a trait-method reference, whether `m` entered scope by importing its **trait** (a `deftrait`/`import` of the trait registers all the trait's method names, §7.1/§7.11) or by importing the **method binding directly** (`(import [home [m]])`). The trait *name* need not separately be in scope.
+
+The reason is identity, not search. A method reference carries the method's **fully-qualified identity**, which names the one trait that declares it and hence that trait's **canonical (home) module**. Resolution roots at that home — a bounded keyed-lookup chain, never a scan (consistent with the resolve-once principle) — where the trait's impls are found by key on the method's identity together with the concrete dispatch type (§7.4). Reaching the method therefore reaches everything dispatch needs.
+
+The following edge cells are normative [S113]:
+
+**(a) Impl coherence is global.** Dispatch never depends on an impl being *separately* visible at the call site. Once the method is in scope and the dispatch type is concrete, the matching impl is found by keyed lookup on (method identity, dispatch type); the impl's declaring module need not be named at the call site, and the trait name need not be in scope. (This refines §5.11.1/§7.11.1: a method reference is itself a sufficient trait-side entry point — it brings the trait's canonical home, where impl reach is anchored, into the current module's import closure — so the "reach the trait" leg of the visibility rule is satisfied by reaching *any of its methods*.)
+
+**(b) Two same-named method imports are an import conflict, not a shadow.** Importing a method named `m` from two different modules — two different traits' `m` — is a duplicate-bare-name **conflict** per [§8.6.4](08-modules.md#864-conflict-rules) (conflict-not-shadow), rejected at compile time, exactly as for any other symbol (§7.11: trait methods "are accessible via import like any other symbol"). **The method import is itself the disambiguator**: a program selects which trait's `m` it dispatches by choosing which module's `m` it imports (or by a fully-qualified reference, §8.6.6). This is the method-import analogue of importing only one of two same-method traits to disambiguate (§7.4.2a) — under this ruling the choice is expressed on the method rather than on the trait.
+
+**(c) Diagnostics name the owning trait even when the trait is not in scope.** A resolution or dispatch error on `m` — no impl for the concrete dispatch type, ambiguity, and so on — MUST name the **owning trait** (`m` belongs to trait `T`), even though `T` was never brought into the module's scope. The method's identity is known at the point of error, so the diagnostic MUST surface the trait it belongs to.
+
+**(d) Declaring an impl still requires the trait head in scope.** This ruling governs **dispatch**, not **declaration**. Writing `(impl T Type …)` — or the higher-kinded pairing form — still requires slot 1, the trait reference, to resolve at the impl site (§7.3, §7.3.5 step 1); importing only a *method* of `T` is **not** sufficient to *declare* an impl of `T`. Declaration reaches the trait; dispatch reaches the method.
+
+**(e) The nullary return-type-dispatched method-only-import cell must accept and compile.** A **return-type-dispatched** method (empty parameter list, `self` in return position, §7.1.1) imported **without** its trait and used at a resolving site (`:Int (zed)`, §3.3.3) MUST typecheck **and** compile to a working call — this closes S112 defect D2 on the **accept** side (the earlier codegen leak on this cell was a compiler bug, not a language rejection; cf. the §7.1.1 note on defect 0628). By the same ruling the **unary** method-only-import case **inverts to accept**: a unary method imported without its trait — previously reported as "no impl in scope" because the trait was absent — dispatches on its argument's concrete type exactly as it would had the trait itself been imported.
 
 ## 7.12 Restrictions and Future Extensions [Tested]
 

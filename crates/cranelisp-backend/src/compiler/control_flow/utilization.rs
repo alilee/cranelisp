@@ -285,7 +285,7 @@ where
         candidate: &MonoExpr,
         recursive: &HashSet<FQSymbol>,
     ) -> Option<(String, bool, bool, Span)> {
-        let MonoExpr::Apply { callee, span, .. } = candidate else {
+        let MonoExpr::Apply { callee, span, resolved_call, .. } = candidate else {
             return None;
         };
         let MonoExpr::Var { name, .. } = callee.as_ref() else {
@@ -293,17 +293,20 @@ where
         };
         let fq = callee_fqsymbol(&self.ctx.current_module, name);
         // Direct self-recursion recovery (the self-edge the `callees` feed drops).
-        // MODULE-PRECISE (S104 Wave 1, Task 0 — `/review` of 4924c26): a bare-name
-        // match alone false-admits a cross-module call `other/fib` from inside
-        // `user/fib` as self-recursive. `fq` is the *resolved* callee FQ and
-        // `self.ctx.current_module` is the enclosing module, so compare the whole
-        // identity — module AND source bare symbol — mirroring the exact-equality
-        // self-call idiom at `apply.rs:169/189`. `current_fn_name` may itself carry
-        // a `module/…$mono` shape, so normalise it through `bare_name` too.
-        let is_self = self.current_fn_name.as_ref().is_some_and(|cur| {
-            fq.module == self.ctx.current_module
-                && fq.symbol.as_ref() == bare_name(cur.as_ref())
-        });
+        // Uses the ONE shared `is_self_call` predicate (FIXME 0654; Principle 7) —
+        // the carrier-keyed identity + the `SigDispatch` mangled-name shape — NOT
+        // the pre-S113 bare written-name compare (which false-admitted a §4.6-
+        // shadowed local named like the fn as self-recursive; the carrier is
+        // absent for a local, so `is_self_call` correctly declines). Scheduling-
+        // only: a mis-classification is sound (lenient-eval §2.8.2). `fq` (composed
+        // from the written name, mono-suffix-stripped) is retained for the SCC-set
+        // membership lookup, a separate concern from the self-edge.
+        let is_self = crate::compiler::is_self_call(
+            callee.as_ref(),
+            resolved_call.as_deref(),
+            &self.ctx.current_module,
+            self.current_fn_name.as_ref(),
+        );
         let scc = is_self || recursive.contains(&fq);
         Some((fq.to_string(), scc, false, *span))
     }
@@ -524,10 +527,20 @@ mod tests {
     // the *actual* codegen methods, not a mirror of their logic.
 
     fn apply_var(callee: &str, ret: cranelisp_types::ConcreteType) -> MonoExpr {
+        apply_var_inner(callee, None, ret)
+    }
+    /// `apply_var` whose callee `Var` carries a `resolved_target` storage FQ — the
+    /// realistic shape the producer records for a resolved reference (the self-
+    /// recursion carve-out records `{module, fn}` for a genuine self-call). The
+    /// carrier-keyed `is_self_call` predicate keys on THIS, not the written name.
+    fn apply_var_c(callee: &str, module: &str, symbol: &str, ret: cranelisp_types::ConcreteType) -> MonoExpr {
+        apply_var_inner(callee, Some(fq(module, symbol)), ret)
+    }
+    fn apply_var_inner(callee: &str, carrier: Option<FQSymbol>, ret: cranelisp_types::ConcreteType) -> MonoExpr {
         MonoExpr::Apply {
             resolved_target: None,
             callee: Box::new(MonoExpr::Var {
-                resolved_target: None,
+                resolved_target: carrier,
                 name: Symbol::from(callee),
                 span: Span::new(0, 0),
                 resolved_call: None,
@@ -593,20 +606,22 @@ mod tests {
 
         let empty: HashSet<FQSymbol> = HashSet::new();
 
-        // (1) Direct self-recursion in the current module → admit (recovered by
-        //     the per-site self-call check even with an empty graph).
+        // (1) Direct self-recursion in the current module → admit. The genuine
+        //     self-call's callee carries the storage FQ `{user, fib}` (the carve-
+        //     out records it); the carrier-keyed `is_self_call` recovers it even
+        //     with an empty graph.
         compiler.current_fn_name = Some(Symbol::from("fib"));
         assert!(
-            compiler.mstatic_admits_candidate(&apply_var("fib", ConcreteType::Int), &empty),
+            compiler.mstatic_admits_candidate(&apply_var_c("fib", "user", "fib", ConcreteType::Int), &empty),
             "self-recursive non-tail `fib` → admit"
         );
 
-        // (2) Task-0 module-blind fix: `other/fib` called from inside `user/fib`
-        //     resolves to module `other` ≠ current `user`, so it is NOT self —
-        //     with an empty graph it is declined (the false-admit the bare-name
-        //     check produced before the fix).
+        // (2) Module-precise (FIXME 0654 / S104 Task 0): `other/fib` called from
+        //     inside `user/fib` carries the storage FQ `{other, fib}` ≠ the current
+        //     identity `{user, fib}`, so `is_self_call` declines it (module AND
+        //     symbol must match) — no bare-name false-admit. Empty graph ⇒ declined.
         assert!(
-            !compiler.mstatic_admits_candidate(&apply_var("other/fib", ConcreteType::Int), &empty),
+            !compiler.mstatic_admits_candidate(&apply_var_c("other/fib", "other", "fib", ConcreteType::Int), &empty),
             "cross-module same-bare-name `other/fib` is NOT self-recursive → decline"
         );
 
@@ -630,9 +645,9 @@ mod tests {
         //     returns exactly the two recursive indices.
         compiler.current_fn_name = Some(Symbol::from("fib"));
         let args = vec![
-            apply_var("fib", ConcreteType::Int),
+            apply_var_c("fib", "user", "fib", ConcreteType::Int),
             apply_var("cell-at", ConcreteType::Int),
-            apply_var("fib", ConcreteType::Int),
+            apply_var_c("fib", "user", "fib", ConcreteType::Int),
         ];
         let idxs =
             find_sparkable_args_with(&args, |e| compiler.mstatic_admits_candidate(e, &empty));
@@ -645,7 +660,7 @@ mod tests {
         // (6) Below the ≥2 gate: a single recursive candidate + flat accessor →
         //     no sparks (the gate suppresses lone candidates).
         let args_one = vec![
-            apply_var("fib", ConcreteType::Int),
+            apply_var_c("fib", "user", "fib", ConcreteType::Int),
             apply_var("cell-at", ConcreteType::Int),
         ];
         assert!(

@@ -206,52 +206,65 @@ impl CompilerSession {
         let mut entries: Vec<InScopeEntry> = Vec::new();
 
         // 1. Current-module own defns + 2. explicit imports — both live in the
-        //    current module's own table; iterate it once and resolve imports.
-        if let Some(table) = self.shared.symbol_tables.get(cur) {
-            for (sym, entry) in table.all_symbols() {
-                let name = sym.as_ref().to_string();
-                // Skip mangled overload/multi-sig variants, the synthetic
-                // `__expr` top-level-expression wrapper, and special forms
-                // (special forms are not "in scope" symbols a user references by
-                // a sig — they surface elsewhere). Mirrors `prelude_implicit_names`
-                // / the `/list` filter (shared `is_internal_listing_name`).
-                if crate::worker::is_internal_listing_name(&name)
-                    || matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. })
-                {
-                    continue;
-                }
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                // Resolve an import to the canonical entry + its defining module
-                // so the rendered signature is the real one (FQ), mirroring the
-                // path `/sig` takes for a re-exported name. ALL feeders — own
-                // defns, explicit imports, implicit prelude — render at full
-                // grain (name + FQ `:Type` sig + docstring) by default (§23.1 /
-                // `repl/spec.md §17.18.1`); the §23.2 budget ladder, not the
-                // symbol's SOURCE, drops the docstring under pressure.
-                let (resolved, home) = self.resolve_entry_for_display(entry, cur);
-                entries.push(self.render_in_scope_entry(&resolved, &name, &home));
+        //    current module's own table. COLLECT owned `(name, entry)` pairs while
+        //    holding the table guard, then DROP the guard BEFORE resolve/render
+        //    (0666): `render_in_scope_entry` → `format_def_entry_doc` re-acquires
+        //    `symbol_tables.get(module)` (the D1 overloaded read-follow), a
+        //    same-shard recursive read that can deadlock a queued writer under
+        //    `--features agent` if the `cur` guard is still held. Collect-then-
+        //    render closes the window. Skip mangled overload/multi-sig variants,
+        //    the synthetic `__expr` wrapper, and special forms (mirrors the
+        //    `/list` filter, shared `is_internal_listing_name`).
+        let own: Vec<(String, cranelisp_types::ModuleEntry<crate::code::Code>)> =
+            if let Some(table) = self.shared.symbol_tables.get(cur) {
+                table
+                    .all_symbols()
+                    .filter(|(sym, entry)| {
+                        !crate::worker::is_internal_listing_name(sym.as_ref())
+                            && !matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. })
+                    })
+                    .map(|(sym, entry)| (sym.as_ref().to_string(), entry.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        for (name, entry) in own {
+            if !seen.insert(name.clone()) {
+                continue;
             }
+            // Resolve an import to the canonical entry + its defining module so the
+            // rendered signature is the real one (FQ), mirroring `/sig` for a
+            // re-exported name. ALL feeders render at full grain by default (§23.1 /
+            // `repl/spec.md §17.18.1`); the §23.2 budget ladder drops the docstring
+            // under pressure, not the symbol's SOURCE. No table guard is held here.
+            let (resolved, home) = self.resolve_entry_for_display(&entry, cur);
+            entries.push(self.render_in_scope_entry(&resolved, &name, &home));
         }
 
         // 3. Implicit prelude — gated on the `prelude_fallback` bit by
-        //    `prelude_implicit_names`. Each name resolves to prelude's canonical
-        //    entry (chain-followed) for the signature.
+        //    `prelude_implicit_names`. Same collect-then-render discipline (0666):
+        //    gather owned entries under the prelude guard, drop it, then render.
+        //    `prelude_implicit_names()` is read BEFORE the guard (it consults
+        //    session state).
         let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
-        for name in self.prelude_implicit_names() {
+        let prelude_names = self.prelude_implicit_names();
+        let prelude_entries: Vec<(String, cranelisp_types::ModuleEntry<crate::code::Code>)> =
+            if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path) {
+                prelude_names
+                    .into_iter()
+                    .filter_map(|name| ptable.get(&name).map(|e| (name, e.clone())))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        for (name, entry) in prelude_entries {
             if !seen.insert(name.clone()) {
                 continue; // an own defn / explicit import already shadows it
             }
-            if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path)
-                && let Some(entry) = ptable.get(&name)
-            {
-                // Implicit-prelude symbols render at full grain too (§23.1 — all
-                // feeders carry the docstring facet, incl. a primitive's §A.5
-                // Description); the §23.2 ladder drops it under budget pressure.
-                let (resolved, home) = self.resolve_entry_for_display(entry, &prelude_path);
-                entries.push(self.render_in_scope_entry(&resolved, &name, &home));
-            }
+            // Implicit-prelude symbols render at full grain too (§23.1); the guard
+            // is already dropped, so the D1 read-follow cannot deadlock.
+            let (resolved, home) = self.resolve_entry_for_display(&entry, &prelude_path);
+            entries.push(self.render_in_scope_entry(&resolved, &name, &home));
         }
 
         if entries.is_empty() {
@@ -297,10 +310,10 @@ impl CompilerSession {
         // single source of truth (Principle 7) rather than string-stripping.
         let stripped = strip_entry_docstring(entry.clone());
         // FIXME 0542: harvest renders the bare-symbol display a human gets by
-        // typing the name — the pure-introspection grain — so a trait's
-        // `; impl:` section is structural (`true`), byte-identical to a bare
-        // lookup / `/sig`.
-        let sig = self.format_def_entry(&stripped, name, home, true);
+        // typing the name — the pure-introspection grain — byte-identical to a
+        // bare lookup / `/sig` (FIXME 0647: an empty trait `; impl:` section is
+        // omitted uniformly, no bare-lookup-vs-echo flag).
+        let sig = self.format_def_entry(&stripped, name, home);
         // Full grain: name + FQ `:Type` signature + docstring — the bare-symbol
         // display a human gets by typing the name. EVERY feeder (own defn,
         // explicit import, implicit prelude) carries its docstring at full grain
@@ -309,7 +322,7 @@ impl CompilerSession {
         // budget ladder, not the symbol's source, drops the docstring (full →
         // sig → name) under pressure — `strip_entry_docstring` is that sig rung,
         // never the default for imports/prelude.
-        let full = self.format_def_entry(entry, name, home, true);
+        let full = self.format_def_entry(entry, name, home);
         InScopeEntry { name: name.to_string(), sig, full }
     }
 

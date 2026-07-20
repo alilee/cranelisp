@@ -6,6 +6,37 @@ filed_at: 2026-07-14
 sprint_filed: 109
 refers_to: crates/cranelisp-typecheck/src/traits/type_resolve.rs (resolve_trait_type_expr, resolve_type_expr_hkt, resolve_type_expr_hkt_impl) + src/form.rs (check_type_expr + collect_type_var_ids) vs resolve.rs::resolve_type_expr
 status: open
+retargeted_to: /design (typecheck deployment)
+scheduled: S114
+---
+
+## S113 disposition (/design frontend, 2026-07-19) — re-targeted, deferred, kept open
+
+Evaluated during the S113 W3 binder-family design (`/design` narrow-deployed to
+**cranelisp-frontend**). **This is NOT frontend surface.** All four mirror
+resolvers named in `refers_to` live in `crates/cranelisp-typecheck/src/` —
+`traits/type_resolve.rs`, `form.rs`, converging onto `resolve.rs`. `/design` is
+narrow-deployed per crate; a frontend deployment owns none of these files, so
+this FIXME cannot be actioned here.
+
+**Re-targeted to /design(typecheck), deferred to S114.** It is a real P7
+`resolver-mirror` convergence, but it is **not** in S113's typecheck wave (W2 is
+mono/carrier-family only — R1/R2/D3/TB-24/D1/D2, SPRINT §Scope-B); opening a
+resolver-convergence refactor there exceeds that wave. The convergence needs a
+shape for Self-substitution + HKT con-var interception + a ruling on the
+`_hkt`/`_hkt_impl` never-error `Named` arms (see §"Proposed resolution") — all
+typecheck-internal design work. **Kept open** (convergence has not happened).
+
+**0589 is NOT blocked on this.** The earlier "0589's frontend leg folds into
+0590" note is superseded: 0589's frontend leg (`parse_annotation_name` routing)
+is a self-contained one-line fix that lands in S113 W3, designed in
+`design/frontend/binder-head-reject.md` §5 — a different crate from 0590.
+
+**Rustdoc-inaccuracy sub-item** (the resolve.rs/checker.rs rustdoc wrongly names
+"trait-method sig" as a `mint=None` still-errors context): a `/dev`(typecheck)
+doc fix independent of the convergence; rides whenever typecheck is next
+deployed.
+
 ---
 
 # Resolver-mirror family: four parallel TypeExpr resolvers each hand-roll the mint-on-miss the canonical resolver just gained

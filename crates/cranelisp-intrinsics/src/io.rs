@@ -1137,7 +1137,7 @@ fn read_capacity(io_ptr: i64) -> i64 {
 /// (FIELD_2_OFFSET, ABI v4 — FIXME 0327 the dispatch funnel).
 ///
 /// The backend stamps field-3 with a pointer to a NUL-terminated UTF-8 C-string
-/// (the `exe.rs::define_cstr_data` convention — read without a length channel)
+/// (int's `src/exe.rs::define_cstr_data` convention — read without a length channel)
 /// after the platform-fn call returns (step 2). A node the backend did not
 /// stamp (a fresh node, or one built by an out-of-tree DLL) keeps field-3 null,
 /// and we degrade to `"<unknown>"` — never crash.

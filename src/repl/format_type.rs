@@ -24,8 +24,9 @@ pub(crate) fn format_overloaded_variants(
     module: &ModuleFullPath,
     variants: &[OverloadVariant],
     docstring: Option<&str>,
+    module_table: Option<&crate::code::SessionSymbolTable>,
 ) -> String {
-    render(&format_overloaded_variants_doc(name, module, variants, docstring))
+    render(&format_overloaded_variants_doc(name, module, variants, docstring, module_table))
 }
 
 pub(crate) fn format_overloaded_variants_doc(
@@ -33,14 +34,14 @@ pub(crate) fn format_overloaded_variants_doc(
     module: &ModuleFullPath,
     variants: &[OverloadVariant],
     docstring: Option<&str>,
+    module_table: Option<&crate::code::SessionSymbolTable>,
 ) -> StyledDoc {
     let mut doc = StyledDoc::new();
     for (i, v) in variants.iter().enumerate() {
         if i > 0 {
             doc.plain("\n");
         }
-        let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
-        let type_str = format_type_qualified(&fn_ty);
+        let type_str = variant_type_str(v, module_table);
         push_type_annotation(&mut doc, &type_str);
         doc.plain(" ");
         push_fq_name(&mut doc, module, name);
@@ -50,6 +51,47 @@ pub(crate) fn format_overloaded_variants_doc(
         }
     }
     doc
+}
+
+/// Render ONE multi-sig variant's type string (D1, `traits.md` §7.0.2).
+///
+/// The bare `OverloadVariant { param_types, ret_type }` cannot encode a trait
+/// bound — constraints live only on a `Scheme`. So a genuinely-constrained clause
+/// (`([a b] (+ a b))` infers `Num a`) rendered from the bare `Type::Fn` DROPS its
+/// constraint (`(Fn [a a] a)` instead of `(Fn [:Num a :Num a] a)`) — a §1.4
+/// non-conformance. The fix READS the recorded settled state: follow
+/// `v.mangled_name` to the clause's template entry in the module's OWN table and
+/// render its `Scheme` (constraints intact) via `format_scheme_type`. This is NOT
+/// the forbidden echo-re-derive shape — it re-derives nothing, it reads the
+/// constraint typecheck already recorded (arch revision 9 principle preserved,
+/// placement corrected to int).
+///
+/// **Binding arch pin:** a fetch miss with a table present is an invariant breach
+/// (the base `Overloaded` entry always co-registers its per-clause template) —
+/// `debug_assert!` + the bare-`Type::Fn` render as the RELEASE fallback ONLY.
+/// Never silent-strip-as-normal, never re-derive from surface syntax. The
+/// no-table path (unit tests without a session) is a distinct benign case that
+/// does not assert.
+fn variant_type_str(
+    v: &OverloadVariant,
+    module_table: Option<&crate::code::SessionSymbolTable>,
+) -> String {
+    if let Some(table) = module_table {
+        if let Some(ModuleEntry::Def { scheme, .. }) = table.get(v.mangled_name.as_ref()) {
+            return crate::display::format_scheme_type(scheme);
+        }
+        debug_assert!(
+            false,
+            "D1 invariant breach: multi-sig variant template `{}` absent from the \
+             module table — its constraint-carrying scheme is unreachable \
+             (traits.md §7.0.2). Rendering the bare `Type::Fn` as the release \
+             fallback (constraint would be silently dropped).",
+            v.mangled_name
+        );
+    }
+    // Release fallback (fetch miss) / no session table (unit tests): bare render.
+    let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
+    format_type_qualified(&fn_ty)
 }
 
 // =============================================================================
@@ -167,25 +209,24 @@ pub(crate) fn format_related_section_doc(label: &str, names: &[&str]) -> StyledD
 pub(crate) fn format_trait_related_sections(
     method_names: &[&str],
     impl_type_names: &[&str],
-    full_impl_section: bool,
 ) -> String {
-    render(&format_trait_related_sections_doc(
-        method_names,
-        impl_type_names,
-        full_impl_section,
-    ))
+    render(&format_trait_related_sections_doc(method_names, impl_type_names))
 }
 
 pub(crate) fn format_trait_related_sections_doc(
     method_names: &[&str],
     impl_type_names: &[&str],
-    full_impl_section: bool,
 ) -> StyledDoc {
     let mut doc = StyledDoc::new();
     if !method_names.is_empty() {
         doc.extend(format_related_section_doc("defn", method_names));
     }
-    if full_impl_section || !impl_type_names.is_empty() {
+    // FIXME 0647: OMIT the `; impl:` drawer when the trait has no implementations,
+    // matching the `deftype` `; match:`/`; impl:` omit-when-empty precedent
+    // (§4.1.3). This makes the definition ECHO and the bare LOOKUP agree — the
+    // former `full_impl_section` gate (0542) that forced an EMPTY drawer on bare
+    // lookup is retired. (/repl re-syncs §4.1.3/§4.1.4 as the normative statement.)
+    if !impl_type_names.is_empty() {
         doc.extend(format_related_section_doc("impl", impl_type_names));
     }
     doc
@@ -267,10 +308,9 @@ impl CompilerSession {
         &self,
         trait_name: &str,
         docstring: Option<&str>,
-        full_impl_section: bool,
         home: &ModuleFullPath,
     ) -> String {
-        render(&self.format_trait_display_doc(trait_name, docstring, full_impl_section, home))
+        render(&self.format_trait_display_doc(trait_name, docstring, home))
     }
 
     /// The `:home/TraitName ; deftrait` trait-display `StyledDoc` (spec §4.1.4) —
@@ -280,7 +320,6 @@ impl CompilerSession {
         &self,
         trait_name: &str,
         docstring: Option<&str>,
-        full_impl_section: bool,
         home: &ModuleFullPath,
     ) -> StyledDoc {
         let tn = TraitName::from(trait_name);
@@ -288,15 +327,12 @@ impl CompilerSession {
         push_type_annotation(&mut result, &format!("{home}/{trait_name}"));
         result.plain(" ");
         push_metadata(&mut result, append_docstring_comment("; deftrait".to_string(), docstring));
-        // FIXME 0542 (§4.1.4): a bare trait lookup MUST ALWAYS surface BOTH the
-        // `; defn:` (method names) and `; impl:` (implementing types) sections —
-        // for user-module traits and stdlib traits alike, and even when the
-        // trait has no impls yet (the `; impl:` header appears with an empty
-        // body). This is DELIBERATELY UNCONDITIONAL, unlike the type-display
-        // rule (§4.1.3), where an empty `; impl:` section is omitted: a trait's
-        // related sections are structural, a type's are conditional.
-        // FIXME 0192 method 4: `get_trait_methods` deleted; inline the 1-line
-        // wrapper over `lookup_trait_decl_chain` — rooted at the trait's HOME.
+        // §4.1.4: the `; defn:` (method names) section always surfaces (a trait
+        // always has methods). The `; impl:` (implementing types) section is
+        // OMITTED when the trait has no implementations (FIXME 0647 — matching the
+        // `deftype` `; match:` omit-when-empty precedent; the echo and the lookup
+        // now agree). FIXME 0192 method 4: `get_trait_methods` deleted; inline the
+        // 1-line wrapper over `lookup_trait_decl_chain` — rooted at the trait's HOME.
         let method_names: Vec<String> = cranelisp_types::lookup_trait_decl_chain(
             &self.shared.symbol_tables, home, &tn,
         )
@@ -310,11 +346,7 @@ impl CompilerSession {
         .collect();
         let method_refs: Vec<&str> = method_names.iter().map(String::as_str).collect();
         let impl_refs: Vec<&str> = impl_type_names.iter().map(String::as_str).collect();
-        result.extend(format_trait_related_sections_doc(
-            &method_refs,
-            &impl_refs,
-            full_impl_section,
-        ));
+        result.extend(format_trait_related_sections_doc(&method_refs, &impl_refs));
         result
     }
 
@@ -442,7 +474,7 @@ mod overloaded_display_tests {
             variant(vec![Type::Int], Type::Int, "pick$Int"),
             variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
         ];
-        let out = format_overloaded_variants("pick", &module, &variants, None);
+        let out = format_overloaded_variants("pick", &module, &variants, None, None);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             lines.len(),
@@ -491,7 +523,7 @@ mod overloaded_display_tests {
             variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
         ];
         let out = format_overloaded_variants(
-            "pick", &module, &variants, Some("Pick one or sum two"),
+            "pick", &module, &variants, Some("Pick one or sum two"), None,
         );
         let lines: Vec<&str> = out.lines().collect();
         assert!(
@@ -512,12 +544,73 @@ mod overloaded_display_tests {
     fn overloaded_display_single_variant_emits_one_line() {
         let module = ModuleFullPath::from("user");
         let variants = vec![variant(vec![Type::Int], Type::Int, "id$Int")];
-        let out = format_overloaded_variants("id", &module, &variants, None);
+        let out = format_overloaded_variants("id", &module, &variants, None, None);
         assert_eq!(
             out.lines().count(),
             1,
             "single-variant Overloaded must emit one line, got: {out}"
         );
+    }
+
+    // D1 (traits.md §7.0.2): a constrained multi-sig clause renders its INFERRED
+    // trait bound inline — the renderer follows `mangled_name` to the clause's
+    // template entry and reads its `Scheme` (constraints intact), NOT the bare
+    // `OverloadVariant` `Type::Fn` (which cannot encode a bound). The load-bearing
+    // seam behind the `multi_sig_variant_display_carries_inferred_num_constraint`
+    // e2e pin.
+    // spec: repl/spec.md §4.1.1 — a multi-sig variant that infers a bound displays it.
+    #[test]
+    fn overloaded_variant_reads_constrained_template_scheme() {
+        use cranelisp_types::{DefKind, FQTraitName, Scheme, TypeId, UserFnState};
+        use std::collections::HashMap;
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // The 2-arg clause's template: `Num a => (Fn [a a] a)`, keyed `h$Var`.
+        let vid: TypeId = 7;
+        let mut constraints: HashMap<TypeId, Vec<FQTraitName>> = HashMap::new();
+        constraints.insert(vid, vec![FQTraitName::new(module.clone(), "Num".into())]);
+        let scheme = Scheme {
+            type_vars: vec![vid],
+            constraints,
+            ty: Type::Fn(
+                vec![Type::Var(vid), Type::Var(vid)],
+                Box::new(Type::Var(vid)),
+            ),
+        };
+        st.insert(
+            "h$Var".into(),
+            ModuleEntry::def(
+                scheme,
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
+            )
+            .build(),
+        );
+        let variants = vec![variant(
+            vec![Type::Var(vid), Type::Var(vid)],
+            Type::Var(vid),
+            "h$Var",
+        )];
+        let out = format_overloaded_variants("h", &module, &variants, None, Some(&st));
+        assert!(
+            out.contains("(Fn [:Num a :Num a] a) user/h"),
+            "the constrained variant MUST render its inferred `Num` bound inline \
+             (read from the template scheme), not the constraint-stripped \
+             `(Fn [a a] a)`; got:\n{out}"
+        );
+    }
+
+    // D1 miss-fallback (binding arch pin): a fetch miss WITH a table present is an
+    // invariant breach — `debug_assert!` fires (this test, debug build) and the
+    // release fallback is the bare `Type::Fn` render, never a silent strip.
+    // spec: traits.md §7.0.2 — the fetch-miss invariant.
+    #[test]
+    #[should_panic(expected = "D1 invariant breach")]
+    fn overloaded_variant_fetch_miss_with_table_trips_debug_assert() {
+        let module = ModuleFullPath::from("user");
+        // Empty table: the variant's template mangle is absent → breach.
+        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let variants = vec![variant(vec![Type::Int], Type::Int, "gone$Int")];
+        let _ = format_overloaded_variants("g", &module, &variants, None, Some(&st));
     }
 
 }
@@ -535,69 +628,46 @@ mod trait_related_section_tests {
 
     
 
-    // spec: repl/spec.md §4.1.4 — a PURE INTROSPECTION display
-    // (`full_impl_section = true`: bare lookup / `/sig` / `/info`) surfaces the
-    // `; impl:` section even when the trait has NO implementing types yet (the
-    // header with an empty body). This is the FIXME-0542 seam.
+    // spec: repl/spec.md §4.1.4 — FIXME 0647: an impl-less trait OMITS the empty
+    // `; impl:` section on BOTH the bare lookup and the definition echo (the
+    // former 0542 always-emit-on-lookup rule is retired), matching the `deftype`
+    // `; match:` omit-when-empty precedent. Only the `; defn:` section survives.
     #[test]
-    fn trait_sections_full_emits_impl_header_when_impls_empty() {
-        let out = format_trait_related_sections(&["show"], &[], true);
+    fn trait_sections_omit_empty_impl_header() {
+        let out = format_trait_related_sections(&["show"], &[]);
         assert!(
             out.contains("; defn:") && out.contains("show"),
             "the `; defn:` method section MUST list `show`; got:\n{out}",
         );
         assert!(
-            out.contains("; impl:"),
-            "a full introspection display MUST surface the `; impl:` section \
-             even with no impls (§4.1.4, FIXME 0542); got:\n{out}",
-        );
-    }
-
-    // spec: repl/spec.md §1.1 — a DEFINITION ECHO (`full_impl_section = false`)
-    // of a freshly-defined impl-less trait OMITS the empty `; impl:` section
-    // (matching the §1.1 example) so introspection lists exactly one `; impl:`
-    // section for the trait. Regression guard for the negative /qa parser.
-    #[test]
-    fn trait_sections_echo_omits_empty_impl_header() {
-        let out = format_trait_related_sections(&["show"], &[], false);
-        assert!(
-            out.contains("; defn:") && out.contains("show"),
-            "the `; defn:` section MUST still appear on a definition echo; \
-             got:\n{out}",
-        );
-        assert!(
             !out.contains("; impl:"),
-            "a definition echo MUST omit the empty `; impl:` section (§1.1); \
-             got:\n{out}",
+            "an impl-less trait MUST omit the empty `; impl:` section (§4.1.4, \
+             FIXME 0647 — deftype omit-when-empty precedent); got:\n{out}",
         );
     }
 
     // spec: repl/spec.md §4.1.4 — when impls exist the `; impl:` section lists
     // the implementing types and NOTHING else (positive + negative in one).
-    // With impls present the section appears regardless of the flag.
     #[test]
     fn trait_sections_impl_lists_only_implementing_types() {
-        for full in [true, false] {
-            let out = format_trait_related_sections(&["show"], &["Int"], full);
-            // Isolate the `; impl:` body rows (comment lines after the header).
-            let impl_body: Vec<&str> = out
-                .lines()
-                .skip_while(|l| l.trim() != "; impl:")
-                .skip(1)
-                .take_while(|l| l.trim_start().starts_with(';'))
-                .collect();
-            let joined = impl_body.join(" ");
-            assert!(
-                joined.contains("Int"),
-                "the `; impl:` section MUST list `Int` (full={full}); \
-                 body={impl_body:?}",
-            );
-            assert!(
-                !joined.contains("Bool"),
-                "the `; impl:` section MUST NOT leak an unrelated type `Bool` \
-                 (full={full}); body={impl_body:?}",
-            );
-        }
+        let out = format_trait_related_sections(&["show"], &["Int"]);
+        // Isolate the `; impl:` body rows (comment lines after the header).
+        let impl_body: Vec<&str> = out
+            .lines()
+            .skip_while(|l| l.trim() != "; impl:")
+            .skip(1)
+            .take_while(|l| l.trim_start().starts_with(';'))
+            .collect();
+        let joined = impl_body.join(" ");
+        assert!(
+            joined.contains("Int"),
+            "the `; impl:` section MUST list `Int`; body={impl_body:?}",
+        );
+        assert!(
+            !joined.contains("Bool"),
+            "the `; impl:` section MUST NOT leak an unrelated type `Bool`; \
+             body={impl_body:?}",
+        );
     }
 }
 
@@ -626,8 +696,8 @@ mod fq_arg_format_type_tests {
         let s = session();
         let ctor = install_color_red(&s);
         let user = s.current_module_path();
-        let bare = s.format_def_entry(&ctor, "Red", &user, true);
-        let dotted = s.format_def_entry(&ctor, "Color.Red", &user, true);
+        let bare = s.format_def_entry(&ctor, "Red", &user);
+        let dotted = s.format_def_entry(&ctor, "Color.Red", &user);
         assert_eq!(
             bare, dotted,
             "bare `Red` and dotted `Color.Red` MUST render the identical §4.1.2 \
@@ -705,7 +775,7 @@ mod fq_arg_format_type_tests {
         // The current scope is `user`, where `T` is NOT reachable — a scope-rooted
         // lookup (the pre-fix bug) would mis-home to `:user/T` + empty sections.
         assert_ne!(s.current_module_path(), home);
-        let out = s.format_trait_display("T", None, true, &home);
+        let out = s.format_trait_display("T", None, &home);
         assert!(
             out.contains(":home/T ; deftrait"),
             "primary line MUST qualify the RESOLVED home, not the asking scope; got: {out}"

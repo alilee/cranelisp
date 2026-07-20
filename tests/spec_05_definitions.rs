@@ -116,6 +116,280 @@ fn defn_qualified_head_rejected_binder_neg() {
     );
 }
 
+// =============================================================================
+// BD-M1 — Binder-generalization matrix (spec/05-definitions.md §5, "Declaration
+// heads are binders"; user ruling 2026-07-18 generalized to ALL native binder
+// heads). ONE frontend seam (`reject_qualified_binder_head`, arch Q3); the matrix
+// pressures that seam — a form whose cell fails differently has grown its own
+// path. Each NATIVE binder form gets a {qualified-head reject, bare-head accept}
+// twin. `defn` is pinned above; `deftrait` (bare + parenthesized + method-name)
+// lives in spec_07_traits.rs. All qualified-head rejects are RED today (silent-
+// accept); they flip at W3 when /dev(frontend) lands the shared reject seam. The
+// located-reject proxy is `!contains("not found")` — a LOCATED binder reject at
+// the head, never an incidental downstream `module … not found` resolution error.
+// defect notation on the reject rows: the shared frontend seam, per arch Q3.
+// =============================================================================
+
+// BD-M1 defn- (private) — qualified head reject.
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (defn-).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::get_defn_name found=S113 owner=/dev
+#[test]
+fn defn_private_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(defn- fmt/foo [x] x)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified `defn-` head `fmt/foo` MUST be a compile-time error (§5 \
+         binder principle); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/foo"),
+        "the qualified head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 defn- (private) — bare-head accept TWIN.
+// spec: spec/05-definitions.md §5.11 — a bare `defn-` head binds normally.
+#[test]
+fn defn_private_bare_head_accepts_twin() {
+    let out = repl_prims("(defn- helper2 [x] x)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare `defn-` head MUST bind without error; got:\n{c}"
+    );
+}
+
+// BD-M1 deftype — qualified head reject.
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (deftype).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs found=S113 owner=/dev
+#[test]
+fn deftype_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(deftype fmt/Color Red2)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified `deftype` head `fmt/Color` MUST be a compile-time error \
+         (§5 binder principle); got:\n{c}"
+    );
+    assert!(
+        !c.contains("not found"),
+        "the qualified head MUST be a LOCATED binder reject at the head, NOT an \
+         incidental `module 'fmt' … not found` resolution error (the deftype head \
+         is treated as a REFERENCE into module `fmt` today); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/Color"),
+        "the qualified head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 deftype — bare-head accept TWIN.
+// spec: spec/05-definitions.md §5.2 — a bare `deftype` head binds normally.
+#[test]
+fn deftype_bare_head_accepts_twin() {
+    let out = repl_prims("(deftype Colour Red3 Green3)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare `deftype` head MUST bind without error; got:\n{c}"
+    );
+}
+
+// BD-M1 deftype- (private) — qualified head reject.
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (deftype-).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs found=S113 owner=/dev
+#[test]
+fn deftype_private_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(deftype- fmt/Secret Hidden2)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified `deftype-` head `fmt/Secret` MUST be a compile-time error \
+         (§5 binder principle); got:\n{c}"
+    );
+    assert!(
+        !c.contains("not found"),
+        "the qualified head MUST be a LOCATED binder reject at the head, NOT an \
+         incidental `module 'fmt' … not found` resolution error; got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/Secret"),
+        "the qualified head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 deftype- (private) — bare-head accept TWIN.
+// spec: spec/05-definitions.md §5.11 — a bare `deftype-` head binds normally.
+#[test]
+fn deftype_private_bare_head_accepts_twin() {
+    let out = repl_prims("(deftype- Secret2 Hidden3)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare `deftype-` head MUST bind without error; got:\n{c}"
+    );
+}
+
+// BD-M1 defmacro — qualified head reject.
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (defmacro).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs found=S113 owner=/dev
+#[test]
+fn defmacro_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(defmacro fmt/mm [] 0)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified `defmacro` head `fmt/mm` MUST be a compile-time error (§5 \
+         binder principle); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/mm"),
+        "the qualified head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 defmacro — bare-head accept TWIN.
+// spec: spec/05-definitions.md §5.5 — a bare `defmacro` head binds normally.
+#[test]
+fn defmacro_bare_head_accepts_twin() {
+    let out = repl_prims("(defmacro mm2 [] 0)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare `defmacro` head MUST bind without error; got:\n{c}"
+    );
+}
+
+// BD-M1 defmacro- (private) — qualified head reject.
+// spec: spec/05-definitions.md §5 — Declaration heads are binders (defmacro-).
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs found=S113 owner=/dev
+#[test]
+fn defmacro_private_qualified_head_rejected_binder_neg() {
+    let out = repl_prims("(defmacro- fmt/mm [] 0)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "the qualified `defmacro-` head `fmt/mm` MUST be a compile-time error (§5 \
+         binder principle); got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/mm"),
+        "the qualified head MUST NOT silently bind; got:\n{}",
+        out.stdout
+    );
+}
+
+// BD-M1 defmacro- (private) — bare-head accept TWIN.
+// spec: spec/05-definitions.md §5.11 — a bare `defmacro-` head binds normally.
+#[test]
+fn defmacro_private_bare_head_accepts_twin() {
+    let out = repl_prims("(defmacro- mm3 [] 0)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !c.to_lowercase().contains("error"),
+        "a bare `defmacro-` head MUST bind without error; got:\n{c}"
+    );
+}
+
+// BD-M2 (MACRO ROUTE — the distinct path to the same seam). An inline `defmacro`
+// whose expansion emits a `defn` with a QUALIFIED head must reject after
+// expansion, on the same §5 binder principle — a qualified binder head is illegal
+// however it is produced. Stdlib-free: an inline macro, NOT stdlib `def`.
+// Silent-accept today → RED; the reject flips at W3 (the shared frontend seam
+// reaches macro-expansion output at `build_form`).
+// spec: spec/05-definitions.md §5 — the binder rule reaches macro-expansion output.
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs (post-expansion binder reject) found=S113 owner=/dev
+#[test]
+fn macro_route_qualified_defn_head_rejected_binder_neg() {
+    let out = repl_prims("(defmacro mkbad [] `(defn fmt/gen [x] x))\n(mkbad)\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a macro whose expansion emits a qualified `defn` head `fmt/gen` MUST be \
+         rejected post-expansion (§5 binder principle reaches macro output); today \
+         it silently accepts. got:\n{c}"
+    );
+    assert!(
+        !out.stdout.contains("user/fmt/gen"),
+        "the macro-route qualified head MUST NOT silently bind `user/fmt/gen`; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
+// Every `a..b` span appearing in `at N..M` positions in the output.
+fn spans(s: &str) -> Vec<(u64, u64)> {
+    let mut v = Vec::new();
+    for seg in s.split("at ") {
+        let a_digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if a_digits.is_empty() {
+            continue;
+        }
+        let rest = &seg[a_digits.len()..];
+        if let Some(after) = rest.strip_prefix("..") {
+            let b_digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if b_digits.is_empty() {
+                continue;
+            }
+            if let (Ok(a), Ok(b)) = (a_digits.parse::<u64>(), b_digits.parse::<u64>()) {
+                v.push((a, b));
+            }
+        }
+    }
+    v
+}
+
+// BD-M2 (span provenance cell) — when the macro-route reject fires, its diagnostic
+// span MUST point at the USER's WRITTEN form, not the synthesized `defn`. Per
+// `design/int/macro-diagnostic-reanchoring.md` (arch-approved option (a), FIXME
+// 0650), int re-anchors the synthetic-located diagnostic from macro-expansion
+// output to the origin form's span and appends an `in expansion of …` provenance.
+// The W4 0650 seam LANDED — the diagnostic now reads `parse error at 0..8:
+// 'fmt/gen2' …  in expansion of `(mkbad2)``. The span is turn-relative (each REPL
+// line is its own turn with 0-based spans — the invocation `(mkbad2)` is
+// legitimately at column 0, so `0..8` is a REAL span, not degenerate). Heuristic:
+// a real `a..b` span (b > a), NOT the `0..0` degenerate band, NOT the ≥1_000_000
+// synthetic band, NOT `__macro_` internals, and the `in expansion of` provenance
+// present. (An earlier `start > 0` proxy was turn-relative-offset-blind and
+// wrongly RED'd the correct `0..8` span.)
+// spec: spec/05-definitions.md §5 — macro-route reject span points at the written form.
+// defect: class=silent-accept locus=src/process_form.rs::reanchor_expansion_diagnostic (re-anchor synthetic diagnostic to origin span + append provenance, FIXME 0650) found=S113 owner=/dev
+#[test]
+fn macro_route_qualified_head_reject_span_at_written_form() {
+    let program = "(defmacro mkbad2 [] `(defn fmt/gen2 [x] x))\n(mkbad2)\n";
+    let out = repl_prims(program);
+    let c = format!("{}{}", out.stdout, out.stderr);
+    // Precondition: the reject must actually fire (shared with BD-M2 reject; W3).
+    assert!(
+        c.to_lowercase().contains("error"),
+        "precondition: the macro-route qualified head must be rejected; got:\n{c}"
+    );
+    // Provenance: the re-anchoring appends the origin-form context.
+    assert!(
+        c.contains("in expansion of"),
+        "the re-anchored diagnostic MUST append the `in expansion of …` provenance \
+         (FIXME 0650 seam); got:\n{c}"
+    );
+    // Span heuristic: at least one REAL span (b > a), none degenerate `0..0`, none
+    // in the ≥1_000_000 synthetic band, no `__macro_` internals.
+    let sp = spans(&c);
+    assert!(
+        !c.contains("__macro_")
+            && !sp.contains(&(0, 0))
+            && sp.iter().all(|(a, b)| *a < 1_000_000 && *b < 1_000_000)
+            && sp.iter().any(|(a, b)| b > a),
+        "the macro-route reject diagnostic MUST re-anchor to the user's written \
+         form — a real `a..b` span (NOT `0..0`, NOT the ≥1_000_000 synthetic band, \
+         NOT `__macro_` internals) (FIXME 0650, W4 int seam); spans seen = {sp:?}; \
+         got:\n{c}"
+    );
+}
+
 // spec: spec/05-definitions.md §5.1.1 — defn with multiple params
 #[test]
 fn defn_multi_params() {

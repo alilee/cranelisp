@@ -472,12 +472,43 @@ where
 {
     if let Some((module_part, symbol_part)) = split_qualified(name) {
         return resolve_qualified(
-            symbol_tables, module_aliases, current_module, &module_part, &symbol_part, span,
+            symbol_tables, module_aliases, first_hop, current_module, &module_part,
+            &symbol_part, span,
         );
     }
 
-    // Unqualified short-name: first hop is the caller-chosen view; subsequent
-    // hops read committed tables (dependencies are always committed).
+    // Unqualified short-name: resolve through the caller-chosen view.
+    resolve_current_via_view(symbol_tables, first_hop, current_module, name, span)
+}
+
+/// Current-module view resolution: first hop through the caller-chosen VIEW
+/// (staging ∪ live), chain-follow with the AN-5 same-module staging arm
+/// ([`chain_follow_committed`]), visibility filter. The ONE body behind BOTH
+/// spellings of a current-module reference (Principle 7):
+///
+/// - the bare short name ([`resolve_one`]'s unqualified leg), and
+/// - the current-module-qualified `cur/sym` ([`resolve_qualified`]'s own-module
+///   arm — S113 0655, user ruling (a)): per TB-25 resolved identity, `cur/sym`
+///   written inside `cur` is another SPELLING of the local name, so it must see
+///   exactly what the bare spelling sees (staging, the in-flight cluster), and
+///   a member absent from the view is the bare **not-found** class — never
+///   [`ResolveError::QualifiedModuleUnknown`], which the orchestrator promotes
+///   to a load-and-retry gap (a current-module gap is the 0655 false
+///   self-dependency mint: "circular dependency detected: m -> m").
+fn resolve_current_via_view<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    name: &str,
+    span: Span,
+) -> Result<Resolved<C>, ResolveError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    // First hop is the caller-chosen view; subsequent hops read committed
+    // tables (dependencies are always committed), with the AN-5 same-module
+    // staging arm inside the chain-follow.
     let sym = Symbol::from(name);
     let head = first_hop
         .lookup(&sym)
@@ -535,15 +566,23 @@ where
         _ => return first,
     };
 
+    // §8.6.4: the prelude fallback applies to BARE names only — a qualified
+    // reference names its module directly. This guard is load-bearing since
+    // the 0655 own-module view arm: a CURRENT-module-qualified miss now
+    // returns the bare not-found class (deliberately — it must never mint a
+    // load-and-retry gap), and without this guard that miss would consult the
+    // prelude (`user/ghost` resolving to the prelude's `ghost` would be a
+    // wrong-accept against the written spelling; MC-X3b).
+    if split_qualified(name).is_some() {
+        return first;
+    }
+
     match first {
         Ok(resolved) => Ok(resolved),
         // Only an inner-scope MISS triggers the prelude retry. Hard failures
         // (private, unknown qualified module) are returned as-is — they are
-        // not "the name is absent here", so the outer scope does not apply. A
-        // qualified `mod/sym` names its module directly and never reaches here
-        // as a not-found miss subject to retry (the qualified branch inside
-        // `resolve_one` returns `QualifiedModuleUnknown`/`PrivateInaccessible`,
-        // not the bare not-found class).
+        // not "the name is absent here", so the outer scope does not apply.
+        // (Qualified names never reach the retry — the guard above.)
         Err(ResolveError::TraitNotFound { .. })
         | Err(ResolveError::TypeNotFound { .. })
         | Err(ResolveError::ConstructorNotFound { .. }) => {
@@ -688,12 +727,17 @@ pub fn check_binding_addition(
 }
 
 /// Qualified `mod/sym` resolution (Principle 17 shape 2). Applies §8.6.6
-/// longest-prefix alias substitution to `module_part`, then looks `symbol_part`
-/// up directly in the alias-resolved module. No chain-follow on the symbol —
-/// a qualified reference names its module directly.
+/// longest-prefix alias substitution to `module_part`; a reference whose
+/// alias-resolved module is the CURRENT module delegates to
+/// [`resolve_current_via_view`] (S113 0655 — the qualified spelling of a local
+/// name resolves identically to the bare spelling, staging included); any
+/// other module resolves via the committed tables (dependencies are always
+/// committed), chain-following within the named module (a qualified name may
+/// land on a re-export that points further on).
 fn resolve_qualified<C, L>(
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,
     current_module: &ModuleFullPath,
     module_part: &ModuleFullPath,
     symbol_part: &str,
@@ -704,6 +748,19 @@ where
     L: LinkerStore,
 {
     let resolved_module = substitute_module_alias(module_aliases, module_part);
+    // S113 0655 (user ruling (a); TB-25 resolved identity): a reference
+    // qualified with the CURRENT module — after §8.6.6 alias substitution —
+    // is another spelling of the local name. Resolve it through the caller's
+    // first-hop VIEW exactly like the bare spelling: the committed-only
+    // primitive below cannot see the caller's staging mid-cluster (the AN-5
+    // asymmetry this arm removes), and its `QualifiedModuleUnknown` for a
+    // mid-compile current module is what minted the 0655 false
+    // self-dependency gap.
+    if resolved_module == *current_module {
+        return resolve_current_via_view(
+            symbol_tables, first_hop, current_module, symbol_part, span,
+        );
+    }
     // Chain-follow the symbol within the named module too (a qualified name
     // may land on a re-export that points further on).
     let (entry, home, storage_key) =

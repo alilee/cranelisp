@@ -385,7 +385,12 @@ pub(crate) fn register_macro_in_module(
         if let Some(doc) = &info.docstring {
             builder = builder.docstring(doc.clone());
         }
-        table.insert(name.clone(), builder.build());
+        let entry = builder.build();
+        // R7 grep-guard (§8.3): observe the foreground macro-Def register. A `Def`
+        // (macro) entry is non-`Import`, so `assert_prelude_closure` short-circuits
+        // to valid WITHOUT a map read — safe while the `get_mut` guard is held.
+        crate::imports::assert_prelude_closure(env.symbol_tables, module, name.as_ref(), &entry);
+        table.insert(name.clone(), entry);
     }
     Ok(())
 }

@@ -11,6 +11,24 @@ type FnValueArgSite = (Symbol, Symbol, Span, Vec<Type>, Option<ModuleFullPath>);
 /// (callee_name, arg_spans, call_span, home_of_imported_callee).
 type MonoCallSite = (Symbol, Vec<Span>, Span, Option<ModuleFullPath>);
 
+
+/// The body expressions a mono-collect scan must walk for one `Defn`.
+///
+/// A single-sig defn contributes its one body; a MULTI-sig defn contributes each
+/// clause variant's body (§11.8.3 leg D3 — NEVER `defn.body()`, which asserts
+/// single-variant and panics on a multi-sig defn, `cranelisp-types/src/ast.rs`).
+/// The `MultiSig` harvest runs post-`finalize_multi_sig_variant_types` so every
+/// clause is settled concrete before its body is scanned. The base defn name is
+/// the self-exclusion key in either case (a clause's own `(build …)` self-call is
+/// overloaded-base dispatch handled by the drain, not a mono leaf).
+fn mono_scan_bodies(defn: &Defn) -> Vec<&Expr> {
+    if defn.is_multi_sig() {
+        defn.variants.iter().map(|v| &v.body).collect()
+    } else {
+        vec![defn.body()]
+    }
+}
+
 // --- Name mangling for multi-sig overload dispatch ---
 
 
@@ -147,12 +165,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // call site — its arg types are the defn's own generic vars).
         let mut local_calls = Vec::new();
         for defn in defns {
-            Self::collect_constrained_calls_excluding_self(
-                defn.body(),
-                &defn.name,
-                constrained_fn_names,
-                &mut local_calls,
-            );
+            for body in mono_scan_bodies(defn) {
+                Self::collect_constrained_calls_excluding_self(
+                    body,
+                    &defn.name,
+                    constrained_fn_names,
+                    &state.method_resolutions.resolved_targets,
+                    &mut local_calls,
+                );
+            }
         }
         let mut call_sites: Vec<MonoCallSite> = local_calls
             .into_iter()
@@ -164,12 +185,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // module. These are NOT in `constrained_fn_names` (their local name is a
         // `ModuleEntry::Import`), so the local collection above never sees them.
         for defn in defns {
-            self.collect_imported_constrained_calls(
-                state,
-                defn.body(),
-                constrained_fn_names,
-                &mut call_sites,
-            );
+            for body in mono_scan_bodies(defn) {
+                self.collect_imported_constrained_calls(
+                    state,
+                    body,
+                    constrained_fn_names,
+                    &mut call_sites,
+                );
+            }
         }
 
         // FIXME 0373 (Tier 1, /arch ruling (A) — monomorphise polymorphic-result
@@ -192,13 +215,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // caller-GOT-slot mechanism, widening the trigger from "constrained /
         // imported callee" to "polymorphic-result hop reached at a concrete type".
         for defn in defns {
-            self.collect_local_parametric_calls(
-                state,
-                defn.body(),
-                &defn.name,
-                constrained_fn_names,
-                &mut call_sites,
-            );
+            for body in mono_scan_bodies(defn) {
+                self.collect_local_parametric_calls(
+                    state,
+                    body,
+                    &defn.name,
+                    constrained_fn_names,
+                    &mut call_sites,
+                );
+            }
         }
 
         // FIXME 0374 (Tier 2 — the `(Box a)`-field-through-HOF gap). Collect
@@ -210,10 +235,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // mangled name in that defn's stored AST after minting.
         let mut fn_value_arg_sites: Vec<FnValueArgSite> = Vec::new();
         for defn in defns {
-            let mut sites = Vec::new();
-            self.collect_parametric_fn_value_args(state, defn.body(), &mut sites);
-            for (arg_name, arg_span, param_types, home) in sites {
-                fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types, home));
+            for body in mono_scan_bodies(defn) {
+                let mut sites = Vec::new();
+                self.collect_parametric_fn_value_args(state, body, &mut sites);
+                for (arg_name, arg_span, param_types, home) in sites {
+                    fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types, home));
+                }
             }
         }
 
@@ -399,6 +426,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // mono-collection chokepoint had been missed).
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
+            // FIXME 0653 — skip a §4.6 LOCAL shadow (see collect_local_parametric_calls).
+            && callee_has_keyed_carrier(&state.method_resolutions.resolved_targets, callee.span())
             && !constrained_fn_names.contains(name)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
             && resolved.home != state.current_module
@@ -497,6 +526,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && name != self_name
+            // FIXME 0653 — skip a §4.6 LOCAL shadow: a callee whose span carries
+            // no keyed `resolved_targets` carrier resolved to a let/fn/param
+            // binding (the shadow gate declined it), NOT the top-level parametric
+            // fn the name-scan would mint. The name is a trigger, not the identity.
+            && callee_has_keyed_carrier(&state.method_resolutions.resolved_targets, callee.span())
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
@@ -646,6 +680,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn collect_constrained_calls(
         expr: &Expr,
         constrained_fn_names: &HashSet<Symbol>,
+        resolved_targets: &HashMap<Span, FQSymbol>,
         out: &mut Vec<(Symbol, Vec<Span>, Span)>,
     ) {
         // Per-node action: record a call site when this node is an Apply whose
@@ -653,13 +688,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && constrained_fn_names.contains(name)
+            // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level constrained fn.
+            && callee_has_keyed_carrier(resolved_targets, callee.span())
         {
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
             out.push((name.clone(), arg_spans, *span));
         }
         // Recurse into children via the shared enumeration helper.
         for_each_child_expr(expr, |child| {
-            Self::collect_constrained_calls(child, constrained_fn_names, out)
+            Self::collect_constrained_calls(child, constrained_fn_names, resolved_targets, out)
         });
     }
 
@@ -678,19 +715,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         self_name: &Symbol,
         constrained_fn_names: &HashSet<Symbol>,
+        resolved_targets: &HashMap<Span, FQSymbol>,
         out: &mut Vec<(Symbol, Vec<Span>, Span)>,
     ) {
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && constrained_fn_names.contains(name)
             && name != self_name
+            // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level constrained fn.
+            && callee_has_keyed_carrier(resolved_targets, callee.span())
         {
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
             out.push((name.clone(), arg_spans, *span));
         }
         for_each_child_expr(expr, |child| {
             Self::collect_constrained_calls_excluding_self(
-                child, self_name, constrained_fn_names, out,
+                child, self_name, constrained_fn_names, resolved_targets, out,
             )
         });
     }

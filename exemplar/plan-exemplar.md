@@ -1127,6 +1127,53 @@ Module-level macro dependency matrix, refined from the Sprint 9 readiness assess
 
 ---
 
+## Multi-sig Vec-helper showcase (S113 Phase 6b)
+
+The S113 §5.1.2 back-flow + D3 fix (a polymorphic callee reached from a
+multi-sig clause body entered via a cross-arity self-call now monomorphises)
+unblocked collapsing an "entry seeds the accumulator" helper *pair* into a
+single idiomatic multi-sig `defn` — the common Clojure shape
+`(defn f ([x] (f x init)) ([x acc] …))`.
+
+**Landed:** `is-solved` / `is-solved-helper` → one multi-sig `is-solved`
+(`grid.cl`). Correct end-to-end (`user.cl` exit 0, `tests.cl` 40/40 parallel ≡
+serial, no UAF under `QUARANTINE+SCRUB`). Its return is a plain `Bool`, so no
+polymorphic consumer is involved.
+
+**Deferred — blocked by the MC-X4 return-consumer residual**
+(`tests/mc_x4_multi_sig_return_consumer.rs`; consumer-side sibling of the
+carrier-loss family, `class=carrier-loss`, owner `/dev(typecheck)`):
+
+- `make-grid` / `make-grid-helper` — collapsing it makes `make-grid`'s
+  `(Option Grid)` return carry a free element-type var (the `Grid`/`SolveResult`
+  ADT fields are *deliberately untyped*, inference-driven), so `user/report`,
+  which **uses** the built grid (feeds `g` to `solve`/`format-board`/
+  `solution-page`), hits `ambiguous type … residual unbound type variable`
+  (`user/report$String`). **Refines MC-X4:** an ADT-wrapped multi-sig return
+  does NOT universally "dodge" — it dodges only when the wrapped value is merely
+  *matched*; when the built value flows into a further polymorphic consumer and
+  the ADT field is untyped, the residual resurfaces (the type-ambiguity face,
+  vs the `undefined function` face MC-X4 pins directly).
+- `peers` / `peers-helper` — bare `(Vec Int)` return consumed by the solver's
+  polymorphic Vec verbs (`count`/`get`) → codegen `undefined function`
+  (the direct MC-X4 shape).
+
+Both stay two-function (annotating the seed or the ADT field to force the
+back-flow would be fighting the language — un-idiomatic for a showcase).
+**Collapse `make-grid`/`peers` once MC-X4 is green.**
+
+**Diagnostic-mode note (S113):** the `is-solved` collapse is memory-neutral in
+every mode except `CRANELISP_ALLOC_PARITY`, where it moves the `user.cl` leak
+delta by a deterministic **one-time +1** (25461 → 25462; `ALLOC_COUNT`
+byte-identical) — a single block the multi-sig RC path retains that the
+two-function form freed (is-solved is called O(propagation-steps) times yet the
+delta moves by only 1, so it is not per-call). It is dwarfed 25000:1 by — and
+in the same family as — the already-pinned MS-P8 copy-per-guess leak (0408),
+which aborts the run regardless. A Track-A micro-datum, not an independent
+regression.
+
+---
+
 ## Next Skills
 
 - `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) remain the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).

@@ -50,9 +50,9 @@ impl CompilerSession {
                 let (resolved_entry, resolved_module) =
                     self.resolve_entry_for_display(&entry, &lookup_module);
                 // §3.8: `/sig` is byte-identical to a bare lookup — a pure
-                // introspection surface, so a trait's `; impl:` section is
-                // structural (`true`, FIXME 0542).
-                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module, true);
+                // introspection surface (FIXME 0647: an empty trait `; impl:`
+                // section is omitted uniformly, no bare-lookup-vs-echo flag).
+                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
                 // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
                 // same primary line plus the provenance comment line.
                 match self.broken_status_line(name, &resolved_module) {
@@ -482,9 +482,9 @@ impl CompilerSession {
         };
         let (resolved_entry, resolved_module) =
             self.resolve_entry_for_display(&entry, &lookup_module);
-        // §3.6: `/info` is a pure-introspection surface — a trait's `; impl:`
-        // section is structural (`true`, FIXME 0542).
-        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module, true);
+        // §3.6: `/info` is a pure-introspection surface (FIXME 0647: an empty
+        // trait `; impl:` section is omitted uniformly).
+        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
         // §3.6 third MUST component (FIXME 0480): the definition source,
         // rendered for BOTH the broken and healthy arms.
         let source = self.info_definition_source(&bare, &resolved_module);
@@ -1522,9 +1522,9 @@ mod fq_arg_commands_tests {
             s.shared.symbol_tables.insert(user.clone(), table);
         }
         let sig = s.handle_sig("dbl");
-        // `/sig` threads `full_trait_sections = true` (§3.8 pure introspection);
-        // match it so the byte-equality holds (the flag is inert for a fn).
-        let expected = s.format_def_entry(&entry, "dbl", &user, true);
+        // `/sig` and the bare-value display share the ONE `format_def_entry`
+        // (§3.8) — byte-equality holds by construction.
+        let expected = s.format_def_entry(&entry, "dbl", &user);
         assert_eq!(
             sig, expected,
             "/sig bare-local MUST render the identical §3.8 primary line as \

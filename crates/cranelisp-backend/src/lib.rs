@@ -113,10 +113,12 @@
 //!   (transitional discriminator: the keyed-fetched entry's
 //!   `callable_got_slot()`). Backend does not emit the platform GOT (the DLL
 //!   exports it).
-//! - **Startup-object hash baking** — [`exe::PlatformLayoutCheck`] +
-//!   `exe::generate_startup_object_checked` bake the compiler-computed layout
-//!   hash + a `cranelisp_check_layout_hash` compare into the `--link` startup
-//!   stub; mismatch aborts at process start with rebuild guidance.
+//! - **Startup-object hash baking** — [`exe::PlatformLayoutCheck`] carries the
+//!   compiler-computed layout hash + platform name into int's `--link` startup
+//!   emission (`int::src/exe.rs`), which bakes a `cranelisp_check_layout_hash`
+//!   compare into the `start` stub; mismatch aborts at process start with
+//!   rebuild guidance. (The orphaned backend startup-`.o` emitter was deleted
+//!   S113 — FIXME 0635 I3; int owns the emission per BC §3 invariant 7.)
 //!
 //! # Persistence
 //!

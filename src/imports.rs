@@ -177,6 +177,77 @@ pub(crate) fn install_exports(
     Ok(())
 }
 
+/// R7/0604 observability rider (`index-worker-isolation.md` §8; `/arch`
+/// `safety-invariants.md` R7). ONE shared seam assert (Principle 7/18) called
+/// BESIDE every live-table insertion. The invariant:
+///
+/// > a **public** binding written into the `prelude` module's live table MUST
+/// > trace to prelude's own declared exports / re-export edges — never a
+/// > foreground compile's import-direction write mis-targeting `prelude` (the
+/// > phantom `bit-and → primitives/bit-and`, FIXME 0604).
+///
+/// **Observability ONLY — no behaviour change.** It does NOT locate or fix the
+/// phantom writer (the S110 disposition re-scoped it to the foreground
+/// concurrent-compile path; no stable RED exists). The deliverable is that the
+/// NEXT firing anywhere NAMES its seam (`debug_assert!` in debug, `MODULE_TRACE`
+/// emit in release) instead of needing another quiet-environment hunt. Because it
+/// is single-sourced, its call sites are the greppable structural guard (§8.3): a
+/// live-table insertion without the assert is a `/review` finding.
+///
+/// The closure check keys on the write's SOURCE (Principle 26 — read the settled
+/// edge, not a name heuristic): a re-export/import edge into prelude is closure-
+/// valid iff its source module GENUINELY provides the name publicly; prelude's own
+/// definition (a non-`Import` entry) is exported by §8.4. An unknown source module
+/// is permitted (cannot judge — observability must NEVER false-fire the build).
+pub(crate) fn assert_prelude_closure(
+    symbol_tables: &SessionTables,
+    module: &ModuleFullPath,
+    name: &str,
+    entry: &ModuleEntry<Code>,
+) {
+    if module.as_ref() != "prelude" || !entry.is_public() {
+        return;
+    }
+    if prelude_write_is_closure_valid(symbol_tables, entry) {
+        return;
+    }
+    if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+        eprintln!(
+            "[MODULE_TRACE] R7 prelude-export-closure breach: public `{name}` \
+             written into the `prelude` live table but not traceable to prelude's \
+             declared export closure (entry: {entry:?})"
+        );
+    }
+    debug_assert!(
+        false,
+        "R7 prelude-export-closure breach: public `{name}` written into the \
+         `prelude` live table but not in its export closure (entry: {entry:?}) — \
+         a foreground import-direction write mis-targeting `prelude` (FIXME 0604)"
+    );
+}
+
+/// Closure-validity of a public write into prelude's table (R7 rider helper).
+fn prelude_write_is_closure_valid(
+    symbol_tables: &SessionTables,
+    entry: &ModuleEntry<Code>,
+) -> bool {
+    match entry {
+        // A re-export / import edge: the SOURCE module must publicly provide the
+        // name. A phantom `bit-and → primitives/bit-and` (bit-and is homed in
+        // num.bits, absent from primitives) fails HERE; a legitimate
+        // `int-to-string → primitives/int-to-string` re-export passes.
+        ModuleEntry::Import { source, .. } => match symbol_tables.get(&source.module) {
+            Some(src) => src
+                .get(source.symbol.as_ref())
+                .map(|e| e.is_public())
+                .unwrap_or(false),
+            None => true, // unknown source module — cannot judge; permit
+        },
+        // Prelude's own definition (§8.4: a public def is exported).
+        _ => true,
+    }
+}
+
 /// Establish a module's session-env companions (prelude-fallback bit, import
 /// `as`-aliases, submodule short-name aliases) from its **already-installed**
 /// symbol table's structural fields (S102 CS-D3a; `design/int/s102-defect-wave.md`
@@ -549,17 +620,22 @@ fn insert_detecting_ambiguity(
                 && let Some(new_term) = terminal_identity(symbol_tables, &new_entry)
                 && prelude_term != new_term
             {
+                // R7 grep-guard (§8.3): observe the poison-sentinel insertion too
+                // (an `Ambiguous` entry is non-`Import` → the assert short-circuits
+                // to valid without a map read, so it is safe beside the insert).
+                let poison = ModuleEntry::Ambiguous { visibility: Visibility::Public };
+                assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &poison);
                 if let Some(mut guard) = symbol_tables.get_mut(current_module) {
-                    guard.insert(
-                        name.clone(),
-                        ModuleEntry::Ambiguous { visibility: Visibility::Public },
-                    );
+                    guard.insert(name.clone(), poison);
                 }
                 let alt_import = format!("{}/{}", new_term.0, new_term.1);
                 let alt_prelude = format!("{}/{}", prelude_term.0, prelude_term.1);
                 return Err(ambiguity_error(&name, &alt_import, &alt_prelude, span));
             }
             // No prelude overlap (or same terminal) — install directly.
+            // R7 rider (§8.3): observe the write BESIDE the insertion (never
+            // inside the §8.6.5 poison decision above — that logic is CORRECT).
+            assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &new_entry);
             if let Some(mut guard) = symbol_tables.get_mut(current_module) {
                 guard.insert(name, new_entry);
             }
@@ -641,11 +717,15 @@ fn insert_detecting_ambiguity(
             // installs Public with the same terminal. Re-point to the
             // more-visible entry so the re-export takes effect (spec §8.4).
             // Equal/downgrade → silent dedup.
-            if !existing.is_public()
-                && new_entry.is_public()
-                && let Some(mut guard) = symbol_tables.get_mut(current_module)
-            {
-                guard.insert(name, new_entry);
+            if !existing.is_public() && new_entry.is_public() {
+                // R7 rider: observe the public visibility-upgrade write BEFORE
+                // acquiring the mutable guard (the assert reads other tables — it
+                // must not run while a `get_mut` guard is held, DashMap shard
+                // re-entrancy).
+                assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &new_entry);
+                if let Some(mut guard) = symbol_tables.get_mut(current_module) {
+                    guard.insert(name, new_entry);
+                }
             }
             continue;
         }
@@ -654,13 +734,11 @@ fn insert_detecting_ambiguity(
         // exemption (S78 §2: `is_seeded` deleted). Install the poison sentinel
         // (spec poison-on-reference model) AND report eagerly with both
         // qualified alternatives so the user can disambiguate.
+        // R7 grep-guard (§8.3): observe the poison-sentinel insertion.
+        let poison = ModuleEntry::Ambiguous { visibility: Visibility::Public };
+        assert_prelude_closure(symbol_tables, current_module, name.as_ref(), &poison);
         if let Some(mut guard) = symbol_tables.get_mut(current_module) {
-            guard.insert(
-                name.clone(),
-                ModuleEntry::Ambiguous {
-                    visibility: Visibility::Public,
-                },
-            );
+            guard.insert(name.clone(), poison);
         }
         let (alt_a, alt_b) =
             qualified_alternatives(&name, &existing_terminal, &new_terminal, &existing, &new_entry);

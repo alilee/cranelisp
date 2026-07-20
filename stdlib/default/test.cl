@@ -11,18 +11,24 @@
 ;; annotation-selected form `(let [x :Int (default)] …)` dispatch to the Int
 ;; impl and compile + run end-to-end.
 ;;
-;; D2 GREEN-FENCE: this module imports BOTH the `Default` TRAIT and the
-;; `default` METHOD via `super`. A nullary return-type-dispatch method imported
-;; WITHOUT its trait leaks `undefined function: default` at codegen (D2,
-;; S112 6a — pinned as a failing test). Importing the trait alongside the
-;; method is the green path; do NOT drop `Default` from this import.
+;; D2 REGRESSION GUARD: this module imports the `default` METHOD ONLY — WITHOUT
+;; the `Default` trait — via `super`. At S112 6a that leaked
+;; `undefined function: default` at codegen; the S113 D2 ruling (method-import
+;; suffices for dispatch, spec §7.11.2) + typecheck fix make it dispatch
+;; correctly, so this method-only import is now the durable guard for that
+;; path. Do NOT re-add `Default` to this import — it would defeat the guard.
+;;
+;; (0672, adjacent open defect: a nullary return-dispatch to a type with NO
+;; impl still leaks `undefined function` instead of a clean reject. The four
+;; impls cover Int/Float/Bool/String, so these tests never hit it; do NOT add a
+;; no-impl negative cell until 0672 is fixed.)
 ;;
 ;; HARNESS-FREE: tests return `(Option String)` directly (None = pass) via
 ;; inline `if`, avoiding `testing.assertions` (whose `assert-eq` carries an
 ;; `Eq` bound). `=` is imported from `compare.eq` for value assertions;
 ;; `compare.eq` does not depend on `default`, so there is no load cycle.
 
-(import [super [Default default]])
+(import [super [default]])
 (import [compare.eq [=]])
 (import [primitives [Int Float Bool String Option Some None]])
 

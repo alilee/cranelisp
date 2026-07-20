@@ -89,6 +89,24 @@ pub fn is_live(ptr: usize) -> bool {
     LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&ptr)
 }
 
+/// Snapshot of the currently-live tracked allocations `(base, size, payload@16)`
+/// (debug builds only). Consumed by the M3 alloc/free parity exit check to
+/// report a non-empty live set (a leak face). The blocks are live, so reading
+/// `payload@16` is sound.
+#[cfg(debug_assertions)]
+pub(crate) fn live_alloc_snapshot() -> Vec<(usize, usize, i64)> {
+    let live = LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner());
+    live.iter()
+        .map(|(&addr, &size)| {
+            // SAFETY: `addr` is a currently-live tracked allocation base of
+            // `size` bytes; `payload@16` is within it when `size >= 24`.
+            let payload =
+                if size >= 24 { unsafe { *((addr as *const u8).add(16) as *const i64) } } else { 0 };
+            (addr, size, payload)
+        })
+        .collect()
+}
+
 /// Reset all counters. Called between tests for isolation.
 pub fn reset_counts() {
     ALLOC_COUNT.store(0, Ordering::Relaxed);
@@ -195,6 +213,11 @@ pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
             .remove(&(base as usize));
     }
 
+    // M3 (design §3): register the alloc/free parity atexit check the first time
+    // a parity gate is observed on. Byte-identical-off — one cached bool load,
+    // no registration when both gates are unset.
+    crate::diagnostics::ensure_parity_registered();
+
     rc::rc_trace("alloc", base as i64, 1);
 
     base
@@ -239,6 +262,16 @@ pub unsafe fn dealloc(base: *mut u8) {
         }
     }
 
+    // A4 release-gated (design §5): header sanity that reads no side table, so it
+    // fires in the release/`--link` lane too. The double-free + header-integrity
+    // halves stay debug-only (they need `LIVE_ALLOCS`); M3's exit parity is their
+    // release face (a double-free shows as DEALLOC_COUNT > ALLOC_COUNT).
+    if crate::diagnostics::rc_check_release_enabled() && total_size < HeapHeader::SIZE {
+        crate::diagnostics::seam_hard_fail(&format!(
+            "dealloc: invalid alloc_size {total_size} at {:#x} (below HeapHeader::SIZE)",
+            base as usize
+        ));
+    }
     debug_assert!(
         total_size >= HeapHeader::SIZE,
         "invalid alloc_size {total_size} at {:#x}",
@@ -250,9 +283,11 @@ pub unsafe fn dealloc(base: *mut u8) {
 
     rc::rc_trace("free", base as i64, 0);
 
+    // Fixed order (design §4): capture FREED_TRACKED identity → (M2) scrub →
+    // (M1) quarantine-or-release → bump DEALLOC_COUNT.
     #[cfg(debug_assertions)]
     {
-        // Capture size + payload word @+16 before releasing, for stale-dec reports.
+        // Capture size + payload word @+16 BEFORE scrubbing, for stale-dec reports.
         let payload_word = unsafe { *((base as *const u8).add(16) as *const i64) };
         FREED_TRACKED
             .lock()
@@ -260,8 +295,16 @@ pub unsafe fn dealloc(base: *mut u8) {
             .insert(base as usize, (total_size, payload_word));
     }
 
-    // SAFETY: base was allocated with this layout by alloc_with_rc.
-    unsafe { alloc::dealloc(base, layout) };
+    // M2 scrub + M1 quarantine-or-release. When both modes are off this is one
+    // cached bool load and `withheld == false` (byte-identical to the old
+    // physical free below).
+    // SAFETY: base is a live allocation of total_size == layout.size() bytes.
+    let withheld = unsafe { crate::diagnostics::scrub_and_dispose(base, layout, total_size) };
+    if !withheld {
+        // SAFETY: base was allocated with this layout by alloc_with_rc and has
+        // not been quarantined.
+        unsafe { alloc::dealloc(base, layout) };
+    }
 
     DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
     BYTES_CURRENT.fetch_sub(total_size, Ordering::Relaxed);

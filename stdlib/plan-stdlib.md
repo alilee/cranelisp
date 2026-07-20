@@ -423,22 +423,45 @@ The stdlib's own test infrastructure. Also available to user programs.
 
 **`default.cl`** — `(deftrait Default (default [] self))`. Impls for Int (0), Float (0.0), Bool (false), String (""), Option (None). The "zero value" trait. Ring 2. Backing self-test `default/test.cl` shipped S112 6b (parent declares `(mod- test)`); exercises each impl via the annotation-selected `(let [x :Int (default)] …)` form (return-type dispatch, S112 leg (c)).
 
-> **Prelude-promotion decision (S112 6b, /stdlib): DEFER to S113.** `Default`/
-> `default` are NOT promoted into the prelude glob this sprint; they stay
-> reached by explicit import (`(import [default [Default default]])`) or FQ.
-> Two independent reasons: **(1)** the bare word `default` is high-traffic —
-> adding it to the prelude glob reserves it against every downstream bare
-> `def` at the §8.6.4 collision surface (see §1.5 "currently-globbed BOUND
-> set"), a heavy reservation to bake in for a niche trait. **(2)** D2 — a
-> nullary return-type-dispatch method imported WITHOUT its trait leaks
-> `undefined function` at codegen (pinned failing test, S112 /testing) — is an
-> **open user normative question** (does importing a trait METHOD without its
-> TRAIT suffice for dispatch, or is trait-in-scope required?). Promoting into
-> the prelude glob changes how `default` is brought into scope and would
-> interact with whatever the D2 ruling settles; promoting BEFORE the ruling
-> risks baking in an interaction we would have to unwind. Revisit in S113
-> AFTER the user rules D2. (/stdlib concurs with the /sprint recommendation;
-> no disagreement.)
+> **Prelude-promotion decision (S113 6b, /stdlib): DECLINE — keep
+> module-qualified.** S112's deferral rested on two reasons; D2 (reason 2) is
+> now RULED and LANDED, so the blocker is gone and the decision is a pure
+> weight call — which /stdlib resolves AGAINST promotion. `Default`/`default`
+> stay reached by explicit import — now `(import [default [default]])`
+> (method-only, no trait) OR `(import [default [Default default]])` OR FQ.
+>
+> **D2 resolved (S113).** The user ruled *importing a trait METHOD without its
+> TRAIT suffices for dispatch* (`spec §7.11.2`); the typecheck fix landed in
+> W2a. Verified end-to-end (S113 6a): `(import [default [default]])` then
+> `(let [x :Int (default)] …)` dispatches to the Int impl and runs — all four
+> impls (Int/Float/Bool/String) confirmed. The S112 "residual defect" note in
+> `default.cl` is retired. This method-only reachability IS the S113 ergonomic
+> win, and it costs zero §8.6.4 reservation.
+>
+> **Promotion is technically sound but declined on intent.** Glob-import
+> return-dispatch works (`(import [default [*]])` → annotated `(default)`
+> resolves; verified), and DEF-1 does not block it (trait methods materialise
+> on demand at the call site, like `+`/`show`). The four reasons to decline:
+> **(1)** the prelude promotes *pervasive bare operators* (`+ = < > show`);
+> `default` is called rarely and is not in this plan's §4 prelude spec.
+> **(2)** `default` is annotation-required to dispatch — bare `(default)` is
+> `§3.11`-ambiguous (verified diagnostic), so it is never "bare and
+> productive" the way `(+ 1 2)` is; promotion saves one import line while the
+> `:Type` annotation stays at every call site. **(3)** `default` is a
+> high-traffic bare word — globbing it reserves it against every downstream
+> module-level `(defn default …)`/`(def default …)` at the §8.6.4 collision
+> surface (§1.5 BOUND set), a poor trade for a niche trait. (Rust precedent
+> cuts *against*: Rust puts the *trait* `Default` in prelude but `default()` is
+> always called qualified — `T::default()` — so the bare word never collides;
+> Cranelisp's `default` is a bare free function.) **(4)** consistency — Hash,
+> Functor, Foldable (the other non-operator foundation traits) are all
+> module-qualified; Default belongs with them.
+>
+> **§1.5 BOUND set unchanged** — `default`/`Default` are NOT added to the glob;
+> no reservation taken. This is a movable boundary: the user arbitrates at
+> Phase 7, and may revisit if a real scenario demands frictionless bare
+> `default` (contingency = the one-line `(export [default [Default default]])`
+> promotion + BOUND-row + §4 update, S114).
 
 **`derive.cl`** — The `derive` dispatch macro: `(derive [Eq Ord Display] MyType)` expands to calls to `derive-Eq`, `derive-Ord`, `derive-Display` which live in their respective trait modules. Ring 3.
 

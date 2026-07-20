@@ -1546,9 +1546,20 @@
         let state = CheckState::new(m.clone());
         let env = tf.env();
         assert_eq!(
-            env.method_to_trait_with_state(&state, &Symbol::from("pub-op")),
+            env.method_to_trait_with_state(&state, &Symbol::from("pub-op")).map(|(tn, _)| tn),
             Some(TraitName::from("PubT")),
             "a PUBLIC prelude trait's method must resolve via the trait fallback"
+        );
+        // D2 (§7.0.1): the method reference carries its trait's HOME module — the
+        // `trait_origin` module, NOT discarded. `PubT` was registered in `prelude`,
+        // so `pub-op`'s home is `prelude`. This is the datum `try_resolve_trait_method`
+        // roots the impl lookup at (instead of re-resolving the bare trait name,
+        // which fails under a method-only import).
+        assert_eq!(
+            env.method_to_trait_with_state(&state, &Symbol::from("pub-op")).map(|(_, home)| home),
+            Some(ModuleFullPath::from("prelude")),
+            "D2 — the method must carry its trait's HOME module (trait_origin), \
+             not just the bare trait name"
         );
         assert!(
             env.method_to_trait_with_state(&state, &Symbol::from("priv-op")).is_none(),

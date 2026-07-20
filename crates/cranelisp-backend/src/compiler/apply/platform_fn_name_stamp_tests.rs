@@ -28,7 +28,8 @@ fn effect_fn_name_offset_is_composed_from_named_constants() {
 //       handle is a NUL-terminated UTF-8 byte sequence (the C-string the
 //       trampoline fault guard reads in step 3, degrading a null handle to
 //       "<unknown>"). This is the same self-describing convention the
-//       layout-hash gate bakes (exe.rs::define_cstr_data).
+//       layout-hash gate bakes (int's src/exe.rs::define_cstr_data — the backend
+//       copy was deleted S113 W2b, FIXME 0635 I3).
 #[test]
 fn baked_fn_name_is_nul_terminated_utf8() {
     let bytes = platform_fn_name_bytes("platform.shapes/rectangle-area");

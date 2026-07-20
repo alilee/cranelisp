@@ -360,6 +360,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             home,
         )?;
 
+        // §11.8.3 leg R2 — overloaded-base dispatch calls (`(h 1)→h$Int`) inside
+        // the minted body are now resolved by the SCOPED DRAIN inside
+        // `recheck_body_for_mono` (the ONE drain, full bifurcation + ret unify),
+        // so their carriers already ride `resolutions` here — no separate scan.
+
         Ok((resolutions, mono_expr_types))
     }
 
@@ -391,8 +396,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) {
         let mut self_calls = Vec::new();
         collect_self_apply_calls(wrap_defn.body(), fn_name, &mut self_calls);
-        for (arg_spans, self_span) in &self_calls {
+        for (callee_span, arg_spans, self_span) in &self_calls {
             if resolutions.resolved_calls.contains_key(self_span) {
+                continue;
+            }
+            // Fix 1 (/arch-directed) — the frame-guarded self-call discriminator.
+            // A `(s1 x)` whose callee `s1` is a `let`/`fn`/param binding shadowing
+            // the base (`(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))`) is NOT
+            // monomorphic self-recursion — it is a LOCAL indirect call. The ONE
+            // shared discriminator `is_recursion_self_ref` (via
+            // `record_reference_target`, run at `infer_var` during THIS recheck)
+            // already made the verdict: a genuine self-call — the base resolving at
+            // the recursion frame — records a callee `resolved_targets` carrier; a
+            // deeper-frame shadow records NONE (the shadow gate returns early). So
+            // a self-apply whose callee span carries no target is a shadow: record
+            // NO SigDispatch, NO carrier → the Apply reaches the backend fully bare
+            // → `compile_var_apply` → `variables` → indirect local call (fixes the
+            // TCO-self-loop hang + the non-tail wrong-value sibling).
+            if !resolutions.resolved_targets.contains_key(callee_span) {
                 continue;
             }
             let self_arg_types: Vec<Type> = arg_spans
@@ -729,7 +750,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 None => continue,
             };
             for fq_trait in traits {
-                if !self.has_impl_with_state(state, &fq_trait.name, &impl_type) {
+                // D2/§7.0.1 P24 — `fq_trait` already holds the trait's HOME
+                // (`.module`); root the impl lookup there via `has_impl_in_home`
+                // rather than re-resolving the BARE `.name` in the caller's scope
+                // (`has_impl_with_state`), which wrong-rejects a method-only import
+                // whose trait is not in caller scope ("no impl of trait blib/Bump
+                // for type Int"). Second "resolve once then throw the home away"
+                // instance this sprint.
+                if !self.has_impl_in_home(&fq_trait.module, &fq_trait.name, &impl_type) {
                     // `fq_trait` is already FQ; render `impl_type` FQ too so the
                     // message disambiguates two same-named ADTs (S87-1).
                     let fq_impl_type =
@@ -772,6 +800,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let saved_resolutions = std::mem::take(&mut state.method_resolutions);
         let saved_expr_types = std::mem::take(&mut state.expr_types);
         let saved_pending_auto_curry = std::mem::take(&mut state.pending_auto_curry);
+        // §11.8.3 leg R2 (W2a /review Important 1) — isolate the OUTER pending
+        // overloads so the scoped drain below resolves ONLY the dispatch calls
+        // THIS mono body defers (`(h 1)` inside `ga$Int`). Without isolation those
+        // deferrals would either leak to the single top-level drain (landing in
+        // the wrong, outer resolutions map — the original R2 carrier-loss) or —
+        // for a D3-harvest recheck that runs AFTER that drain — be dropped
+        // entirely (the residual-unbound-var wrong-reject, Important 1b).
+        let saved_pending_overloads =
+            std::mem::take(&mut state.pending_overload_resolutions);
         // Switch into the defining module for an imported callee so the body's
         // bare-name references resolve in its import context (FIXME 0355).
         let saved_current_module = home.map(|h| {
@@ -780,12 +817,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let result = self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty);
 
-        // Drain pending auto-curry entries into method_resolutions before
-        // capturing. During re-check, auto-curry sites push to
-        // pending_auto_curry but aren't yet in method_resolutions.
-        if result.is_ok() {
-            self.resolve_auto_curry(state);
-        }
+        // Drain the overloaded-base DISPATCH calls the body deferred, reusing the
+        // ONE drain (P7 — full concrete/template bifurcation + return-var
+        // unification): a genuinely-poly selected clause `(h 1 2)` monomorphises
+        // to a concrete instance (never a slot-less `$Var` template mangle,
+        // Important 1a), and the call's result type is pinned (no residual-var
+        // wrong-reject, Important 1b). A locally-shadowed call never deferred (the
+        // §11.8.7 local-scope-first gate), so it is absent here and stays a local.
+        // Self-calls to the mono base are handled inline by the R1 gate (never
+        // pushed), so pass 1 of the drain is a no-op in a mono recheck. THEN the
+        // auto-curry drain (unchanged ordering, mirroring the top-level pass).
+        let drain_result = if result.is_ok() {
+            let r = self.resolve_pending_overloads(state);
+            if r.is_ok() {
+                self.resolve_auto_curry(state);
+            }
+            r
+        } else {
+            Ok(())
+        };
 
         let resolutions = std::mem::take(&mut state.method_resolutions);
         let mono_expr_types: HashMap<Span, Type> = state.expr_types
@@ -796,6 +846,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state.method_resolutions = saved_resolutions;
         state.expr_types = saved_expr_types;
         state.pending_auto_curry = saved_pending_auto_curry;
+        state.pending_overload_resolutions = saved_pending_overloads;
         // Restore the caller's module unconditionally (mirrors the side-state
         // save/restore discipline above).
         if let Some(prev) = saved_current_module {
@@ -803,6 +854,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         result?;
+        drain_result?;
         Ok((resolutions, mono_expr_types))
     }
 
@@ -847,7 +899,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         };
         let mut inner_calls = Vec::new();
-        Self::collect_constrained_calls(defn.body(), &constrained_fn_names, &mut inner_calls);
+        // FIXME 0653 — the recheck's carriers (`resolutions.resolved_targets`) gate
+        // the name-scan: a §4.6 local shadow of a constrained fn has no carrier.
+        Self::collect_constrained_calls(
+            defn.body(),
+            &constrained_fn_names,
+            &resolutions.resolved_targets,
+            &mut inner_calls,
+        );
         for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
             if resolutions.resolved_calls.contains_key(inner_call_span) {
                 continue; // already resolved (e.g. as a trait method)
@@ -921,7 +980,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Collect inner Apply-of-bare-Var call sites first (immutable walk), then
         // monomorphise (mutable) — avoids borrowing `self`/`state` across the walk.
         let mut inner_sites: Vec<(Symbol, Vec<Span>, Span)> = Vec::new();
-        collect_apply_var_calls(defn.body(), &defn.name, &mut inner_sites);
+        // FIXME 0653 — gate the name-scan on the recheck's carriers: a §4.6 local
+        // shadow of a parametric hop has no `resolved_targets` carrier.
+        collect_apply_var_calls(
+            defn.body(),
+            &defn.name,
+            &resolutions.resolved_targets,
+            &mut inner_sites,
+        );
 
         for (inner_name, arg_spans, inner_span) in &inner_sites {
             if resolutions.resolved_calls.contains_key(inner_span) {
@@ -1097,17 +1163,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 pub(super) fn collect_apply_var_calls(
     expr: &Expr,
     self_name: &Symbol,
+    resolved_targets: &HashMap<Span, FQSymbol>,
     out: &mut Vec<(Symbol, Vec<Span>, Span)>,
 ) {
     if let Expr::Apply { callee, args, span, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
         && name != self_name
+        // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level parametric fn: a
+        // callee with no keyed `resolved_targets` carrier resolved to a local.
+        && crate::program::callee_has_keyed_carrier(resolved_targets, callee.span())
     {
         let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
         out.push((name.clone(), arg_spans, *span));
     }
     crate::program::for_each_child_expr(expr, |child| {
-        collect_apply_var_calls(child, self_name, out)
+        collect_apply_var_calls(child, self_name, resolved_targets, out)
     });
 }
 
@@ -1119,14 +1189,18 @@ pub(super) fn collect_apply_var_calls(
 pub(super) fn collect_self_apply_calls(
     expr: &Expr,
     self_name: &Symbol,
-    out: &mut Vec<(Vec<Span>, Span)>,
+    out: &mut Vec<(Span, Vec<Span>, Span)>,
 ) {
     if let Expr::Apply { callee, args, span, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
         && name == self_name
     {
         let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-        out.push((arg_spans, *span));
+        // Carry the CALLEE `Var` span too: the self-call classifier
+        // (`record_self_recursion_dispatch`) needs it to consult the frame-guarded
+        // `is_recursion_self_ref` verdict `record_reference_target` recorded for
+        // this callee during the recheck (a let-shadowed base has NO carrier).
+        out.push((callee.span(), arg_spans, *span));
     }
     crate::program::for_each_child_expr(expr, |child| {
         collect_self_apply_calls(child, self_name, out)

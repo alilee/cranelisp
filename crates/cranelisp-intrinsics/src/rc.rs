@@ -433,6 +433,14 @@ pub fn consume_shallow(ptr: i64) {
         old_rc > 0,
         "consume_shallow underflow: ptr={ptr:#x} had rc={old_rc} before decrement"
     );
+    // A2 release-gate (safety-invariants §5): the underflow half fires in the
+    // release/`--link` lane too. Under M2 scrub a stale dec reads a poisoned
+    // (wild-negative) rc, so `old_rc <= 0` names the seam at the offending dec.
+    if crate::diagnostics::rc_check_release_enabled() && old_rc <= 0 {
+        crate::diagnostics::seam_hard_fail(&format!(
+            "consume_shallow: dec of ptr {ptr:#x} with rc={old_rc} <= 0 (stale/poisoned dec)"
+        ));
+    }
     rc_trace("dec", ptr, old_rc - 1);
     if old_rc == 1 {
         std::sync::atomic::fence(Ordering::Acquire);
@@ -473,6 +481,18 @@ pub fn rc_inc(ptr: i64) {
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to inc
     }
+    // A1 (safety-invariants §4 R8 / §5, the inc-half of FIXME 0494's dec-half):
+    // an inc of a freed/poisoned pointer is a defect. Debug asserts liveness AT
+    // the offending inc — before any deref, so a stale (freed) pointer names its
+    // seam here rather than resurrecting a dead/reused chunk. Under M1 quarantine
+    // `is_live` stays false forever, making this fire deterministically.
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        alloc::is_live(ptr as usize),
+        "STALE RC INC (rc_inc): inc of non-live heap pointer {ptr:#x} — already \
+         freed; the inc resurrects or corrupts a dead/reused chunk. \
+         (safety-invariants R8 / seam A1.)"
+    );
     if rc_stats_enabled() {
         tally_rc_inc();
     }
@@ -487,6 +507,13 @@ pub fn rc_inc(ptr: i64) {
         };
         rc_ptr.fetch_add(1, Ordering::Release)
     };
+    // A1 release-gate: the `rc > 0` half fires in the release/`--link` lane too.
+    // A poisoned rc (M2) reads wild-negative, so `old_rc <= 0` names the seam.
+    if crate::diagnostics::rc_check_release_enabled() && old_rc <= 0 {
+        crate::diagnostics::seam_hard_fail(&format!(
+            "rc_inc: inc of ptr {ptr:#x} with rc={old_rc} <= 0 (stale/poisoned inc)"
+        ));
+    }
     rc_trace("inc", ptr, old_rc + 1);
 }
 

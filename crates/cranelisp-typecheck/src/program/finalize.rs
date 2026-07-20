@@ -1035,14 +1035,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.register_test_fn_mono_roots(state)?;
 
         // Pass 5: drain the deferred multi-sig/overload resolutions and
-        // auto-curry. `resolve_pending_overloads` has exactly ONE call site (this
-        // one) — the SINGLE drain of `state.pending_overload_resolutions`, which
-        // `infer.rs` fills whenever a call targets an overloaded base (it mints a
-        // fresh return var and defers, NOT resolving per-defn). It unifies each
-        // deferred call's return var with the selected variant's concrete return
-        // and records the `SigDispatch` resolution at the call span. (Corrects the
-        // former "already resolved per-defn" comment — I1: nothing drains
-        // per-defn; this ordering is load-bearing for the LEG-2 value scan below.)
+        // auto-curry. This is the TOP-LEVEL drain of `state.pending_overload_
+        // resolutions`, which `infer.rs` fills whenever a call targets an
+        // overloaded base (it mints a fresh return var and defers, NOT resolving
+        // per-defn). It unifies each deferred call's return var with the selected
+        // variant's concrete return and records the `SigDispatch` resolution at
+        // the call span. (Corrects the former "already resolved per-defn" comment
+        // — I1: nothing drains per-defn; this ordering is load-bearing for the
+        // LEG-2 value scan below.) NOTE (§11.8.3 Important 1): `recheck_body_for_
+        // mono` runs a SECOND, SCOPED invocation over the isolated pendings a mono
+        // body defers, so its inner multi-sig dispatch carriers land in the mono
+        // view — the outer pendings here are unaffected by that scoped drain.
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
 
@@ -1125,6 +1128,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             accumulator,
             &mut multi_sig_mangled_names,
         )?;
+
+        // §11.8.3 leg D3 — the SECOND mono-harvest settlement point. Now that
+        // `finalize_multi_sig_variant_types` (Phase A) has settled every multi-sig
+        // clause concrete, scan the MULTI-SIG clause bodies for inner mono call
+        // sites (a poly hop like `(idpoly n)` inside `build`'s clause body). The
+        // single-sig pass-4 above (line ~1015) filtered every multi-sig defn out
+        // (`Defn::body()` panics on them), so a poly callee reached only from a
+        // multi-sig clause body was never enqueued → codegen `undefined function`.
+        // This is the SAME `pass4_monomorphise` harvest (arch W2a pin — one
+        // parameterized fn at two settlement points, not a forked sibling),
+        // invoked with the complementary `MultiSig` family. Runs BEFORE the sweep
+        // below so the minted SigDispatch carriers reach the accumulator that
+        // `finalize_annotations_and_publish` rebuilds each mangled variant's
+        // `codegen_view` from. Legs R2 (inner multi-sig-dispatch) and R1 (inline
+        // gate) ride the shared `monomorphise_call`/`infer_apply` seams, firing for
+        // any minted body regardless of which settlement point drove it.
+        let multi_sig_defns =
+            Self::collect_defns_for_mono(working_program, MonoDefnFamily::MultiSig);
+        debug_assert_eq!(
+            single_sig_defns.len() + multi_sig_defns.len(),
+            working_program
+                .iter()
+                .filter(|t| matches!(t, TopLevel::Defn(_)))
+                .count(),
+            "the SingleSig + MultiSig mono-harvest families MUST partition every \
+             top-level Defn exactly once (arch W2a pin — complementary AND total); \
+             a later-added defn family that reaches neither is this assert's job to \
+             catch loudly"
+        );
+        self.pass4_monomorphise(state, &multi_sig_defns, &constrained_fn_names)?;
 
         // Surface any field-accessor synthesis collisions with a NON-accessor
         // binding (FIXME 0351(a)) as non-fatal warnings.
@@ -1387,22 +1420,54 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     // =================================================================
 
 
-    /// Collect only single-sig Defn entries (skip multi-sig).
-    pub(super) fn collect_single_sig_defns(program: &[TopLevel]) -> Vec<&Defn> {
+    /// Collect the program's `Defn`s belonging to ONE monomorphisation family
+    /// (§11.8.3). The SINGLE parameterized harvest-input selector (arch W2a pin
+    /// — NEVER a forked sibling of `collect_single_sig_defns`): invoked at the
+    /// two mono settlement points with complementary families, so every `Defn`
+    /// reaches EXACTLY one harvest invocation:
+    ///
+    /// - `SingleSig` — the pass-4 single-sig mono (`finalize.rs:1015`), untouched.
+    /// - `MultiSig` — the post-`finalize_multi_sig_variant_types` clause-body
+    ///   harvest (§11.8.3 leg D3), where multi-sig clauses are settled concrete.
+    ///
+    /// The `is_multi_sig()` partition is complementary AND total by construction:
+    /// a `Defn` is multi-sig or it is not. The `debug_assert_eq!` inline in
+    /// `finalize_check_result_inner` (at the second, `MultiSig` harvest call)
+    /// makes "a later-added defn family silently skipped" a loud failure, not a
+    /// silent hole (arch pin: filter must be total).
+    pub(super) fn collect_defns_for_mono(
+        program: &[TopLevel],
+        family: MonoDefnFamily,
+    ) -> Vec<&Defn> {
         program
             .iter()
             .filter_map(|top| {
-                if let TopLevel::Defn(defn) = top {
-                    if defn.is_multi_sig() {
-                        None
-                    } else {
-                        Some(defn)
-                    }
-                } else {
-                    None
-                }
+                let TopLevel::Defn(defn) = top else { return None };
+                let matches = match family {
+                    MonoDefnFamily::SingleSig => !defn.is_multi_sig(),
+                    MonoDefnFamily::MultiSig => defn.is_multi_sig(),
+                };
+                matches.then_some(defn)
             })
             .collect()
     }
 
+    /// Collect only single-sig Defn entries (skip multi-sig) — the `SingleSig`
+    /// family of [`Self::collect_defns_for_mono`].
+    pub(super) fn collect_single_sig_defns(program: &[TopLevel]) -> Vec<&Defn> {
+        Self::collect_defns_for_mono(program, MonoDefnFamily::SingleSig)
+    }
+
+}
+
+/// The two complementary monomorphisation-harvest families (§11.8.3, arch W2a
+/// pin). Every top-level `Defn` belongs to exactly one; the two harvest
+/// invocations (pass-4 single-sig, post-Phase-A multi-sig) partition the set.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum MonoDefnFamily {
+    /// Single-signature defns — the pass-4 mono (`finalize.rs:1015`).
+    SingleSig,
+    /// Multi-signature defns — the post-`finalize_multi_sig_variant_types`
+    /// clause-body harvest (leg D3).
+    MultiSig,
 }

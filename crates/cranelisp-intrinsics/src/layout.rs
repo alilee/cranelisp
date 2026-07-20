@@ -1,6 +1,6 @@
 //! Platform layout-hash check for `--link` standalone binaries.
 //!
-//! The `--link` startup stub (`cranelisp-backend::exe::generate_startup_object_checked`)
+//! The `--link` startup stub (int's `src/exe.rs::generate_startup_object`)
 //! bakes, per linked platform, the compiler-computed `expected_hash` and the
 //! platform `name` as `.rodata`, declares the platform rlib's statically-linked
 //! `__cranelisp_layout_hash_<name>` as imported data, and calls
@@ -46,7 +46,7 @@ use std::ffi::CStr;
 ///   (`src/platform.rs`), so the two run modes read the identical symbol
 ///   identically.
 /// - `expected` — a NUL-terminated C string: the compiler-computed hash baked
-///   into the startup stub by `cranelisp-backend` (`define_cstr_data`).
+///   into the startup stub by int's `src/exe.rs` (`define_cstr_data`).
 /// - `name` — a NUL-terminated C string: the platform name (for the diagnostic).
 ///
 /// On a match this returns and `main` proceeds. On a mismatch it prints

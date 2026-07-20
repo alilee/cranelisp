@@ -171,32 +171,49 @@ where
         // carrying the escape fact). Consumed only by `compile_var_apply`'s
         // constructor arm; `false` everywhere else ⇒ today's heap path verbatim.
         stack: bool,
+        // §13.7 (FIXME 0664): the recorded escape fact (`node_escapes`) of THIS
+        // `Apply`, threaded to the COW seam (`compile_builtin_fn_call` stashes it
+        // for `cow_source_ownership`'s escape gate). `None` ⇒ absent ⇒ inc default.
+        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
-        // TCO check: self-recursive call in tail position -> jump to loop header.
+        // TCO fast-path: a tail self-call jumps to the loop header instead of
+        // emitting a call. Self-call identity is decided by the ONE shared
+        // `is_self_call` predicate (Principle 7 / Principle 24; `backend.md`
+        // §2.7.1; BC §3 invariant 10) — NEVER by bare written-name equality (the
+        // 0632 name-as-identity class). It covers both shapes in one place:
+        //
+        // - **carrier-keyed** — the callee `Var`'s `resolved_target` storage FQ ==
+        //   this fn's storage identity `{ctx.current_module, current_fn_name}`
+        //   (module AND symbol). typecheck records exactly this FQ for a genuine
+        //   self-call and records NOTHING for a shadowing `let`/`fn`/param local
+        //   (which resolves at a deeper frame) — so a carrier-absent callee never
+        //   matches, falls through to `compile_var_apply`, whose local `variables`
+        //   check finds the shadow and emits an indirect call (the `(defn s1 [x]
+        //   (let [s1 (fn [y] y)] (s1 x)))` §4.6 lexical-shadow case — LOCAL wins,
+        //   no hang). The pre-S113 bare `*name == *fn_name` match was DELETED (not
+        //   demoted to a fallback — the keyed-read-else-re-resolve hybrid
+        //   `backend-keyed-consumer.md` §1.2 REJECTs).
+        // - **SigDispatch mangled-name** — the monomorphised constrained-poly
+        //   self-recursion shape (compiling `user/countdown$Int`, its recursive
+        //   `(countdown ...)` resolves to `SigDispatch{user/countdown$Int}` whose
+        //   mangled name == `current_fn_name`). The 0519 `{home}/{bare}${sig}`
+        //   mangle embeds the module, so a cross-module same-signature dispatch
+        //   fails to match by construction.
+        //
+        // The same predicate is consumed by the B3.4 stack-alloc gate 3
+        // (`body_has_self_call`) and the spark SCC classifier
+        // (`classify_spark_callee`) — one source of truth, so the TCO back-edge
+        // set and the stack-alloc decline can never diverge (FIXME 0654; the
+        // divergence was a latent loop-carried stack-slot UAF).
         if self.in_tail_position
-            && let MonoExpr::Var { name, .. } = callee
-            && let Some(ref fn_name) = self.current_fn_name
-            && *name == *fn_name
             && self.tail_loop_block.is_some()
             && args.len() == self.fn_param_count
-        {
-            return self.compile_tail_self_call(args);
-        }
-
-        // TCO check for monomorphised constrained-poly self-recursion:
-        // When compiling `countdown$Int`, the body's recursive call is
-        // `(countdown ...)` which the typechecker resolves to
-        // `SigDispatch { mangled_name: "countdown$Int" }`. The callee
-        // AST name ("countdown") doesn't match the current fn name
-        // ("countdown$Int"), so the check above misses it. We detect
-        // this case by checking whether the resolved call's mangled name
-        // matches the current function.
-        if self.in_tail_position
-            && self.tail_loop_block.is_some()
-            && args.len() == self.fn_param_count
-            && let Some(ResolvedCall::SigDispatch { mangled_name }) = resolved_call
-            && let Some(ref fn_name) = self.current_fn_name
-            && fn_name.as_ref() == mangled_name.as_ref()
+            && crate::compiler::is_self_call(
+                callee,
+                resolved_call,
+                &self.ctx.current_module,
+                self.current_fn_name.as_ref(),
+            )
         {
             return self.compile_tail_self_call(args);
         }
@@ -323,6 +340,7 @@ where
                             apply_type,
                             saved_tail,
                             false,
+                            apply_escapes,
                         );
                         this.sparked_args = saved_spark;
                         result
@@ -340,6 +358,7 @@ where
                             apply_type,
                             saved_tail,
                             false,
+                            apply_escapes,
                         )
                     },
                 );
@@ -350,7 +369,7 @@ where
         // non-lenient apply does NOT touch `sparked_args`; the pointer-identity
         // guard in `maybe_force_sparked_arg` ensures its own argument slice never
         // matches an enclosing apply's installed map.
-        self.dispatch_apply(callee, args, span, resolved_call, apply_target, apply_type, saved_tail, stack)
+        self.dispatch_apply(callee, args, span, resolved_call, apply_target, apply_type, saved_tail, stack, apply_escapes)
     }
 
     /// Dispatch a (non-TCO, args-not-in-tail) application through the resolved-
@@ -372,10 +391,12 @@ where
         // B3.4 (§4.1): stack-eligibility hint for a use-site constructor call;
         // consumed by `compile_var_apply`.
         stack: bool,
+        // §13.7 (FIXME 0664): this Apply's escape fact, threaded to the COW seam.
+        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
-            return self.compile_resolved_call(resolved.clone(), args, span, saved_tail, apply_target);
+            return self.compile_resolved_call(resolved.clone(), args, span, saved_tail, apply_target, apply_escapes);
         }
 
         // Regular function call: callee must be a Var referring to a known function,
@@ -441,10 +462,12 @@ where
         // is the keyed-read carrier the S1/S2/S5/S6/S7/S8/S9 sites consume;
         // AutoCurry (a value-seam leg) is untouched this wave.
         apply_target: Option<&FQSymbol>,
+        // §13.7 (FIXME 0664): this Apply's escape fact, for the COW seam.
+        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
-                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target)
+                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target, apply_escapes)
             }
             ResolvedCall::TraitMethod { ref mangled_name, .. } => {
                 let sym = Symbol::from(mangled_name.as_ref());
@@ -503,6 +526,11 @@ where
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
+        // §13.7 (FIXME 0664): this Apply's escape fact — stashed on `self` just
+        // before `compile_vec_op` so `cow_source_ownership` reads it for the
+        // escape gate. Set at the vec-op call (after args are compiled, so a
+        // nested-arg apply cannot clobber it).
+        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         // Decision 24: uniform consuming convention. Extern primitives
         // dec their own heap args; inline builtins operate on NeverHeap
@@ -556,6 +584,11 @@ where
         if is_vec_primitive(op_name) {
             let arg_vals = self.compile_arg_list(args)?;
             self.in_tail_position = saved_tail;
+            // §13.7 (FIXME 0664): stash THIS COW Apply's escape fact for
+            // `cow_source_ownership`. Set AFTER `compile_arg_list` (so a nested-arg
+            // apply's own stash cannot clobber it) and immediately before the
+            // vec-op dispatch — no apply is compiled between here and the read.
+            self.pending_cow_escapes = apply_escapes;
             if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
                 return Ok(val);
             }
@@ -1420,7 +1453,8 @@ where
     ///
     /// The baked datum is a **NUL-terminated** UTF-8 byte sequence — the same
     /// self-describing C-string convention the layout-hash gate bakes
-    /// (`exe.rs::define_cstr_data`) — so the trampoline reads it without a
+    /// (int's `src/exe.rs::define_cstr_data` — the backend copy was deleted S113
+    /// W2b, FIXME 0635 I3) — so the trampoline reads it without a
     /// separate length channel. It is emitted via the **same data-symbol family
     /// as the trace `DisplayDescriptor` baker** (`emit_ro_data` →
     /// `declare_anonymous_data` + `define_data`), so it survives `.o` caching:
@@ -2312,7 +2346,8 @@ fn is_io_combinator_call(resolved_call: Option<&ResolvedCall>) -> bool {
 /// The byte payload baked for a platform fn-name handle (S81 / FIXME 0327, the
 /// dispatch funnel step 2/4): the FQ name as UTF-8 with a trailing NUL — the
 /// self-describing C-string convention the trampoline fault guard reads (step 3)
-/// without a separate length channel, mirroring `exe.rs::define_cstr_data`.
+/// without a separate length channel, mirroring int's `src/exe.rs::define_cstr_data`
+/// (the backend copy was deleted S113 W2b, FIXME 0635 I3).
 fn platform_fn_name_bytes(fq_name: &str) -> Vec<u8> {
     let mut bytes = fq_name.as_bytes().to_vec();
     bytes.push(0); // NUL terminator — C-string read by the trampoline guard.
@@ -2374,3 +2409,6 @@ mod moded_arg_rc_tests;
 
 #[cfg(test)]
 mod keyed_miss_tests;
+
+#[cfg(test)]
+mod tco_self_call_carrier_tests;

@@ -171,6 +171,23 @@ fn parse_mod_decl(elems: &[Sexp], span: Span, visibility: Visibility) -> Result<
 
     let name = expect_symbol(&elems[1], "mod declaration name")?;
 
+    // spec §5.8: the module name MUST be a simple symbol — "not qualified, not
+    // dotted". A `/` (module qualifier) or `.` (dotted path) in a `mod`/`mod-`
+    // head is a compile-time error. Same binder-head diagnostic family as
+    // `reject_qualified_binder_head`, but `mod` is a MODULE-PHASE decl (not a §5
+    // declaration head), so it enforces its own simple-symbol rule at this seam
+    // and rejects `.` as well as `/` (design/frontend/binder-head-reject.md §8).
+    // Covers both `mod` and `mod-` (single shared parser).
+    if name.contains('/') || name.contains('.') {
+        return Err(CranelispError::ModuleError {
+            message: format!(
+                "'{name}' is not a valid module name — a `mod`/`mod-` head must be a \
+                 simple symbol, not qualified (`/`) or dotted (`.`) (spec §5.8)"
+            ),
+            location: ErrorLocation::from_span_file(elems[1].span(), None),
+        });
+    }
+
     let inline_body = if elems.len() > 2 {
         Some(elems[2..].to_vec())
     } else {
@@ -296,6 +313,11 @@ fn parse_module_spec(sexp: &Sexp) -> Result<(String, Option<String>, Span), Cran
             }
             let module = expect_symbol(&elems[0], "module path in alias")?;
             let alias = expect_symbol(&elems[1], "alias name")?;
+            // The module path (elems[0]) is a REFERENCE — a qualified/dotted path
+            // is permitted. The alias (elems[1]) is a LOCAL binder (spec §5
+            // binder-positions table, §8.3.4) — a qualified spelling rejects,
+            // same diagnostic family as the other local binders.
+            crate::ast_builder::reject_qualified_binder_head(&alias, elems[1].span())?;
             Ok((module, Some(alias), *span))
         }
         other => Err(CranelispError::ModuleError {
@@ -424,6 +446,21 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
     }
 
     let name = expect_symbol(&elems[1], "platform declaration name")?;
+
+    // The platform name composes the `platform.<name>` module path, so a
+    // qualified (`/`) or dotted (`.`) name would corrupt that composition — it
+    // MUST be a simple symbol. Same simple-symbol guard as the `mod`/`mod-` head
+    // (spec §5.8 model; §5.10 needs the "not qualified, not dotted" wording,
+    // tracked in FIXME 0660 / /spec rider). Same diagnostic family.
+    if name.contains('/') || name.contains('.') {
+        return Err(CranelispError::ModuleError {
+            message: format!(
+                "'{name}' is not a valid platform name — a `platform` head must be a \
+                 simple symbol, not qualified (`/`) or dotted (`.`) (spec §5.10)"
+            ),
+            location: ErrorLocation::from_span_file(elems[1].span(), None),
+        });
+    }
 
     Ok(PlatformSpec { name, span })
 }

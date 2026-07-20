@@ -32,6 +32,35 @@ fn test_underflow_check_ok_on_positive() {
     rc_underflow_check(0x1234, 5);
 }
 
+// spec: 12-runtime §12.3.2 — A1 (safety-invariants §4 R8): rc_inc fires the
+// stale-inc liveness assert at the offending inc of a freed pointer (the
+// inc-half of the FIXME-0494 dec-half check). Debug-only; nextest runs each
+// test in its own process, so `LIVE_ALLOCS` is not perturbed by a parallel
+// alloc re-populating the freed address.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "STALE RC INC")]
+fn a1_rc_inc_fires_on_stale_inc() {
+    let base = alloc::alloc_with_rc(16) as i64; // live, rc=1
+    // SAFETY: base was returned by alloc_with_rc and its RC is 1 — this brings
+    // it to 0 and frees it, so it is no longer live.
+    unsafe { alloc::dealloc(base as *mut u8) };
+    assert!(!alloc::is_live(base as usize), "precondition: freed pointer is non-live");
+    rc_inc(base); // stale inc of a freed pointer — A1 must panic here
+}
+
+// spec: 12-runtime §12.3.2 — A1: rc_inc on a LIVE pointer does not fire the
+// stale-inc assert (positive path).
+#[cfg(debug_assertions)]
+#[test]
+fn a1_rc_inc_ok_on_live_pointer() {
+    let base = alloc::alloc_with_rc(16) as i64; // live, rc=1
+    rc_inc(base); // rc → 2, live — no panic
+    // SAFETY: two refs (rc=2); consume twice to balance and free.
+    consume_shallow(base);
+    consume_shallow(base);
+}
+
 // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow skips bare nullary tags
 #[test]
 fn decision24_consume_shallow_skips_nullary_tags() {

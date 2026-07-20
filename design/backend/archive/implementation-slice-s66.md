@@ -1,5 +1,11 @@
 # Sprint 66 implementation slice — `cranelisp-backend`
 
+> **HISTORICAL (archived S113, FIXME 0635 I4).** One-shot S66 facade→source delta
+> slice; executed and superseded. Its last-open row 1(d) (`Jit::compile_defn`
+> deletion) became true at S111 CS-1. Reads five now-retired facade docs. Kept for
+> the audit trail only — do NOT cite as live design intent; current backend design
+> is `backend.md` + its live subordinate docs.
+
 **Status.** draft
 **Author.** `/design` (backend), 2026-05-06
 **Reads.** `design/arch/facades/backend.md` (final, S65 close); `design/arch/facades/primitives.md`; `design/arch/facades/intrinsics.md`; `design/arch/facades/types.md`; `design/arch/facades/int.md`; `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md`; `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md`; `design/arch/decisions/0042-platform-error-adopts-error-location.md`; `design/arch/fixmes/0099-*.md`, `0100-*.md`, `0108-*.md`, `0150-*.md`; `design/backend/backend.md` (master); `design/backend/compile-to-module.md` (subordinate). `/qa` S66 test plan slice — when available.

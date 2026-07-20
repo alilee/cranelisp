@@ -248,6 +248,94 @@ new type. No new `cranelisp-types` staging primitive is required; no `/arch` FIX
 4. `/testing` retro-tags the repro family `// defect:` (candidate class
    `shared-state-write-race`, `/qa` to confirm the vocabulary add).
 
+## 8. R7 live-table insertion-seam asserts — the 0604 observability rider (S113 W4)
+
+**Status: DESIGN (S113 Phase 3, `/design`(src/)).** The W4 rider for FIXME 0604
+per `/arch` revision 7 (`safety-invariants.md` R7 / §6 task 4) + `/qa`'s
+`s113-test-plan.md` PS-R7. The register row R7 is **`/arch`-owned**
+(`safety-invariants.md`); this section designs only the **int-side mechanism** —
+the live-table insertion-seam asserts — per the SPRINT Q1-revision-1 ownership
+split. **Ungated by the W0 depth decision** (it is the user's "assertion density"
+palette item, src/-surface and tiny). It is NOT a fix — the S110 `/dev`
+disposition re-scoped the phantom writer to the FOREGROUND concurrent-compile path
+(the index feed is provably inert under the `--run --no-cache` recipe); the ~320
+cumulative no-fires say quiet-environment hunting is spent evidence. **The
+deliverable is observability: the next firing anywhere NAMES its seam** instead of
+needing another hunt.
+
+### 8.1 The invariant asserted — prelude-export closure
+
+`stdlib/prelude.cl` exports only its declared closure; no stdlib module
+re-exports `bit-and`. The defect is a phantom **public** `bit-and →
+primitives/bit-and` entry appearing in the live `prelude` module's table (§"The
+defect", FIXME 0604). The invariant every live-table insertion must preserve:
+
+> a **public** binding written into the `prelude` module's live table MUST trace
+> to prelude's own declared exports / re-export edges — never a foreground
+> compile's import-direction write mis-targeting `prelude`.
+
+### 8.2 The mechanism — ONE shared assert at EVERY live-table insertion seam (Principle 7/18)
+
+A single shared helper — not per-seam copies (the mirror the phantom hunt fought)
+— called at every seam that writes a `ModuleEntry` into a live `shared.symbol_tables`
+table:
+
+```
+fn assert_prelude_closure(module, name, entry, /* MODULE_TRACE sink */) {
+    debug_assert!(
+        module != PRELUDE || !entry.is_public()
+            || prelude_export_closure_contains(name),
+        "R7 prelude-export-closure breach: public `{name}` written into the \
+         `prelude` live table but not in its export closure (source: {…})"
+    );
+    // Release: cheap MODULE_TRACE emit of (module, name, source, seam-id) on
+    // the same predicate — the ghost becomes a named seam on the next firing.
+}
+```
+
+`prelude_export_closure_contains` reads prelude's OWN declared exports/re-export
+edges (the same closure the fallback bit consults), so it is authoritative and
+does not itself scan foreground state.
+
+### 8.3 The seams it is threaded through (the enumerated write set)
+
+Every live-table insertion reachable from the foreground concurrent-compile path
+(FIXME 0604 §"Why the recipe RE-SCOPES to the foreground" — eval thread +
+priority/nice workers building `num.bits` + `num.bits.test` + `prelude` + its
+re-exported domain modules concurrently):
+
+1. `src/imports.rs::install_imports` / `install_exports` — the per-symbol
+   `Import`/`Reexport` writers (the import-direction writes suspected of
+   mis-targeting `prelude`).
+2. `src/cluster.rs::insert_cluster` — drains `ProcessedCluster` bindings into the
+   live tables.
+3. `src/process_form/` + `src/worker.rs` register paths — foreground Def/decl
+   commits.
+4. `src/imports.rs::insert_detecting_ambiguity` (~L547-560) — the §8.6.5
+   poison-consumer is **CORRECT (do not touch its logic)**; the assert is added
+   BESIDE the insertion, not inside the poison decision, so it observes without
+   perturbing the sanctioned ambiguity behaviour.
+
+Because the assert is single-sourced, its call sites are the greppable structural
+guard (§5-style): a live-table insertion WITHOUT the assert is a `/review` finding
+(a seam that could write the phantom un-observed).
+
+### 8.4 What this rider does and does NOT claim
+
+- **Does:** convert any future firing into a **named seam** (which insertion, which
+  `name → source`) — the observability deliverable; land a unit test at the assert
+  seam (METHOD §2.2) pinning that a planted out-of-closure `prelude` public write
+  trips the assert; keep the two GREEN twins (`tests/spec_08_prelude_outer_scope.rs`)
+  + the IR-1 lane must-hold.
+- **Does NOT:** locate or fix the write (no stable RED exists — that is the
+  sanctioned no-stable-RED exception; FIXME 0604 stays open until a named-seam
+  firing yields the fix + its fail-on-revert sweep). A bounded recipe re-sweep runs
+  ONLY in an environment with prior fires — quiet-environment sweeps are spent.
+
+/qa's PS-R7 consumes the named seam when it fires. This is the R7 "seam assert /
+diagnosed-error-at-trust-boundary" tier of the `safety-invariants.md` §2 ladder,
+applied to the int live-table trust boundary.
+
 ## Cross-references
 
 - `tests/plan/s109-attribution-index-feed-race.md` — the attribution of record (mechanism,

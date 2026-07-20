@@ -133,33 +133,53 @@ impl UseCtx {
     }
 }
 
-/// The provenance/freshness of an expression's value.
+/// The provenance/freshness of an expression's value — the §16.1 monotone
+/// provenance lattice (S113 W5, `safety-invariants.md` §3a). Ordered by CLAIM
+/// STRENGTH: `Fresh` and `Unconditional` are the STRONG claims (each licenses a
+/// safety-op elision); `Conditional` is the conservative ⊤-ward point.
+///
+/// The §16.3 P20 reshape makes "publish a hard claim from a conditional origin"
+/// STRUCTURALLY unrepresentable (B-2's class becomes a non-compile, not a review
+/// finding): the hard-claim producer arms (`origin_to_result_mode`'s
+/// `AliasOf`/`ProjectionOf`) pattern-match ONLY `Unconditional`, and every
+/// constructor that handles a conditional input (rows 3/4/5/6) builds ONLY
+/// `Conditional`. Internal-only — the persisted `ResultMode` already carries the
+/// conditional point (`MayAliasOf`, schema 20), so NO types edit / NO schema bump
+/// (§16.3 verdict).
 #[derive(Debug, Clone)]
 enum Origin {
-    /// A fresh allocation / `Fresh`-result call / literal.
+    /// A fresh allocation / `Fresh`-result call / literal — no param reaches it.
     Fresh,
-    /// This value IS the named binding's root (a param used directly, or an
-    /// alias `let x = p`).
-    Root(Symbol),
-    /// A borrowed view rooted in the named binding.
-    Projection(Symbol),
-    /// A value that MAY be rooted in a param on some control-flow path and be
-    /// fresh (or a different param) on another — the conservative not-`Fresh`
-    /// join of divergent return paths (FIXME 0520, correcting §13.6(c)). `rep`
-    /// is a representative param-rooted binding (lowest reaching param index
-    /// when several may reach — see [`Walker::join_origin`]); `projection` marks
-    /// a may-borrowed-view (⇒ `ProjectionOf`) vs a may-alias (⇒ `AliasOf`).
-    /// `Fresh` is reserved for the provably-no-param-reaches-result case, so
-    /// this variant is what keeps a partial param-return from collapsing to the
-    /// elision-permitting `Fresh` (the ABI-half soundness cure).
-    MayParam { rep: Symbol, projection: bool },
+    /// UNCONDITIONAL: this value IS param `root`'s reference on EVERY path (a
+    /// param used directly, or a `let x = p` alias when `projection == false`) —
+    /// or a borrowed view of it on every path (`projection == true`, the clean
+    /// accessor). The strong claim that licenses a hard `AliasOf`/`ProjectionOf`
+    /// publish (row 9). Constructable ONLY from a provably-unconditional source.
+    Unconditional { root: Symbol, projection: bool },
+    /// CONDITIONAL (the ⊤-ward conservative point, today's `MayParam`): the value
+    /// MAY reach param `rep` on some control-flow path and be fresh/other on
+    /// another — the not-`Fresh` join of divergent paths (FIXME 0520), a COW
+    /// may-alias, an element-store fold, or a projection of a conditional
+    /// container. `rep` is a representative param-rooted binding (lowest reaching
+    /// index on a join). A hard claim is UNREPRESENTABLE from here — it can only
+    /// publish `MayAliasOf` (§16.3), keeping every protect/dec the fresh arm needs.
+    Conditional { rep: Symbol, projection: bool },
 }
 
 impl Origin {
+    /// Construct an unconditional alias (`projection == false`) or borrowed view
+    /// (`projection == true`) — the ex-`Root`/`Projection` variants.
+    fn unconditional(root: Symbol, projection: bool) -> Origin {
+        Origin::Unconditional { root, projection }
+    }
+    /// Construct a conditional (may-reach) origin — the ex-`MayParam` variant.
+    fn conditional(rep: Symbol, projection: bool) -> Origin {
+        Origin::Conditional { rep, projection }
+    }
     fn root(&self) -> Option<&Symbol> {
         match self {
-            Origin::Root(s) | Origin::Projection(s) => Some(s),
-            Origin::MayParam { rep, .. } => Some(rep),
+            Origin::Unconditional { root, .. } => Some(root),
+            Origin::Conditional { rep, .. } => Some(rep),
             Origin::Fresh => None,
         }
     }
@@ -219,11 +239,15 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 return Some(idx);
             }
             match &bs.origin {
-                Origin::Root(s) => cur = s.clone(),
-                // A may-alias binding roots (on its param-reaching path) in
-                // `rep`; follow it so a store of such a binding widens the param
-                // (over-approximating toward Owned/IntoResult — always sound).
-                Origin::MayParam { rep, .. } => cur = rep.clone(),
+                // An unconditional ALIAS (`projection:false`) IS its root — follow
+                // the chain. An unconditional PROJECTION is a borrowed view, NOT an
+                // alias, so it is NOT followed here (a projection rooted in a param
+                // is reached by `classify_capture_escape`'s recursion instead).
+                Origin::Unconditional { root, projection: false } => cur = root.clone(),
+                // A conditional binding roots (on its param-reaching path) in `rep`;
+                // follow it (either projection kind) so a store of such a binding
+                // widens the param (over-approximating toward Owned — always sound).
+                Origin::Conditional { rep, .. } => cur = rep.clone(),
                 _ => return None,
             }
         }
@@ -236,24 +260,24 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// path yields `Fresh`.
     fn origin_to_result_mode(&self, origin: &Origin) -> ResultMode {
         match origin {
-            Origin::Root(s) => match self.param_root(s) {
-                Some(idx) => ResultMode::AliasOf(idx),
+            // Row 9 — the HARD-claim arms match ONLY `Unconditional` (§16.3 P20):
+            // an alias publishes `AliasOf(i)`, a borrowed view `ProjectionOf(i)`
+            // — both UNCONDITIONAL, so a consumer's elision is sound. A `root` (for
+            // a projection) or the alias chain (`param_root`) that reaches no param
+            // is an owned local returned by value ⇒ `Fresh`.
+            Origin::Unconditional { root, projection } => match self.param_root(root) {
+                Some(i) if *projection => ResultMode::ProjectionOf(i),
+                Some(i) => ResultMode::AliasOf(i),
                 None => ResultMode::Fresh,
             },
-            Origin::Projection(s) => match self.param_root(s) {
-                Some(idx) => ResultMode::ProjectionOf(idx),
-                None => ResultMode::Fresh,
-            },
-            // Both may-arms publish `MayAliasOf` (S111 §15.3, spine §3.7(a1)):
-            // a may-origin is a CONDITIONAL claim (a `Fresh` path exists), and
-            // `AliasOf`/`ProjectionOf` are reserved for provably UNCONDITIONAL
-            // claims. Publishing `AliasOf`/`ProjectionOf` here would let a
-            // consumer assume the result IS/views the param and elide a
-            // protect/dec on the fresh arm — the unsound direction. Retain-side
-            // imprecision (the may-projection loses its provenance fact) is
-            // acceptable; the flagship bare-accessor stays `Origin::Projection`
-            // (the unconditional row above), so no S99-target read-path shrinks.
-            Origin::MayParam { rep, .. } => match self.param_root(rep) {
+            // A CONDITIONAL claim can never publish a hard `AliasOf`/`ProjectionOf`
+            // (a `Fresh` path exists) — both projection arms publish `MayAliasOf`
+            // (S111 §15.3, spine §3.7(a1); §16.3): the consumer keeps its
+            // protect/dec on the fresh arm. Retain-side imprecision (the
+            // may-projection loses its provenance fact) is acceptable; the flagship
+            // bare-accessor stays an `Unconditional` projection (row 6), so no
+            // S99-target read-path shrinks.
+            Origin::Conditional { rep, .. } => match self.param_root(rep) {
                 Some(idx) => ResultMode::MayAliasOf(idx),
                 None => ResultMode::Fresh,
             },
@@ -269,9 +293,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     fn reach(&self, o: &Origin) -> Option<(usize, bool, Symbol)> {
         match o {
             Origin::Fresh => None,
-            Origin::Root(s) => self.param_root(s).map(|i| (i, false, s.clone())),
-            Origin::Projection(s) => self.param_root(s).map(|i| (i, true, s.clone())),
-            Origin::MayParam { rep, projection } => {
+            Origin::Unconditional { root, projection } => {
+                self.param_root(root).map(|i| (i, *projection, root.clone()))
+            }
+            Origin::Conditional { rep, projection } => {
                 self.param_root(rep).map(|i| (i, *projection, rep.clone()))
             }
         }
@@ -306,11 +331,9 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             }
             (Some((ia, pa, sa)), Some((ib, pb, sb))) => {
                 let (idx_sym, _) = if ia <= ib { (sa, ia) } else { (sb, ib) };
-                Origin::MayParam { rep: idx_sym, projection: pa && pb }
+                Origin::conditional(idx_sym, pa && pb)
             }
-            (Some((_, p, s)), None) | (None, Some((_, p, s))) => {
-                Origin::MayParam { rep: s, projection: p }
-            }
+            (Some((_, p, s)), None) | (None, Some((_, p, s))) => Origin::conditional(s, p),
         }
     }
 
@@ -413,20 +436,55 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
 
             MonoExpr::Match { scrutinee, arms, .. } => {
                 let scrut_origin = self.walk(scrutinee, UseCtx::Neutral);
-                let scrut_root = scrut_origin.root().cloned();
                 let mut acc: Option<Origin> = None;
+                // ESCAPE half of §16 row 3 (0641 B-2) — the scrutinee is walked
+                // `Neutral` above (its allocation-site escape fact = false). But a
+                // WHOLE-VALUE `Pattern::Var` arm binds the scrutinee ITSELF; if that
+                // binding flows to the arm result and thence outward, the
+                // scrutinee's allocation escapes. Present-but-wrong (`escapes=
+                // Some(false)`) defeats the backend's P25 absent-default: for
+                // `(match (vec-set v 1 99) [r r])` the COW `Apply` reads
+                // non-escaping, the ruled gate declines the inc, and the match decs
+                // the scrutinee while `r` returns it → UAF. Detect the binding's
+                // escape (it was pushed to the worklist during the arm-body walk in
+                // an escaping ctx) and re-walk the scrutinee in that ctx to record
+                // the true escape (+ widen folded params — idempotent, monotone).
+                let mut scrut_escapes = false;
                 for arm in arms {
+                    let whole_var = match &arm.pattern {
+                        Pattern::Var { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    let escaped_mark = self.escaped.len();
                     // §13.6(i) (F4): each arm gets its OWN scope frame — a pattern
                     // binding is restored before the sibling arm (and the post-match
                     // uses) are walked, so an arm binding that shadows a param/outer
                     // binding cannot leak past its arm.
-                    let frame = self.bind_pattern(&arm.pattern, scrut_root.as_ref(), arm);
+                    let frame = self.bind_pattern(&arm.pattern, &scrut_origin, arm);
                     let o = self.walk(&arm.body, ctx);
+                    if let Some(vn) = &whole_var {
+                        // Only the arm-LOCAL new worklist entries (a match-arm
+                        // binding is not a `Let` binding — nothing drains it, so
+                        // remove its entries here; the scrutinee re-walk below
+                        // records the escape). Enclosing entries (< mark) untouched.
+                        let arm_local: Vec<_> = self.escaped.split_off(escaped_mark);
+                        if arm_local.iter().any(|(n, _)| n == vn) {
+                            scrut_escapes = true;
+                        }
+                        self.escaped.extend(arm_local.into_iter().filter(|(n, _)| n != vn));
+                    }
                     self.restore_frame(frame);
                     acc = Some(match acc.take() {
                         None => o,
                         Some(prev) => self.join_origin(prev, o),
                     });
+                }
+                if scrut_escapes {
+                    // `scrut_escapes` implies the arm body walked in an escaping
+                    // `ctx` (the worklist push condition). Re-walk the scrutinee
+                    // there — the loop/recur cells (arm result consumed in-frame,
+                    // `ctx` non-escaping) never reach here, so they do not regress.
+                    self.walk(scrutinee, ctx);
                 }
                 acc.unwrap_or(Origin::Fresh)
             }
@@ -436,10 +494,22 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             MonoExpr::VecLit { elements, span, .. } | MonoExpr::ConstrADT { fields: elements, span, .. } => {
                 self.facts.escapes.insert(*span, ctx.escapes());
                 let flow = ctx.field_flow();
+                // Row 5 (§16.2, 0641 B-1 + I-2 CORRECTION) — the container Origin is
+                // the JOIN of its element Origins, NOT unconditional `Fresh`. The
+                // as-built anti-monotone rule returned `Fresh` unconditionally,
+                // laundering an element's param reach: `(vec-get [v] 0)` → `Fresh`
+                // (freed COW read), `[(vec-set v 0 9)]` → a fresh container whose
+                // escaping element is a COW alias. Folding `join_origin` over the
+                // elements makes an element reaching param i widen the container to
+                // `Conditional{rep:i}` — a projection-OUT (row 6) then inherits the
+                // alias reach. Losing per-element detail is fine (widen); losing the
+                // reach is the unsound direction.
+                let mut acc = Origin::Fresh;
                 for el in elements {
-                    self.walk(el, UseCtx::Field { flow });
+                    let el_origin = self.walk(el, UseCtx::Field { flow });
+                    acc = self.join_origin(acc, el_origin);
                 }
-                Origin::Fresh
+                acc
             }
 
             MonoExpr::Lambda { params, body, span, .. } => {
@@ -495,8 +565,23 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // the body walk the only escaped entries left are those
                     // enclosing captures; discard them by restoring `outer`.
                     let outer = std::mem::take(&mut self.escaped);
+                    // Row 5 interaction (§16.2): with a fresh aggregate now carrying
+                    // a `Conditional` origin, a capture of an ENCLOSING param used in
+                    // this non-escaping lambda's `Return`-walked tail would widen the
+                    // enclosing param's flow/mode via `param_root` — but the lambda
+                    // does NOT escape, so its captures do not escape and the
+                    // enclosing param must not widen from them (the pre-row-5
+                    // behaviour, where captures were `Fresh` and `param_root` missed;
+                    // the §13.6(j) B3.4 precision pin). Snapshot + restore the
+                    // enclosing param flow/mode around the isolated body walk, exactly
+                    // as `escaped` is isolated — the lambda's own tail allocations
+                    // still get their escape site facts (the fix's point).
+                    let saved_flow = self.param_flow.clone();
+                    let saved_modes = self.param_modes.clone();
                     self.walk(body, UseCtx::Return);
                     self.escaped = outer;
+                    self.param_flow = saved_flow;
+                    self.param_modes = saved_modes;
                 }
                 Origin::Fresh
             }
@@ -547,11 +632,16 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             if let Some(idx) = self.param_root(name) {
                 self.classify_param_use(idx, ctx);
             }
-            // Blocker 1: a Fresh (freshly-constructed) binding used in an
-            // escaping context re-propagates to its defining RHS — recorded here
-            // and drained at the enclosing `Let`. `Root`/`Projection` bindings
-            // are already handled through `param_root` above.
-            if matches!(bs.origin, Origin::Fresh) && ctx.escapes() {
+            // Blocker 1: a freshly-CONSTRUCTED binding used in an escaping context
+            // re-propagates to its defining RHS — recorded here, drained at the
+            // enclosing `Let`. `Fresh` (no param) AND `Conditional` (a fresh
+            // aggregate/COW carrying a param — row 5 now gives such a container a
+            // `Conditional` origin, not `Fresh`) both need the re-walk to flip the
+            // allocation's escape site fact; the folded param's FLOW is already
+            // widened via `param_root` above (idempotent with the re-walk). An
+            // UNCONDITIONAL binding is a direct param alias/view, not a fresh
+            // allocation — it is fully handled by `param_root`, no re-walk owed.
+            if matches!(bs.origin, Origin::Fresh | Origin::Conditional { .. }) && ctx.escapes() {
                 self.escaped.push((name.clone(), ctx));
             }
             bs.origin
@@ -598,17 +688,19 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 let result = summary.as_ref().map(|s| s.result).unwrap_or(ResultMode::Fresh);
                 let origin = match result {
                     ResultMode::ProjectionOf(k) => {
+                        // Row 6 (§16.2) — a projection-out roots at the container's
+                        // Origin: an UNCONDITIONAL container yields an unconditional
+                        // projection (+ the provenance fact); a CONDITIONAL container
+                        // yields a conditional projection (never strengthens — no
+                        // provenance fact, the backend materializes at Decision-24).
+                        // With row 5 (container carries its element-join) this
+                        // inherits the aliased element's reach.
                         match arg_origins.get(k).cloned().unwrap_or(Origin::Fresh) {
-                            Origin::Root(root) | Origin::Projection(root) => {
+                            Origin::Unconditional { root, .. } => {
                                 self.facts.provenance.insert(*span, root.clone());
-                                Origin::Projection(root)
+                                Origin::unconditional(root, true)
                             }
-                            // May-projection: not-`Fresh` (keeps protect) but the
-                            // root is ambiguous ⇒ no provenance fact (the backend
-                            // materializes at Decision-24 — the safe direction).
-                            Origin::MayParam { rep, .. } => {
-                                Origin::MayParam { rep, projection: true }
-                            }
+                            Origin::Conditional { rep, .. } => Origin::conditional(rep, true),
                             Origin::Fresh => Origin::Fresh,
                         }
                     }
@@ -655,21 +747,39 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// A free name that is not a binding (a callable / global) is not a
     /// capture-escape — its value-use is recorded by the body walk (§8.3).
     fn classify_capture_escape(&mut self, name: &Symbol) {
+        let bs = self.bindings.get(name).cloned();
+        // Widen any param this name roots in (a direct param, an alias chain, or
+        // the param-reaching path of a conditional). The escape rides the ABI, so
+        // a caller passing a fresh value at that position sees the escape (the
+        // inter-procedural half). This runs for ALL param-reaching origins — but a
+        // fresh AGGREGATE carrying a param (a `Conditional` binding) ALSO needs its
+        // allocation to escape (below), so it does NOT early-return.
         if let Some(idx) = self.param_root(name) {
             self.classify_param_use(idx, UseCtx::EscapingCapture);
-            return;
         }
-        let Some(bs) = self.bindings.get(name).cloned() else { return };
+        let Some(bs) = bs else { return };
         match bs.origin {
-            Origin::Fresh => self.escaped.push((name.clone(), UseCtx::EscapingCapture)),
-            // Root/Projection of a non-param local (param_root missed above ⇒ its
-            // root is a local): follow to the owning binding and escape it.
-            // `param_root` does not chase `Projection`, so a projection rooted in a
+            // Row 7 (§16.2, 0641 I-1 CORRECTION) — a FRESH ALLOCATION captured by an
+            // escaping closure escapes: `Fresh` (no param) OR `Conditional` (a fresh
+            // aggregate/COW carrying a param — row 5 now gives it a `Conditional`
+            // origin, not `Fresh`) both push to the worklist so the enclosing scope
+            // re-walks the RHS in the escaping context (flips the alloc site fact,
+            // folds params IntoResult). Pre-cure, a captured let-bound param alias /
+            // aggregate laundered (the freed-heap read I-1) because it was treated
+            // as a fresh local with no reach; now its param is widened above AND its
+            // allocation escapes here.
+            Origin::Fresh | Origin::Conditional { .. } => {
+                self.escaped.push((name.clone(), UseCtx::EscapingCapture))
+            }
+            // An UNCONDITIONAL alias/projection of another LOCAL (not itself the
+            // param — that case is a direct param, `root == name`, and was widened
+            // above): follow to the owning binding and escape it. `param_root` does
+            // not chase an unconditional projection, so a projection rooted in a
             // param is reached here and resolves on the recursion.
-            Origin::Root(s) | Origin::Projection(s) if s != *name => {
+            Origin::Unconditional { root: s, .. } if s != *name => {
                 self.classify_capture_escape(&s)
             }
-            Origin::Root(_) | Origin::Projection(_) | Origin::MayParam { .. } => {}
+            Origin::Unconditional { .. } => {}
         }
     }
 
@@ -781,27 +891,54 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     fn bind_pattern(
         &mut self,
         pattern: &Pattern,
-        scrut_root: Option<&Symbol>,
+        scrut_origin: &Origin,
         arm: &MonoMatchArm,
     ) -> ScopeFrame {
+        let scrut_root = scrut_origin.root().cloned();
         let mut names = Vec::new();
         collect_pattern_bindings(pattern, &mut names);
         // §13.6(d) shadow guard (arm-own): if any bound name would shadow the
         // scrutinee root, emit no provenance for the arm (conservative).
-        let shadow = scrut_root.map(|r| names.iter().any(|n| n == r)).unwrap_or(false);
-        let root = if shadow { None } else { scrut_root.cloned() };
-        if let Some(r) = &root {
+        let shadow = scrut_root
+            .as_ref()
+            .map(|r| names.iter().any(|n| n == r))
+            .unwrap_or(false);
+        // Row 3 (§16.2) — the arm provenance fact is emitted ONLY for an
+        // UNCONDITIONAL scrutinee (a hard projection root the backend may trust). A
+        // CONDITIONAL (COW) scrutinee gets NO arm provenance fact — Decision-24
+        // materializes at the site, the safe direction.
+        if !shadow
+            && matches!(scrut_origin, Origin::Unconditional { .. })
+            && let Some(r) = &scrut_root
+        {
             self.facts.provenance.insert(arm.span, r.clone());
         }
+        // Row 3 (§16.2, 0641 B-2 CORRECTION): a binding's Origin roots at the
+        // SCRUTINEE'S Origin — a whole-value `Pattern::Var` binds it VERBATIM (a
+        // `Conditional` scrutinee yields a `Conditional` binding, never an
+        // unconditional `Projection`/`Root`); a destructuring `Pattern::Constructor`
+        // field binds a PROJECTION of the scrutinee, unconditional ONLY if the
+        // scrutinee is itself unconditional, else `Conditional{projection:true}`.
+        // The as-built published a hard `Projection(scrut_root)` for every name even
+        // under a COW `Conditional` scrutinee (`(match (vec-set v 1 99) [r r])` →
+        // hard `Projection(v)`) — a narrowing with no justification.
+        let is_whole_var = matches!(pattern, Pattern::Var { .. });
         let mut frame: ScopeFrame = Vec::with_capacity(names.len());
         for n in names {
             // §13.6(d) shadow guard (pre-existing): a pattern binding also shadows
             // any OTHER live binding of that name — drop pre-existing provenance
             // rooted in it (F2 mirror cure, single-sourced with the Let seam).
             self.drop_shadowed_provenance(&n);
-            let origin = match &root {
-                Some(r) => Origin::Projection(r.clone()),
-                None => Origin::Fresh,
+            let origin = if shadow {
+                Origin::Fresh
+            } else if is_whole_var {
+                scrut_origin.clone()
+            } else {
+                match scrut_origin {
+                    Origin::Unconditional { root, .. } => Origin::unconditional(root.clone(), true),
+                    Origin::Conditional { rep, .. } => Origin::conditional(rep.clone(), true),
+                    Origin::Fresh => Origin::Fresh,
+                }
             };
             let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
             frame.push((n, prior));
@@ -937,7 +1074,7 @@ pub(crate) fn transfer<E: TransferEnv>(
         param_modes.push(if is_copy { Mode::Copy } else { Mode::Borrowed });
         bindings.insert(
             name.clone(),
-            BindState { origin: Origin::Root(name.clone()), param_idx: Some(i) },
+            BindState { origin: Origin::unconditional(name.clone(), false), param_idx: Some(i) },
         );
     }
     let mut w = Walker {

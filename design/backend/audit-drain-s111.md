@@ -108,10 +108,36 @@ outside the crate. **4th audit for the cache half.**
   next to its real subject (`cranelisp-types`'s GOT, or a backend
   `got/tests.rs` sibling if the assertions are backend-side). `GOT_TABLE_SIZE` /
   `NULLARY_TAG_THRESHOLD` consumers import from `cranelisp-types` directly.
-- `exe.rs:72-77` — the `#[allow(dead_code)]` + "currently red post-W2/W3;
-  re-wires S77" comment on the LIVE `generate_startup_object` (called via
-  `src/exe.rs:50` → `src/session_v4/lifecycle.rs`). 16 sprints stale. Delete the
-  allow + the transient-state comment; the function is production-live.
+- `exe.rs:54` (`generate_startup_object`, + `generate_startup_object_checked`
+  `:121` / `define_cstr_data`) — **premise corrected (FIXME 0635 I3, S113):** this
+  backend copy is **DEAD in production, exercised only by `exe/tests.rs`**. The
+  original bullet's "LIVE … called via `src/exe.rs:50`, production-live" claim
+  conflated it with int's OWN independent copy. The production `--link` startup-`.o`
+  emission was RELOCATED to int at **S76 §4.4** (BC §3 invariant 7 — int owns the
+  `_main`/`start` alias); int's `src/exe.rs::generate_startup_object` (called from
+  `session_v4/lifecycle.rs`) is the live one and has **already drifted**: it takes
+  five params (adding `stub_entry_symbol` + a `platform_layout_checks` slice for
+  layout-hash baking) where this backend copy takes three — a strictly less-capable
+  predecessor, not a synced reference. CS-1 already fixed the source rustdoc marker
+  (`exe.rs:72-77` now honestly says "Dead in production"); this bullet's premise is
+  the residue.
+  - **Disposition ruling (`/design`(backend), S113, P7/P8):** **DELETE** the orphaned
+    backend copy — `generate_startup_object`, `generate_startup_object_checked`,
+    `define_cstr_data`, and `exe/tests.rs` — mirroring the §1.3 `compile_defn`
+    deletion exactly (a parallel front door production never runs → delete, do not
+    gate). Rationale: it is a superseded interim (Principle 8) that has already
+    diverged from int's production copy (Principle 7 — a drifted "reference" misleads
+    worse than none), and the seam categorically belongs to int (S75 W3 `pub(crate)`
+    narrow + S76 §4.4 relocation + BC §3 invariant 7). Startup-`.o` emission is
+    validated where it is owned — int's copy via the `--link` e2e suite
+    (`tests/link.rs`). Testability rider for `/qa`/int: if byte-level assertions on
+    the startup `.o` (Export `start`, import relocations, layout-check baking) are
+    judged worth retaining, re-home them at int (`src/exe.rs:50` is `pub`, unit-testable
+    there) — do NOT keep them at backend to justify the dead code.
+  - `/dev` action (in-wave): delete the three fns + `exe/tests.rs`, drop the
+    `#[allow(dead_code)]`; regenerate `crates/cranelisp-backend/public-api.txt` in the
+    same change-set if `generate_startup_object`/`_checked` are on the surface (they
+    are `pub(crate)` per the S75 W3 narrow — expect no baseline delta; confirm).
 - **Public API**: `CacheMetadata` / `build_cache_packet` / `got` / `codegen_types`
   are on the public surface (`public-api.txt`). Regenerate the baseline in the
   same change-set per the baseline-diff discipline; with zero external consumers
@@ -145,8 +171,9 @@ A.4-revised done-bar (cure-the-risk, not just gate it):
   retired S75) — it goes with the struct.
 - **Public API**: all `pub(crate)` — `public-api.txt` unchanged.
 - **Doc consequence**: `implementation-slice-s66.md` row 1(d) ("`Jit::compile_defn`
-  deletion observed in source") finally becomes TRUE — that one-shot is now
-  cleanly archivable (see `backend.md` doc-map).
+  deletion observed in source") finally becomes TRUE — that one-shot is now cleanly
+  archived at `design/backend/archive/implementation-slice-s66.md` (FIXME 0635 I4,
+  S113; `archive/README.md` carries its row).
 
 ### 1.4 Drop `module_aliases` off `CompileContext`
 

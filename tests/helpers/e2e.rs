@@ -1530,3 +1530,195 @@ impl Cranelisp {
             .output()
     }
 }
+
+// =============================================================================
+// Safety-matrix combinator (MS-P1, tests/plan/s113-test-plan.md §2).
+//
+// One PROGRAM (a `user.cl` body plus optional sibling modules) is exercised
+// through the memory-safety DIFFERENTIAL-ORACLE matrix. The frame: every
+// optimization the ownership analysis performs is a NARROWING that elides a
+// safety op (protect/inc, distinct drop glue, atomic RC) on a static judgment
+// (`safety-invariants.md` §2). The conservative all-Owned lowering
+// (`CRANELISP_NO_OWNERSHIP=1`) is the reference semantics (R7). A memory-safety
+// defect trips at least one face:
+//
+//   1. Differential oracle — `--run` with ownership ON vs OFF MUST agree on exit
+//      AND stdout, and both MUST equal the expected clean result. (A false-elision
+//      makes ON diverge from the conservative fallback: garbage value, SIGABRT.)
+//   2. `--link` face — the linked binary MUST also produce the expected result
+//      (link-then-RUN, not link-success-only; tests/CLAUDE.md §Diagnostic).
+//   3. RC balance — the alloc/dealloc imbalance under `CRANELISP_RC_STATS=1` MUST
+//      be IDENTICAL ON vs OFF (the elision introduces no leak/double-free relative
+//      to the conservative oracle; differential, so a benign baseline teardown
+//      imbalance is not a false RED).
+//   4. RC_DEC_CHECK zero — under `CRANELISP_RC_DEC_CHECK=1` the ON path MUST NOT
+//      trip an RC-underflow abort (exit stays at the expected code).
+//
+// RC-reading runs are per-subprocess (RC_STATS/RC_DEC_CHECK affect only the
+// spawned child), so the matrix is safe under nextest process isolation.
+
+/// A memory-safety probe run through the differential-oracle matrix.
+pub struct SafetyMatrix {
+    program: String,
+    files: Vec<(String, String)>,
+    prelude: PreludeVariant,
+    expect_exit: i32,
+    check_rc_balance: bool,
+}
+
+impl SafetyMatrix {
+    /// A probe over `program` (written as `user.cl`). Defaults: no prelude,
+    /// expected exit 0, RC-balance face ON.
+    pub fn new(program: &str) -> Self {
+        SafetyMatrix {
+            program: program.to_string(),
+            files: Vec::new(),
+            prelude: PreludeVariant::None,
+            expect_exit: 0,
+            check_rc_balance: true,
+        }
+    }
+
+    pub fn prelude(mut self, p: PreludeVariant) -> Self {
+        self.prelude = p;
+        self
+    }
+
+    /// Add a sibling module compiled alongside `user.cl`.
+    pub fn with_file(mut self, rel: &str, contents: &str) -> Self {
+        self.files.push((rel.to_string(), contents.to_string()));
+        self
+    }
+
+    pub fn expect_exit(mut self, n: i32) -> Self {
+        self.expect_exit = n;
+        self
+    }
+
+    /// Disable the RC-balance face (for probes whose correct behaviour has a
+    /// mode-dependent baseline imbalance the differential can't neutralise).
+    pub fn without_rc_balance(mut self) -> Self {
+        self.check_rc_balance = false;
+        self
+    }
+
+    fn base(&self) -> Cranelisp {
+        let mut b = Cranelisp::new().with_prelude(self.prelude);
+        for (rel, contents) in &self.files {
+            b = b.file(rel, contents);
+        }
+        b.user(&self.program)
+    }
+
+    /// Run the full matrix, panicking with a per-face diagnostic on divergence.
+    pub fn assert(self) {
+        let expect = self.expect_exit;
+
+        // Face 1 — differential oracle (--run, ownership ON vs OFF).
+        let on = self.base().run("user.cl").output();
+        let off = self
+            .base()
+            .run("user.cl")
+            .env("CRANELISP_NO_OWNERSHIP", "1")
+            .output();
+        assert_eq!(
+            on.status.code(),
+            Some(expect),
+            "[safety-matrix] ownership-ON `--run` exit MUST be {expect} (the clean \
+             result); got {:?}:\n{}{}",
+            on.status.code(),
+            on.stdout,
+            on.stderr
+        );
+        assert_eq!(
+            off.status.code(),
+            on.status.code(),
+            "[safety-matrix] DIFFERENTIAL-ORACLE divergence: ownership-ON exit {:?} \
+             != ownership-OFF (conservative) exit {:?} — the elision produced a \
+             different result than the all-Owned fallback (a false-elision defect).\n\
+             ON: {}{}\nOFF: {}{}",
+            on.status.code(),
+            off.status.code(),
+            on.stdout,
+            on.stderr,
+            off.stdout,
+            off.stderr
+        );
+        assert_eq!(
+            on.stdout, off.stdout,
+            "[safety-matrix] DIFFERENTIAL-ORACLE stdout divergence ON vs OFF — the \
+             elided path observed a different value than the conservative fallback.\n\
+             ON stdout: {:?}\nOFF stdout: {:?}",
+            on.stdout, off.stdout
+        );
+
+        // Face 2 — --link face (link-then-RUN).
+        let link = self.base().link_then_run("user.cl").output();
+        assert_eq!(
+            link.status.code(),
+            Some(expect),
+            "[safety-matrix] `--link` face: linked binary exit MUST be {expect}; \
+             got {:?}:\n{}{}",
+            link.status.code(),
+            link.stdout,
+            link.stderr
+        );
+
+        // Face 3 — RC balance (differential: same imbalance ON vs OFF).
+        if self.check_rc_balance {
+            let rc_on = self
+                .base()
+                .run("user.cl")
+                .env("CRANELISP_RC_STATS", "1")
+                .output();
+            let rc_off = self
+                .base()
+                .run("user.cl")
+                .env("CRANELISP_RC_STATS", "1")
+                .env("CRANELISP_NO_OWNERSHIP", "1")
+                .output();
+            let imbalance = |out: &CrOutput| -> Option<i64> {
+                let line = out.stderr.lines().find(|l| l.contains("[RC_STATS]"))?;
+                let field = |k: &str| -> Option<i64> {
+                    line.split_whitespace()
+                        .find_map(|tok| tok.strip_prefix(k).and_then(|v| v.parse().ok()))
+                };
+                Some(field("allocs=")? - field("deallocs=")?)
+            };
+            if let (Some(a), Some(b)) = (imbalance(&rc_on), imbalance(&rc_off)) {
+                assert_eq!(
+                    a, b,
+                    "[safety-matrix] RC-balance differential: ownership-ON alloc \
+                     imbalance {a} != ownership-OFF {b} — the elision introduced a \
+                     leak or double-free relative to the conservative oracle.\n\
+                     ON RC_STATS stderr:\n{}\nOFF RC_STATS stderr:\n{}",
+                    rc_on.stderr, rc_off.stderr
+                );
+            }
+        }
+
+        // Face 4 — RC_DEC_CHECK zero (ON path must not trip an underflow abort).
+        let dc = self
+            .base()
+            .run("user.cl")
+            .env("CRANELISP_RC_DEC_CHECK", "1")
+            .output();
+        assert_eq!(
+            dc.status.code(),
+            Some(expect),
+            "[safety-matrix] RC_DEC_CHECK face: the ownership-ON path tripped an \
+             RC-underflow check (exit {:?} != {expect}) — a premature-free elision.\n{}{}",
+            dc.status.code(),
+            dc.stdout,
+            dc.stderr
+        );
+    }
+}
+
+/// Convenience: run `program` through the full safety matrix (MS-P1).
+pub fn assert_safety_matrix(program: &str, prelude: PreludeVariant, expect_exit: i32) {
+    SafetyMatrix::new(program)
+        .prelude(prelude)
+        .expect_exit(expect_exit)
+        .assert();
+}

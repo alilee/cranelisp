@@ -121,6 +121,8 @@ name
 
 A bare symbol that is NOT a known constructor and is NOT `_` is a **variable pattern**. It matches any value and binds that value to `name` within the arm body.
 
+A variable pattern is a **local binder**: `name` MUST be a **bare (unqualified) symbol**; a qualified spelling (`m/x`) is a compile-time error, span at the pattern (§5, *Binder positions*). This is distinct from a **constructor** pattern head, which is a *reference* and MAY be dotted (`(Maybe.Some x)`, §6.2.1) — a dotted head is always a constructor pattern, never a variable binder (see below). [S113]
+
 **Disambiguation rule:** When a bare symbol appears as a pattern, the implementation MUST resolve it as follows:
 
 1. If the symbol is `_`, it is a **wildcard pattern**.

@@ -181,6 +181,72 @@ Examples: `Num.+$primitives/Int`, `Eq.=$primitives/String`, `Eq.!=$primitives/In
 
 *(The `primitive_for_trait_method` short-circuit means operator impls on primitive types — `Num.+$…/Int`, `Display.show$…/Int` — never actually mint a trait-method symbol; they collapse to `ResolvedCall::BuiltinFn` and inline. The mangle path is exercised by user traits and user impls on ADTs.)*
 
+### 3.2 TB-24 — poly-applied conventional impl target: bind the target's con-vars (converge the resolver mirror, S113 W2)
+
+**Spec:** §7.3.5 Case 1 + §7.3.3 + §5.4.3 — a conventional (kind-`*`) trait impl over a
+poly-applied target `(Option a)` is admissible (`✓`): it registers a polymorphic impl
+over every `Option a`, and dispatch on a concrete `(Some 3)` resolves it. Likewise the
+canonical constrained form `(Option :Disp a)`. This is spec-admissible and was the only
+`✓` Case-1 row with no test — broken on HEAD (`class=wrong-reject`).
+
+**The defect — a `resolver-mirror` (P7 divergent duplication).** For `(impl Disp (Option a) …)`,
+`Disp` is conventional, so the arity gate (`impl_check.rs:283–317`) passes (`Option` arity
+1 == 1). The reject fires later, resolving the target's type-args at
+`impl_check.rs:645–662` (`check_impl_method_with_sig`): each target arg is reduced to its
+**bare head string** and resolved as a NAMED type via `concrete_type_for_impl_target`
+(`impl_check.rs:654` → `checker.rs:1170`), which does a plain `scope_resolve(state, "a", span)`
+(`checker.rs:1183`) and returns `TypeNotFound { name: "a" }` — the "unknown type a" reject,
+*before* the value gate. This path passes **no con-var binding** — no `var_map`, no
+`mint_free_var`, no `ConVars` — so the lowercase target var `a` cannot resolve as anything
+but a nominal type name. It is the 0590-tightening blast-radius shape (a mint site
+hardened to reject `/`-qualified vars) landing on a position that legitimately holds a var.
+
+**The fix — route the conventional impl-target args through the shared resolver with a
+con-var binding, mirroring the HKT pairing path.** The HKT pairing-head impl path already
+binds its con-vars: `resolve_hkt_impl_type_expr` (`checker.rs:2803–2827`, `ConVars::Impl { names, target }`)
+routes through the shared `resolve_type_expr_ctx` (`checker.rs:2835`) →
+`crate::resolve::resolve_type_expr`, which mints/binds lowercase con-vars as
+`Type::Var`/`TyConApp`; the con-var map is built in `register_hkt_trait`
+(`registry.rs:206–211`). The conventional impl-target-arg path bypasses
+`resolve_type_expr_ctx` entirely and uses the string-head NAMED-lookup shortcut with no
+`ConVars`. **Converge them** (P7 — one type-expr resolver, not two): resolve the
+conventional target args through `resolve_type_expr_ctx` with a con-var/mint binding for
+the target's own lowercase vars, exactly as the HKT `ConVars` path does. The polymorphic
+impl then registers over `(Option a)` and dispatch on `(Some 3)` resolves it (both the
+bare `(Option a)` and the constrained `(Option :Disp a)` forms — the constraint annotation
+rides the same resolver context).
+
+**Attribution:** typecheck-only (`impl_check.rs` + `checker.rs`, converging onto the
+existing `resolve_type_expr_ctx`); backend never involved (matches the repro — the reject
+is a typecheck resolve-layer diagnostic, parse already accepts `Applied(Option,[a])`); no
+types diff; no schema bump. This is the resolver-mirror class (`display-envelope-mirror`'s
+resolution-seam sibling) — the fix REDUCES codepaths rather than adding one.
+
+**AS-LANDED (S113 W2a, review APPROVE — records the settled state, P26): ARGS-ONLY, head
+kept.** The landed fix is narrower than "route the whole target through the shared resolver."
+It routes the target's **ARGS** through the shared `resolve_annotation_type_expr_in_module`
+(`impl_check.rs:659–665`, with a `var_map` for con-var mint-on-miss/co-reference) while
+**keeping `concrete_type_for_impl_target` for the HEAD** (`impl_check.rs:667`). Review judged
+this **safer than whole-target routing**: the head path preserves the §7.3.5 Case-3
+kind-check rejects (a primitive as an HKT target, a con-var arity mismatch) that a wholesale
+reroute could have loosened. So a poly-applied target `(Option a)` binds its lowercase
+con-var `a` as a fresh `Type::Var` (in the SAME `var_map` the method sigs mint into, so a
+target var co-refers with a like-named sig var, §3.3.1), a concrete arg (`Int` in `(Option
+Int)`) resolves byte-identically, and the §7.3.5 head-position rejects are untouched. The
+resolver-mirror convergence is real but scoped to the arg position (the head keeps its
+dedicated Case-3-aware path by design). Same P24-corollary family as D2 — see FIXME 0653.
+
+**TB24b (W2 close) — the impl-target CONSTRAINT slot's trait refs now resolve.** A companion
+gap on the same target: the impl-target constraint slot (`(Box :Disp a)` →
+`impl_.type_constraints = [(a, Disp)]`) carried trait references that were **never routed
+through trait resolution** — an unknown trait there (`(Box :NoSuchTrait a)`) was silently
+accepted. Landed fix: `check_impl_method_with_sig` (`impl_check.rs:630`) resolves each
+`type_constraints` trait ref through the ONE `resolve_trait` (honouring qualification via
+`scope_resolve`'s `/`-split, exactly as a param-position bound `:C x` does via
+`resolve_bound_param`), erroring `TraitNotFound` on an unknown trait or a non-`TraitDecl`
+terminal. Placed **before the HK branch** so it covers every impl kind (conventional + HKT).
+Typecheck-only, no types diff, no schema bump.
+
 ## 4. Default Methods
 
 Default methods are trait methods with a body that may be omitted from `impl` blocks; the trait decl supplies the body and impls inherit it unless they override.
@@ -277,6 +343,148 @@ Resolution happens in `infer_apply` and is refined post-inference by `resolve_de
 6. Otherwise mint `ResolvedCall::TraitMethod { trait_name, method_name, impl_type, mangled_name }` via `mangle_trait_method`.
 
 If not a trait method, `infer_apply` falls to `is_primitive` (⇒ `BuiltinFn`) or leaves no entry (regular function call).
+
+### 7.0.1 D2 — method-import-sufficient dispatch: root at the method's home, not trait-in-scope (S113 W2)
+
+**Spec:** §7.11.2 (settled 2026-07-19) — importing a trait method *without* its trait
+is sufficient for **dispatch**; §7.11.2(e) — the nullary return-type-dispatched
+method-only-import cell MUST accept and compile (D2 accept-side; the earlier
+`undefined function: zed` codegen leak on this cell is a compiler bug, §7.1.1 note).
+§7.11.2(d) — **declaration** still requires the trait head in scope (the over-inversion
+fence; do NOT touch the impl-declaration path).
+
+**The defect — a P24 "resolve once then throw the home away" anti-pattern.** The
+resolution reason the spec gives is *identity, not search*: a method reference carries
+its FQ identity, which names the one trait that declares it and hence that trait's home
+module (§7.11.2 ¶2). But `try_resolve_trait_method` (`dispatch.rs:21`) roots dispatch at
+the trait **name in current scope**, not at the method's chain-followed home:
+
+1. `method_to_trait_with_state` (`checker.rs:2407`) resolves the method's `Def`, reads
+   `trait_origin` (which carries the trait's FULL `FQTypeName` — module + name), then
+   **discards `fqtn.module` and returns only the bare `TraitName`** (`checker.rs:2415`).
+   The home is known and thrown away — the resolve-once violation (P24).
+2. `has_impl_with_state(state, &trait_name, …)` (`dispatch.rs:63` → `checker.rs:2457`)
+   re-resolves the **bare** trait name via `resolve_terminal_entry_scoped` and requires
+   a `TraitDecl` terminal (`checker.rs:2466–2470`); a second bare re-resolution is
+   `resolve_trait` (`dispatch.rs:97` → `checker.rs:1201`). When only the METHOD is
+   imported, the bare trait name resolves nowhere → `has_impl_with_state` returns
+   `false` → the `no impl of trait T for type X` reject fires at `dispatch.rs:70`,
+   even though `has_impl_in_home` (`checker.rs:2485`) is already home-rooted and would
+   have found the impl had it been handed the discarded home.
+
+**The fix — thread the home (P24 "Resolve once"), no new machinery (arch Q4).** Preserve
+the trait's home through `method_to_trait_with_state` (return the `FQTypeName`, or a
+`(TraitName, ModuleFullPath)` pair — a typecheck-internal signature change, no
+`cranelisp-types` diff) and root the impl lookup at that home via the EXISTING
+`has_impl_in_home` (`checker.rs:2485`) instead of the bare `resolve_terminal_entry_scoped`
+/ `resolve_trait` re-resolutions. Reaching the method reaches the home reaches the impl
+by keyed lookup on (method identity, dispatch type) — the §7.11.2(a) global-coherence
+statement, realised as a bounded chain-follow (P24, no scan). The **carrier is already
+populated on the accept side**: the nullary path (`dispatch.rs:46`) falls THROUGH into
+the shared `ResolvedCall::TraitMethod { … }` tail (`dispatch.rs:138`) — so once the
+impl lookup succeeds home-rooted, the carrier codegen keyed-reads (`callees.rs:177`) is
+written and `:Int (zed)` links. **The leak closes on the ACCEPT side, not by adding a
+reject** (spec ruling; SPRINT §Scope B).
+
+**Watch-cells (spec-pinned, do NOT overshoot):**
+- **Two same-named method imports stay a CONFLICT** (§7.11.2(b), §8.6.4): the D2 fix
+  roots dispatch at a method's home only AFTER the method reference resolved to a SINGLE
+  binding. A duplicate bare-name import (two traits' `m` from two modules) is rejected at
+  import time by the existing §8.6.4 conflict seam (`reject_def_over_binding`), BEFORE any
+  dispatch resolution — so (b) is preserved by construction; the D2 change touches a
+  different seam (dispatch), never the import-conflict path. Do NOT weaken the conflict
+  check to "resolve one of them at dispatch."
+- **The unary case INVERTS to accept** (§7.11.2(e) final sentence): a unary method
+  imported without its trait now dispatches on its argument's concrete type — same
+  home-rooting fix, no separate path. (`tests/…::unary_arg_dispatch_method_only_import_*`
+  flips must-reject → must-accept; /testing W1 fence-inversion, arch revision 5.)
+- **Declaration stays gated** (§7.11.2(d)): the `(impl T Type …)` slot-1 trait-reference
+  resolution (`impl_check.rs`, §3) is UNCHANGED — importing a method of `T` does not
+  license declaring an impl of `T`. The declaration gate is a different seam; the D2 fix
+  must not touch it (the F-D2-8 over-inversion fence stays GREEN).
+- **Diagnostics name the owning trait** (§7.11.2(c)): a genuine no-impl/ambiguity error
+  MUST still name the trait even when it is not in scope — the trait name is on
+  `trait_origin`, available at the error site once the home is threaded (do not drop it
+  when re-pointing the lookup).
+
+**Attribution:** typecheck-only (`dispatch.rs` + `checker.rs`); no types diff; no schema
+bump (the `ResolvedCall::TraitMethod` carrier shape is unchanged — this populates it for
+a cell that previously rejected).
+
+**AS-LANDED (S113 W2a, review APPROVE — records the settled state, P26).** Threading the
+home was NOT one hop but **four**, because the trait's home is consulted at four distinct
+resolution seams that all previously re-resolved a bare name in ambient scope (the P24
+corollary — FIXME 0653):
+
+1. **`method_to_trait_with_state` (`checker.rs:2451`) now returns `(TraitName,
+   ModuleFullPath)`** — the trait's home, no longer discarded. This pair is threaded as
+   `(trait_name, trait_defining_module)` through `try_resolve_trait_method` (`dispatch.rs:36`).
+2. **Impl lookup roots at the home** via the existing `has_impl_in_home(&trait_defining_module,
+   …)` (`dispatch.rs:75`). `has_impl_with_state` (`checker.rs:2509`) is now **test-only dead
+   code** (its bare re-resolution was the wrong-reject).
+3. **A THIRD home-hop in `find_trait_method_decl` (`dispatch.rs:430`)** — the nullary
+   `method_self_in_return` decl-scan (which decides whether a method dispatches on its
+   `Self` return) must find the method's `TraitDecl`, but a method-only import leaves that
+   decl invisible to the current-module + prelude scans. A third hop roots the scan at the
+   method's `trait_origin` home, **gated by a new `trait_filter: Option<&TraitName>` param**
+   (`find_trait_method_decl_in_module`, `dispatch.rs:483`) so the home-hop reads the method
+   off its OWN trait, not any home-resident trait with a same-named method (defence-in-depth
+   over §8.6.4 per-module method-name uniqueness). Without this hop `method_self_in_return`
+   defaults `false`, the call defers unresolved, and codegen leaks `undefined function` —
+   the §7.11.2(e) accept-side leak.
+4. **A FOURTH home-hop at dispatch-type resolution** (`dispatch.rs:124` →
+   `checker::resolve_type_in_module`, `checker.rs:1187`), a **P24 case-split**: an ADT
+   dispatch arg already carries its `FQTypeName` on `Type::ADT(fqtn, _)` — use it directly
+   (a user ADT impl'd on a prelude trait lives in the USER module, NOT the trait home, so
+   home-rooting would wrong-miss it); an intrinsic scalar (`Int`/…) carries no embedded
+   fqtn, so it resolves at the trait's HOME (which reaches `primitives`). Re-resolving the
+   bare `Int` in the caller's scope was the "unknown type Int" wrong-reject (W2a Important 3).
+
+Also **`verify_constraints` home-rooted** (`monomorphise.rs`, via `has_impl_in_home`) — the
+same P24 corollary instance. **Cross-ref FIXME 0653** (P24 corollary — "a resolution product
+carrying FQ identity narrowed to its bare name is a defect marker"; the three W2a instances
+above share that shape): resolved identity, not a bare name, is the currency past a
+resolution seam.
+
+### 7.0.2 D1 — the multi-sig variant constraint lives on the template scheme, not the OverloadVariant (settled-state contract for the display)
+
+**Spec:** repl/spec.md §4.1.1 — a multi-sig clause `([a b] (+ a b))` MUST display
+`:(Fn [:Num a :Num a] a)`, never the constraint-stripped `:(Fn [a a] a)`; dropping the
+bound from a variant's display is a §1.4 non-conformance even when it is still enforced.
+
+**Evidence — the fix is int-side (src/), NOT W2 typecheck (this contradicts arch
+revision 9's placement assumption; reported to /sprint).** The render seam is int-side:
+`src/repl/format_type.rs:42` (`format_overloaded_variants_doc`) builds a `Type::Fn` from
+the **bare** `OverloadVariant { param_types, ret_type, mangled_name }`
+(`cranelisp-types/src/module.rs:2294`) and never consults a `Scheme`. A bare `Type`
+cannot encode a trait bound (constraints live only in `Scheme.constraints`), so the
+constraint is structurally absent from what the seam reads. **Typecheck records the
+constraint correctly** — it is the settled state: a genuinely-constrained clause is
+re-keyed to its `$Var` template entry keeping its `Scheme` (constraints intact) and its
+`ast` (`register.rs:559–572`), and that `$Var` mangle is what `OverloadVariant.mangled_name`
+carries (`register.rs:571` → `register_overloaded_base`). So the constraint IS reachable
+at display time by following `mangled_name` to the template entry and reading its existing
+`Scheme.constraints`.
+
+**Two options, and the no-bump one is int-side:**
+- **(A) int-side read-follow (no bump).** The display follows `OverloadVariant.mangled_name`
+  to the template entry in the module table and renders with `Scheme.constraints`. This
+  **reads recorded settled state** (the template scheme) — it is NOT the forbidden
+  echo-re-derive shape (the eval.rs `impl_echo_type_name` precedent, arch revision 9): it
+  re-derives nothing, it reads the constraint typecheck already recorded. No
+  `cranelisp-types` change, no `CACHE_SCHEMA_VERSION` bump.
+- **(B) enrich the carrier so the display reads it directly.** Add a constraint field to
+  `OverloadVariant` so the render needs no pointer-follow. This is a `cranelisp-types`
+  shape change → **schema bump** → **blocked in W2** (SPRINT §Scope B).
+
+**Verdict:** the render seam is int-side and the only typecheck-side alternative needs a
+schema bump W2 forbids, so **D1 is an int-side read-follow (option A), best placed in W4
+(src/) or as an int-side rider — not W2 typecheck.** The typecheck side is already
+correct (the template scheme is the faithful settled record); the fix is teaching the
+int display to read that recorded scheme instead of the bare variant. This preserves the
+arch-revision-9 *principle* (read recorded settled state, never re-derive at the echo)
+while correcting its *placement* (the echo is int's, not typecheck's). `/sprint` to
+re-attribute D1 W2→W4.
 
 ### Deferred resolution — `resolve_deferred_trait_calls`
 

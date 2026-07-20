@@ -327,6 +327,28 @@ effect, defaults, and scope — is
 [`repl/spec.md §0.7`](../repl/spec.md) (Execution Environment Variables); the rows
 above re-present that contract for everyday use.
 
+### Memory-safety diagnostics (developer tools)
+
+Cranelisp manages memory automatically, so everyday programs never need these. When
+you are chasing a suspected use-after-free, double-free, or leak — for example while
+narrowing down a compiler or platform bug — a set of **env-gated allocator modes**
+makes such faults deterministic. They are **all off by default**: with every variable
+unset the runtime behaves exactly as normal (byte-for-byte identical output), and
+they apply identically in **REPL, `--run`, and `--link`** modes. They add cost and
+retain memory, so leave them off for normal use.
+
+| Variable | Effect |
+|---|---|
+| `CRANELISP_QUARANTINE_FREED=1` | **No reuse after free.** Freed blocks are retained instead of returned to the allocator, so a stale pointer can never land on reused memory — any dangling access is caught at the point of use rather than silently succeeding. |
+| `CRANELISP_QUARANTINE_MAX_BYTES=N` | Caps quarantine retention at `N` bytes (oldest freed blocks released first). Use for long-running sessions where unbounded retention would exhaust memory; unset = unbounded (the strongest signal, best for short repros). |
+| `CRANELISP_SCRUB_FREED=1` | **Poison freed memory.** Overwrites each freed block with a sentinel pattern, so a use-after-free reads obvious garbage (or faults immediately) instead of stale-but-plausible data. Strongest combined with quarantine. |
+| `CRANELISP_ALLOC_PARITY=1` | **Balance check.** At process exit, asserts the number of allocations equals the number of frees, reporting any imbalance — a double-free (more frees) or a leak (more allocations) that produces otherwise-correct output. |
+| `CRANELISP_ALLOC_PARITY_DUMP=1` | Prints the current allocation/free ledger mid-run (print-and-continue) rather than only at exit. |
+
+The three modes compose freely; quarantine + scrub + parity together is the strongest
+configuration. These are debugging aids, not a language feature — their design home is
+`design/intrinsics/diagnostic-modes.md`.
+
 ## Cross-links
 
 - **REPL experience** — display formats, prompts, exit conditions, and the CLI

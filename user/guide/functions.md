@@ -48,6 +48,17 @@ user> (defn rp ([:Position p :Rotation rot] (rp p rot 0)) ([:Position p :Rotatio
 
 The REPL confirms it by reporting **both** arity signatures.
 
+A multi-signature `defn` carries any **constraints** into every signature it
+reports. A constrained parameter is written with a trait annotation — `:Num x` is
+one parameter `x` bound to `Num` (the `:Num` annotation binds the single following
+form). Both signatures echo the constraint:
+
+```
+user> (defn h ([:Num x] (+ x x)) ([:Num x :Num y] (+ x y)))
+:(Fn [:Num a] a) user/h ; defn
+:(Fn [:Num a :Num a] a) user/h
+```
+
 ### Clauses infer like separate mutually-recursive functions
 
 Here is the rule that governs inference across the clauses: **a multi-signature

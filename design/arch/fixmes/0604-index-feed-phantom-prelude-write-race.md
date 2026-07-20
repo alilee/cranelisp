@@ -20,6 +20,28 @@ status: open
 
 # Background stdlib index feed racily writes a phantom public binding into the live `prelude` table (family FIXME: the index-feed WRITE-race)
 
+## /qa S113 Phase-3 plan of record (2026-07-19 — observability rider, then evidence)
+
+Standing state after the S111 P5-close hunt (`tests/plan/PLAN.md` §"Sprint
+111" I.4, "0604 seam verdict"): ~320 cumulative no-fires across four
+scheduling regimes; `CRANELISP_MODULE_TRACE` CANNOT locate the seam (the
+foreground install path has zero trace instrumentation — the trace recipe
+above is INOPERABLE for seam location); static narrowing exhausted (no
+textual path to `prelude ← bit-and` in the enumerable writer set). Further
+quiet-environment sweeps are spent evidence.
+
+Plan (consumes the S113 W4 rider — arch revision 7, `safety-invariants.md`
+R7/§6 task 4): (1) `/dev`(int) lands `debug_assert!` + `MODULE_TRACE` emit at
+EVERY live-table insertion seam enforcing the prelude-export-closure
+invariant, UNGATED by the W0 depth decision, unit-pinned at the assert seam;
+(2) the deliverable is observability — the NEXT firing anywhere names its
+seam instead of needing another hunt; (3) a bounded recipe re-sweep runs
+ONLY in an environment with prior fires (the S109-era `/sprint` one, if
+accessible); (4) the IR-1 lane + the two GREEN twins below stay must-hold.
+This file stays open (the sanctioned no-stable-RED exception) and retires
+when a named-seam firing yields the fix + its fail-on-revert sweep. Row:
+`tests/plan/s113-test-plan.md` PS-R7.
+
 ## Why a FIXME despite the no-FIXME-with-failing-test rule
 
 There is **no stable RED**: `/testing`'s reduction (`ea77dad8`) could not make

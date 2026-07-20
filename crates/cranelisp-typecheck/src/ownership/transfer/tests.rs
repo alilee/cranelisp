@@ -220,12 +220,19 @@ fn return_direct_param_is_alias() {
 }
 
 #[test]
-fn return_embedded_in_constr_escapes_and_result_fresh() {
-    // spec: §3.3/§13.6(c) — a returned ADT is Fresh; its stored param escapes.
+fn return_embedded_in_constr_escapes_and_result_conditional() {
+    // spec: §16.2 row 5 (0641 I-2) — a returned ADT carrying a param is the JOIN of
+    // its element origins (`Conditional{rep:x}`), NOT unconditional `Fresh`: the
+    // param's reference escapes INSIDE the container, so the result publishes the
+    // conservative `MayAliasOf(0)` (keeps the consumer's protect on the aliased
+    // element path). Pre-§16 this returned `Fresh` — the I-2 anti-monotone rule
+    // ("a fresh container whose escaping element is a COW alias" laundered to Fresh).
     let r = run(&[strparam("x")], adt(vec![var("x")]), TestEnv::default());
-    assert_eq!(r.summary.result, ResultMode::Fresh);
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0));
     // Escape site fact on the ConstrADT is true (it is returned).
     assert!(r.facts.escapes.values().any(|v| *v));
+    // x is folded into the returned aggregate ⇒ IntoResult (unchanged).
+    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
 }
 
 #[test]
@@ -535,6 +542,189 @@ fn match_arm_binding_is_projection_of_scrutinee() {
     assert_eq!(r.summary.param_mode(0), Mode::Borrowed);
     // Provenance recorded for the arm rooted in `p`.
     assert!(r.facts.provenance.values().any(|v| v.as_ref() == "p"));
+}
+
+// ===== §16 monotone provenance frame — the 0641 rule-table corrections =====
+
+#[test]
+fn row5_container_carries_element_reach_not_fresh() {
+    // §16.2 row 5 (0641 B-1/I-2) — a container `[v]` (here a ConstrADT holding the
+    // param `v`) has the JOIN of its element origins = `Conditional{rep:v}`, NOT
+    // unconditional `Fresh`. The direct return publishes the conservative
+    // `MayAliasOf(0)` (v's reference escapes inside the container). Pre-§16 this
+    // laundered to `Fresh` (the anti-monotone rule).
+    let r = run(&[strparam("v")], adt(vec![var("v")]), TestEnv::default());
+    assert_eq!(r.summary.result, ResultMode::MayAliasOf(0));
+}
+
+#[test]
+fn row5_row6_projection_out_of_container_inherits_reach() {
+    // §16.2 rows 5+6 (0641 B-1) — `(vec-get [v] 0)`: the container `[v]` carries
+    // v's reach (row 5, `Conditional{v}`); the projection-out (a `ProjectionOf(0)`
+    // callee over that container) inherits it as a conditional projection → the
+    // result is `MayAliasOf(0)`, NOT `Fresh`. Pre-§16 the container was `Fresh` so
+    // the projection laundered v → `Fresh` (the freed-COW-read B-1 defect).
+    let env = TestEnv::default().summary(
+        "vec-get",
+        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::ProjectionOf(0), vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+    );
+    let getv = call(
+        "vec-get",
+        vec![adt(vec![var("v")]), MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }],
+    );
+    let r = run(&[strparam("v")], getv, env);
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "a projection-out of a param-carrying container inherits the reach (rows 5+6)"
+    );
+}
+
+#[test]
+fn row3_conditional_scrutinee_whole_var_binds_conditional_no_hard_claim() {
+    // §16.2 row 3 (0641 B-2 provenance half) — `(match (cow v) [r r])` where `cow`
+    // returns a COW `MayAliasOf(0)` scrutinee: the whole-value var-pattern `r`
+    // binds the scrutinee's origin VERBATIM (`Conditional{v}`), so the arm body
+    // `r` publishes `MayAliasOf(0)` — NEVER an unconditional hard `AliasOf`/
+    // `ProjectionOf`. And NO arm provenance fact is emitted for a conditional
+    // scrutinee. Pre-§16 the arm bound a hard `Projection(v)` (the narrowing).
+    let env = TestEnv::default().summary(
+        "cow",
+        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+    );
+    let arm = MonoMatchArm {
+        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        body: var("r"),
+        span: s(),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(call("cow", vec![var("v")])),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(
+        r.summary.result,
+        ResultMode::MayAliasOf(0),
+        "a whole-var arm on a conditional scrutinee stays conditional (no hard claim)"
+    );
+    assert!(
+        r.facts.provenance.is_empty(),
+        "a conditional (COW) scrutinee emits NO arm provenance fact (row 3)"
+    );
+}
+
+#[test]
+fn row7_captured_let_bound_param_alias_retains_param() {
+    // §16.2 row 7 (0641 I-1) — `(let [r v] (fn [] (readonly r)))`: `r` is an
+    // unconditional ALIAS of param `v` (`Unconditional{v}`), captured by an
+    // escaping closure and used inside. The capture roots THROUGH the alias to v,
+    // so v is retained past the enclosing frame (Owned/Retained) — NOT laundered as
+    // a fresh local (the freed-heap read I-1).
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), var("v"))],
+        body: Box::new(lambda_sp(Span::new(300, 301), vec![], call("readonly", vec![var("r")]))),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "captured param alias retains v (I-1)");
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "v escapes via the capture");
+}
+
+// A COW call `(cow v)` with an explicit span (a `MayAliasOf(0)` result) — the
+// scrutinee whose per-node escape fact the row-3 escape-half tests inspect.
+fn cow_sp(span: Span) -> MonoExpr {
+    MonoExpr::Apply {
+        resolved_target: None,
+        callee: Box::new(var("cow")),
+        args: vec![var("v")],
+        span,
+        resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
+            mangled_name: JitSymbol::from("cow"),
+        })),
+        ty: ConcreteType::String,
+        escapes: None,
+        confined: None,
+        unique_static: None,
+        provenance: None,
+    }
+}
+
+#[test]
+fn row3_escape_whole_var_arm_records_scrutinee_escape() {
+    // ESCAPE half of §16 row 3 (0641 B-2) — `(match (cow v) [r r])` in tail: the
+    // whole-value `r` binds the COW scrutinee and RETURNS it, so the scrutinee's
+    // Apply node MUST record escapes=true. Pre-fix it stayed `Some(false)` (walked
+    // `Neutral`) → the backend's ruled gate declined the inc → the match decs the
+    // scrutinee while `r` returns it → UAF.
+    let env = TestEnv::default().summary(
+        "cow",
+        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+    );
+    let cow_span = Span::new(500, 501);
+    let arm = MonoMatchArm {
+        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        body: var("r"),
+        span: s(),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(cow_sp(cow_span)),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&cow_span),
+        Some(&true),
+        "the COW scrutinee escapes via the returned whole-value binding (B-2 escape half)"
+    );
+}
+
+#[test]
+fn row3_escape_whole_var_arm_scrutinee_stays_non_escaping_when_consumed_in_frame() {
+    // The precision twin (loop/recur cells MUST NOT regress) — when the arm result
+    // does NOT flow the binding outward (`r` unused, result consumed in-frame), the
+    // scrutinee stays NON-escaping. Only a binding that actually escapes triggers
+    // the scrutinee re-walk.
+    let env = TestEnv::default().summary(
+        "cow",
+        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+    );
+    let cow_span = Span::new(510, 511);
+    let arm = MonoMatchArm {
+        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        body: MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+        span: s(),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(cow_sp(cow_span)),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&cow_span),
+        Some(&false),
+        "the scrutinee stays non-escaping when the binding is consumed in-frame \
+         (loop/recur must not regress)"
+    );
 }
 
 #[test]

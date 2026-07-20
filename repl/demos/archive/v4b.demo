@@ -3,6 +3,10 @@
 ; loop. Programs using only primitives now compile through the new
 ; scheduler path. --v4 --run proves it end-to-end.
 
+; The raw integer primitives live in the `primitives` module — import the ones
+; this tour drives through the scheduler:
+(import [primitives [add-i64 sub-i64 mul-i64 lt-i64]])
+
 ; Primitive arithmetic through the scheduler
 (add-i64 1 2)
 

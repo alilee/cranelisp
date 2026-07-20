@@ -1396,3 +1396,98 @@ fn persist_type_decl_regen_preserves_source() {
          source-first regen, FIXME 0538); regenerated user.cl:\n{regenerated}"
     );
 }
+
+// =============================================================================
+// PS-RT4 trait-PROVENANCE axis (W5b, was FIXME 0664 — recipe in the plan row).
+// The original RT-4 pins sat in the LOCAL-trait cell only; the W4 fix passed them
+// while the IMPORTED-trait cell (and the prelude-trait cell) still dropped the
+// impl from the regenerated `user.cl` (the D45 model splits on this axis — the
+// shell lives at the TRAIT's home, so a variant grew its own missing codepath).
+// 0664's fix landed + verified; these are its born-green regression guards.
+// =============================================================================
+
+// IMPORTED-trait cell (0664's regression guard): trait `Bump` in a FILE module
+// `tlib`, impl for a user type `W` at the user module — the impl must be written to
+// the regenerated `user.cl` and dispatch after restart.
+// spec: repl/spec.md §15.2 — an imported-trait impl persists across restart.
+#[test]
+fn imported_trait_impl_survives_restart() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "tlib.cl",
+            "(import [primitives [Int]])\n(deftrait Bump (bump [self] Int))\n",
+        )
+        .stdin(
+            "(import [tlib [Bump bump]])\n\
+             (deftype W Wv)\n\
+             (impl Bump W (defn bump [w] 42))\n\
+             (bump Wv)\n\
+             /quit\n",
+        )
+        .output();
+    assert!(
+        first.stdout.contains(":primitives/Int 42"),
+        "session 1 MUST dispatch `(bump Wv)` → 42; stdout={}",
+        first.stdout
+    );
+
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude_no_overwrite(PreludeVariant::PrimitivesOnly)
+        .stdin("(bump Wv)\n/quit\n")
+        .output();
+    let c = format!("{}{}", second.stdout, second.stderr);
+    assert!(
+        second.stdout.contains(":primitives/Int 42"),
+        "session 2 MUST restore the IMPORTED-trait impl from the regenerated \
+         `user.cl` and dispatch `(bump Wv)` → 42 (0664 — the impl for an imported \
+         trait must not be dropped); got:\n{c}"
+    );
+    assert!(
+        !c.contains("no impl of trait"),
+        "session 2 MUST NOT report `no impl of trait` — the imported-trait impl was \
+         dropped from `user.cl`; got:\n{c}"
+    );
+}
+
+// PRELUDE-trait cell (highest-value real-usage variant): `impl Display MyType`
+// where `Display` comes from the prelude. The impl must survive regen.
+// spec: repl/spec.md §15.2 — a prelude-trait impl persists across restart.
+#[test]
+fn prelude_trait_impl_survives_restart() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin(
+            "(deftype MyType Mv)\n\
+             (impl Display MyType (defn show [x] \"hi\"))\n\
+             (show Mv)\n\
+             /quit\n",
+        )
+        .output();
+    assert!(
+        first.stdout.contains("hi"),
+        "session 1 MUST `(show Mv)` → \"hi\"; stdout={}",
+        first.stdout
+    );
+
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude_no_overwrite(PreludeVariant::TestStandard)
+        .stdin("(show Mv)\n/quit\n")
+        .output();
+    let c = format!("{}{}", second.stdout, second.stderr);
+    assert!(
+        second.stdout.contains("hi"),
+        "session 2 MUST restore the PRELUDE-trait impl and `(show Mv)` → \"hi\" \
+         (0664); got:\n{c}"
+    );
+    assert!(
+        !c.contains("no impl of trait"),
+        "session 2 MUST NOT report `no impl of trait`; got:\n{c}"
+    );
+}

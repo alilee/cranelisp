@@ -703,7 +703,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///    TEMPLATE clause monomorphises at this call's args (fresh instantiation) so
     ///    distinct external calls at distinct types never conflict, and dispatches
     ///    to the minted instance.
-    pub(super) fn resolve_pending_overloads(&self, state: &mut CheckState) -> Result<(), CranelispError> {
+    pub(crate) fn resolve_pending_overloads(&self, state: &mut CheckState) -> Result<(), CranelispError> {
         let pending = std::mem::take(&mut state.pending_overload_resolutions);
 
         // Pass 1 — self-calls (monomorphic recursion).
@@ -848,12 +848,40 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 self.unify(state, p, a, span)?;
             }
             self.unify(state, ret_type_var, &ret_ty, span)?;
-            let concrete_mangled = mangle_sig(base_name.as_ref(), &resolved_variant_params);
+            // Fix A (MC-X2 qualified face) — mangle the concrete dispatch identity
+            // from the BARE base name (strip any module qualifier), NEVER the
+            // WRITTEN reference. This matches `finalize_multi_sig_variant_types`
+            // Phase A, which registers a back-flow-pinned clause under
+            // `mangle_sig(defn.name, concrete_params)` (bare), so the drain's
+            // re-derivation must also be bare (`rp4$Int+Int`, not the still-`$Var`
+            // stored `mangled_name` Phase A hasn't promoted yet). For an imported
+            // base the qualified reference `mlib/h` must NOT leak into the mangle
+            // (`mangle_sig("mlib/h",…) = "mlib/h$Int"` → the bad `mlib/mlib/h$Int`)
+            // — the stored entry is `h$Int` in `mlib`. Bare-name mangle serves both.
+            let bare_base = base_name.as_ref().rsplit('/').next().unwrap_or(base_name.as_ref());
+            let concrete_mangled = mangle_sig(bare_base, &resolved_variant_params);
             let resolution = ResolvedCall::SigDispatch {
                 mangled_name: JitSymbol::from(concrete_mangled.as_ref()),
             };
             self.record_dispatch_target(state, span, &resolution);
             state.method_resolutions.resolved_calls.insert(span, resolution);
+            // MC-X2 (W2-close) — an IMPORTED base's concrete clause `Def` lives in
+            // its HOME module, not the caller's. `record_dispatch_target` keyed the
+            // carrier at `current_module` (the `SigDispatch` arm's "always local"
+            // assumption — correct only for a LOCAL base); override with the base's
+            // recorded home so the backend keyed-read finds `mlib/h$Int` (P24 —
+            // key by storage identity). Local bases have no `overload_homes` entry
+            // → no override. Also cures the W2a scoped-drain carrier's same
+            // current-module face (this is the ONE drain both use).
+            if let Some(home) = state.overload_homes.get(base_name).cloned() {
+                state.method_resolutions.resolved_targets.insert(
+                    span,
+                    FQSymbol {
+                        module: home,
+                        symbol: Symbol::from(concrete_mangled.as_ref()),
+                    },
+                );
+            }
         } else {
             // TEMPLATE clause (constrained / genuinely-polymorphic, §11.4 step 4).
             // Its params must NOT be globally pinned (a second external call at a

@@ -323,6 +323,15 @@ pub fn insert_cluster(
     // staging pivot lands (FIXME 0176), this loop drains staging into live
     // per-entry under inner-DashMap locks (target shape from `facades/int.md`
     // §"Atomicity guarantees").
+    // R7/0604 rider (index-worker-isolation.md §8): observe each committed write
+    // BESIDE the insertion, BEFORE acquiring the mutable guard (the assert reads
+    // other tables — it must not run under a held `get_mut`, DashMap shard
+    // re-entrancy). Cheap: does real work only for `target == prelude`.
+    for (sym, entry) in &processed.entries {
+        crate::imports::assert_prelude_closure(
+            &shared.symbol_tables, target, sym.as_ref(), entry,
+        );
+    }
     if let Some(mut live) = shared.symbol_tables.get_mut(target) {
         for (sym, entry) in processed.entries {
             live.insert(sym, entry);

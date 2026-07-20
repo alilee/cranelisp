@@ -137,7 +137,7 @@ pub fn generate_module_source(
     }
 
     // 7. Trait implementations
-    let impl_section = generate_impls(symbol_table);
+    let impl_section = generate_impls(symbol_table, introspection, module_path);
     if !impl_section.is_empty() {
         sections.push(impl_section);
     }
@@ -147,6 +147,17 @@ pub fn generate_module_source(
     if !fn_section.is_empty() {
         sections.push(fn_section);
     }
+
+    // §12.3.1 completeness guard (arch-directed, Principle 18): the RT-4 stub hid
+    // a whole kind (`impl`) SILENTLY. The PRIMARY guard is now compile-time — both
+    // `ModuleEntry` and `DefKind` are matched exhaustively in
+    // `section_entry_claimed_or_excluded` (no `_` arm), so a NEW persisted kind is
+    // a compile error there until its author classifies it. This runtime sweep is
+    // the documented seam + `MODULE_TRACE` hook: with the current variant set every
+    // classification is claimed-or-excluded (so it does not fire today), but it
+    // trips loudly if a future edit sets a classification to `false` — a
+    // persisted-content kind left unclaimed.
+    assert_section_completeness(symbol_table, module_path);
 
     let mut result = sections.join("\n\n");
     if !result.is_empty() {
@@ -717,16 +728,222 @@ fn generate_types(
         .join("\n\n")
 }
 
-/// Generate trait implementations. Uses sexp from TraitImpl entries
-/// on the symbol table (if they have sexp fields). Falls back to
-/// introspection for impl method sources.
-fn generate_impls(st: &crate::code::SessionSymbolTable) -> String {
-    // TraitImpl entries currently don't have an sexp field (see §2.1 gap).
-    // For now, skip impl regeneration — impls will need the sexp field
-    // added to ModuleEntry::TraitImpl as a prerequisite (design §9.1).
-    // This allows basic persistence (defn, deftype, import) to work.
-    let _ = st;
-    String::new()
+/// Generate trait implementations WRITTEN IN this module (RT-4 close,
+/// `design/int/session-persistence.md` §12).
+///
+/// The former stub silently skipped the whole `impl` kind (the §12.1
+/// enumeration-miss data-loss class): every `impl` — conventional and HKT —
+/// vanished from the regenerated `.cl` while `deftrait`/`deftype`/`defn`
+/// survived (inconsistent-resurrection, the S109-4/0573 class). The fix mirrors
+/// `generate_traits`/`generate_types` exactly (ONE reader per kind, Principle 7).
+///
+/// **Enumeration (§12.3, completeness-binding).** "The impls written in module M"
+/// is NOT "the shells in M's table". Under Decision 45 *as amended* the impl
+/// `TraitImpl` **shell** lives at the TRAIT's defining module carrying
+/// `impl_module = <writer>` (the writer back-pointer); the shell's mangled method
+/// `Def`s + the impl form's verbatim source live in the writer's module. So M's
+/// regen enumerates the shells whose `impl_module == module_path` — an impl of an
+/// M-homed trait written in M (the RT-4 pins) OR of an imported trait written in M
+/// (the §12.4 union backstop, reached identically). A shell homed in M but written
+/// in another module N (`impl_module == N`) is N's regen row — a LEGAL exclusion.
+///
+/// For each enumerated impl the render key is the settled `Trait.Type` label,
+/// and source is fetched via the same `introspection_sexp_and_source` +
+/// `emit_decl_or_source` re-parse-gated reader every decl section uses (a
+/// stale/garbage source is skipped, never corrupts the file).
+///
+/// **Two enumeration sources (§12.3), deduped by the shared `Trait.Type` key**
+/// (0664 — the registrar writes the `TraitImpl` shell to the TRAIT's home table,
+/// `impl_check.rs::symbol_table_mut_in(&trait_home)`, NOT the writer's table, so
+/// the shell-only scan of `st` is INCOMPLETE for an impl of an imported trait):
+///
+/// - **Row 1 — shells in `st`.** A `TraitImpl` shell for a trait homed HERE lives
+///   in this module's own table; filter to impls WRITTEN here (`impl_module == M`).
+///   Key from the settled shell fields (`impl_type` is the settled effective
+///   target, Principle 26). Catches impls of M-homed traits written in M.
+/// - **Row 2 — introspection backstop.** `record_defining_turn_source` records the
+///   impl form's verbatim source under `{M, "Trait.Type"}` for EVERY impl written
+///   in M, INCLUDING impls of IMPORTED traits (whose shell lives at the trait's
+///   home, absent from `st`). A `{M, sym}` record is an impl label iff `sym` is
+///   dotted AND its recorded form's head is `impl` (structural, self-contained —
+///   no cross-table shell walk). Key = `sym`.
+///
+/// An impl reachable via BOTH rows (an M-homed trait impl written in M) yields the
+/// SAME `Trait.Type` key from each, so the `BTreeSet` renders it exactly ONCE
+/// (0664 dedup obligation). An impl of an M-homed trait written in module N stays
+/// excluded: row 1 filters `impl_module != M`, and its source is recorded under
+/// `{N, …}`, not `{M, …}`, so row 2 does not reach it either. `BTreeSet` gives
+/// deterministic sorted output.
+fn generate_impls(
+    st: &crate::code::SessionSymbolTable,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
+    module_path: &ModuleFullPath,
+) -> String {
+    use std::collections::BTreeSet;
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+
+    // Row 1 — shells homed HERE, written HERE.
+    for (_name, entry) in st.all_symbols() {
+        if let ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, .. } = entry
+            && impl_module == module_path
+        {
+            keys.insert(format!("{}.{}", trait_name.name, impl_type.name));
+        }
+    }
+
+    // Row 2 — introspection impl-label records written HERE (the imported-trait
+    // backstop). Fully consumed + dropped BEFORE the render loop's `.get()` below
+    // (no concurrent iter+get on the same DashMap shard).
+    if let Some(intro) = introspection {
+        for item in intro.iter() {
+            let fq = item.key();
+            if fq.module == *module_path
+                && fq.symbol.as_ref().contains('.')
+                && record_is_impl_form(item.value())
+            {
+                keys.insert(fq.symbol.to_string());
+            }
+        }
+    }
+
+    keys.into_iter()
+        .filter_map(|key| {
+            let sym = cranelisp_types::Symbol::from(key);
+            let (sexp, source) =
+                introspection_sexp_and_source(introspection, module_path, &sym);
+            emit_decl_or_source(sexp, source)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// `true` iff the introspection record's recorded form (verbatim `source`
+/// preferred, `sexp` fallback) is an `(impl …)` form — the §12.3 row-2 impl-label
+/// discriminator (0664). Structural (head symbol), so a `deftype`/`defn`/ctor
+/// record sharing a dotted name can never be misclassified as an impl.
+fn record_is_impl_form(intro: &Introspection) -> bool {
+    if let Some(src) = &intro.source
+        && let Ok(forms) = cranelisp_frontend::parse(src.trim())
+        && forms.len() == 1
+    {
+        return sexp_head_is(&forms[0], "impl");
+    }
+    if let Some(sexp) = &intro.sexp {
+        return sexp_head_is(sexp, "impl");
+    }
+    false
+}
+
+/// `true` iff `sexp` is a list whose head is the bare symbol `head`.
+fn sexp_head_is(sexp: &Sexp, head: &str) -> bool {
+    matches!(
+        sexp,
+        Sexp::List(items, _)
+            if matches!(items.first(), Some(Sexp::Symbol(h, _)) if h == head)
+    )
+}
+
+/// §12.3.1 section-completeness guard (Principle 18) — the runtime seam. Sweeps
+/// the live table and, for any entry a classification marks unclaimed, trips a
+/// `debug_assert!` (debug) / emits `MODULE_TRACE` (release).
+///
+/// The PRIMARY guard is compile-time: `section_entry_claimed_or_excluded` matches
+/// `ModuleEntry`/`DefKind` exhaustively, so a NEW persisted kind cannot be added
+/// without classifying it here. With the current variant set every classification
+/// is claimed-or-excluded, so this sweep does not fire today — it remains as the
+/// documented seam + `MODULE_TRACE` hook, firing only if a future edit marks a
+/// classification `false` (a persisted-content kind left unclaimed).
+fn assert_section_completeness(
+    st: &crate::code::SessionSymbolTable,
+    module_path: &ModuleFullPath,
+) {
+    for (name, entry) in st.all_symbols() {
+        if section_entry_claimed_or_excluded(name.as_ref(), entry) {
+            continue;
+        }
+        if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+            eprintln!(
+                "[MODULE_TRACE] regen section-completeness breach in `{module_path}`: \
+                 entry `{name}` is a persisted-content kind claimed by no section \
+                 generator — it would be SILENTLY dropped from the regenerated `.cl` \
+                 (session-persistence.md §12.3.1)"
+            );
+        }
+        debug_assert!(
+            false,
+            "regen section-completeness breach in `{module_path}`: entry `{name}` \
+             is a persisted-content kind claimed by no section generator — it would \
+             be silently dropped from the regenerated `.cl` (session-persistence.md \
+             §12.3.1). Add a section generator or list it as a legal exclusion in \
+             `section_entry_claimed_or_excluded`."
+        );
+    }
+}
+
+/// `true` iff `entry` is claimed by a section generator (traits/types/impls/fns)
+/// OR is an enumerated LEGAL exclusion (a non-persisted kind, or an impl written
+/// in another module) — the §12.3.1 completeness contract.
+///
+/// Both `ModuleEntry` and `DefKind` are matched EXHAUSTIVELY (no `_` arm), so a
+/// NEW variant is a COMPILE error here: its author must classify it before it can
+/// be persisted (compile-time enforcement — louder than the runtime sweep the
+/// design first sketched, since the enums turned out exhaustive to this crate).
+/// The runtime sweep in `assert_section_completeness` remains as the documented
+/// seam + `MODULE_TRACE` hook (it fires if a future classification is set wrong).
+fn section_entry_claimed_or_excluded(
+    name: &str,
+    entry: &ModuleEntry<crate::code::Code>,
+) -> bool {
+    // Internal synthetic names (`$`-mangled impl methods / mono / multi-sig
+    // variants, `__expr` / `__macro_*` wrappers) are never persisted as their
+    // own row — they ride their owner's form (§8's `is_internal_listing_name`
+    // skip). A legal exclusion regardless of kind.
+    if crate::worker::is_internal_listing_name(name) {
+        return true;
+    }
+    match entry {
+        // Claimed by a section generator.
+        ModuleEntry::TraitDecl { .. } => true, // §5 traits
+        ModuleEntry::TypeDef { .. } => true,   // §6 types
+        // §7 impls: claimed when written HERE (`impl_module == module_path`); a
+        // shell written in module N is N's regen row (legal exclusion, §12.2
+        // D45-amended storage model). Both dispositions are valid, so no trip.
+        ModuleEntry::TraitImpl { .. } => true,
+        // `DefKind` is EXHAUSTIVE to this crate — every current variant is named
+        // (no `_` arm). A NEW `DefKind` is therefore a COMPILE error here, forcing
+        // its author to classify it as claimed-or-excluded (louder than a runtime
+        // trip — the §12.3.1 intent, structurally).
+        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            // §8 fns/macros.
+            cranelisp_types::DefKind::UserFn { .. }
+            | cranelisp_types::DefKind::Macro { .. } => true,
+            // A product-ctor `Def` carries the type facet — claimed by §6 types
+            // (`type_def_info()`); a sum ctor rides its `TypeDef` form. Either
+            // way a `Constructor` is never a persisted row of its own.
+            cranelisp_types::DefKind::Constructor { .. } => true,
+            // Builtin / non-persisted definition kinds (bootstrap / primitives /
+            // platform effects) — never regenerated to a user `.cl`.
+            cranelisp_types::DefKind::Primitive { .. }
+            | cranelisp_types::DefKind::PlatformEffect { .. }
+            | cranelisp_types::DefKind::PrimitiveExtern => true,
+            // Multi-sig BASE entry. Its authored `(defn h (…) (…))` form regen is
+            // a separate concern from this RT-4 close (generate_fns_and_macros
+            // handles the `UserFn`/`Macro` arms only); a recognized exclusion so
+            // the guard does NOT false-fire on live multi-sig defns.
+            cranelisp_types::DefKind::Overloaded { .. } => true,
+        },
+        // Non-persisted structural / builtin `ModuleEntry` kinds.
+        //
+        // `ModuleEntry` is EXHAUSTIVE to this crate — every current variant is
+        // named (no `_` arm). A NEW variant is a COMPILE error here, forcing its
+        // author to classify it as claimed-or-excluded before it can be persisted
+        // — the §12.3.1 completeness contract, enforced structurally (compile
+        // time > runtime).
+        ModuleEntry::Import { .. }
+        | ModuleEntry::SpecialForm { .. }
+        | ModuleEntry::IntrinsicType { .. }
+        | ModuleEntry::Ambiguous { .. } => true,
+    }
 }
 
 fn generate_fns_and_macros(
@@ -2300,6 +2517,199 @@ mod tests {
             !out.contains("Pt"),
             "a decl with no introspection record is skipped (no garbage): {out:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RT-4 — impl-source-regen close (session-persistence.md §12)
+    // -----------------------------------------------------------------------
+
+    fn trait_impl_shell(
+        home: &ModuleFullPath,
+        trait_name: &str,
+        impl_type_module: &ModuleFullPath,
+        impl_type: &str,
+        impl_module: &ModuleFullPath,
+    ) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{FQTraitName, FQTypeName, Visibility};
+        ModuleEntry::TraitImpl {
+            trait_name: FQTraitName::new(home.clone(), trait_name.into()),
+            impl_type: FQTypeName::new(impl_type_module.clone(), impl_type.into()),
+            impl_module: impl_module.clone(),
+            methods: vec!["dp".into()],
+            visibility: Visibility::Public,
+        }
+    }
+
+    // §12.3 row 1: an impl of an M-homed trait, WRITTEN IN M. The registrar stages
+    // the `TraitImpl` shell at the TRAIT's home table — which, for a trait homed
+    // HERE, IS `st` (`symbol_table_mut_in(&trait_home)`, trait_home == M). Filter
+    // `impl_module == M`; render from the `{M, "Disp.W"}` defining-turn source
+    // (the `record_defining_turn_source` key, via `impl_echo_type_name`). The RT-4
+    // pins live here.
+    // spec: repl/spec.md §15.4 — `impl` is persisted module content.
+    #[test]
+    fn generate_impls_enumerates_impl_written_in_module() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // Trait homed at `user`, so its shell lives in `user`'s table (== st),
+        // written in `user`. Production shape (shell at trait home).
+        st.insert(
+            "impl$user/W$user/Disp".into(),
+            trait_impl_shell(&module, "Disp", &module, "W", &module),
+        );
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .or_default()
+            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+
+        let out = generate_impls(&st, Some(&introspection), &module);
+        assert_eq!(
+            out, "(impl Disp W (defn dp [w] 42))",
+            "an impl written in M MUST regenerate from its defining-turn source: {out:?}"
+        );
+    }
+
+    // §12.3 legal exclusion: a shell HOMED in M (its trait lives here, so the
+    // shell is in `st`) but WRITTEN IN another module N (`impl_module == N`) is N's
+    // regen row — M's generate_impls MUST NOT emit it. Row 1 filters
+    // `impl_module != M`; row 2 does not reach it either, because the writer N
+    // recorded the source under `{N, "Disp.X"}`, NOT `{M, …}` (staged the
+    // production way — the introspection key is the WRITER's module).
+    // spec: repl/spec.md §15.4; session-persistence.md §12.2 (D45-amended storage)
+    #[test]
+    fn generate_impls_excludes_impl_written_in_another_module() {
+        let home = ModuleFullPath::from("user");
+        let other = ModuleFullPath::from("other");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(home.clone());
+        // Trait Disp homed at `user` (shell in st), impl written in `other`.
+        st.insert(
+            "impl$other/X$user/Disp".into(),
+            trait_impl_shell(&home, "Disp", &other, "X", &other),
+        );
+        // The writer `other` records the source under `{other, "Disp.X"}` — NOT
+        // under `user`. `user`'s regen must not reach it.
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: other.clone(), symbol: "Disp.X".into() })
+            .or_default()
+            .source = Some("(impl Disp X (defn dp [w] 7))".to_string());
+
+        let out = generate_impls(&st, Some(&introspection), &home);
+        assert!(
+            out.is_empty(),
+            "an impl written in another module is a LEGAL exclusion from M's regen: {out:?}"
+        );
+    }
+
+    // §12.3 row 2 (0664 backstop, the BLOCKER fix): an impl of an IMPORTED trait,
+    // WRITTEN IN M. Staged the PRODUCTION way — the shell lives at the TRAIT's home
+    // (`lib.shape`), NOT in `st`, so the row-1 shell scan MISSES it; only the
+    // introspection record `{M, "Disp.W"}` (written by `record_defining_turn_source`
+    // for every impl written in M) reaches it. The pre-0664 shell-only enumeration
+    // DROPPED this impl from regen.
+    // spec: session-persistence.md §12.3 row 2 — the imported-trait backstop.
+    #[test]
+    fn generate_impls_enumerates_impl_of_imported_trait_written_here() {
+        let module = ModuleFullPath::from("user");
+        // `st` holds NO TraitImpl shell — production stages it at the trait's home
+        // (`lib.shape`), a table generate_impls is not even handed. Only the
+        // introspection defining-turn source is present.
+        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .or_default()
+            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+
+        let out = generate_impls(&st, Some(&introspection), &module);
+        assert_eq!(
+            out, "(impl Disp W (defn dp [w] 42))",
+            "an impl of an IMPORTED trait written HERE (shell at the trait home, \
+             absent from st) MUST be reached via the introspection backstop: {out:?}"
+        );
+    }
+
+    // §12.3 dedup (0664 obligation): an M-homed-trait impl written in M is reachable
+    // via BOTH row 1 (shell in st) AND row 2 (introspection impl record). It MUST
+    // render EXACTLY ONCE (the shared `Trait.Type` key deduplicates).
+    // spec: session-persistence.md §12.3 — union-with-dedup.
+    #[test]
+    fn generate_impls_dedups_impl_reachable_via_both_rows() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert(
+            "impl$user/W$user/Disp".into(),
+            trait_impl_shell(&module, "Disp", &module, "W", &module),
+        );
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Disp.W".into() })
+            .or_default()
+            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+
+        let out = generate_impls(&st, Some(&introspection), &module);
+        assert_eq!(
+            out.matches("(impl Disp W").count(),
+            1,
+            "an impl reachable via both enumeration rows MUST render exactly once: {out:?}"
+        );
+    }
+
+    // §12.3 row 2 discriminator: a dotted introspection record whose form is NOT an
+    // `(impl …)` (e.g. a `Type.Ctor` carrying a deftype form) is NOT misclassified
+    // as an impl — the head-symbol check keeps ctor/decl records out of the impl
+    // section.
+    // spec: session-persistence.md §12.3 — structural impl-label discriminator.
+    #[test]
+    fn generate_impls_row2_ignores_non_impl_dotted_record() {
+        let module = ModuleFullPath::from("user");
+        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        // A dotted key whose recorded form is a deftype, not an impl.
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Color.Red".into() })
+            .or_default()
+            .source = Some("(deftype Color Red Green Blue)".to_string());
+
+        let out = generate_impls(&st, Some(&introspection), &module);
+        assert!(
+            out.is_empty(),
+            "a dotted non-impl record MUST NOT be enumerated as an impl: {out:?}"
+        );
+    }
+
+    // The §12.3.1 fail-loud guard: the current variant set is FULLY classified —
+    // a realistic user module (trait + type + defn + impl written here) passes the
+    // section-completeness sweep WITHOUT tripping. (The trip case is a NEW variant,
+    // structurally unconstructable here — the guard's `_` arms.)
+    // spec: session-persistence.md §12.3.1 — section-completeness guard
+    #[test]
+    fn section_completeness_guard_passes_for_realistic_module() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("Disp".into(), trait_decl_entry("Disp"));
+        st.insert("W".into(), type_def_entry(&module, "W"));
+        st.insert("g".into(), userfn_entry(0));
+        st.insert(
+            "impl$user/W$user/Disp".into(),
+            trait_impl_shell(&module, "Disp", &module, "W", &module),
+        );
+        // Also an internal `$`-mangled impl method + the `__expr` wrapper — both
+        // legal exclusions (ride their owner / transient).
+        st.insert("dp$user/W".into(), userfn_entry(1));
+        st.insert("__expr".into(), userfn_entry(2));
+        // Every entry must be claimed-or-excluded (the guard's `debug_assert!`
+        // would panic this test otherwise).
+        for (name, entry) in st.all_symbols() {
+            assert!(
+                section_entry_claimed_or_excluded(name.as_ref(), entry),
+                "entry `{name}` must be claimed or a legal exclusion"
+            );
+        }
+        // And the full sweep runs clean (no panic).
+        assert_section_completeness(&st, &module);
     }
 
 }

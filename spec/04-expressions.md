@@ -177,6 +177,8 @@ Bindings go out of scope after `body` is evaluated. Any heap-allocated values bo
 
 The binding list MUST contain an even number of forms -- alternating names and expressions. An odd number is a compile-time error.
 
+Each binding name is a **local binder** — it introduces a fresh name into the `let`'s lexical scope. It MUST be a **bare (unqualified) symbol**; a qualified spelling (`(let [m/x 1] …)`) is a compile-time error, span at the binder. A lexical scope has no cross-module addressing, so a module qualifier is meaningless on a binder — only *references* carry qualifiers (§5, *Binder positions*; §8.5). [S113]
+
 ## 4.4 If Expression [Tested+Neg tests/spec_04_expressions::if_true_branch]
 
 ```clojure
@@ -271,6 +273,8 @@ Lambda parameters support optional type annotations using the `:Type name` synta
 ```
 
 Concrete annotations (`:Int`, `:String`, `:(Option Int)`) constrain the parameter to that exact type. Trait annotations (`:Num`, `:Display`) add trait constraints. Unannotated parameters receive fresh type variables and are inferred from usage.
+
+Each parameter name is a **local binder** and MUST be a **bare (unqualified) symbol** (§5, *Binder positions*); a qualified spelling (`(fn [m/x] …)`) is a compile-time error, span at the parameter. The same rule holds for `defn`/`defmacro` parameters (§5.1, §5.5). [S113]
 
 ### 4.5.3 Calling Convention [Tested tests/spec_04_expressions::lambda_closure_captures, tests/spec_04_expressions::closure_composition_returns_capturing_two_fn_args]
 
