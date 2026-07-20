@@ -615,7 +615,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // subst-resolved variant body the `ast` carries (best-effort; a
                 // `$Var`-param variant body legitimately stays non-concrete — see
                 // `build_concrete_codegen_view`).
-                if let Some(view) = build_concrete_codegen_view(&mangled, &ast, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets) {
+                if let Some(view) = build_concrete_codegen_view(
+                    &mangled,
+                    &ast,
+                    &state.method_resolutions.pattern_ctors,
+                    &state.method_resolutions.var_refs,
+                    &state.method_resolutions.apply_refs,
+                )? {
                     builder = builder.codegen_view(view);
                 }
                 builder = builder.ast(ast);
@@ -874,12 +880,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // → no override. Also cures the W2a scoped-drain carrier's same
             // current-module face (this is the ONE drain both use).
             if let Some(home) = state.overload_homes.get(base_name).cloned() {
-                state.method_resolutions.resolved_targets.insert(
+                state.method_resolutions.apply_refs.insert(
                     span,
-                    FQSymbol {
+                    cranelisp_types::ApplyRef::Dispatch(FQSymbol {
                         module: home,
                         symbol: Symbol::from(concrete_mangled.as_ref()),
-                    },
+                    }),
                 );
             }
         } else {
@@ -1315,10 +1321,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // left `Polymorphic` by a failed recheck, re-attempted in a later
             // run) reads a map WITHOUT the body's spans off the enclosing map —
             // the sibling cell of the mono-instance 0622 gap.
-            let codegen_view = concrete_defn
-                .variants
-                .first()
-                .and_then(|v| build_concrete_codegen_view(&name, v, &resolutions.pattern_ctors, &resolutions.resolved_targets));
+            let codegen_view = match concrete_defn.variants.first() {
+                Some(v) => build_concrete_codegen_view(
+                    &name,
+                    v,
+                    &resolutions.pattern_ctors,
+                    &resolutions.var_refs,
+                    &resolutions.apply_refs,
+                )?,
+                None => None,
+            };
 
             // Re-register the entry under the BARE name as `Concrete{slot}`,
             // carrying the concrete scheme + annotated body. Allocate a fresh

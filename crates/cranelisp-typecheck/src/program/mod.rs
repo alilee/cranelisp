@@ -63,13 +63,18 @@ pub(crate) struct FormCheckResult {
     /// AFTER the per-form `state.method_resolutions` has been drained.
     pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
 
-    /// The per-reference resolved STORAGE identities discovered while checking
-    /// this form's bodies (`MethodResolutions.resolved_targets`, keyed by the
-    /// referencing `Var`/`Apply` span; S110 0583 §1.1). Mirror of
-    /// `pattern_ctors` — accumulated cross-form so the finalize codegen-view
-    /// rebuild can populate `MonoExpr::{Var,Apply}.resolved_target` AFTER the
+    /// The per-`Var`-span typed resolution verdicts discovered while checking
+    /// this form's bodies (`MethodResolutions.var_refs`; S114 carrier flip).
+    /// Mirror of `pattern_ctors` — accumulated cross-form so the finalize
+    /// codegen-view rebuild can populate `MonoExpr::Var.resolution` AFTER the
     /// per-form `state.method_resolutions` has been drained.
-    pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
+    pub(crate) var_refs: HashMap<Span, cranelisp_types::VarRef>,
+
+    /// The per-`Apply`-span typed dispatch verdicts discovered while checking
+    /// this form's bodies (`MethodResolutions.apply_refs`; S114 carrier flip) —
+    /// the Apply-side sibling of `var_refs`, populating
+    /// `MonoExpr::Apply.dispatch`.
+    pub(crate) apply_refs: HashMap<Span, cranelisp_types::ApplyRef>,
 
     /// Expression types for this form's AST nodes.
     /// In Pass 1: may contain constructor types for TypeDef forms.
@@ -109,7 +114,8 @@ impl FormCheckResult {
         FormCheckResult {
             method_resolutions: HashMap::new(),
             pattern_ctors: HashMap::new(),
-            resolved_targets: HashMap::new(),
+            var_refs: HashMap::new(),
+            apply_refs: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),
@@ -136,7 +142,8 @@ impl FormCheckResult {
 pub(crate) struct ModuleCheckAccumulator {
     pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
     pub(crate) pattern_ctors: HashMap<Span, cranelisp_types::FQSymbol>,
-    pub(crate) resolved_targets: HashMap<Span, cranelisp_types::FQSymbol>,
+    pub(crate) var_refs: HashMap<Span, cranelisp_types::VarRef>,
+    pub(crate) apply_refs: HashMap<Span, cranelisp_types::ApplyRef>,
     pub(crate) expr_types: HashMap<Span, Type>,
     pub(crate) constrained_fn_names: HashSet<Symbol>,
     pub(crate) mono_defns: Vec<MonoDefn>,
@@ -190,7 +197,8 @@ impl ModuleCheckAccumulator {
         ModuleCheckAccumulator {
             method_resolutions: HashMap::new(),
             pattern_ctors: HashMap::new(),
-            resolved_targets: HashMap::new(),
+            var_refs: HashMap::new(),
+            apply_refs: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),

@@ -45,13 +45,13 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolved_target: None }
+    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
 }
 /// A statically-resolved call `(name args...)` via SigDispatch (classifies
 /// Summarised(name), consulting the summary registered under `name`).
 fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(name)),
         args,
         span: s(),
@@ -68,7 +68,7 @@ fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
 /// A call with no resolved_call (the None+Var classifier row).
 fn bare_call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(name)),
         args,
         span: s(),
@@ -100,7 +100,7 @@ fn adt_sp(span: Span, fields: Vec<MonoExpr>) -> MonoExpr {
 /// A `SigDispatch` call with an explicit span.
 fn call_sp(span: Span, name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(name)),
         args,
         span,
@@ -445,6 +445,79 @@ fn match_arm_no_shadow_keeps_provenance() {
 }
 
 #[test]
+fn match_whole_var_pattern_returning_scrutinee_records_scrutinee_escape() {
+    // spec: §16 row 3 (0641 B-2) — the ESCAPE half of the whole-value
+    // `Pattern::Var` match-var seam (S114 §9 item 5 unit pin). A scrutinee that
+    // is a fresh allocation bound WHOLE by a var-pattern and flowed outward
+    // escapes its frame: `(defn f [v] (match (vec-set v) [r r]))`. The scrutinee
+    // is walked `Neutral` first (escape=false), then — because the var-pattern
+    // `r` returns it in the escaping body ctx — RE-WALKED escaping so its
+    // allocation-site escape fact is TRUE. A stale `Some(false)` here defeats the
+    // backend P25 absent-default and produces the COW-var-pattern UAF the fix
+    // cures (`design/typecheck/typed-resolution-carrier.md` §6). This pins the
+    // transfer.rs recording seam directly — it FAILS on revert of the §16 row-3
+    // scrutinee re-walk.
+    let scrut_span = Span::new(10, 20);
+    let arm = MonoMatchArm {
+        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        body: var("r"),
+        span: Span::new(30, 31),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let m = MonoExpr::Match {
+        // `vec-set` is a Fresh-result COW allocation over its first arg.
+        scrutinee: Box::new(call_sp(scrut_span, "vec-set", vec![var("v")])),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let env = TestEnv::default().summary(
+        "vec-set",
+        sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let r = run(&[strparam("v")], m, env);
+    assert_eq!(
+        r.facts.escapes.get(&scrut_span),
+        Some(&true),
+        "the whole-value var-pattern returns the scrutinee ⇒ its allocation escapes"
+    );
+}
+
+#[test]
+fn match_whole_var_pattern_scrutinee_not_returned_does_not_escape() {
+    // spec: §16 row 3 (0641 B-2 precision twin) — the fix must NOT over-widen: a
+    // var-pattern binding that is NOT flowed outward (the arm returns a fresh
+    // constant, not `r`) keeps the scrutinee's escape fact FALSE.
+    // `(defn f [v] (match (vec-set v) [r (other)]))`.
+    let scrut_span = Span::new(10, 20);
+    let arm = MonoMatchArm {
+        pattern: Pattern::Var { name: Symbol::from("r"), span: s() },
+        body: call("other", vec![]),
+        span: Span::new(30, 31),
+        provenance: None,
+        resolved_ctor: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(call_sp(scrut_span, "vec-set", vec![var("v")])),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let env = TestEnv::default()
+        .summary("vec-set", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]))
+        .summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let r = run(&[strparam("v")], m, env);
+    assert_eq!(
+        r.facts.escapes.get(&scrut_span),
+        Some(&false),
+        "the var-pattern binding is not returned ⇒ the scrutinee does not escape"
+    );
+}
+
+#[test]
 fn let_shadow_drops_ambiguous_provenance() {
     // spec: §13.6(d) (blocker 3) — a let binding shadowing a live provenance
     // root makes that projection's root ambiguous ⇒ provenance None (backend
@@ -644,7 +717,7 @@ fn row7_captured_let_bound_param_alias_retains_param() {
 // scrutinee whose per-node escape fact the row-3 escape-half tests inspect.
 fn cow_sp(span: Span) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var("cow")),
         args: vec![var("v")],
         span,

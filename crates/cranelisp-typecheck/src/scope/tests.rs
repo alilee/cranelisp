@@ -22,7 +22,7 @@
     fn test_shadowing() {
         let mut stack = ScopeStack::new();
         stack.bind(Symbol::from("x"), mono(Type::Int));
-        stack.push_scope();
+        stack.push_scope(cranelisp_types::Span::SYNTHETIC);
         stack.bind(Symbol::from("x"), mono(Type::Bool));
         assert_eq!(stack.lookup("x").unwrap().ty, Type::Bool);
         stack.pop_scope();
@@ -34,7 +34,7 @@
     fn test_lookup_outer_scope() {
         let mut stack = ScopeStack::new();
         stack.bind(Symbol::from("x"), mono(Type::Int));
-        stack.push_scope();
+        stack.push_scope(cranelisp_types::Span::SYNTHETIC);
         stack.bind(Symbol::from("y"), mono(Type::Bool));
         // Can still see x from outer scope
         assert_eq!(stack.lookup("x").unwrap().ty, Type::Int);
@@ -112,7 +112,7 @@
         let mut stack = ScopeStack::new();
         // Outer frame: a : t0  (monomorphic — t0 is free in env)
         stack.bind(Symbol::from("a"), mono(Type::Var(0)));
-        stack.push_scope();
+        stack.push_scope(cranelisp_types::Span::SYNTHETIC);
         // Inner frame: b : forall [t1]. t1 -> t1  (t1 quantified, not free)
         stack.bind(
             Symbol::from("b"),

@@ -4,7 +4,18 @@
 // first contact: 1 Vec leaked per `conj`/`assoc` iteration (25,461 surviving in the
 // solver). The superseded/temporary Vec on the persistent-op RC path is never dec'd
 // to zero — a LEAK (bounded, non-corrupting: QUARANTINE+SCRUB clean ⇒ no UAF).
-// Owner /dev(backend/intrinsics), `class=rc-miscount` (leak polarity).
+//
+// SEAM (FIXME 0688, /qa 2026-07-20 — RC_TRACE-discriminated; s114-test-plan §2.1):
+// verdict (a) BACKEND — the missing release is at the TCO tail-jump slot
+// overwrite. `main::go`'s recur arm incs the old `v` (arg-pass), calls `conj`,
+// then `jump block1(...)` overwriting the param slot with the fresh box and
+// NEVER dec'ing the superseded value's slot reference — the PARAM sibling of the
+// §13.3 B3.1a let-scope dead-block leak (`flush_let_scopes_before_tail_jump`
+// covers `let` bindings only). conj's copy arm DOES emit its source release
+// (atomic_rmw sub + drop-glue), so the copy-branch-polarity and
+// intrinsics-non-accounting hypotheses are REFUTED — the conj copy path is the
+// exposure, not the seam. Owner /dev(backend) — NO intrinsics deployment.
+// `class=rc-miscount` (leak polarity).
 //
 // The leak is specific to the stdlib persistent collection verbs (`conj`/`count` —
 // the COW/persistent path), NOT the primitive `vec-push` (which reuses in-place), so
@@ -57,7 +68,7 @@ fn run_stdlib(src: &str, env: &[(&str, &str)]) -> helpers::e2e::CrOutput {
 // Today the persistent-op path leaks 1 Vec per iteration (allocs=22 / deallocs=2).
 // spec: spec/12-runtime.md §12.3.1 — a superseded persistent-collection value is
 // freed when no longer reachable.
-// defect: class=rc-miscount locus=crates/cranelisp-backend vec persistent-op (conj/assoc) RC path — superseded temporary Vec never dec'd to zero found=S113 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump loop-param slot overwrite — superseded heap param never released (0688 verdict a; conj copy path is the exposure, not the seam) found=S113 owner=/dev
 #[test]
 fn conj_loop_does_not_leak() {
     let out = run_stdlib(CONJ_LOOP, &[("CRANELISP_RC_STATS", "1")]);
@@ -74,7 +85,7 @@ fn conj_loop_does_not_leak() {
 // MS-P8 parity face — the conj loop under ALLOC_PARITY must NOT abort (a balanced
 // program passes the atexit parity check). `(count (go 20 [0]))` = 21.
 // spec: spec/12-runtime.md §12.3.1 — a balanced program passes the alloc-parity check.
-// defect: class=rc-miscount locus=crates/cranelisp-backend vec persistent-op (conj/assoc) RC path found=S113 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump loop-param slot overwrite — superseded heap param never released (0688 verdict a; conj copy path is the exposure, not the seam) found=S113 owner=/dev
 #[test]
 fn conj_loop_parity_no_abort() {
     run_stdlib(CONJ_LOOP, &[("CRANELISP_ALLOC_PARITY", "1")]).assert_exit(21);

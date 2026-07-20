@@ -261,7 +261,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         resolved: &ResolvedCall,
     ) {
         if let Some(fq) = self.dispatch_target_fq(state, resolved) {
-            state.method_resolutions.resolved_targets.insert(span, fq);
+            state
+                .method_resolutions
+                .apply_refs
+                .insert(span, cranelisp_types::ApplyRef::Dispatch(fq));
         }
     }
 

@@ -40,14 +40,14 @@ fn test_compute_last_uses() {
 
     let x = Symbol::from("x");
     let var = |name: Symbol, span: Span| MonoExpr::Var {
-        resolved_target: None,
+        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
         name,
         span,
         resolved_call: None,
         ty: ConcreteType::Int,
     };
     let expr = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(Symbol::from("f"), Span::new(0, 1))),
         args: vec![
             var(x.clone(), Span::new(2, 3)),
@@ -85,7 +85,7 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
 
     let v = Symbol::from("v");
     let var = |name: Symbol, span: Span, ty: ConcreteType| MonoExpr::Var {
-        resolved_target: None,
+        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
         name,
         span,
         resolved_call: None,
@@ -99,7 +99,7 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
     //   arg1   = (g)                    (no v)
     //   arg2   = (h (push v))           v nested deep, occurrence #2, span 10..11
     let inner_push = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(Symbol::from("vec-push"), Span::new(8, 9), vec_ty.clone())),
         args: vec![var(v.clone(), Span::new(10, 11), vec_ty.clone())],
         span: Span::new(7, 12),
@@ -111,7 +111,7 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         unique_static: None,
     };
     let arg2 = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(Symbol::from("h"), Span::new(6, 7), vec_ty.clone())),
         args: vec![inner_push],
         span: Span::new(5, 13),
@@ -123,7 +123,7 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         unique_static: None,
     };
     let arg1 = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(Symbol::from("g"), Span::new(4, 5), vec_ty.clone())),
         args: vec![],
         span: Span::new(4, 6),
@@ -135,7 +135,7 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         unique_static: None,
     };
     let expr = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(Symbol::from("loop"), Span::new(0, 1), vec_ty.clone())),
         args: vec![var(v.clone(), Span::new(2, 3), vec_ty.clone()), arg1, arg2],
         span: Span::new(0, 14),
@@ -186,14 +186,14 @@ fn pure_ssa_alias_use_extends_root_live_range() {
         vec![ConcreteType::Int],
     );
     let var = |name: Symbol, span: Span, ty: ConcreteType| MonoExpr::Var {
-        resolved_target: None,
+        resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC },
         name,
         span,
         resolved_call: None,
         ty,
     };
     let apply = |callee: Symbol, args: Vec<MonoExpr>, span: Span, ty: ConcreteType| MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(callee, Span::new(span.start, span.start + 1), ty.clone())),
         args,
         span,

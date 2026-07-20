@@ -75,7 +75,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         self.check_defn_body(state, defn, param_types, ret_ty, var_scope)
             .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
-        self.resolve_deferred_trait_calls(state, defn.body());
+        self.resolve_deferred_trait_calls(state, defn.body())?;
         self.resolve_value_position_trait_methods(state, defn.body(), false);
 
         // Per-defn post-passes: resolve auto-curry accumulated during this
@@ -103,7 +103,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         // Per-defn AST annotation + concrete-boundary `codegen_view` writeback.
-        self.annotate_and_writeback_single_defn(state, defn, &form_et, &form_mr);
+        self.annotate_and_writeback_single_defn(state, defn, &form_et, &form_mr)?;
 
         // Harvest call graph edges (Decision 21 + FIXME 0470/0472): the
         // ResolvedCall channel + the user-fn references recorded during this
@@ -117,7 +117,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(FormCheckResult {
             method_resolutions: form_mr,
             pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
-            resolved_targets: state.method_resolutions.resolved_targets.clone(),
+            var_refs: state.method_resolutions.var_refs.clone(),
+            apply_refs: state.method_resolutions.apply_refs.clone(),
             expr_types: form_et,
             constrained_fn,
             mono_defns: Vec::new(),
@@ -313,7 +314,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defn: &Defn,
         form_et: &HashMap<Span, Type>,
         form_mr: &HashMap<Span, ResolvedCall>,
-    ) {
+    ) -> Result<(), CranelispError> {
         let resolved_et: HashMap<Span, Type> = form_et
             .iter()
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
@@ -349,9 +350,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
         );
         let codegen_view = if is_concrete_codegen_target {
-            annotated.variants.first().and_then(|variant| {
-                build_concrete_codegen_view(&defn.name, variant, &state.method_resolutions.pattern_ctors, &state.method_resolutions.resolved_targets)
-            })
+            match annotated.variants.first() {
+                Some(variant) => build_concrete_codegen_view(
+                    &defn.name,
+                    variant,
+                    &state.method_resolutions.pattern_ctors,
+                    &state.method_resolutions.var_refs,
+                    &state.method_resolutions.apply_refs,
+                )?,
+                None => None,
+            }
         } else {
             None
         };
@@ -365,6 +373,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             *ast = annotated.variants.into_iter().next();
             *cv = codegen_view;
         }
+        Ok(())
     }
 
 
@@ -419,7 +428,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             };
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty, var_scope)?;
-            self.resolve_deferred_trait_calls(state, internal_defn.body());
+            self.resolve_deferred_trait_calls(state, internal_defn.body())?;
             self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
 
             // Per-variant post-passes (auto-curry only; overloads deferred to finalize)
@@ -567,7 +576,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(FormCheckResult {
             method_resolutions: form_mr,
             pattern_ctors: state.method_resolutions.pattern_ctors.clone(),
-            resolved_targets: state.method_resolutions.resolved_targets.clone(),
+            var_refs: state.method_resolutions.var_refs.clone(),
+            apply_refs: state.method_resolutions.apply_refs.clone(),
             expr_types: form_et,
             constrained_fn: None,
             mono_defns: Vec::new(),
@@ -605,7 +615,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         ret_ty: &Type,
         written_var_scope: HashMap<Symbol, TypeId>,
     ) -> Result<(), CranelispError> {
-        self.push_scope(state);
+        // Binder provenance: the defn form span every param + the recursion-self
+        // binding share (S114 `VarRef::Local`).
+        self.push_scope(state, defn.span);
 
         // Activate the definition's written-var scope + the constraint-abstract
         // rigid set (spec §3.3.1–§3.3.2 [S109]). Two independent pieces:

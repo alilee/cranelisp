@@ -35,13 +35,13 @@ fn span() -> Span {
 }
 
 fn var(name: Symbol) -> MonoExpr {
-    MonoExpr::Var { name, span: span(), resolved_call: None, ty: ConcreteType::Int, resolved_target: None }
+    MonoExpr::Var { resolution: cranelisp_types::VarRef::Local { binder: name.clone(), binding_span: cranelisp_types::Span::SYNTHETIC }, name, span: span(), resolved_call: None, ty: ConcreteType::Int }
 }
 
 /// A function-call binding `(f arg)` against a named callee.
 fn call(callee: &str) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(sym(callee))),
         args: vec![],
         span: span(),
@@ -58,7 +58,7 @@ fn call(callee: &str) -> MonoExpr {
 /// it depends on any earlier binding named `dep_var`.
 fn call_with_arg(callee: &str, dep_var: &str) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(sym(callee))),
         args: vec![var(sym(dep_var))],
         span: span(),
@@ -424,7 +424,7 @@ fn sparkable_args_literal_var_excluded() {
 /// `(reduce-tree …)` accumulator, which is never a scored site).
 fn heap_call(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(sym(callee))),
         args: vec![],
         span: span(),
@@ -442,7 +442,7 @@ fn heap_call(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> Mon
 /// `(reduce-tree …)`). Scores 0 → always admitted (the §9 compute-win).
 fn scalar_call_with_facts(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(sym(callee))),
         args: vec![],
         span: span(),
@@ -532,7 +532,7 @@ fn density_mixed_nested_sites_sum() {
         unique_static: None,
     };
     let candidate = MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(sym("process"))),
         args: vec![nested_ctor],
         span: span(),

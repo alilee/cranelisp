@@ -167,3 +167,108 @@ fn trait_method_sig_trailing_form_rejected_neg() {
         out.status.code()
     );
 }
+
+// =============================================================================
+// M1 matrix spot cells (s114-test-plan §5.1; enforcement-matrices.md §1). The nine
+// CORRECT operand positions route their body through `build_one_expr_at` today:
+// these born-green fences pin the ascribed-ACCEPT and trailing-REJECT columns at
+// the spot positions that had no committed pin, so the one-seam fix (`build_body_to_end`)
+// keeps them routed. A row that stops accepting `:Type body` or stops rejecting a
+// trailing form after the seam adoption is caught here. (The WRONG positions —
+// let-body, impl-method, trait-default, trace — are the BD-A1/A2 REDs above.)
+// =============================================================================
+
+// M1 ascribed spot-pin — FN BODY. `(fn [n] :Int n)` — the closure body is ascribed
+// and MUST be accepted (routed). `(g 7)` = 7.
+// spec: spec/03-types.md §2.3.8 — an annotation may appear in an `fn` body.
+#[test]
+fn m1_fn_body_ascription_accepted_spot() {
+    run_prims("(defn f [] (let [g (fn [n] :Int n)] (g 7)))\n(defn main [] (Pure (f)))\n")
+        .assert_exit(7);
+}
+
+// M1 ascribed spot-pin — IF BRANCHES. `(if c :Int 10 :Int 20)` — both branches
+// ascribed, accepted. `(f 0)` = 10.
+// spec: spec/03-types.md §2.3.8 — an annotation may appear in an `if` branch.
+#[test]
+fn m1_if_branch_ascription_accepted_spot() {
+    run_prims(
+        "(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (Pure (f 0)))\n",
+    )
+    .assert_exit(10);
+}
+
+// M1 ascribed spot-pin — MATCH ARM BODY. `(match v [x :Int x])` — the arm body
+// ascribed, accepted. `(f 7)` = 7.
+// spec: spec/03-types.md §2.3.8 — an annotation may appear in a match arm body.
+#[test]
+fn m1_match_arm_ascription_accepted_spot() {
+    run_prims("(defn f [v] (match v [x :Int x]))\n(defn main [] (Pure (f 7)))\n").assert_exit(7);
+}
+
+// M1 ascribed spot-pin — LET VALUE. `(let [x :Int 7] x)` — the binding value
+// ascribed, accepted. `(f)` = 7.
+// spec: spec/03-types.md §2.3.8 — an annotation may appear in a `let` binding value.
+#[test]
+fn m1_let_value_ascription_accepted_spot() {
+    run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (Pure (f)))\n").assert_exit(7);
+}
+
+// M1 ascribed spot-pin — APPLY ARG. `(add-i64 :Int 3 4)` — an application argument
+// ascribed (multi-operand position, `build_args_with_annotations`), accepted. = 7.
+// spec: spec/03-types.md §2.3.8 — an annotation may appear in an application argument.
+#[test]
+fn m1_apply_arg_ascription_accepted_spot() {
+    run_prims("(defn f [] (add-i64 :Int 3 4))\n(defn main [] (Pure (f)))\n").assert_exit(7);
+}
+
+// M1 REQUIRED trailing cell — LET BODY. `(let [x 1] x 9)` — a trailing form after
+// the let body MUST be rejected (post-fix via `build_body_to_end`; today the
+// arity-locked `!= 3` gate rejects it — the seam makes the reject structural, not
+// incidental). Born-green fence.
+// spec: spec/04-expressions.md §4.3 — a `let` body is a single form; a trailing form
+// is rejected.
+#[test]
+fn m1_let_body_trailing_form_rejected_neg() {
+    let out = run_prims("(defn f [] (let [x 1] x 9))\n(defn main [] (Pure (f)))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a trailing form after a `let` body `(let [x 1] x 9)` MUST be rejected; \
+         got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// M1 REQUIRED trailing cell — TRACE OPERAND. `(trace 5 9)` — a trailing form after
+// the traced operand MUST be rejected (post-fix via the seam; today the arity gate
+// rejects it). Born-green fence.
+// spec: spec/04-expressions.md §4.12 — a `trace` takes a single operand form; a
+// trailing form is rejected.
+#[test]
+fn m1_trace_trailing_form_rejected_neg() {
+    let out = run_prims("(defn f [] (trace 5 9))\n(defn main [] (Pure 0))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a trailing form after a `trace` operand `(trace 5 9)` MUST be rejected; \
+         got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// M1 trailing spot cell — FN BODY. `(fn [n] n 9)` — a trailing form after the
+// closure body MUST be rejected. Born-green fence.
+// spec: spec/04-expressions.md §4.5 — an `fn` body is a single form; a trailing form
+// is rejected.
+#[test]
+fn m1_fn_body_trailing_form_rejected_neg() {
+    let out = run_prims("(defn f [] (let [g (fn [n] n 9)] (g 7)))\n(defn main [] (Pure (f)))\n");
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.to_lowercase().contains("error"),
+        "a trailing form after an `fn` body `(fn [n] n 9)` MUST be rejected; got \
+         exit {:?}:\n{c}",
+        out.status.code()
+    );
+}

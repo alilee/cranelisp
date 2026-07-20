@@ -200,6 +200,21 @@ fn match_scrutinee_cow_var_pattern_link_does_not_corrupt_heap() {
 // freed once `mk` returns, and the later closure call reads freed heap.
 // `((mk [1 2 3]))` reads `(vec-get [1 2 3] 1)` = 2. Fails toggle-off too
 // (independent capture-accounting factor); deterministic face: `--link`.
+//
+// RE-ATTRIBUTION (FIXME 0669 verdict, /qa 2026-07-20; s114-test-plan §1): this
+// capture face JOINS the 0668 backend consume-seam family. It crashes under
+// `CRANELISP_NO_OWNERSHIP=1` too, and post-R14 toggle-off consults no
+// `transfer.rs` fact — a crash that survives analysis-off cannot be owned by the
+// analysis. Structurally it is cell G's let-bind alias (`(let [r v] …)` binds a
+// `Var` to a `Var` without counting; both scope-dec) with CLOSURE CAPTURE as the
+// consume position instead of the vec-lit store — an enumerated position in the
+// 0668 consume-position × operand-provenance contract. The `// defect:` locus
+// below is re-pointed to the backend consume seam; the flip trigger is the 0668
+// consume-contract /dev change-set (Track B). Track A makes NO transfer.rs
+// capture-provenance change this sprint. Re-attribution rider: if the analysis-ON
+// face survives the backend fix while G/F/B flip, a residual typecheck provenance
+// face re-attributes to typecheck THEN (backend fix = the discriminating
+// experiment).
 // =============================================================================
 
 const I1_MK: &str = "(defn mk [v] (let [r v] (fn [] (vec-get r 1))))\n";
@@ -208,7 +223,7 @@ const I1_MK: &str = "(defn mk [v] (let [r v] (fn [] (vec-get r 1))))\n";
 // MUST keep the backing live past the defining fn's return. `((mk [1 2 3]))`
 // MUST yield 2; today the capture-accounting laundering frees the backing and
 // the closure call reads freed heap → a pointer-shaped garbage word (RED).
-// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::capture-of-let-bound-param-alias found=S111 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend let-bind-alias / closure-capture consume seam (FIXME 0668; 0669 re-attribution) found=S111 owner=/dev
 #[test]
 fn capture_let_bound_param_alias_repl_yields_correct_value() {
     let out = Cranelisp::new()
@@ -230,7 +245,7 @@ fn capture_let_bound_param_alias_repl_yields_correct_value() {
 // spec: spec/12-runtime.md §12.1 — the `--link` face (the DETERMINISTIC signal):
 // `main` returns `(Pure 2)` → exit 2. Today the shape deterministically ABORTS
 // (`corrupted double-linked list`, SIGABRT; 6/6 runs).
-// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::capture-of-let-bound-param-alias found=S111 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend let-bind-alias / closure-capture consume seam (FIXME 0668; 0669 re-attribution) found=S111 owner=/dev
 #[test]
 fn capture_let_bound_param_alias_link_does_not_corrupt_heap() {
     Cranelisp::new()

@@ -351,7 +351,24 @@ pub mod linker;
 /// that bogus state (the CS-2/P25 cache-trust class; source-hash does not save
 /// it). The bump refuses every schema-20 `.o` wholesale. One bump covers the
 /// sprint window (leg (a) rides it; b2 does NOT re-bump).
-pub const CACHE_SCHEMA_VERSION: u32 = 21;
+///
+/// **21 → 22 (S114 carrier flip + B-2 escape-fact window —
+/// `design/arch/typed-resolution-carrier.md` §4; ONE window, F7).** Two
+/// bump-worthy changes share this single invalidation event:
+/// (1) the typed-resolution-carrier reshape — `MonoExpr::Var.resolved_target:
+/// Option<FQSymbol>` → `resolution: VarRef` and `MonoExpr::Apply.resolved_target`
+/// → `dispatch: ApplyRef` (non-optional, NO `#[serde(default)]` — absence is
+/// unrepresentable), plus the `MethodResolutions` split (`resolved_targets` →
+/// `var_refs` + `apply_refs`), all serde-visible on the persisted
+/// `codegen_view` in `.meta.json`; a schema-21 sidecar cannot deserialize
+/// (missing `resolution`/`dispatch` fields is a hard serde error, not a
+/// default — deliberately). (2) The B-2 match-var-pattern escape-fact
+/// correction (S113 W5b, `ownership/transfer.rs`): a cache written pre-fix can
+/// carry a stale `escapes=Some(false)` on match/scrutinee allocation nodes that
+/// would reproduce the COW-var-pattern UAF on a warm run — the fact's MEANING
+/// was corrected, so pre-fix caches must not be trusted. Per the S111 0621
+/// precedent both ride ONE bump; no second invalidation event this sprint.
+pub const CACHE_SCHEMA_VERSION: u32 = 22;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

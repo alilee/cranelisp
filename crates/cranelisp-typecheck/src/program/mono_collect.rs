@@ -113,12 +113,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // mangle embeds its home). Without this, the W2 0585 keyed read
             // would hard-fail this VALID program on the stale template carrier.
             for (_enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
-                state.method_resolutions.resolved_targets.insert(
+                // Arg-position fn-value `Var` → the minted instance's storage FQ
+                // (a table reference: `VarRef::Global`). S114 carrier flip.
+                state.method_resolutions.var_refs.insert(
                     *arg_span,
-                    FQSymbol {
+                    cranelisp_types::VarRef::Global(FQSymbol {
                         module: current_module.clone(),
                         symbol: mangled_sym.clone(),
-                    },
+                    }),
                 );
             }
         }
@@ -170,7 +172,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     body,
                     &defn.name,
                     constrained_fn_names,
-                    &state.method_resolutions.resolved_targets,
+                    &state.method_resolutions.var_refs,
                     &mut local_calls,
                 );
             }
@@ -427,7 +429,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             // FIXME 0653 — skip a §4.6 LOCAL shadow (see collect_local_parametric_calls).
-            && callee_has_keyed_carrier(&state.method_resolutions.resolved_targets, callee.span())
+            && callee_has_keyed_carrier(&state.method_resolutions.var_refs, callee.span())
             && !constrained_fn_names.contains(name)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
             && resolved.home != state.current_module
@@ -530,7 +532,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // no keyed `resolved_targets` carrier resolved to a let/fn/param
             // binding (the shadow gate declined it), NOT the top-level parametric
             // fn the name-scan would mint. The name is a trigger, not the identity.
-            && callee_has_keyed_carrier(&state.method_resolutions.resolved_targets, callee.span())
+            && callee_has_keyed_carrier(&state.method_resolutions.var_refs, callee.span())
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
             && let Some(resolved) = self.resolve_terminal_fq_scoped(state, name.as_ref())
@@ -680,7 +682,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn collect_constrained_calls(
         expr: &Expr,
         constrained_fn_names: &HashSet<Symbol>,
-        resolved_targets: &HashMap<Span, FQSymbol>,
+        var_refs: &HashMap<Span, cranelisp_types::VarRef>,
         out: &mut Vec<(Symbol, Vec<Span>, Span)>,
     ) {
         // Per-node action: record a call site when this node is an Apply whose
@@ -689,14 +691,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && let Expr::Var { name, .. } = callee.as_ref()
             && constrained_fn_names.contains(name)
             // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level constrained fn.
-            && callee_has_keyed_carrier(resolved_targets, callee.span())
+            && callee_has_keyed_carrier(var_refs, callee.span())
         {
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
             out.push((name.clone(), arg_spans, *span));
         }
         // Recurse into children via the shared enumeration helper.
         for_each_child_expr(expr, |child| {
-            Self::collect_constrained_calls(child, constrained_fn_names, resolved_targets, out)
+            Self::collect_constrained_calls(child, constrained_fn_names, var_refs, out)
         });
     }
 
@@ -715,7 +717,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         self_name: &Symbol,
         constrained_fn_names: &HashSet<Symbol>,
-        resolved_targets: &HashMap<Span, FQSymbol>,
+        var_refs: &HashMap<Span, cranelisp_types::VarRef>,
         out: &mut Vec<(Symbol, Vec<Span>, Span)>,
     ) {
         if let Expr::Apply { callee, args, span, .. } = expr
@@ -723,14 +725,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && constrained_fn_names.contains(name)
             && name != self_name
             // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level constrained fn.
-            && callee_has_keyed_carrier(resolved_targets, callee.span())
+            && callee_has_keyed_carrier(var_refs, callee.span())
         {
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
             out.push((name.clone(), arg_spans, *span));
         }
         for_each_child_expr(expr, |child| {
             Self::collect_constrained_calls_excluding_self(
-                child, self_name, constrained_fn_names, resolved_targets, out,
+                child, self_name, constrained_fn_names, var_refs, out,
             )
         });
     }
@@ -785,9 +787,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if has_inner {
                 self.record_dispatch_target(state, span, &resolution);
             } else if let Some(cvs) = callee_var_span
-                && let Some(fq) = state.method_resolutions.resolved_targets.get(&cvs).cloned()
+                && let Some(cranelisp_types::VarRef::Global(fq)) =
+                    state.method_resolutions.var_refs.get(&cvs).cloned()
             {
-                state.method_resolutions.resolved_targets.insert(span, fq);
+                // A PLAIN-fn auto-curry over a TABLE-resolved callee (`Global`)
+                // transports the callee's storage FQ as the Apply-span dispatch
+                // carrier (S114 carrier flip). A curry over a LOCAL callee
+                // (`VarRef::Local`) matches nothing here → the Apply epilogue's
+                // `ApplyRef::ViaCallee` stands (the identity rides the callee).
+                state
+                    .method_resolutions
+                    .apply_refs
+                    .insert(span, cranelisp_types::ApplyRef::Dispatch(fq));
             }
             state.method_resolutions.resolved_calls.insert(span, resolution);
         }

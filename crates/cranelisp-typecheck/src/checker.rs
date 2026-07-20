@@ -32,7 +32,7 @@ use cranelisp_types::{ErrorLocation,
     CranelispError, FQSymbol, JitSymbol, MethodResolutions, ModuleAliases,
     ModuleEntry, ModuleFullPath, ResolutionGap, ResolutionScope, ResolveError, ResolvedCall, Scheme,
     Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
-    Warning, apply,
+    VarRef, Warning, apply,
 };
 
 // Per single-pair invariant (`facades/typecheck.md` §"Single-pair invariant"):
@@ -1340,9 +1340,13 @@ where
 
     // --- Scope operations (delegate to CheckState.env) ---
 
-    /// Push a new scope frame.
-    pub(crate) fn push_scope(&self, state: &mut CheckState) {
-        state.env.push_scope();
+    /// Push a new scope frame introduced by the binding form at `binding_span`
+    /// (the `let`/`fn`/`defn`/match-arm node) — its span becomes the
+    /// `VarRef::Local` binding-form provenance for every binder bound into the
+    /// frame (S114 carrier flip; `design/typecheck/typed-resolution-carrier.md`
+    /// §3).
+    pub(crate) fn push_scope(&self, state: &mut CheckState, binding_span: Span) {
+        state.env.push_scope(binding_span);
     }
 
     /// Pop the topmost scope frame.
@@ -1585,19 +1589,23 @@ where
             // recursion LOCAL, so the env-shadow gate fires — but the backend
             // compiles a non-tail self-call through `resolve_got_target` on the
             // fn's own name (the recursion local is NOT a backend local). So
-            // record the enclosing defn's own storage FQ as the carrier,
-            // EXPLICITLY diverging from the `callees` self-edge skip: the two
-            // feeds' gates are semantically different — a self-edge is unwanted
-            // in the call graph, yet the self-call IS a table reference the
-            // backend keys. `resolved_targets` only; never `callees`.
+            // record the enclosing defn's own storage FQ as a `VarRef::Global`
+            // carrier, EXPLICITLY diverging from the `callees` self-edge skip:
+            // the two feeds' gates are semantically different — a self-edge is
+            // unwanted in the call graph, yet the self-call IS a table reference
+            // the backend keys. `var_refs` only; never `callees`.
             //
-            // CONSUMER back-pointer (FIXME 0653): the carrier presence/absence
-            // this carve-out records IS the verdict the mono-recheck self-call
-            // classifier (`record_self_recursion_dispatch`) and the name-scan
-            // collectors (`collect_local_parametric_calls` & siblings) read — the
-            // frames are dead at those seams, so they consume this record rather
-            // than re-evaluating `is_recursion_self_ref`. A shadowed call recorded
-            // NO carrier here ⇒ those consumers skip it (§4.6 local, not a mint).
+            // CONSUMER back-pointer (FIXME 0653): the carrier verdict this
+            // carve-out records IS what the mono-recheck self-call classifier
+            // (`record_self_recursion_dispatch`) and the name-scan collectors
+            // (`collect_local_parametric_calls` & siblings) read — the frames
+            // are dead at those seams, so they consume this record rather than
+            // re-evaluating `is_recursion_self_ref`. Under the S114 flip totality
+            // is exact: a genuine self-call records `VarRef::Global`, every other
+            // local records `VarRef::Local` (binder identity), so
+            // `callee_has_keyed_carrier` discriminates `Global` from `Local`
+            // (contains-key no longer suffices — every local now carries an
+            // entry).
             //
             // The carve-out fires ONLY for a GENUINE self-recursive reference —
             // the enclosing defn's OWN recursion binding, which resolves at
@@ -1606,16 +1614,35 @@ where
             // DEEPER frame), or a param named `f` (which suppresses
             // `current_defn` at `check_defn_body`) — is a LOCAL reference:
             // nothing table-resolved HIT (§1.1 "whichever storage key HIT"), so
-            // no carrier entry (the backend's local-`variables` check handles
-            // it). Recording the enclosing fn's FQ on a local Var over-matched
-            // (FIXME 0619 item 2) — harmless only by the backend's
-            // locals-before-keyed-read ordering; now provenance-correct here.
+            // `VarRef::Local` (the backend's local-`variables` check handles it).
             if state.is_recursion_self_ref(name) {
                 let fq = FQSymbol {
                     module: state.current_module.clone(),
                     symbol: Symbol::from(name),
                 };
-                state.method_resolutions.resolved_targets.insert(span, fq);
+                state
+                    .method_resolutions
+                    .var_refs
+                    .insert(span, VarRef::Global(fq));
+            } else {
+                // §4.6 LOCAL — a fn/let/match/lambda binding. The producer
+                // totality contract (S114): record the POSITIVE local verdict
+                // with its binder identity (the bound name + the span of the
+                // binding FORM that introduced it, read from the scope frame's
+                // provenance). The former "record nothing for a local" license
+                // is retired — "unresolved" now has no representation, so every
+                // successfully-typed reference records a typed verdict.
+                let binding_span = state
+                    .env
+                    .binding_form_span(name)
+                    .unwrap_or(Span::SYNTHETIC);
+                state.method_resolutions.var_refs.insert(
+                    span,
+                    VarRef::Local {
+                        binder: Symbol::from(name),
+                        binding_span,
+                    },
+                );
             }
             return;
         }
@@ -1624,13 +1651,20 @@ where
         if let Some(resolved) = self.resolve_ref_target(state, name, span) {
             state
                 .method_resolutions
-                .resolved_targets
-                .insert(span, resolved.storage_fq());
+                .var_refs
+                .insert(span, VarRef::Global(resolved.storage_fq()));
             if let ModuleEntry::Def { kind, .. } = &resolved.entry
                 && matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
             {
                 state.user_fn_refs.insert(span, resolved.storage_fq());
             }
+        } else {
+            // A non-`Def` terminal / miss (`resolve_ref_target` None, but a
+            // scheme was found upstream in `infer_var` so the reference is
+            // successfully-typed) records NOTHING here — the view-build gate then
+            // raises `ViewBuildError::Unresolved` for this real-span `Var`
+            // (design §2.1 last row). This is the LOCATED typecheck-phase error
+            // the carrier exists for, never a silent local default.
         }
     }
 

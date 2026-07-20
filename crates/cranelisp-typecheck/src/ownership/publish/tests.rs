@@ -17,16 +17,22 @@ use super::super::transfer::SiteFacts;
 fn apply_body(span: Span) -> MonoExpr {
     // `(gcells g)` — an accessor Apply we can annotate with provenance.
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(MonoExpr::Var {
-            resolved_target: None,
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from("gcells"),
+                binding_span: Span::SYNTHETIC,
+            },
             name: Symbol::from("gcells"),
             span: Span::SYNTHETIC,
             resolved_call: None,
             ty: ConcreteType::String,
         }),
         args: vec![MonoExpr::Var {
-            resolved_target: None,
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from("g"),
+                binding_span: Span::SYNTHETIC,
+            },
             name: Symbol::from("g"),
             span: Span::SYNTHETIC,
             resolved_call: None,

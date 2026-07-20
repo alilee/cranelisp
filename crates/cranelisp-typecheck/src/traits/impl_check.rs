@@ -884,16 +884,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // carries (best-effort per `build_concrete_codegen_view`; a `Self`-typed
         // impl-method body checked against a contrived synthetic-span fixture can
         // legitimately leave a residual var the `ast`-path codegen never reads).
-        let codegen_view: Option<MonoDefnVariant> = ast_variant
-            .as_ref()
-            .and_then(|v| {
-                crate::program::build_concrete_codegen_view(
-                    &mangled_sym,
-                    v,
-                    &state.method_resolutions.pattern_ctors,
-                    &state.method_resolutions.resolved_targets,
-                )
-            });
+        let codegen_view: Option<MonoDefnVariant> = match ast_variant.as_ref() {
+            Some(v) => crate::program::build_concrete_codegen_view(
+                &mangled_sym,
+                v,
+                &state.method_resolutions.pattern_ctors,
+                &state.method_resolutions.var_refs,
+                &state.method_resolutions.apply_refs,
+            )?,
+            None => None,
+        };
         // FIXME 0472: harvest this method body's callee edges (ResolvedCall
         // channel + user-fn references) BEFORE taking the table guard; write
         // them onto the mangled entry after it exists below. This is the
@@ -1058,7 +1058,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         param_types: &[Type],
         ret_ty: &Type,
     ) -> Result<(), CranelispError> {
-        self.push_scope(state);
+        // Binder provenance: the defn form span every param shares (S114
+        // `VarRef::Local` — the impl-method / mono-recheck body frame).
+        self.push_scope(state, defn.span);
 
         // This body is re-checked against ALREADY-CONCRETE param/ret types (a
         // monomorphisation instance or a trait-impl method): the caller has
@@ -1084,7 +1086,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let body_ty = self.infer_expr(state, defn.body())?;
             self.unify(state, &body_ty, ret_ty, defn.span)?;
             // Post-inference deferred trait resolution
-            self.resolve_deferred_trait_calls(state, defn.body());
+            self.resolve_deferred_trait_calls(state, defn.body())?;
             Ok(())
         })();
 

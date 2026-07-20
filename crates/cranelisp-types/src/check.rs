@@ -5,8 +5,8 @@ use std::collections::HashMap;
 mod tests;
 
 use crate::{
-    Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, Scheme, Span, Symbol,
-    TraitMethodSig, TraitName, Type,
+    ApplyRef, Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, Scheme, Span,
+    Symbol, TraitMethodSig, TraitName, Type, VarRef,
 };
 
 /// Per-Span resolved-stage data produced by typecheck, consumed by backend.
@@ -74,25 +74,28 @@ pub struct MethodResolutions {
     /// `Symbol` slipping through was the D47-violation pattern flagged by
     /// the S70 cranelisp-types solidness sweep finding #4.
     pub pattern_ctors: HashMap<Span, FQSymbol>,
-    /// Per-reference-span resolved STORAGE identity (S110 0583; mirror of
-    /// `pattern_ctors`): the `FQSymbol` under which the referenced `Def`
-    /// actually resolved — "whichever storage key HIT" at the typecheck
-    /// resolution chokepoint (`design/arch/backend-keyed-consumer.md` §1.1).
-    /// It is NOT the written name and NOT a display name: module + the exact
-    /// symbol-table key the resolution terminated at (bare `m/f`, canonical
-    /// `m/Type.Ctor` for sum ctors, mangled `m/f$Int+Int` for a mono/dispatch
-    /// instance, `primitives/add-i64` for a primitive, etc.).
-    ///
-    /// Keyed by the REFERENCING node's span — `Expr::Var.span` for
-    /// value/callee references, `Expr::Apply.span` for dispatch-leg
-    /// resolutions that resolve at the `Apply`. Populated by typecheck at the
-    /// `infer_var` chokepoint (and dispatch seams); read by
-    /// [`crate::MonoExpr::from_expr`] into `MonoExpr::{Var,Apply}.resolved_target`
-    /// so the backend performs ONE keyed fetch and never re-resolves a name
-    /// (Principle 24 "Resolve once"). Local variables / lambda params are not
-    /// table-resolved and carry no entry here.
-    #[serde(default)]
-    pub resolved_targets: HashMap<Span, FQSymbol>,
+    /// Per-`Var`-span typed resolution verdict (S114 carrier flip;
+    /// `design/arch/typed-resolution-carrier.md` §3) — TOTAL over the
+    /// check-run's `Var` references: typecheck's `infer_var` chokepoint
+    /// records a [`VarRef`] for **every** successfully-typed `Var` — locals
+    /// get `VarRef::Local { binder, binding_span }` (binder identity from the
+    /// scope frame's binding-form provenance), table references get
+    /// `VarRef::Global(storage_fq)` ("whichever storage key HIT" — the 0620
+    /// rule; NOT a written spelling). The former `resolved_targets` map's
+    /// Global-or-nothing convention (`None` meant local OR producer bug) is
+    /// retired: "unresolved" has no representation, and a missing entry for a
+    /// real-span `Var` fails [`crate::MonoExpr::from_expr`] as the located
+    /// [`crate::ViewBuildError::Unresolved`] typecheck-phase error.
+    pub var_refs: HashMap<Span, VarRef>,
+    /// Per-`Apply`-span typed dispatch verdict — TOTAL over the check-run's
+    /// `Apply` nodes: a dispatch selection (trait-method / sig-dispatch /
+    /// builtin) records [`ApplyRef::Dispatch`] with the SELECTED entry's
+    /// storage FQ; **every other checked `Apply`** records the POSITIVE
+    /// [`ApplyRef::ViaCallee`] verdict (the identity rides the callee
+    /// expression). Splitting the former shared `resolved_targets` keyspace
+    /// into `var_refs` + `apply_refs` also retires the latent Var-span /
+    /// Apply-span key-collision hazard (two key populations, two typed maps).
+    pub apply_refs: HashMap<Span, ApplyRef>,
 }
 
 impl MethodResolutions {
@@ -137,7 +140,7 @@ pub enum ResolvedCall {
         /// `design/arch/backend-keyed-consumer.md` §1.1.1). This is the
         /// resolution PRODUCT: `try_resolve_trait_method` reads it off the
         /// `ModuleEntry::TraitImpl` shell that grounds the selected mangle, so
-        /// the storage-module carrier (`resolved_targets`) and the `callees`
+        /// the storage-module carrier (`apply_refs`) and the `callees`
         /// edge derive the method entry's true home — never `current_module`,
         /// which is wrong for a cross-module trait call (impl written in B,
         /// called from A). Downstream consumers READ this field, never

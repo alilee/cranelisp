@@ -687,7 +687,7 @@ applied_type = '(' TYPE_NAME type_expr+ ')'
 fn_type      = '(' 'Fn' '[' type_expr* ']' type_expr ')'
 ```
 
-**Symbol well-formedness.** A `SYMBOL` or `TYPE_NAME` appearing in a type expression MUST be a well-formed name. A **dangling-qualifier** spelling — a symbol run ending in `/` with an empty local half (`Foo/`, `foo/`; a non-empty module path with no local name, §8.5.1) — is a **located compile-time error** at the offending token, exactly as in every other position. It is not a valid named type, type variable, or qualified type reference. A qualified type reference (`core.option/Option`, §8.5.3) MUST name a local symbol on the right of the `/`. [S114]
+**Symbol well-formedness.** A `SYMBOL` or `TYPE_NAME` appearing in a type expression MUST be a well-formed name. A **dangling-qualifier** spelling — a symbol run pairing `/` with an empty half: an empty local half (`Foo/`, `foo/`; a non-empty module path with no local name), or the symmetric empty module half (`/Foo`; a non-empty local name with no module path), §8.5.1 — is a **located compile-time error** at the offending token, exactly as in every other position. It is not a valid named type, type variable, or qualified type reference. A qualified type reference (`core.option/Option`, §8.5.3) MUST have a non-empty module path on the left of the `/` AND name a local symbol on its right. [S114]
 
 ### 2.4.1 Named Types
 

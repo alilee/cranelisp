@@ -178,10 +178,14 @@ where
     for d in compile {
         // Lenient body with the dispatch carriers — mirrors the `codegen_view`
         // `compile_to_module` builds for a hand-constructed fixture (KC-W0-6):
-        // strict `from_expr` first, `lenient_from_expr` fallback.
-        let body = cranelisp_types::MonoExpr::from_expr(d.body(), &empty_ctors, resolved_targets)
+        // strict `from_expr` first, `lenient_from_expr` fallback. S114 carrier
+        // flip: `from_expr` now takes the TOTAL typed maps, derived from the
+        // fixture's `resolved_targets` (present ⇒ Global/Dispatch, absent ⇒
+        // Local/ViaCallee).
+        let (var_refs, apply_refs) = resolved_targets_to_typed_maps(d.body(), resolved_targets);
+        let body = cranelisp_types::MonoExpr::from_expr(d.body(), &empty_ctors, &var_refs, &apply_refs)
             .unwrap_or_else(|_| {
-                cranelisp_types::MonoExpr::lenient_from_expr(d.body(), &empty_ctors, resolved_targets)
+                cranelisp_types::MonoExpr::lenient_from_expr(d.body(), &empty_ctors, &var_refs, &apply_refs)
             });
         let compile_ctx = crate::compiler::CompileContext {
             func_ids: &func_ids,
@@ -204,6 +208,102 @@ where
         clifs.push(art.clif_ir);
     }
     clifs
+}
+
+/// S114 carrier flip (`typed-resolution-carrier.md` §4): build the TOTAL typed
+/// `var_refs`/`apply_refs` maps a hand-built fixture body needs for
+/// `MonoExpr::from_expr` (now total-or-`ViewBuildError`), from the legacy
+/// span→`FQSymbol` `resolved_targets` map every backend fixture already threads.
+///
+/// A `Var`/`Apply` span PRESENT in `resolved_targets` is a table-resolved
+/// reference — `VarRef::Global`/`ApplyRef::Dispatch` with the recorded storage
+/// FQ. An ABSENT span is a local / no-dispatch reference — `VarRef::Local
+/// { binder, binding_span: SYNTHETIC }` / `ApplyRef::ViaCallee`, the neutral
+/// positive verdict. This preserves the exact pre-flip dispatch semantics the
+/// fixtures rely on: an absent span that is genuinely a `variables` local wins
+/// the backend scope-stack read first (KC-N6); an absent unresolved global falls
+/// through to the same loud carrier-miss hard error the production rule raises.
+pub(crate) fn resolved_targets_to_typed_maps(
+    expr: &Expr,
+    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
+) -> (
+    HashMap<Span, cranelisp_types::VarRef>,
+    HashMap<Span, cranelisp_types::ApplyRef>,
+) {
+    let mut var_refs = HashMap::new();
+    let mut apply_refs = HashMap::new();
+    fill_typed_maps(expr, resolved_targets, &mut var_refs, &mut apply_refs);
+    (var_refs, apply_refs)
+}
+
+fn fill_typed_maps(
+    expr: &Expr,
+    rt: &HashMap<Span, cranelisp_types::FQSymbol>,
+    var_refs: &mut HashMap<Span, cranelisp_types::VarRef>,
+    apply_refs: &mut HashMap<Span, cranelisp_types::ApplyRef>,
+) {
+    use cranelisp_types::{ApplyRef, VarRef};
+    match expr {
+        Expr::Var { name, span, .. } => {
+            let vr = match rt.get(span) {
+                Some(fq) => VarRef::Global(fq.clone()),
+                None => VarRef::Local {
+                    binder: name.clone(),
+                    binding_span: Span::SYNTHETIC,
+                },
+            };
+            var_refs.insert(*span, vr);
+        }
+        Expr::Apply { callee, args, span, .. } => {
+            let ar = match rt.get(span) {
+                Some(fq) => ApplyRef::Dispatch(fq.clone()),
+                None => ApplyRef::ViaCallee,
+            };
+            apply_refs.insert(*span, ar);
+            fill_typed_maps(callee, rt, var_refs, apply_refs);
+            for a in args {
+                fill_typed_maps(a, rt, var_refs, apply_refs);
+            }
+        }
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, v) in bindings {
+                fill_typed_maps(v, rt, var_refs, apply_refs);
+            }
+            fill_typed_maps(body, rt, var_refs, apply_refs);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            fill_typed_maps(cond, rt, var_refs, apply_refs);
+            fill_typed_maps(then_branch, rt, var_refs, apply_refs);
+            fill_typed_maps(else_branch, rt, var_refs, apply_refs);
+        }
+        Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+            fill_typed_maps(body, rt, var_refs, apply_refs);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            fill_typed_maps(scrutinee, rt, var_refs, apply_refs);
+            for arm in arms {
+                fill_typed_maps(&arm.body, rt, var_refs, apply_refs);
+            }
+        }
+        Expr::VecLit { elements, .. } => {
+            for e in elements {
+                fill_typed_maps(e, rt, var_refs, apply_refs);
+            }
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for f in fields {
+                fill_typed_maps(f, rt, var_refs, apply_refs);
+            }
+        }
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            fill_typed_maps(launched, rt, var_refs, apply_refs);
+            fill_typed_maps(continuation, rt, var_refs, apply_refs);
+        }
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. } => {}
+    }
 }
 
 /// Read a Vec's `len` field directly from its base pointer.
@@ -486,7 +586,8 @@ pub(crate) fn make_def_entry_inner(
         // ctor pattern arm carries its `MonoMatchArm.resolved_ctor` — the S19
         // None-arm `lookup_constructor` fallback is deleted, so a pattern ctor
         // with no carrier now hard-errors at codegen (the production discipline).
-        let body = MonoExpr::from_expr(&v.body, pattern_ctors, resolved_targets)
+        let (var_refs, apply_refs) = resolved_targets_to_typed_maps(&v.body, resolved_targets);
+        let body = MonoExpr::from_expr(&v.body, pattern_ctors, &var_refs, &apply_refs)
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),
@@ -537,9 +638,10 @@ pub(crate) fn test_codegen_view(
     resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
 ) -> cranelisp_types::MonoDefnVariant {
     let empty_ctors = HashMap::new();
-    let body = cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, resolved_targets)
+    let (var_refs, apply_refs) = resolved_targets_to_typed_maps(&variant.body, resolved_targets);
+    let body = cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
         .unwrap_or_else(|_| {
-            cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, &empty_ctors, resolved_targets)
+            cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
         });
     cranelisp_types::MonoDefnVariant {
         name: name.clone(),
@@ -1059,7 +1161,8 @@ pub(crate) fn table_with_def_and_slot(
         v
     });
     let codegen_view = variant.as_ref().map(|v| {
-        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+        let (var_refs, apply_refs) = resolved_targets_to_typed_maps(&v.body, &HashMap::new());
+        let body = MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs)
             .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
         MonoDefnVariant {
             name: defn.name.clone(),

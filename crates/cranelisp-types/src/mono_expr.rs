@@ -99,12 +99,13 @@ pub struct MonoMatchArm {
 /// consumer match at compile time; a `_ =>` arm here would re-smuggle the
 /// ambiguous default this type exists to kill.
 ///
-/// **Dormant (S114 Phase 3, produces-but-unused).** The vocabulary lands ahead
-/// of its wiring; the `MonoExpr::{Var,Apply}` field flip
-/// (`resolved_target: Option<FQSymbol>` → `resolution: VarRef` /
-/// `dispatch: ApplyRef`), the `MethodResolutions` sidecar split, and the
-/// `CACHE_SCHEMA_VERSION` 21→22 bump land as ONE coordinated Phase-5 carrier
-/// wave (`design/arch/typed-resolution-carrier.md` §4–§5).
+/// **Live (S114 Phase 5 carrier flip).** Carried non-optionally on
+/// [`MonoExpr::Var`]`.resolution`; produced totally by typecheck into
+/// `MethodResolutions.var_refs` (keyed by `Var` span); transported by
+/// [`MonoExpr::from_expr`] / [`MonoExpr::lenient_from_expr`], whose miss
+/// behaviour is the phase-boundary gate ([`ViewBuildError::Unresolved`] /
+/// the tier-3 seam assert). Serde-visible on the persisted `codegen_view`
+/// (`CACHE_SCHEMA_VERSION` 22 window).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VarRef {
     /// A local binding — defn/fn param, `let` name, `match` var-pattern
@@ -135,7 +136,9 @@ pub enum VarRef {
 ///
 /// **NOT `#[non_exhaustive]`** — closed sum, same rationale as [`VarRef`].
 ///
-/// **Dormant (S114 Phase 3, produces-but-unused)** — see [`VarRef`].
+/// **Live (S114 Phase 5 carrier flip)** — carried non-optionally on
+/// [`MonoExpr::Apply`]`.dispatch`; produced totally into
+/// `MethodResolutions.apply_refs` (keyed by `Apply` span); see [`VarRef`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApplyRef {
     /// A dispatch-leg resolution recorded at this `Apply`'s span (BuiltinFn /
@@ -147,6 +150,44 @@ pub enum ApplyRef {
     /// computed callee value (closure call). Typecheck ASSERTS it looked and
     /// there is no dispatch selection at this node.
     ViaCallee,
+}
+
+/// [`MonoExpr::from_expr`]'s failure sum (S114 carrier flip;
+/// `design/arch/typed-resolution-carrier.md` §4) — the strict view-build gate
+/// distinguishes TYPE incompleteness from RESOLUTION incompleteness, because
+/// the two route differently at `build_concrete_codegen_view`:
+///
+/// - [`ViewBuildError::NotConcrete`] — a node's type is absent / non-concrete
+///   (the pre-flip `NotConcrete` failure, re-wrapped). Legitimate for
+///   multi-sig `f$Var` variants and forward-reference result vars; the caller
+///   MAY fall back to [`MonoExpr::lenient_from_expr`].
+/// - [`ViewBuildError::Unresolved`] — a real-span `Var`/`Apply` has NO
+///   `var_refs`/`apply_refs` verdict. This is the phase-boundary gate the
+///   carrier exists for: a reference typecheck could not classify surfaces
+///   HERE as a **located typecheck-phase error** — it MUST NOT be swallowed
+///   into the lenient fallback (doing so re-opens the check-gate-leak class
+///   one level up; the lenient walk seam-asserts on the same miss).
+///
+/// **NOT `#[non_exhaustive]`** — same closed-sum exception class as
+/// [`VarRef`]/[`ApplyRef`] (types `CLAUDE.md` §Public-surface mechanics): the
+/// NotConcrete-vs-Unresolved routing at the fallback seam is the load-bearing
+/// consumer match, and a `_ =>` arm there would silently route a future
+/// variant into the wrong leg.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewBuildError {
+    /// Type incompleteness at a node — the caller may lenient-fall-back.
+    NotConcrete(NotConcrete),
+    /// Resolution incompleteness: a real-span reference with no typed verdict
+    /// in the sidecar maps. `span`/`name` locate the reference (for an
+    /// `Apply`, `name` is the callee head — the callee `Var`'s name when
+    /// there is one). A located typecheck-phase error, never a fallback.
+    Unresolved { span: Span, name: Symbol },
+}
+
+impl From<NotConcrete> for ViewBuildError {
+    fn from(nc: NotConcrete) -> Self {
+        ViewBuildError::NotConcrete(nc)
+    }
 }
 
 /// Post-monomorphisation codegen AST node.
@@ -216,17 +257,17 @@ pub enum MonoExpr {
         /// backend reads it off the node). `None` for ordinary variable
         /// references.
         resolved_call: Option<Box<ResolvedCall>>,
-        /// The resolved STORAGE identity for a table-resolved reference (S110
-        /// 0583; `design/arch/backend-keyed-consumer.md` §1.1) — "whichever
-        /// storage key HIT" at the typecheck resolution chokepoint, carried
-        /// from `MethodResolutions.resolved_targets` (keyed by this `Var`'s
-        /// span). `Some` for user-fn / primitive / constructor / effect /
-        /// extern references; `None` for a local variable / lambda param (not
-        /// table-resolved). The backend keys ONE fetch on this and hard-fails
-        /// on a carrier-miss for a table-reference kind (Principle 24) — it
-        /// never re-resolves the bare name.
-        #[serde(default)]
-        resolved_target: Option<FQSymbol>,
+        /// How this reference was resolved — the typed, NON-OPTIONAL carrier
+        /// (S114 flip of the S110 `resolved_target: Option<FQSymbol>`;
+        /// `design/arch/typed-resolution-carrier.md` §4). [`VarRef::Local`]
+        /// carries the binder identity (backend: scope-stack read, hard
+        /// invariant failure on a miss); [`VarRef::Global`] carries the
+        /// storage FQ — "whichever storage key HIT" at typecheck's resolution
+        /// chokepoint (`Resolved.storage_fq()`, the 0620 rule) — on which the
+        /// backend keys ONE `entry_at` fetch (Principle 24). No
+        /// `#[serde(default)]`: absence is unrepresentable — a persisted view
+        /// missing the field is schema-invalid, not conservatively defaulted.
+        resolution: VarRef,
         ty: ConcreteType,
     },
     Let {
@@ -265,15 +306,17 @@ pub enum MonoExpr {
         /// How this call was resolved by the typechecker — carried verbatim from
         /// `Expr::Apply.resolved_call` (the backend reads it off the node).
         resolved_call: Option<Box<ResolvedCall>>,
-        /// The resolved STORAGE identity for a dispatch-leg resolution that
-        /// resolves at this `Apply` (S110 0583;
-        /// `design/arch/backend-keyed-consumer.md` §1.1) — the module-bearing
-        /// FQ of the SELECTED mangled/mono entry, carried from
-        /// `MethodResolutions.resolved_targets` (keyed by this `Apply`'s span).
-        /// `None` when the callee reference itself carries the identity on its
-        /// `Var` node. The backend keys ONE fetch on this (Principle 24).
-        #[serde(default)]
-        resolved_target: Option<FQSymbol>,
+        /// How this call's dispatch identity is carried — the typed,
+        /// NON-OPTIONAL carrier (S114 flip of the S110
+        /// `resolved_target: Option<FQSymbol>`;
+        /// `design/arch/typed-resolution-carrier.md` §4).
+        /// [`ApplyRef::Dispatch`] carries the storage FQ of the SELECTED
+        /// mangled/mono entry (the backend keys ONE fetch on it, Principle
+        /// 24); [`ApplyRef::ViaCallee`] is the POSITIVE no-Apply-level-dispatch
+        /// verdict — the identity rides the callee expression (its `Var`'s
+        /// [`VarRef`], or a computed closure value). No `#[serde(default)]`:
+        /// absence is unrepresentable.
+        dispatch: ApplyRef,
         ty: ConcreteType,
         // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
         #[serde(default)]
@@ -391,36 +434,61 @@ impl MonoExpr {
         }
     }
 
-    /// The ONLY way to obtain a `MonoExpr` from an [`Expr`]. Walks an
+    /// The ONLY way to obtain a strict `MonoExpr` from an [`Expr`]. Walks an
     /// `inferred_type`-annotated `Expr`, converting each node's `inferred_type`
     /// via [`ConcreteType::from_type`], and **fails at the first node whose
     /// `inferred_type` is absent or non-concrete** (returning
-    /// [`NotConcrete::Var`] / [`NotConcrete::HktHead`]).
+    /// [`ViewBuildError::NotConcrete`]) **or whose resolution verdict is
+    /// missing** (returning [`ViewBuildError::Unresolved`] — see "The
+    /// view-build gate" below).
     ///
-    /// This failure IS the unified ambiguity / could-not-monomorphise error
+    /// The `NotConcrete` failure IS the unified ambiguity / could-not-monomorphise error
     /// (`design/arch/concrete-boundary-type.md` §1.3 / §2.6): a residual `Var` in
     /// a codegen-reaching position means no root pins it. The `Annotate` node is
     /// **erased** — it collapses to its inner `MonoExpr`. `Lambda` param `TypeExpr`
     /// annotations are **erased** — the concrete param types ride in the lambda's
     /// `ty` (`ConcreteType::Fn`).
     ///
-    /// Non-destructive over the source `Expr` (Phase 2 is produces-but-unused).
+    /// Non-destructive over the source `Expr`.
     ///
-    /// # The REQUIRED sidecar parameters (S110 0583 — the §10 unforgettable
-    /// template, Principle 18)
+    /// # The REQUIRED sidecar parameters (S110 0583 template, Principle 18;
+    /// typed since the S114 carrier flip)
     ///
-    /// `pattern_ctors` and `resolved_targets` are span-keyed sidecars produced
-    /// by typecheck (`MethodResolutions`). A new view-build site cannot forget
-    /// to thread the carriers because the signature demands them:
-    /// `pattern_ctors` populates `MonoMatchArm.resolved_ctor`;
-    /// `resolved_targets` populates `MonoExpr::{Var,Apply}.resolved_target`
-    /// (`design/arch/backend-keyed-consumer.md` §1). Pass empty maps only for a
-    /// view whose references are structurally resolver-free (all-local bodies).
+    /// `pattern_ctors`, `var_refs`, and `apply_refs` are span-keyed sidecars
+    /// produced by typecheck (`MethodResolutions`). A new view-build site
+    /// cannot forget to thread the carriers because the signature demands
+    /// them: `pattern_ctors` populates `MonoMatchArm.resolved_ctor`;
+    /// `var_refs` populates `MonoExpr::Var.resolution`; `apply_refs`
+    /// populates `MonoExpr::Apply.dispatch`. The maps are TOTAL over the
+    /// paired check-run's real-span references (the producer contract,
+    /// `design/arch/typed-resolution-carrier.md` §3) — the former "pass empty
+    /// maps for all-local bodies" license is RETIRED (all-local bodies carry
+    /// `VarRef::Local` entries; synthetic bodies go through
+    /// [`MonoExpr::synthetic_local_from_expr`]).
+    ///
+    /// # The view-build gate (miss behaviour)
+    ///
+    /// - A real-span `Var`/`Apply` with no map entry fails as
+    ///   [`ViewBuildError::Unresolved`] — the LOCATED typecheck-phase error
+    ///   the carrier exists for.
+    /// - The resolution verdict is read BEFORE the node's type: a node that
+    ///   is both unresolved and non-concrete reports `Unresolved`, so a
+    ///   resolution miss can never slip into the caller's `NotConcrete`
+    ///   lenient fallback (where the same miss would seam-assert).
+    /// - A [`Span::SYNTHETIC`] node with no map entry takes the all-local
+    ///   verdict (`VarRef::Local { binding_span: Span::SYNTHETIC }` /
+    ///   [`ApplyRef::ViaCallee`]): synthetic nodes are structurally OUTSIDE
+    ///   span-keyed transport (one shared key — the maps cannot address them
+    ///   individually; `typed-resolution-carrier.md` §3.4), and every
+    ///   synthetic population is compiler-synthesised locals. A map entry
+    ///   under the SYNTHETIC key (e.g. a synthesis-transported
+    ///   `pattern_ctors` identity) still wins over the carve-out.
     pub fn from_expr(
         expr: &Expr,
         pattern_ctors: &HashMap<Span, FQSymbol>,
-        resolved_targets: &HashMap<Span, FQSymbol>,
-    ) -> Result<MonoExpr, NotConcrete> {
+        var_refs: &HashMap<Span, VarRef>,
+        apply_refs: &HashMap<Span, ApplyRef>,
+    ) -> Result<MonoExpr, ViewBuildError> {
         // The node-level concrete type: every non-erased node MUST carry an
         // `inferred_type`, and it MUST be concrete. An absent annotation is
         // treated as a residual `Var(0)` — the same "this position's type is not
@@ -428,7 +496,7 @@ impl MonoExpr {
         // illegal as a `Var`-typed one). The erased `Annotate` node is the one
         // node that reads no `ty` of its own.
         match expr {
-            Expr::Annotate { expr: inner, .. } => MonoExpr::from_expr(inner, pattern_ctors, resolved_targets),
+            Expr::Annotate { expr: inner, .. } => MonoExpr::from_expr(inner, pattern_ctors, var_refs, apply_refs),
 
             Expr::IntLit { value, span, .. } => Ok(MonoExpr::IntLit {
                 value: *value,
@@ -453,26 +521,34 @@ impl MonoExpr {
                 confined: None,
                 unique_static: None,
             }),
-            Expr::Var { name, span, resolved_call, .. } => Ok(MonoExpr::Var {
-                name: name.clone(),
-                span: *span,
-                resolved_call: resolved_call.clone(),
-                resolved_target: resolved_targets.get(span).cloned(),
-                ty: node_ty(expr)?,
-            }),
+            Expr::Var { name, span, resolved_call, .. } => {
+                // Verdict BEFORE type: an unresolved reference must surface as
+                // the located `Unresolved` gate error, never leak to the
+                // caller's `NotConcrete` lenient fallback.
+                let resolution = var_verdict(name, *span, var_refs).ok_or(
+                    ViewBuildError::Unresolved { span: *span, name: name.clone() },
+                )?;
+                Ok(MonoExpr::Var {
+                    name: name.clone(),
+                    span: *span,
+                    resolved_call: resolved_call.clone(),
+                    resolution,
+                    ty: node_ty(expr)?,
+                })
+            }
             Expr::Let { bindings, body, span, .. } => Ok(MonoExpr::Let {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, resolved_targets)?)))
-                    .collect::<Result<_, NotConcrete>>()?,
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, resolved_targets)?),
+                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?)))
+                    .collect::<Result<_, ViewBuildError>>()?,
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::If { cond, then_branch, else_branch, span, .. } => Ok(MonoExpr::If {
-                cond: Box::new(MonoExpr::from_expr(cond, pattern_ctors, resolved_targets)?),
-                then_branch: Box::new(MonoExpr::from_expr(then_branch, pattern_ctors, resolved_targets)?),
-                else_branch: Box::new(MonoExpr::from_expr(else_branch, pattern_ctors, resolved_targets)?),
+                cond: Box::new(MonoExpr::from_expr(cond, pattern_ctors, var_refs, apply_refs)?),
+                then_branch: Box::new(MonoExpr::from_expr(then_branch, pattern_ctors, var_refs, apply_refs)?),
+                else_branch: Box::new(MonoExpr::from_expr(else_branch, pattern_ctors, var_refs, apply_refs)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
@@ -480,30 +556,37 @@ impl MonoExpr {
                 // Param `TypeExpr` annotations are erased — the concrete param
                 // types live in the lambda's `ty` (`ConcreteType::Fn`).
                 params: params.iter().map(|(n, _)| n.clone()).collect(),
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, resolved_targets)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
                 span: *span,
                 ty: node_ty(expr)?,
                 escapes: None,
                 confined: None,
                 unique_static: None,
             }),
-            Expr::Apply { callee, args, span, resolved_call, .. } => Ok(MonoExpr::Apply {
-                callee: Box::new(MonoExpr::from_expr(callee, pattern_ctors, resolved_targets)?),
-                args: args
-                    .iter()
-                    .map(|e| MonoExpr::from_expr(e, pattern_ctors, resolved_targets))
-                    .collect::<Result<_, NotConcrete>>()?,
-                span: *span,
-                resolved_call: resolved_call.clone(),
-                resolved_target: resolved_targets.get(span).cloned(),
-                ty: node_ty(expr)?,
-                escapes: None,
-                confined: None,
-                unique_static: None,
-                provenance: None,
-            }),
+            Expr::Apply { callee, args, span, resolved_call, .. } => {
+                // Verdict BEFORE walking children/type — same gate-first rule
+                // as the `Var` arm; the error names the callee head.
+                let dispatch = apply_verdict(*span, apply_refs).ok_or_else(|| {
+                    ViewBuildError::Unresolved { span: *span, name: apply_head_name(callee) }
+                })?;
+                Ok(MonoExpr::Apply {
+                    callee: Box::new(MonoExpr::from_expr(callee, pattern_ctors, var_refs, apply_refs)?),
+                    args: args
+                        .iter()
+                        .map(|e| MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs))
+                        .collect::<Result<_, ViewBuildError>>()?,
+                    span: *span,
+                    resolved_call: resolved_call.clone(),
+                    dispatch,
+                    ty: node_ty(expr)?,
+                    escapes: None,
+                    confined: None,
+                    unique_static: None,
+                    provenance: None,
+                })
+            }
             Expr::Match { scrutinee, arms, span, compiler_generated, .. } => Ok(MonoExpr::Match {
-                scrutinee: Box::new(MonoExpr::from_expr(scrutinee, pattern_ctors, resolved_targets)?),
+                scrutinee: Box::new(MonoExpr::from_expr(scrutinee, pattern_ctors, var_refs, apply_refs)?),
                 arms: arms
                     .iter()
                     .map(|arm| {
@@ -520,13 +603,13 @@ impl MonoExpr {
                         };
                         Ok(MonoMatchArm {
                             pattern: arm.pattern.clone(),
-                            body: MonoExpr::from_expr(&arm.body, pattern_ctors, resolved_targets)?,
+                            body: MonoExpr::from_expr(&arm.body, pattern_ctors, var_refs, apply_refs)?,
                             span: arm.span,
                             provenance: None,
                             resolved_ctor,
                         })
                     })
-                    .collect::<Result<_, NotConcrete>>()?,
+                    .collect::<Result<_, ViewBuildError>>()?,
                 span: *span,
                 compiler_generated: *compiler_generated,
                 ty: node_ty(expr)?,
@@ -534,8 +617,8 @@ impl MonoExpr {
             Expr::VecLit { elements, span, .. } => Ok(MonoExpr::VecLit {
                 elements: elements
                     .iter()
-                    .map(|e| MonoExpr::from_expr(e, pattern_ctors, resolved_targets))
-                    .collect::<Result<_, NotConcrete>>()?,
+                    .map(|e| MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs))
+                    .collect::<Result<_, ViewBuildError>>()?,
                 span: *span,
                 ty: node_ty(expr)?,
                 escapes: None,
@@ -544,23 +627,23 @@ impl MonoExpr {
             }),
             Expr::Trace { modules, body, span, .. } => Ok(MonoExpr::Trace {
                 modules: modules.clone(),
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, resolved_targets)?),
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::ParBind { bindings, body, span, .. } => Ok(MonoExpr::ParBind {
                 bindings: bindings
                     .iter()
-                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, resolved_targets)?)))
-                    .collect::<Result<_, NotConcrete>>()?,
-                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, resolved_targets)?),
+                    .map(|(n, e)| Ok((n.clone(), MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs)?)))
+                    .collect::<Result<_, ViewBuildError>>()?,
+                body: Box::new(MonoExpr::from_expr(body, pattern_ctors, var_refs, apply_refs)?),
                 span: *span,
                 ty: node_ty(expr)?,
             }),
             Expr::LaunchContinue { launched, continuation, span, .. } => {
                 Ok(MonoExpr::LaunchContinue {
-                    launched: Box::new(MonoExpr::from_expr(launched, pattern_ctors, resolved_targets)?),
-                    continuation: Box::new(MonoExpr::from_expr(continuation, pattern_ctors, resolved_targets)?),
+                    launched: Box::new(MonoExpr::from_expr(launched, pattern_ctors, var_refs, apply_refs)?),
+                    continuation: Box::new(MonoExpr::from_expr(continuation, pattern_ctors, var_refs, apply_refs)?),
                     span: *span,
                     ty: node_ty(expr)?,
                 })
@@ -570,8 +653,8 @@ impl MonoExpr {
                 tag: *tag,
                 fields: fields
                     .iter()
-                    .map(|e| MonoExpr::from_expr(e, pattern_ctors, resolved_targets))
-                    .collect::<Result<_, NotConcrete>>()?,
+                    .map(|e| MonoExpr::from_expr(e, pattern_ctors, var_refs, apply_refs))
+                    .collect::<Result<_, ViewBuildError>>()?,
                 span: *span,
                 ty: node_ty(expr)?,
                 escapes: None,
@@ -588,9 +671,23 @@ impl MonoExpr {
     /// Relocated here from the backend (S110 W0.b,
     /// `design/arch/backend-keyed-consumer.md` §5) so view construction has ONE
     /// home in `cranelisp-types` and typecheck becomes the sole mono-view
-    /// producer. Same two REQUIRED sidecar parameters as [`MonoExpr::from_expr`]
-    /// (Principle 18) — a lenient view carries the same `resolved_target` /
-    /// `resolved_ctor` carriers as a strict one.
+    /// producer. Same REQUIRED sidecar parameters as [`MonoExpr::from_expr`]
+    /// (Principle 18) — a lenient view carries the same typed
+    /// `resolution`/`dispatch`/`resolved_ctor` carriers as a strict one.
+    ///
+    /// **Tolerance is for TYPES only** (S114 carrier flip;
+    /// `design/arch/typed-resolution-carrier.md` §3.5): resolution verdicts
+    /// come from the same paired check-run and are equally TOTAL. A real-span
+    /// `Var`/`Apply` with no `var_refs`/`apply_refs` entry is an in-process
+    /// producer-bug breach and PANICS via an always-on tier-3 seam assertion
+    /// (`design/arch/safety-invariants.md` §2) — it is never silently
+    /// manufactured into a `Local`/`ViaCallee` verdict (the census closed via
+    /// FIXME 0685: the only all-local population is the synthetic bodies,
+    /// which take [`MonoExpr::synthetic_local_from_expr`], so this walk's
+    /// real-span population has NO legitimate miss). A [`Span::SYNTHETIC`]
+    /// node with no entry takes the all-local verdict — the same carve-out as
+    /// the strict walk (synthetic nodes are structurally outside span-keyed
+    /// transport).
     ///
     /// **Remaining role.** The fallback for entries that legitimately have NO
     /// strictly-concrete body-AST (signature-driven ctor/accessor synthetic
@@ -604,7 +701,8 @@ impl MonoExpr {
     pub fn lenient_from_expr(
         expr: &Expr,
         pattern_ctors: &HashMap<Span, FQSymbol>,
-        resolved_targets: &HashMap<Span, FQSymbol>,
+        var_refs: &HashMap<Span, VarRef>,
+        apply_refs: &HashMap<Span, ApplyRef>,
     ) -> MonoExpr {
         // The node's concrete type: the real one when concrete, else the
         // placeholder (never read for signature-driven bodies).
@@ -613,7 +711,7 @@ impl MonoExpr {
                 .and_then(|t| ConcreteType::from_type(t).ok())
                 .unwrap_or(ConcreteType::Int)
         };
-        let rec = |e: &Expr| MonoExpr::lenient_from_expr(e, pattern_ctors, resolved_targets);
+        let rec = |e: &Expr| MonoExpr::lenient_from_expr(e, pattern_ctors, var_refs, apply_refs);
 
         match expr {
             Expr::Annotate { expr: inner, .. } => rec(inner),
@@ -625,7 +723,16 @@ impl MonoExpr {
                 name: name.clone(),
                 span: *span,
                 resolved_call: resolved_call.clone(),
-                resolved_target: resolved_targets.get(span).cloned(),
+                resolution: var_verdict(name, *span, var_refs).unwrap_or_else(|| {
+                    // Always-on tier-3 seam assert (safety-invariants.md §2):
+                    // lenient tolerance is for TYPES only — a real-span
+                    // resolution miss is a producer bug, never a silent Local.
+                    panic!(
+                        "lenient_from_expr: no VarRef verdict for real-span Var `{name}` at \
+                         {span:?} — resolution verdicts are TOTAL over the paired check-run \
+                         (in-process producer bug; design/arch/typed-resolution-carrier.md §3.5)"
+                    )
+                }),
                 ty: node_ty(expr),
             },
             Expr::Let { bindings, body, span, .. } => MonoExpr::Let {
@@ -655,7 +762,17 @@ impl MonoExpr {
                 args: args.iter().map(&rec).collect(),
                 span: *span,
                 resolved_call: resolved_call.clone(),
-                resolved_target: resolved_targets.get(span).cloned(),
+                dispatch: apply_verdict(*span, apply_refs).unwrap_or_else(|| {
+                    // Always-on tier-3 seam assert — the Apply sibling of the
+                    // Var-arm assert above.
+                    panic!(
+                        "lenient_from_expr: no ApplyRef verdict for real-span Apply of \
+                         `{}` at {span:?} — resolution verdicts are TOTAL over the paired \
+                         check-run (in-process producer bug; \
+                         design/arch/typed-resolution-carrier.md §3.5)",
+                        apply_head_name(callee)
+                    )
+                }),
                 ty: node_ty(expr),
                 confined: None,
                 escapes: None,
@@ -736,7 +853,7 @@ impl MonoExpr {
     /// distinction the [`VarRef`]/[`ApplyRef`] flip enforces):
     ///
     /// - **No resolution-map parameters.** The all-local license is the
-    ///   signature itself — there is no `resolved_targets`/`var_refs` sidecar
+    ///   signature itself — there is no `var_refs`/`apply_refs` sidecar
     ///   to consult and none to forget, retiring the "pass empty maps for
     ///   all-local bodies" convention. `pattern_ctors` IS still taken: a
     ///   match-arm ctor identity is not a local — synthesis holds it in hand
@@ -751,19 +868,23 @@ impl MonoExpr {
     ///   "unresolved has no constructor" cannot be re-smuggled through this
     ///   door.
     ///
-    /// **Dormant interior (S114 Phase 3).** Until the Phase-5 carrier flip
-    /// this delegates to [`MonoExpr::lenient_from_expr`] with an empty
-    /// resolution sidecar — byte-identical to the pre-0685 adt.rs callsites.
-    /// At the flip its interior becomes the all-local MODE of the ONE shared
-    /// lenient walk (every `Var` → `VarRef::Local { binder, binding_span:
-    /// Span::SYNTHETIC }`, every `Apply` → `ApplyRef::ViaCallee`) — never a
-    /// hand-built second node-construction walk
-    /// (`design/arch/typed-resolution-carrier.md` §4).
+    /// **All-local mode of the ONE shared walk (S114 Phase 5 flip).** The
+    /// interior delegates to [`MonoExpr::lenient_from_expr`] with empty
+    /// resolution maps: under the shared walk's [`Span::SYNTHETIC`] carve-out
+    /// every (asserted-synthetic) `Var` takes `VarRef::Local { binder,
+    /// binding_span: Span::SYNTHETIC }` and every `Apply` takes
+    /// [`ApplyRef::ViaCallee`] — the all-local mode is the span-directed
+    /// behaviour of the one walk, never a hand-built second
+    /// node-construction walk (`design/arch/typed-resolution-carrier.md` §4).
+    /// The synthetic-span assert is what bounds the license: a real-span node
+    /// in the body panics here (and the shared walk's real-span seam assert
+    /// would refuse it a silent local verdict regardless).
     pub fn synthetic_local_from_expr(
         expr: &Expr,
         pattern_ctors: &HashMap<Span, FQSymbol>,
     ) -> MonoExpr {
-        let mono = MonoExpr::lenient_from_expr(expr, pattern_ctors, &HashMap::new());
+        let mono =
+            MonoExpr::lenient_from_expr(expr, pattern_ctors, &HashMap::new(), &HashMap::new());
         assert_all_synthetic(&mono);
         mono
     }
@@ -829,6 +950,44 @@ fn assert_all_synthetic(m: &MonoExpr) {
                 assert_all_synthetic(f);
             }
         }
+    }
+}
+
+/// The ONE resolution-verdict rule for a `Var` node, shared by the strict and
+/// lenient walks (S114 carrier flip): a map hit carries typecheck's verdict; a
+/// [`Span::SYNTHETIC`] miss takes the all-local verdict (synthetic nodes are
+/// structurally outside span-keyed transport — `typed-resolution-carrier.md`
+/// §3.4); a real-span miss is `None` — the caller decides the failure shape
+/// ([`ViewBuildError::Unresolved`] strict; tier-3 seam panic lenient).
+fn var_verdict(name: &Symbol, span: Span, var_refs: &HashMap<Span, VarRef>) -> Option<VarRef> {
+    match var_refs.get(&span) {
+        Some(v) => Some(v.clone()),
+        None if span == Span::SYNTHETIC => Some(VarRef::Local {
+            binder: name.clone(),
+            binding_span: Span::SYNTHETIC,
+        }),
+        None => None,
+    }
+}
+
+/// The `Apply` sibling of [`var_verdict`] — same three-way rule; the synthetic
+/// all-local verdict is [`ApplyRef::ViaCallee`].
+fn apply_verdict(span: Span, apply_refs: &HashMap<Span, ApplyRef>) -> Option<ApplyRef> {
+    match apply_refs.get(&span) {
+        Some(a) => Some(a.clone()),
+        None if span == Span::SYNTHETIC => Some(ApplyRef::ViaCallee),
+        None => None,
+    }
+}
+
+/// The callee head name for `Apply` diagnostics: the callee `Var`'s name when
+/// there is one (through erased `Annotate` layers), else a marker for a
+/// computed callee.
+fn apply_head_name(callee: &Expr) -> Symbol {
+    match callee {
+        Expr::Var { name, .. } => name.clone(),
+        Expr::Annotate { expr, .. } => apply_head_name(expr),
+        _ => Symbol::from("<computed callee>"),
     }
 }
 

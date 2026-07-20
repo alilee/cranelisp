@@ -8,6 +8,7 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{
     CranelispError, ErrorLocation, FQSymbol, ModuleFullPath, ResolvedCall, Span, Symbol, Type,
+    VarRef,
 };
 
 use super::FnCompiler;
@@ -113,17 +114,33 @@ where
         span: Span,
         resolved_call: Option<&ResolvedCall>,
         inferred_type: Option<&Type>,
-        // S110 W2 (`backend-keyed-consumer.md` §4; S10–S18): the Var's terminal
-        // STORAGE key (§1.1.2). Drives every value-seam keyed read below. `None`
-        // for a local/lambda-param Var (caught by the `variables` check first —
-        // KC-N6) or a genuinely-unresolved name (falls to the undefined error).
-        resolved_target: Option<&FQSymbol>,
+        // S114 carrier flip (`typed-resolution-carrier.md` §4; the S110 W2
+        // `backend-keyed-consumer.md` §4 S10–S18 seams): the Var's typed
+        // resolution verdict. `VarRef::Global(storage_fq)` drives every value-seam
+        // keyed read below; `VarRef::Local` is a scope-stack reference caught by
+        // the `variables` check first (KC-N6) — a `Local` that MISSES the scope
+        // stack is a hard producer/backend invariant failure carrying the binder
+        // identity (§2.7.2), never the old silent "undefined variable".
+        resolution: &VarRef,
     ) -> Result<Value, CranelispError> {
         // Local variable takes priority (before ANY keyed read — KC-N6). A
         // shadowing local wins unconditionally; the carrier is never consulted.
+        // This handles BOTH a `VarRef::Local` and a `VarRef::Global` whose name
+        // shadows a backend local (the self-recursion carve-out records the
+        // enclosing fn's storage FQ on a shadowing recursion binding).
         if let Some(var) = self.variables.get(name) {
             return Ok(self.builder.use_var(*var));
         }
+
+        // Past the scope-stack read: convert the typed verdict to the keyed-read
+        // target. Exhaustive on the closed `VarRef` sum. A `VarRef::Local` here
+        // has no storage FQ — its keyed reads are all `None` (it can only match
+        // the `variables` check, which already missed), and it resolves to the
+        // hard invariant failure at the terminal below.
+        let resolved_target: Option<&FQSymbol> = match resolution {
+            VarRef::Global(fq) => Some(fq),
+            VarRef::Local { .. } => None,
+        };
 
         // Value-position trait-method reference (spec §7.6). Typecheck
         // annotates a bare `Expr::Var` that names a trait method used in value
@@ -220,10 +237,29 @@ where
             });
         }
 
-        Err(CranelispError::CodegenError {
-            message: format!("undefined variable: {name}"),
-            location: ErrorLocation::from_span(span),
-        })
+        // Terminal. S114 carrier flip (§2.7.2, unit obligation 4): a `VarRef::Local`
+        // reaching here MISSED the scope-stack read above — a hard producer/backend
+        // invariant failure (Principle 18), carrying the binder identity, NOT the
+        // old silent "undefined variable" (the `Local` constructor asserts typecheck
+        // bound this reference to a local, so a backend scope-stack miss is a
+        // contract breach). A `VarRef::Global` at the terminal is a genuinely
+        // undefined table reference (unreachable post-typecheck — the located
+        // `ViewBuildError::Unresolved` fires at `from_expr`) and keeps the message.
+        match resolution {
+            VarRef::Local { binder, binding_span } => Err(CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation (VarRef::Local): binder '{binder}' \
+                     for reference '{name}' is absent from the backend scope stack \
+                     (binding-form span {}..{})",
+                    binding_span.start, binding_span.end
+                ),
+                location: ErrorLocation::from_span(span),
+            }),
+            VarRef::Global(_) => Err(CranelispError::CodegenError {
+                message: format!("undefined variable: {name}"),
+                location: ErrorLocation::from_span(span),
+            }),
+        }
     }
 
     /// Look up the tag value for a nullary constructor via the Var's carrier.

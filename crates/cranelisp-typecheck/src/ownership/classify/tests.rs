@@ -16,7 +16,10 @@ use super::*;
 
 fn var(name: &str) -> MonoExpr {
     MonoExpr::Var {
-        resolved_target: None,
+        resolution: cranelisp_types::VarRef::Local {
+            binder: Symbol::from(name),
+            binding_span: Span::SYNTHETIC,
+        },
         name: Symbol::from(name),
         span: Span::SYNTHETIC,
         resolved_call: None,

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{DefKind, ErrorLocation, ConcreteType, CranelispError, FQSymbol, HeapHeader, ModuleEntry, MonoExpr, ResolvedCall, Span, Symbol};
+use cranelisp_types::{DefKind, ErrorLocation, ConcreteType, CranelispError, FQSymbol, HeapHeader, ModuleEntry, MonoExpr, ResolvedCall, Span, Symbol, VarRef};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
@@ -925,8 +925,18 @@ where
         // (the W1.1/0620 recorder flip records `resolved.storage_fq()`, not the
         // bare alias), so the keyed `ctor_meta_at` read below lands on the real
         // `DefKind::Constructor` `Def` — a direct read, NO chain-follow.
+        // S114 carrier flip (typed-resolution-carrier.md §4): the callee `Var`'s
+        // typed verdict. Exhaustive on the closed `VarRef` sum (no `_` arm):
+        // `Global` carries the storage FQ the keyed reads consume; `Local` is a
+        // scope-stack reference (its slot is backend-side) — `None` here, so it
+        // falls through to `compile_direct_call`, whose carrier-miss is the loud
+        // hard error (Rev-2, never a re-resolve). A `Local` reaching here has
+        // already missed the `variables` locals-first check above.
         let callee_target = match callee {
-            MonoExpr::Var { resolved_target, .. } => resolved_target.as_ref(),
+            MonoExpr::Var { resolution, .. } => match resolution {
+                VarRef::Global(fq) => Some(fq),
+                VarRef::Local { .. } => None,
+            },
             _ => None,
         };
 

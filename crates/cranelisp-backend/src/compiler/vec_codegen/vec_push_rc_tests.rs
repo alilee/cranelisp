@@ -13,7 +13,7 @@ use super::*;
 
 fn var(ty: ConcreteType) -> MonoExpr {
     MonoExpr::Var {
-        resolved_target: None,
+        resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("x"), binding_span: Span::SYNTHETIC },
         name: cranelisp_types::Symbol::from("x"),
         span: Span::SYNTHETIC,
         resolved_call: None,

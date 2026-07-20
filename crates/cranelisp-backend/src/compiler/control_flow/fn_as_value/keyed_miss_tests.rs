@@ -324,3 +324,53 @@ fn kc_n6_local_none_carrier_is_not_a_miss() {
          would be a false positive breaking every closure body."
     );
 }
+
+// spec: design/arch/typed-resolution-carrier.md §2.7.2 (unit obligation 4) — the
+// NEGATIVE twin of KC-N6. A `VarRef::Local` reference whose binder is ABSENT from
+// the backend scope stack is a HARD invariant failure (Principle 18) carrying the
+// binder IDENTITY — never the old silent "undefined variable". The `Local`
+// constructor asserts typecheck bound this reference to a local, so a backend
+// scope-stack miss is a producer/backend contract breach, not an unresolved name.
+// defect: class=carrier-loss locus=crates/cranelisp-backend/src/compiler/literals.rs::compile_var found=S114 owner=/dev
+#[test]
+fn kc_varref_local_scope_stack_miss_is_hard_invariant_failure_with_binder() {
+    // (defn useit [] ghost) — `ghost` is a free Var, NOT a param, so it is absent
+    // from the backend `variables` scope stack. With no carrier threaded, the test
+    // harness classifies the uncarried real-span Var as `VarRef::Local { binder:
+    // "ghost" }`, so codegen reaches the Local scope-miss hard-fail — exactly the
+    // producer/backend contract breach §2.7.2 requires be LOUD.
+    let ghost = value_ref_defn("ghost", Span::new(500, 505));
+
+    let user = ModuleFullPath::from("user");
+    let tables = empty_tables();
+    {
+        let mut st = SymbolTable::new(user.clone());
+        let _ = st.allocate_got_slot().expect("fresh table has free slots");
+        st.insert(ghost.name.clone(), make_def_entry_slot(ghost.clone(), 0));
+        tables.insert(user.clone(), st);
+    }
+
+    let mut obj = make_object_module();
+    let result = compile_to_module(
+        user.clone(),
+        std::slice::from_ref(&ghost.name),
+        &tables,
+        &mut obj,
+        true,
+    );
+    let err = match result {
+        Ok(_) => panic!(
+            "a VarRef::Local reference absent from the backend scope stack MUST hard-error \
+             (§2.7.2), not compile silently"
+        ),
+        Err(e) => e,
+    };
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("invariant violation")
+            && msg.contains("VarRef::Local")
+            && msg.contains("ghost"),
+        "the hard-fail MUST name the binder identity (§2.7.2 unit obligation 4), \
+         not surface a silent `undefined variable`; got: {msg}"
+    );
+}

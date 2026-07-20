@@ -77,7 +77,8 @@ pair-invariant); validity checked at every hit (stale ⇒ recompile, never
 use-stale); **no re-codegen on cache-hit** (the `.o` bytes are authoritative);
 `CACHE_FORMAT_VERSION` (manifest shape) and `CACHE_SCHEMA_VERSION` (sidecar
 `SymbolTable` shape) are independent. **Any serde-shape change to the persisted
-`SymbolTable` MUST bump `CACHE_SCHEMA_VERSION`** (currently `19`, cache/mod.rs) in
+`SymbolTable` MUST bump `CACHE_SCHEMA_VERSION`** (read the constant in
+`cache/mod.rs` for the current value — a literal here goes stale, and did) in
 the same change-set — this includes upstream `cranelisp-types` changes to what
 `Def` records (e.g. the S101 `callees` edge set). `BUILD_ID = env!("CRANELISP_BUILD_ID")`
 is stamped by `build.rs`; a mismatch on disk ⇒ `CacheStale::BuildIdMismatch` ⇒

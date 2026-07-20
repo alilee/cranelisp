@@ -106,8 +106,9 @@ golden lane, `vec_lifecycle`.
 | BI-C-off | B-2 shape under `CRANELISP_NO_OWNERSHIP=1` — the toggle-off face 0669 item 1 named | RED committed (`b2_match_cow_var_pattern_toggle_off_neg`); flips. The analysis-ON twins (`false_fresh_provenance_residual.rs::match_scrutinee_cow_var_pattern_*`) stay GREEN through the fix |
 | BI-B-cow | **NEW** — nested-match WITH COW: `(match (match (vec-set v 0 5) [r r]) [q q])` (0668 cell B verbatim; the 0669-named probe cell not yet committed), both toggles | NEW ×2, RED; flips |
 | BI-I1 | capture face ×2 (re-attributed per §1) | existing REDs join this family's flip set; locus update rides the pin change-set |
-| BI-M | **NEW mode-axis completion**: the RED faces G and C-off each gain a `--link` twin (repl face optional — `--run` + `--link` is the divergence-bearing pair per MS-P7's lesson); born-green A gains a `--link` fence | NEW ×3 (G-link, C-off-link, A-link) |
-| BI-T | Twin discipline: every RED names its GREEN twin in-file (H bare-match for the match rows; E fresh-vec for the alias rows) — /testing verifies the pairing comments at authoring | maintenance |
+| BI-M | **NEW mode-axis completion**: the RED faces G and C-off each gain a `--link` twin (repl face optional — `--run` + `--link` is the divergence-bearing pair per MS-P7's lesson); born-green A gains a `--link` fence | NEW ×3 (G-link, C-off-link, A-link) — landed W1 |
+| BI-T | Twin discipline: every RED names its GREEN twin in-file. **W1 finding accepted (/qa disposition item 4): the planned "H bare-match" HEAP green twin does not exist — heap-forward-through-match is broken WHOLESALE** (`(match [7 8 9] [r r])` returns garbage both inline and across a fn return), so /testing's SCALAR control substitution stands: `bare_match_forward_scalar_green` (`(match 7 [r r])` → 7) proves the match machinery (var-pattern bind + arm forward) correct and isolates the consume seam as the RC-accounting site | maintenance — scalar control accepted |
+| BI-H-heap | **NEW row (item-4 completion): the INLINE/single-match heap-forward face.** The committed family rows cover the nested (F, B-cow) and COW/toggle faces, but the minimal single bare match forwarding a fresh heap vec — `(defn f [] (match [7 8 9] [r r]))` inline, and its across-fn-return sibling — had no committed row despite being RED. /testing authors ×2 RED cells in a **pre-W4 rider** (`class=rc-miscount`, 0668 consume seam; GREEN twin = the scalar control); flips with the same Track-B contract change-set | NEW ×2 RED (rider) |
 
 `[oracle]` — the whole family graduates through `assert_safety_matrix`
 where the lane supports the toggle axis; until then env-pair cells as today.
@@ -256,12 +257,26 @@ minimum (each fails on revert of its half):
    (the S113 fix's unit pin — confirm it exists; author if the fix landed
    e2e-only).
 
-### 3.5 PS-SH1 completion
+### 3.5 PS-SH1 completion — as-built (W1; /qa disposition item 5 ACCEPTED)
 
 The S113 residual: {let-shadowed} × {single-sig defn, multi-sig base} ×
-**value-ref** cells (call cells landed + flipped S113). NEW ×2, expected
-RED against the current residual, flipping with the Track-A drain; the
-in-file call cells are the GREEN twins.
+**value-ref** cells (call cells landed + flipped S113). /testing completed
+the shape as **matrix-missing POSITIONS, not net-new scenarios** — the
+right reading of the residual (the matrix pressures ONE codepath; a
+per-position fix that greens one value-ref position but not a sibling
+names a divergent resolver). As built in `tests/shadowing_scope_lookup.rs`:
+
+- **+2 RED positions**: multi-sig-base value-ref **returned**
+  (`…value_ref_returned…`) and **stored-in-container**
+  (`…value_ref_in_container…`) — both resolve to the module overload base
+  today; flip with the Track-A typecheck drain.
+- **+1 GREEN control**: the single-sig value-ref HOF twin
+  (`let_shadowed_single_sig_defn_value_ref_hof_resolves_to_local`) —
+  proves the bug is the overload-base gate, not value-ref resolution
+  generally; must stay green.
+
+Counts: ×3 as built (2 RED + 1 born-green control), vs the planned "NEW
+×2"; the in-file call cells remain the flipped-S113 GREEN twins.
 
 ### 3.6 MS-P7 — evidence gate (F5; do NOT pre-commit a wave)
 
@@ -380,22 +395,79 @@ track — do not fold). **FIXME 0604 retires when the chokepoint + census +
 guards land**; if a firing occurs first anywhere, the assert names the seam
 and the fix narrows to it.
 
-### 4.3 0670 chain cells (F8 — three waves, strict order)
+### 4.3 0670 chain cells (F8 — three waves, strict order) — **RE-BASED post-W1 (/qa disposition item 1, 2026-07-20)**
 
 Wave 1 (int fix, Track C) → wave 2 (frontend §5 value-level reject
-re-lands, Track D) → wave 3 (cells). /testing authors the cells in the
-Stage-1 battery (they are RED against HEAD in the right polarity — the
-positive cells fail today because the int bug rejects the valid program):
+re-lands, Track D) → wave 3 (cells authored Stage 1, W1 — done).
 
-| Row | Cell | Notes |
+**W1 finding (verified /testing, post-c962f133): the 0670 mis-qualification
+does NOT reproduce e2e at HEAD.** Every IQ-P shape — including the verbatim
+FIXME repro `(defn greet [name] (str "hello, " name))` — compiles and runs:
+`qualify_expanded_sexp`'s incidental "hold verbatim if the symbol is
+available in the current module" skip guard, plus the narrow
+`defining_modules` seeding, suppress the mis-qualification for today's
+documented shapes.
+
+**Disposition: C1 SHIPS AS DESIGNED (architectural fix), with the
+expansion-seam UNIT tests as its acceptance instead of an e2e flip.**
+Grounds: (a) the S113 NOTE recorded a real observed breakage — the W3
+revert of the frontend reject happened *because* valid programs broke;
+non-reproduction with today's shapes is not mechanism soundness. (b) The
+suppressor is **table-state-dependent** — "available in the current module"
+is a symbol-table lookup, so whether a binder is mis-qualified turns on
+what happens to be visible/imported, not on scope. Correctness resting on
+incidental table state is the 0604 heisenbug-lineage class; a fragile
+suppressor is not a fix. (c) The scope-blind re-walk remains the P7 mirror
+the /arch path-1 ruling condemns, and the frontend NOTEs still block W-D2
+on the wave-1 invariant ("int never produces a qualified binder") — the
+reject's soundness argument needs that invariant **by construction**; the
+suppressor cannot supply it (its failure mode is exactly the configuration
+that forced the W3 revert). (d) The live-defect demonstration moves to the
+unit tier, where it is *reachable*: precisely because the guard is
+table-state-dependent, a pure fixture (design doc §3) can pin the state in
+which suppression fails and show the scope-blind walk mis-qualify a binder
+— RED before the fix, GREEN after. No prior live e2e demonstration is
+required.
+
+**W5-C1 acceptance (binding):**
+
+1. The mandatory expansion-seam unit tests
+   (`design/int/expansion-qualification-scope.md` §3):
+   `qualify_skips_value_binders_and_local_reads`,
+   `qualify_skips_let_and_match_binders`, plus one completeness cell per
+   binder form (defn/fn/let/match — the shared-enumeration matrix).
+   Authored **failing-first** against the scope-blind pass, with the
+   fixture's `defining_modules`/table state constructed so the incidental
+   availability skip-guard does NOT fire — this RED→GREEN unit flip is the
+   live-defect demonstration replacing the evaporated e2e flip.
+2. IQ-P1..P3 + the repl_persist `name`-param programs stay GREEN
+   (must-hold fences; they are no longer flip targets).
+3. The binder predicates promote to ONE shared home consumed by both walks
+   (/review structural check — a second private enumeration is the P7
+   mirror re-grown).
+
+**Escalation clause:** if /dev(src) cannot construct a unit fixture in
+which the scope-blind pass mis-qualifies a binder (i.e. the suppression
+proves structural rather than table-state-dependent), C1 pauses and
+returns to /qa with that evidence before landing — that outcome would be
+the first genuine evidence against the live defect, and the C1/W-D2
+sequencing would be re-adjudicated then.
+
+**W6-W-D2 acceptance (binding; gate unchanged — C1 committed first):**
+IQ-N1..N4 flip RED→GREEN (located value-level qualified-binder reject at
+the three seams, span on the user's written form) while IQ-P1..P3 and the
+IQ-N bare twins stay GREEN (the reject fires on the qualified SPELLING,
+never on collision, and never on int's output).
+
+| Row | Cell | As-built status (W1) |
 |---|---|---|
-| IQ-P1 | **Int-fix positive**: `(defn f [name] …)` where `name` collides with an importable symbol AND a macro is in scope — compiles + runs | Free-standing: fixture module exporting `name` + an inline `defmacro` used in the body (NOT stdlib `str`). RED until the int fix |
-| IQ-P2 | `let` sibling: `(let [name "x"] (m … name))` | same trigger pair; RED until the int fix |
-| IQ-P3 | Stdlib-conformance twin (sanctioned exception, `use_workspace_stdlib_for_stdlib_conformance_only()`): the verbatim FIXME repro `(defn greet [name] (str "hello, " name))` | the real user-facing route; RED until the int fix |
-| IQ-N1..N4 | **Value-level qualified-binder negatives** (located reject, span on the user's written form): defn param `(defn f [a/b] …)`, fn param, `let` name, match var-pattern | RED only after wave 2 re-lands the reject — /testing authors them in Stage 1 as the wave-2 acceptance; bare-twin positives = the existing BD-M1 bare-head cells + IQ-P1/P2 themselves (a colliding BARE binder stays legal — the twin that proves the reject fires on qualified spelling, not collision) |
+| IQ-P1 | `(defn f [label] (wrap label))` — colliding defn param + foreign macro, compiles + runs | **BORN-GREEN fence** (`tests/qualified_binder_expansion_0670.rs::colliding_defn_param_with_foreign_macro_compiles_and_runs`) |
+| IQ-P2 | `let` sibling | **BORN-GREEN fence** (`…::colliding_let_binder_with_foreign_macro_compiles_and_runs`) |
+| IQ-P3 | verbatim FIXME repro via workspace stdlib (sanctioned exception) | **BORN-GREEN fence** (`…::greet_name_param_with_str_macro_compiles`) |
+| IQ-N1..N4 | value-level qualified-binder negatives: defn param, fn param, `let` name, match var-pattern (+ bare twin) | **RED** (silent-accept today); flip = W-D2 acceptance |
 
-The mandatory expansion-seam unit test (param stays bare through expansion)
-is /dev(src)'s, named in the FIXME.
+The expansion-seam unit tests are /dev(src)'s to author (W5-C1 item 1
+above; enumerated so nothing falls through the deferral — METHOD §2.2).
 
 ## 5. Track D — frontend: standing matrices (0676), BD-A flips, 0682 cells
 
@@ -444,6 +516,27 @@ duplicating).
 BD-A3's probe-first discipline stands (silent-accept vs late-incidental
 determines the pin's class); the type-params any-case cell rides the probe.
 
+**M2 type-param case ruling (/qa disposition item 3, 2026-07-20 —
+SPEC-MANDATED REJECT, ruled from spec text, no user question needed).**
+The W1 probe found `(deftype (Box A) …)` — an UPPERCASE type param —
+silently accepted (`build_type_head` params loop, `ast_builder.rs:607-613`,
+takes any symbol, any case). Spec §2.2.2 is decisive: *"Type parameters
+MUST be lowercase symbols"*, with the EBNF `type_param = SYMBOL
+(* lowercase *)`; §2.4.2 gives the semantic ground (lowercase = type
+variable; an uppercase symbol is a named-type reference, which is not a
+parameter binder). The silent accept is therefore a `class=silent-accept`
+defect against a spec MUST — the same audit-R1 Done criterion the user
+accepted at Phase 1 ("both `build_type_head` arms enforce the same case
+rule") already covers it. New standing M2 rows:
+
+| Head parser | type-param uppercase reject |
+|---|---|
+| `build_type_head` (deftype) | **M2-TP1: RED cell required** — `(deftype (Box A) …)` MUST be a located reject; /testing authors it in a **W-D1 rider** (`class=silent-accept locus=…build_type_head params loop`) |
+| `parse_trait_head_shape` (deftrait) | **M2-TP2: probe-first twin** — §2.2.3 uses the same `type_param` production; probe `(deftrait (Functor F) …)`, pin per outcome in the same rider (green fence if already rejected, RED sibling if silently accepted) |
+
+The fix rides the W-D1 case-mirror change-set (same wave as the BD-A3
+list-arm name-case fix); the deftrait twin is the P7-mirror pressure.
+
 Flips: the BD-A ×6 REDs + deftype-ctor-trailing ×1 flip with the
 /dev(frontend) one-seam change-set (route the four positions through
 `build_one_expr_at` + mirror the trailing rejection + mirror the case
@@ -457,21 +550,26 @@ Ruling: `:` is a `^`-style reader macro — whitespace between `:` and its
 form ALLOWED (`: Int` ≡ `:Int`); the bound form MUST be a type expression;
 `:foo/` ERRORS; bare `foo/` ERRORS anywhere; bare `/` (division) stands.
 
-| Row | Cell | Polarity |
-|---|---|---|
-| RA-P1 | Space tolerance, param position: `(defn f [: Int x] :Int x)` ≡ the no-space spelling — one test, both spellings, same result | POS (RED if the reader currently rejects the spaced form) |
-| RA-P2 | Space tolerance, expression position: `(let [x 1] : Int x)` ≡ `:Int x`; include a list-form type `: (Fn [Int] Int)` cell | POS |
-| RA-N1 | `:foo/` → located error (today: `read_qualified_tail` silently degrades to `:foo` — `class=silent-accept` until fixed) | NEG, RED |
-| RA-N2 | `:a.b/` → located error (the dotted-loop swallow mirror; the S87 F5 consolidation removes the second swallow site) | NEG, RED |
-| RA-N3 | bare `foo/` in value position → located error; sibling cell in operand position | NEG, RED ×2 |
-| RA-N4 | bare `/` division GREEN fence: `(/ 6 2)` → 3 (Principle 16 stands — the reject must not over-reach) | POS fence, must stay GREEN through the fix |
-| RA-N5 | bound form not a type expression → located error (e.g. `:3 x` / `: "s" x`) — 0589-family adjacency noted: the lowercase-mints-a-type-var defect is a SEPARATE pinned family; this cell asserts only the non-type-form reject | NEG |
-| RA-N6 | `/bar` (empty-module-half) → located error — user confirmation 2026-07-20 ("`/bar` errors too"; symmetric reading of the dangling-qualifier ruling, scribe follow-up 0686). Value + operand position twins, same pattern as RA-N3; RA-N4's bare-`/` division fence is the adjacent must-not-over-reach guard (FIXME 0687) | NEG, RED ×2 |
+**As-built polarity (W1 verified, /qa disposition item 2, 2026-07-20)** —
+the corrected polarity is absorbed here; the file is
+`tests/ra_annotation_qualifier_0682.rs`:
 
-Sequencing: cells author QA-first in Stage 1 (RED against today's
-leniency); they flip with the /dev(frontend) Phase-5 change-set; /spec's
-scribe (§1.4.5/§2.4/§8.5) precedes the fix so `// spec:` anchors resolve.
-The "consume_dotted_module_path exists once" structural criterion joins the
+| Row | Cell | As-built polarity (W1) |
+|---|---|---|
+| RA-P1 | Space tolerance, param position: `(defn f [: Int x] :Int x)` ≡ the no-space spelling — one test, both spellings, same result | **BORN-GREEN fence** (already works at HEAD) |
+| RA-P2 | Space tolerance, expression position: `(let [x 1] : Int x)` ≡ `:Int x`; incl. list-form type `: (Fn [Int] Int)` | **BORN-GREEN fence** |
+| RA-N1 | `:foo/` → located error (today: `read_qualified_tail` silently degrades to `:foo` — `class=silent-accept`) | NEG, **RED**; flips W-D1 |
+| RA-N2 | `:a.b/` → located error (the dotted-loop swallow mirror; the S87 F5 consolidation removes the second swallow site) | NEG, **RED**; flips W-D1 |
+| RA-N3 | bare `foo/` in value + operand position → located error | **BORN-GREEN ×2** (already errors located "expected local name after '/'"; fences through W-D1) |
+| RA-N4 | bare `/` division GREEN fence: `(/ 6 2)` → 3 (Principle 16 stands — the reject must not over-reach) | POS fence, must stay GREEN through the fix |
+| RA-N5 | bound form not a type expression → located error (`:3`) — asserts only the non-type-form reject (0589 family separate) | NEG, **RED via incidental-artifact assertion** (`:3` errors today, but only via the incidental "defn has extra forms" from the degraded tokens; the cell asserts that artifact ABSENT + a located reject); flips W-D1 |
+| RA-N6 | `/bar` (empty-module-half) → located error, value + operand twins (user confirmation 2026-07-20; 0686/0687) | NEG, **RED ×2 via incidental-artifact assertion** (`/bar` errors today only as the `/`+`bar` split artifacts — "extra forms" / "undefined variable: /"; the cells assert those ABSENT + the located qualifier reject); flips with W-D1's `read_operator` guard |
+
+Sequencing: cells authored QA-first in Stage 1 (done, W1); the five REDs
+(RA-N1, RA-N2, RA-N5, RA-N6 ×2) flip with the /dev(frontend) W-D1
+change-set; /spec's scribe (§1.4.5/§2.4/§8.5 — landed, incl. the 0686
+`/bar` enumeration) precedes the fix so `// spec:` anchors resolve. The
+"consume_dotted_module_path exists once" structural criterion joins the
 wave's /review check.
 
 ### 5.3 0660 reserved rows
@@ -487,42 +585,68 @@ family. Rows reserved — /qa adds them when the enumeration table exists
   LAST among typecheck deployments and defers with a note if the carrier
   consumes the sprint. Acceptance if it lands: the four type-position
   mirror sites converge (structural grep) + existing mint-family pins
-  (0589/BD-M5 rows, QQ negatives) stay green. NEW ×1 repro-gated probe:
-  the `_hkt` never-error `Named` arms latent-defect suspicion — /testing
-  probes a `_hkt`-reaching program for a silently-wrong `Named` fallback;
-  pin per outcome (the BD-A3 probe-first template).
+  (0589/BD-M5 rows, QQ negatives) stay green.
+  **`_hkt` probe outcome (W1; /qa disposition item 6, recorded):** the
+  never-error `Named` arm suspicion does NOT reproduce e2e — the
+  `form.rs::check_type_expr` pre-walk errors FIRST (`unknown type
+  \`Bogus\``), masking the `_hkt`/`_hkt_impl` `Named` mint from every
+  source-reachable shape. Pinned as a **born-green fence**
+  (`tests/hkt_named_arm_probe.rs::hkt_sig_unknown_named_type_rejected_not_silently_minted`
+  + valid-Functor green control): if the 0590 convergence (or any
+  refactor) removes the pre-walk barrier, the never-error arm surfaces and
+  the fence flips RED. **The fence stands; the latent defect is a
+  UNIT-TIER obligation for the 0590 deployment** — its /design+/dev
+  deployment MUST either retire the never-error `Named` arms in the
+  convergence or land a unit pin exercising them directly (the pre-walk is
+  the only barrier; enumerated here per the deferral discipline so it
+  cannot fall through).
 - Archive-demo de-rot + "in expansion of" finalize-path: /repl-side and
   display-side items — no plan rows beyond the existing demo gates.
 
-## 7. Wave-flip ledger (Phase-4 input)
+## 7. Wave-flip ledger (Phase-4 input; **RE-BASED post-W1 as-built, /qa 2026-07-20**)
 
 | Wave (per SPRINT §Required sequencing) | REDs that flip | Must-hold fences |
 |---|---|---|
 | Carrier wave (types+typecheck+backend+bump, ONE change-set) | F-D2-10 ×4 (re-shaped per CA-1) | CA-2..4 born-green, F-D2-8 declaration gate, F-D2-4, MC-N1 inversion set, CS-1/CS-2, golden lane |
-| Typecheck settlement-consumer drain (before/interleaved) | MC-X4, MC-X4b, MC-X5, PS-SH1 residual (+ §3.5 new ×2) | MC-X4 typed-field twin, MC-G1 fences, standalone twins |
-| Track B consume-contract change-set(s) (behind §1 disposition — now discharged) | BI-G, BI-F, BI-C-off, BI-B-cow ×2, BI-I1 ×2, then F-R1 ×2 (backend `protect_return_value` entry-main seam) + MS-P8 ×2 (backend TCO tail-jump param-flush seam) per their own backend fixes — both adjudicated backend per §2.1, no intrinsics deployment | A/E ×2 + BI-M link fences, H, l_c3 ×2, `vec_lifecycle`, match-cow ON twins, golden |
+| Typecheck settlement-consumer drain (before/interleaved) | MC-X4, MC-X4b, MC-X5, PS-SH1 residual + §3.5 new ×2 (returned + container value-ref) | MC-X4 typed-field twin, MC-G1 fences, standalone twins, §3.5 single-sig value-ref GREEN control |
+| Track B consume-contract change-set(s) (behind §1 disposition — now discharged) | BI-G (+link twin), BI-F, BI-C-off (+link twin), BI-B-cow ×2, BI-I1 ×2, BI-H-heap ×2 (rider, §2), then F-R1 ×2 (backend `protect_return_value` entry-main seam) + MS-P8 ×2 (backend TCO tail-jump param-flush seam) per their own backend fixes — both adjudicated backend per §2.1, no intrinsics deployment | A/E ×2 + A-link fence, H scalar control, l_c3 ×2, `vec_lifecycle`, match-cow ON twins, golden |
 | Track C: 0638 fix | 0638 ×5 (both mode-faces in one change-set) | marshal sustained-repetition guards |
 | Track C: 0604 chokepoint | none (structural gate — census + unit test + sweeps) | twin guards ×2 GREEN |
-| Track C: 0670 int fix (F8 wave 1) | IQ-P1..P3 | repl_persist `name`-param programs stay GREEN |
-| Track D: frontend one-seam + case-mirror | BD-A ×6, deftype-ctor ×1, M1/M2 new cells | M1 GREEN column, structural grep |
-| Track D: 0670 wave 2 (reject re-lands) | IQ-N1..N4 | IQ-P1..P3 stay GREEN (the reject must not re-break the valid program) |
-| Track D: 0682 fix | RA-N1..N6, RA-P1/P2 if RED | RA-N4 division fence |
+| Track C: 0670 int fix (W5-C1; F8 wave 1) | **none e2e — acceptance is the §4.3 expansion-seam UNIT flip** (RED-first fixture defeating the availability skip-guard) | IQ-P1..P3 born-green fences + repl_persist `name`-param programs stay GREEN |
+| Track D: frontend one-seam + case-mirror (W-D1) | BD-A ×6, deftype-ctor ×1, M1/M2 new cells incl. M2-TP1 (uppercase type-param reject, rider) | M1 GREEN column + M1 spot fences, M2-TP2 deftrait twin per probe, structural grep |
+| Track D: 0670 wave 2 (W-D2, reject re-lands; requires C1 committed) | IQ-N1..N4 | IQ-P1..P3 + IQ-N bare twins stay GREEN (the reject must not re-break the valid program) |
+| Track D: 0682 fix (rides W-D1) | RA-N1, RA-N2, RA-N5, RA-N6 ×2 | RA-P1/P2 + RA-N3 ×2 born-green, RA-N4 division fence |
+| Track E: 0590 (if it lands) | none | `_hkt` born-green fence ×2 (§6) + mint-family pins; unit-tier `Named`-arm obligation |
 | Unassigned pending evidence | MS-P7 (§3.6) | — |
 
-## 8. New-cell counts for /testing (Stage-1 battery unless noted)
+## 8. Stage-1 battery — AS BUILT (W1 delivered 2026-07-20; /qa re-base)
 
-| Track | New e2e cells | Of which born-green fences | Re-shapes/upkeep |
-|---|---|---|---|
-| A (carrier/typecheck) | 8 (CA-2 ×1, CA-3 ×3, CA-4 ×1, CS-1 ×1, CS-2 ×1 (or re-point), §3.5 ×2) — CA-3 counts 3 sibling cells | 5 | F-D2-10 ×4 assertion re-shape rides the flip change-set |
-| B (consume family) | 7 (BI-B-cow ×2, BI-M ×3, MS-P8/F-R1 verify-in-place) | 1 (A-link) | BI-I1 ×2 locus update; twin-pairing comments |
-| C (src) | 8 (IQ-P1..P3 ×3, IQ-N1..N4 ×4, 0671 twin ×1); riders ×2 with their change-sets | 0 | — |
-| D (frontend) | ~22 (M1 required ×2 + spot ~6, M2 ×1–2 probe-pinned, RA ×11 incl. the division fence + RA-N6 ×2, spot-fences ×2) | ~8 | structural-grep criteria to /review |
-| E | 1 (repro-gated `_hkt` probe) | per outcome | — |
-| **Total** | **~46** | **~14** | 4 re-shapes + locus updates (BI-I1 ×2 + the F-R1/MS-P8 family lines per §2.1) |
+**Delivered: 45 new tests — 17 RED defect cells + 28 born-green fences.**
+Suite at W1 close: **5033 run / 4985 passed / 48 failed / 1 skipped** —
+the 48 = the 31 S113-close originals (all present, zero drift) + the 17
+intended new REDs; zero regressions, zero born-green false-REDs. RED
+reconciliation was EXACT (31/31); BI-I1 + F-R1/MS-P8 `// defect:` locus
+updates done; corpus check CLEAN (the `/bar` guard breaks no fixture).
+
+Notable polarity deltas from the planned battery (dispositioned §4.3,
+§5.2, §2, §3.5, §6): IQ-P1..P3 born-green (not RED — 0670 e2e
+non-reproduction; C1 acceptance moved to the unit tier); RA-N3/P1/P2
+born-green, RA-N5/N6 RED via incidental-artifact assertions; the BI-T heap
+green twin replaced by the scalar control; PS-SH1 = +2 positions + control;
+the `_hkt` probe pinned born-green.
+
+**Outstanding /testing riders (post-Stage-1, small):**
+
+| Rider | Cells | Wave |
+|---|---|---|
+| M2 type-param case (§5.1 ruling) | M2-TP1 RED ×1 (`(deftype (Box A) …)` located reject) + M2-TP2 deftrait probe/pin ×1 | with/before W-D1 (W6) |
+| BI-H-heap (§2) | ×2 RED (bare single match forwarding a fresh heap vec: inline + fn-return) | pre-W4 rider |
+| 0671 asking-module twin, riders 0674/0675 | per §4.1 | with their Track-C change-sets |
 
 Unit-tier (/dev, enumerated so nothing falls through the deferral): §3.4
-items 1–5 (carrier + escape-fact), §4.2 item 4 (0604 chokepoint), 0670
-expansion-seam test, per-fix unit tests per METHOD §2.2 throughout.
+items 1–5 (carrier + escape-fact), §4.2 item 4 (0604 chokepoint), the
+0670 expansion-seam tests (**now W5-C1's acceptance**, §4.3), the 0590
+`Named`-arm obligation (§6), per-fix unit tests per METHOD §2.2 throughout.
 
 ## 9. Traceability
 
@@ -536,8 +660,45 @@ expansion-seam test, per-fix unit tests per METHOD §2.2 throughout.
   expected end-state = the 31-RED ledger drained except explicit carries
   (MS-P7 if evidence arrives late; anything Phase 4 defers with rationale).
 
+## 10. W1 findings disposition record (Phase 5 post-W1, /qa, 2026-07-20)
+
+The six /testing findings (SPRINT.md §Notes, W1 DELIVERED entry), each
+dispositioned in place above — this section is the index:
+
+1. **0670 e2e non-reproduction** → §4.3 re-base. **C1 ships as designed**;
+   the architectural fix stands (scope-blind walk = the wrong mechanism;
+   the availability skip-guard is a table-state-dependent suppressor, the
+   0604-heisenbug class, not a fix). W5-C1 acceptance = the RED-first
+   expansion-seam UNIT flip + IQ-P/repl_persist fences + shared
+   binder-predicate home; W6-W-D2 acceptance = IQ-N1..N4 flip with IQ-P +
+   bare twins green; C1-before-W-D2 gate unchanged. Escalation clause
+   recorded (§4.3) if the unit fixture cannot defeat the suppressor.
+2. **RA polarity** → §5.2 absorbed (RA-N3/N4/P1/P2 born-green; RA-N1/N2
+   RED; RA-N5/N6 RED via incidental-artifact assertions; 5 REDs flip
+   W-D1).
+3. **BD-A3 uppercase type param** → §5.1 RULED spec-mandated (spec §2.2.2
+   "Type parameters MUST be lowercase symbols" + §2.4.2; audit R1 Done
+   criterion). M2-TP1 RED + M2-TP2 deftrait probe twin, /testing W-D1
+   rider. No user question — the spec text is decisive.
+4. **BI-T cell-H** → §2 scalar control substitution ACCEPTED;
+   heap-forward-through-match broken wholesale; NEW row BI-H-heap ×2 RED
+   (inline face was unaccounted) as a pre-W4 rider.
+5. **PS-SH1** → §3.5 matrix-completion shape ACCEPTED (+2 positions +
+   single-sig control); counts updated.
+6. **0590 `_hkt`** → §6 recorded: e2e mask = `form.rs::check_type_expr`
+   pre-walk; born-green fence stands; `Named`-arm latent defect is an
+   enumerated unit-tier obligation on the 0590 deployment.
+
+Ledger (§7) and counts (§8) re-based to the as-built battery: 45 tests,
+17 RED + 28 born-green; suite 5033/4985/48/1.
+
 ## Next skills
 
+- `/testing` — two small riders (§8): M2-TP1/TP2 (with/before W-D1) and
+  BI-H-heap ×2 (pre-W4).
+- `/dev`(src, W5-C1) — the expansion-seam unit tests are the wave's
+  acceptance (§4.3), authored RED-first; escalate to /qa per the §4.3
+  clause if the suppressor cannot be defeated in a fixture.
 - `/spec` — 0682 ruling scribe (queued in the serial order; before the
   Track-D 0682 fix so anchors resolve).
 - `/design`(typecheck) — carrier doc §3–§5 elaboration; §3.4 unit items

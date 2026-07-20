@@ -5,13 +5,25 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{Scheme, Symbol, TypeId, free_vars};
+use cranelisp_types::{Scheme, Span, Symbol, TypeId, free_vars};
 
 /// A stack of lexical scope frames. Each frame maps names to type schemes.
 /// Lookup walks from the top (innermost) to bottom (outermost).
+///
+/// **Binder-identity provenance (S114 carrier flip, `VarRef::Local`).** A
+/// parallel `frame_spans` records the span of the **binding form** that
+/// introduced each frame (the `let`/`fn`/`defn`/match-arm node — every binder
+/// in one frame shares that form's span, the honest grain since per-binder
+/// spans do not exist on the AST for params; `design/arch/typed-resolution-carrier.md`
+/// §2(a)). `binding_form_span(name)` reads it so `record_reference_target` can
+/// stamp `VarRef::Local { binder, binding_span }` for a local reference. The
+/// base (module) frame carries [`Span::SYNTHETIC`] — it never sources a
+/// `VarRef::Local` (module-level defs resolve via the table → `Global`).
 #[derive(Debug, Clone)]
 pub struct ScopeStack {
     frames: Vec<HashMap<Symbol, Scheme>>,
+    /// Parallel to `frames`: the binding-form span each frame was pushed with.
+    frame_spans: Vec<Span>,
 }
 
 impl ScopeStack {
@@ -19,12 +31,17 @@ impl ScopeStack {
     pub fn new() -> Self {
         ScopeStack {
             frames: vec![HashMap::new()],
+            frame_spans: vec![Span::SYNTHETIC],
         }
     }
 
-    /// Push a new empty scope frame.
-    pub fn push_scope(&mut self) {
+    /// Push a new empty scope frame introduced by the binding form at
+    /// `binding_span` (the `let`/`fn`/`defn`/match-arm node). Every binder bound
+    /// into this frame shares that span as its `VarRef::Local` binding-form
+    /// provenance.
+    pub fn push_scope(&mut self, binding_span: Span) {
         self.frames.push(HashMap::new());
+        self.frame_spans.push(binding_span);
     }
 
     /// Pop the topmost scope frame.
@@ -35,6 +52,15 @@ impl ScopeStack {
             "invariant: cannot pop the base scope frame"
         );
         self.frames.pop();
+        self.frame_spans.pop();
+    }
+
+    /// The binding-FORM span of the frame in which `name` first resolves
+    /// (innermost-first), for `VarRef::Local { binding_span }`. `None` if `name`
+    /// is unbound in any frame. Reuses [`Self::lookup_frame`]'s index so the
+    /// span read agrees with the scheme lookup.
+    pub fn binding_form_span(&self, name: &str) -> Option<Span> {
+        self.lookup_frame(name).map(|idx| self.frame_spans[idx])
     }
 
     /// Bind a name in the current (topmost) scope frame.

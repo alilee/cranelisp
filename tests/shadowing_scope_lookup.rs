@@ -188,3 +188,88 @@ fn let_shadowed_multi_sig_base_value_ref_resolves_to_local_not_overload() {
         out.status.code()
     );
 }
+
+// PS-SH1 completion NEW #1 (s114-test-plan §3.5) — the multi-sig-base value-ref
+// RETURNED position (distinct from the HOF-arg position above). A `let` shadows a
+// multi-sig base `h` with a local closure and RETURNS the shadowed name as a value;
+// the caller then applies it. The value-ref MUST resolve to the LOCAL closure
+// `(fn [y] 100)` → `((g) 5)` = 100. GREEN twins: the multi-sig CALL cell
+// (`let_shadowed_multi_sig_base_call_resolves_to_local_not_overload`, flipped S113)
+// and the single-sig value-ref control below. Flips with the Track-A typecheck
+// drain. RED today (resolves to the module overload base → error).
+// spec: spec/05-definitions.md §5.1.2 + spec/04-expressions.md §4.6 — a let binding
+// shadows a multi-sig base in VALUE position; a returned value-ref sees the local.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck value-ref of a let-shadowed multi-sig base (returned position) resolves to the module overload base, not the local binding found=S114 owner=/dev
+#[test]
+fn let_shadowed_multi_sig_base_value_ref_returned_resolves_to_local_not_overload() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h ([x] x) ([a b] a))\n\
+             (defn g [] (let [h (fn [y] 100)] h))\n\
+             (defn main [] (Pure ((g) 5)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.status.code() == Some(100) && !c.contains("cannot be used as a value"),
+        "a RETURNED value-ref of a let-shadowed multi-sig base `h` MUST resolve to \
+         the LOCAL closure `(fn [y] 100)` (`((g) 5)` = 100), NOT the module overload \
+         base ('cannot be used as a value'); got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// PS-SH1 completion NEW #2 (s114-test-plan §3.5) — the multi-sig-base value-ref
+// STORED-IN-CONTAINER position (a third value-ref position: the shadowed name is
+// placed in a vec, projected out, then applied). MUST resolve to the LOCAL closure
+// → `((vec-get (g) 0) 5)` = 100. Same seam as NEW #1, different value-ref position
+// (the matrix pressures ONE codepath — a per-position fix that greens one but not
+// the sibling names a divergent resolver). Flips with the Track-A drain. RED today.
+// spec: spec/05-definitions.md §5.1.2 + spec/04-expressions.md §4.6 — a let binding
+// shadows a multi-sig base placed in a container in VALUE position.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck value-ref of a let-shadowed multi-sig base (container-store position) resolves to the module overload base, not the local binding found=S114 owner=/dev
+#[test]
+fn let_shadowed_multi_sig_base_value_ref_in_container_resolves_to_local_not_overload() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h ([x] x) ([a b] a))\n\
+             (defn g [] (let [h (fn [y] 100)] [h]))\n\
+             (defn main [] (Pure ((vec-get (g) 0) 5)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.status.code() == Some(100) && !c.contains("cannot be used as a value"),
+        "a CONTAINER-STORED value-ref of a let-shadowed multi-sig base `h` MUST \
+         resolve to the LOCAL closure `(fn [y] 100)` (`((vec-get (g) 0) 5)` = 100), \
+         NOT the module overload base; got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// PS-SH1 single-sig value-ref GREEN control (the uniform twin for the multi-sig
+// value-ref REDs above): a let-shadowed SINGLE-sig defn `h`, value-ref passed to a
+// HOF, resolves to the local closure → 100. Single-sig value-refs work in every
+// position; only the multi-sig OVERLOAD BASE bypasses the local binding. This is
+// the parallel-shape green twin proving the bug is the overload gate, not value-ref
+// resolution generally. GREEN today, must stay green.
+// spec: spec/04-expressions.md §4.6 — a let binding shadows a single-sig defn in
+// VALUE position; the value-ref sees the local binding.
+#[test]
+fn let_shadowed_single_sig_defn_value_ref_hof_resolves_to_local() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn h [x] (add-i64 x 1))\n\
+             (defn use-hof [f] (f 5))\n\
+             (defn g [] (let [h (fn [y] 100)] (use-hof h)))\n\
+             (defn main [] (Pure (g)))\n",
+        )
+        .output()
+        .assert_exit(100);
+}

@@ -4,8 +4,8 @@
 //! 10-40 lines, independently testable. Addresses audit HIGH-1 (monolithic infer_expr).
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, Expr, JitSymbol, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
-    Type, TypeExpr,
+    ApplyRef, CranelispError, Expr, JitSymbol, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span,
+    Symbol, Type, TypeExpr, VarRef,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -43,7 +43,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 args,
                 span,
                 ..
-            } => self.infer_apply(state, callee, args, *span),
+            } => {
+                let ty = self.infer_apply(state, callee, args, *span)?;
+                // Apply-side totality (S114 carrier flip, design §2.2): EVERY
+                // checked `Apply` records a typed dispatch verdict. A dispatch
+                // seam inside `infer_apply` (trait-method / sig-dispatch /
+                // builtin / auto-curry) already recorded `ApplyRef::Dispatch`;
+                // stamp the POSITIVE `ApplyRef::ViaCallee` for every OTHER
+                // checked Apply (the identity rides the callee expression).
+                // `or_insert` never clobbers a Dispatch; a later-pass dispatch
+                // selection (`record_dispatch_target` in mono_collect /
+                // monomorphise / register) `insert`s and overwrites this
+                // ViaCallee, so the final verdict is correct regardless of the
+                // pass that resolves the dispatch.
+                state
+                    .method_resolutions
+                    .apply_refs
+                    .entry(*span)
+                    .or_insert(ApplyRef::ViaCallee);
+                Ok(ty)
+            }
             Expr::Match {
                 scrutinee,
                 arms,
@@ -354,7 +373,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // name goes through the shared bare/qualified recorder (which also owns
         // the local-shadow gate + the self-recursion carve-out, leg 2).
         if let Some(fq) = self.resolve_dotted_member_fq(state, name) {
-            state.method_resolutions.resolved_targets.insert(span, fq);
+            // A dotted `Type.member` reference is a table reference — its typed
+            // verdict is `VarRef::Global` with the canonical member storage FQ.
+            state
+                .method_resolutions
+                .var_refs
+                .insert(span, VarRef::Global(fq));
         } else {
             self.record_reference_target(state, name, span);
         }
@@ -374,7 +398,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        self.push_scope(state);
+        // Binder provenance: the `let` node span is the binding-form span every
+        // `let`-bound name shares (S114 `VarRef::Local`).
+        self.push_scope(state, span);
 
         for (name, binding_expr) in bindings {
             let binding_ty = self.infer_expr(state, binding_expr)?;
@@ -410,7 +436,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        self.push_scope(state);
+        // Binder provenance: the `ParBind` node span (S114 `VarRef::Local`).
+        self.push_scope(state, span);
 
         for (name, binding_expr) in bindings {
             // Each binding value is an `IO aᵢ` action. Unify against `IO ?aᵢ`
@@ -511,7 +538,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        self.push_scope(state);
+        // Binder provenance: the lambda node span every param shares (S114
+        // `VarRef::Local` — per-param spans do not exist on the AST).
+        self.push_scope(state, span);
 
         // SHARE the enclosing definition's written-var scope (spec §3.3.1
         // co-reference [S109 W6.3]): a nested `fn`'s `:a` CO-REFERS to the
@@ -1086,7 +1115,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Called after a function body is fully checked and all substitutions are
     /// established. Walks the expression tree, finds Apply nodes whose callee is
     /// a known trait method but has no entry in method_resolutions, and resolves them.
-    pub(crate) fn resolve_deferred_trait_calls(&self, state: &mut CheckState, expr: &Expr) {
+    ///
+    /// **F-D2-10 (FIXME 0672) — the settlement re-attempt propagates the no-impl
+    /// error (S114).** A NULLARY return-type-dispatched method (`(zed)` with
+    /// `Self` in return position) defers at `infer_apply` because its return type
+    /// is still a `Var` until a later annotation (`:Widget (zed)`) or call context
+    /// pins it. By this pass the return type is SETTLED (P26 — derive from settled
+    /// state), so `try_resolve_trait_method`'s nullary branch reaches
+    /// `has_impl_in_home` with the concrete return type — and if there is NO impl,
+    /// returns the located "no impl of trait X for type Y" error naming the owning
+    /// trait. That `Err` is now PROPAGATED (the pre-S114 `if let Ok(Some(..))`
+    /// SWALLOWED it, leaking the unresolved Apply to codegen as `undefined
+    /// function` — the wrong phase; `design/typecheck/typed-resolution-carrier.md`
+    /// §5). This makes the nullary case uniform with the unary sibling (F-D2-7),
+    /// which already propagates from `infer_apply`. `Ok(None)` (genuinely still
+    /// deferred — a non-concrete return type, dispatched elsewhere) stays a skip.
+    pub(crate) fn resolve_deferred_trait_calls(
+        &self,
+        state: &mut CheckState,
+        expr: &Expr,
+    ) -> Result<(), CranelispError> {
         // Per-node action: try to resolve an as-yet-unresolved trait-method Apply.
         if let Expr::Apply { callee, args, span, .. } = expr
             && !state.method_resolutions.resolved_calls.contains_key(span)
@@ -1102,18 +1150,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         .unwrap_or_else(|| Type::Var(0))
                 })
                 .collect();
-            if let Ok(Some(resolution)) =
-                self.try_resolve_trait_method(state, name, &resolved_args, *span)
+            // Propagate the located no-impl error (F-D2-10); skip on `Ok(None)`.
+            if let Some(resolution) =
+                self.try_resolve_trait_method(state, name, &resolved_args, *span)?
             {
                 // S110 0583 leg 1 (deferred dispatch): carrier at the Apply span.
                 self.record_dispatch_target(state, *span, &resolution);
                 state.method_resolutions.resolved_calls.insert(*span, resolution);
             }
         }
-        // Recurse into children via the shared enumeration helper.
+        // Recurse into children via the shared enumeration helper, propagating the
+        // first child error (the F-D2-10 no-impl reject).
+        let mut first_err: Option<CranelispError> = None;
         crate::program::for_each_child_expr(expr, |child| {
-            self.resolve_deferred_trait_calls(state, child)
+            if first_err.is_none()
+                && let Err(e) = self.resolve_deferred_trait_calls(state, child)
+            {
+                first_err = Some(e);
+            }
         });
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Post-inference pass: resolve trait methods used in **value position**
@@ -1220,7 +1279,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut has_wildcard = false;
 
         for arm in arms {
-            self.push_scope(state);
+            // Binder provenance: the match-arm node span every var-pattern
+            // binder in this arm shares (S114 `VarRef::Local`).
+            self.push_scope(state, arm.span);
 
             match &arm.pattern {
                 Pattern::Constructor {

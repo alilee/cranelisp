@@ -143,7 +143,7 @@ fn adt_vec_drop_glue_concrete_args_axis_link_r1() {
 // as the canonical guard; the module-axis COLLISION itself is guarded on its
 // corruption face by `safety_oracle_lane.rs` (MS-P4).
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
-// defect: class=rc-miscount locus=entry-main IO-teardown seam found=S111 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value — entry-main IO-return over-inc (0688 verdict a) found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_module_axis_leak_r2() {
     let out = Cranelisp::new()
@@ -208,7 +208,7 @@ fn adt_vec_drop_glue_module_axis_leak_r2() {
 // per-test leak fix. (`chaining_toggle_off_allocates_intermediate` is separately
 // RED for the reuse-token differential, not this residual.)
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
-// defect: class=rc-miscount locus=entry-main IO-teardown seam found=S111 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value — entry-main IO-return over-inc (0688 verdict a) found=S111 owner=/dev
 #[test]
 fn entry_main_heap_let_teardown_balances_r2() {
     let out = Cranelisp::new()

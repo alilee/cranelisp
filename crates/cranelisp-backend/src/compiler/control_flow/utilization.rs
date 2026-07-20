@@ -538,9 +538,17 @@ mod tests {
     }
     fn apply_var_inner(callee: &str, carrier: Option<FQSymbol>, ret: cranelisp_types::ConcreteType) -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolved_target: carrier,
+                // S114 flip: a carrier present ⇒ the table-resolved verdict (the
+                // fp1 self-call carrier shape); absent ⇒ a scope-stack local.
+                resolution: match carrier {
+                    Some(fq) => cranelisp_types::VarRef::Global(fq),
+                    None => cranelisp_types::VarRef::Local {
+                        binder: Symbol::from(callee),
+                        binding_span: Span::SYNTHETIC,
+                    },
+                },
                 name: Symbol::from(callee),
                 span: Span::new(0, 0),
                 resolved_call: None,

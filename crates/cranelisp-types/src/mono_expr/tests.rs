@@ -1,6 +1,12 @@
 use super::*;
 use crate::{MatchArm, ModuleFullPath, Type, TypeExpr, TypeName, TypeRef};
+use std::collections::HashMap;
 
+/// NOTE: `Span::new(0, 0)` == [`Span::SYNTHETIC`]. Tests that exercise
+/// TYPE-side behaviour (concreteness, erasure) deliberately use this synthetic
+/// span so their `Var`/`Apply` nodes take the all-local carve-out and need no
+/// sidecar entries; tests that exercise the RESOLUTION gate use real spans and
+/// explicit typed-map entries.
 fn span() -> Span {
     Span::new(0, 0)
 }
@@ -11,6 +17,27 @@ fn int_ty() -> Option<Box<Type>> {
 
 fn int_lit(v: i64) -> Expr {
     Expr::IntLit { value: v, span: span(), inferred_type: int_ty() }
+}
+
+fn no_pc() -> HashMap<Span, FQSymbol> {
+    HashMap::new()
+}
+
+fn no_vr() -> HashMap<Span, VarRef> {
+    HashMap::new()
+}
+
+fn no_ar() -> HashMap<Span, ApplyRef> {
+    HashMap::new()
+}
+
+fn typed_var(name: &str, sp: Span, ty: Type) -> Expr {
+    Expr::Var {
+        name: Symbol::from(name),
+        span: sp,
+        resolved_call: None,
+        inferred_type: Some(Box::new(ty)),
+    }
 }
 
 // S109 W1.2 §10.2 (BU-3, population→transport seam): a `Pattern::Constructor`
@@ -26,15 +53,11 @@ fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
         module: ModuleFullPath::from("m"),
         symbol: Symbol::from("Maybe.Some"),
     };
-    let scrut = Expr::Var {
-        name: Symbol::from("s"),
-        span: span(),
-        resolved_call: None,
-        inferred_type: Some(Box::new(Type::ADT(
-            FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Maybe")),
-            vec![],
-        ))),
-    };
+    let scrut = typed_var(
+        "s",
+        span(),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Maybe")), vec![]),
+    );
     let match_expr = Expr::Match {
         scrutinee: Box::new(scrut),
         arms: vec![
@@ -57,11 +80,11 @@ fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
         compiler_generated: false,
         inferred_type: int_ty(),
     };
-    let mut pc = std::collections::HashMap::new();
+    let mut pc = no_pc();
     pc.insert(pat_span, fq.clone());
 
     let MonoExpr::Match { arms, .. } =
-        MonoExpr::from_expr(&match_expr, &pc, &std::collections::HashMap::new()).expect("concrete")
+        MonoExpr::from_expr(&match_expr, &pc, &no_vr(), &no_ar()).expect("concrete")
     else {
         panic!("expected a Match node");
     };
@@ -75,20 +98,18 @@ fn match_arm_carries_resolved_ctor_from_sidecar_keyed_by_pattern_span() {
     // Empty sidecar ⇒ the ctor arm is None (the population gap the backend
     // detects — it is never silently filled by the transport layer).
     let MonoExpr::Match { arms: arms2, .. } =
-        MonoExpr::from_expr(&match_expr, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete")
+        MonoExpr::from_expr(&match_expr, &no_pc(), &no_vr(), &no_ar()).expect("concrete")
     else {
         panic!("expected a Match node");
     };
     assert_eq!(arms2[0].resolved_ctor, None, "an empty sidecar leaves the ctor arm None");
 }
 
-// S110 0583 (the resolved_target transport seam): `from_expr` populates
-// `MonoExpr::{Var,Apply}.resolved_target` from the `resolved_targets` sidecar
-// keyed by the referencing node's OWN span; an empty sidecar leaves it `None`
-// (the carrier-miss precondition the backend keys on, W1). Lambda params /
-// locals are not in the sidecar and stay `None`.
+// S114 carrier flip (typed-resolution-carrier.md §4): `from_expr` populates the
+// NON-OPTIONAL `MonoExpr::Var.resolution` / `MonoExpr::Apply.dispatch` from the
+// typed `var_refs`/`apply_refs` sidecars keyed by the referencing node's span.
 #[test]
-fn var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span() {
+fn var_and_apply_carry_typed_verdicts_from_sidecars_keyed_by_span() {
     use crate::FQSymbol;
     let var_span = Span::new(10, 20);
     let apply_span = Span::new(30, 40);
@@ -96,14 +117,9 @@ fn var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span() {
     let fq_dispatch =
         FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("g$Int") };
 
-    // `(f)` — the callee Var carries its storage FQ; the Apply carries the
-    // dispatch-leg FQ.
-    let callee = Expr::Var {
-        name: Symbol::from("f"),
-        span: var_span,
-        resolved_call: None,
-        inferred_type: Some(Box::new(Type::Fn(vec![], Box::new(Type::Int)))),
-    };
+    // `(f)` — the callee Var carries its Global verdict; the Apply carries the
+    // dispatch-leg verdict.
+    let callee = typed_var("f", var_span, Type::Fn(vec![], Box::new(Type::Int)));
     let apply = Expr::Apply {
         callee: Box::new(callee),
         args: vec![],
@@ -111,41 +127,205 @@ fn var_and_apply_carry_resolved_target_from_sidecar_keyed_by_span() {
         resolved_call: None,
         inferred_type: int_ty(),
     };
-    let mut rt = std::collections::HashMap::new();
-    rt.insert(var_span, fq_fn.clone());
-    rt.insert(apply_span, fq_dispatch.clone());
+    let mut vr = no_vr();
+    vr.insert(var_span, VarRef::Global(fq_fn.clone()));
+    let mut ar = no_ar();
+    ar.insert(apply_span, ApplyRef::Dispatch(fq_dispatch.clone()));
 
-    let MonoExpr::Apply { callee, resolved_target, .. } =
-        MonoExpr::from_expr(&apply, &std::collections::HashMap::new(), &rt).expect("concrete")
+    let MonoExpr::Apply { callee, dispatch, .. } =
+        MonoExpr::from_expr(&apply, &no_pc(), &vr, &ar).expect("concrete")
     else {
         panic!("expected an Apply node");
     };
-    assert_eq!(resolved_target.as_ref(), Some(&fq_dispatch), "Apply carries the dispatch-leg FQ");
-    let MonoExpr::Var { resolved_target: v_rt, .. } = *callee else {
+    assert_eq!(dispatch, ApplyRef::Dispatch(fq_dispatch), "Apply carries the dispatch-leg verdict");
+    let MonoExpr::Var { resolution, .. } = *callee else {
         panic!("expected a Var callee");
     };
-    assert_eq!(v_rt.as_ref(), Some(&fq_fn), "the callee Var carries its storage FQ");
+    assert_eq!(resolution, VarRef::Global(fq_fn), "the callee Var carries its Global verdict");
+}
 
-    // Empty sidecar ⇒ both carriers None (the carrier-miss the backend detects;
-    // never silently filled by the transport layer).
-    let MonoExpr::Apply { callee, resolved_target, .. } =
-        MonoExpr::from_expr(&apply, &std::collections::HashMap::new(), &std::collections::HashMap::new())
-            .expect("concrete")
+// The view-build gate (typed-resolution-carrier.md §3.2): a real-span `Var`
+// with no `var_refs` entry is the LOCATED `Unresolved` typecheck-phase error —
+// never a silent local, never a codegen-time miss.
+#[test]
+fn from_expr_real_span_var_miss_errors_unresolved() {
+    let var_span = Span::new(7, 13);
+    let e = typed_var("mystery", var_span, Type::Int);
+    assert_eq!(
+        MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).unwrap_err(),
+        ViewBuildError::Unresolved { span: var_span, name: Symbol::from("mystery") }
+    );
+}
+
+// The Apply sibling: a real-span `Apply` with no `apply_refs` entry errors
+// `Unresolved` at the APPLY span, naming the callee head.
+#[test]
+fn from_expr_real_span_apply_miss_errors_unresolved_naming_callee_head() {
+    let var_span = Span::new(7, 13);
+    let apply_span = Span::new(5, 20);
+    let callee = typed_var("f", var_span, Type::Fn(vec![], Box::new(Type::Int)));
+    let apply = Expr::Apply {
+        callee: Box::new(callee),
+        args: vec![],
+        span: apply_span,
+        resolved_call: None,
+        inferred_type: int_ty(),
+    };
+    // The callee Var HAS a verdict; only the Apply's is missing — isolates the
+    // Apply-side gate.
+    let mut vr = no_vr();
+    vr.insert(
+        var_span,
+        VarRef::Global(FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("f") }),
+    );
+    assert_eq!(
+        MonoExpr::from_expr(&apply, &no_pc(), &vr, &no_ar()).unwrap_err(),
+        ViewBuildError::Unresolved { span: apply_span, name: Symbol::from("f") }
+    );
+}
+
+// Gate precedence: a node that is BOTH unresolved and non-concrete reports
+// `Unresolved` — were `NotConcrete` to win, the caller's lenient fallback
+// would re-walk the same miss and panic (a seam assert where a located error
+// was designed). The verdict is read before the node type.
+#[test]
+fn unresolved_gate_takes_precedence_over_not_concrete_at_the_same_node() {
+    let var_span = Span::new(3, 9);
+    let e = typed_var("x", var_span, Type::Var(7));
+    assert_eq!(
+        MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).unwrap_err(),
+        ViewBuildError::Unresolved { span: var_span, name: Symbol::from("x") },
+        "resolution gate fires before the concreteness gate"
+    );
+}
+
+// The SYNTHETIC carve-out (typed-resolution-carrier.md §3.4): synthetic nodes
+// are structurally outside span-keyed transport, so a Span::SYNTHETIC miss
+// takes the all-local verdict in BOTH walks — Local for a Var, ViaCallee for
+// an Apply.
+#[test]
+fn synthetic_span_miss_takes_all_local_verdict() {
+    let syn = Span::SYNTHETIC;
+    let callee = typed_var("p", syn, Type::Fn(vec![], Box::new(Type::Int)));
+    let apply = Expr::Apply {
+        callee: Box::new(callee),
+        args: vec![],
+        span: syn,
+        resolved_call: None,
+        inferred_type: int_ty(),
+    };
+    let MonoExpr::Apply { callee, dispatch, .. } =
+        MonoExpr::from_expr(&apply, &no_pc(), &no_vr(), &no_ar()).expect("concrete")
     else {
         panic!("expected an Apply node");
     };
-    assert_eq!(resolved_target, None, "empty sidecar leaves the Apply carrier None");
-    assert!(matches!(*callee, MonoExpr::Var { resolved_target: None, .. }));
+    assert_eq!(dispatch, ApplyRef::ViaCallee);
+    let MonoExpr::Var { resolution, .. } = *callee else { panic!("expected Var callee") };
+    assert_eq!(resolution, VarRef::Local { binder: Symbol::from("p"), binding_span: syn });
+}
+
+// The lenient walk's tolerance is for TYPES only: a real-span resolution miss
+// is an in-process producer bug and fires the always-on tier-3 seam assert
+// (safety-invariants.md §2) — never a silently manufactured `Local`.
+#[test]
+#[should_panic(expected = "no VarRef verdict")]
+fn lenient_real_span_var_miss_panics_seam_assert() {
+    let e = typed_var("table-ref", Span::new(3, 12), Type::Int);
+    let _ = MonoExpr::lenient_from_expr(&e, &no_pc(), &no_vr(), &no_ar());
+}
+
+#[test]
+#[should_panic(expected = "no ApplyRef verdict")]
+fn lenient_real_span_apply_miss_panics_seam_assert() {
+    let var_span = Span::new(3, 12);
+    let apply = Expr::Apply {
+        callee: Box::new(typed_var("f", var_span, Type::Fn(vec![], Box::new(Type::Int)))),
+        args: vec![],
+        span: Span::new(1, 20),
+        resolved_call: None,
+        inferred_type: int_ty(),
+    };
+    let mut vr = no_vr();
+    vr.insert(
+        var_span,
+        VarRef::Global(FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("f") }),
+    );
+    let _ = MonoExpr::lenient_from_expr(&apply, &no_pc(), &vr, &no_ar());
+}
+
+// The lenient walk transports the same typed carriers as the strict walk
+// (byte-identical on a fully-concrete, fully-resolved body).
+#[test]
+fn lenient_carries_typed_verdicts_and_matches_strict() {
+    let var_span = Span::new(10, 20);
+    let apply_span = Span::new(5, 25);
+    let fq_fn = FQSymbol { module: ModuleFullPath::from("m"), symbol: Symbol::from("f") };
+    let apply = Expr::Apply {
+        callee: Box::new(typed_var("f", var_span, Type::Fn(vec![], Box::new(Type::Int)))),
+        args: vec![],
+        span: apply_span,
+        resolved_call: None,
+        inferred_type: int_ty(),
+    };
+    let mut vr = no_vr();
+    vr.insert(var_span, VarRef::Global(fq_fn));
+    let mut ar = no_ar();
+    ar.insert(apply_span, ApplyRef::ViaCallee);
+
+    let strict = MonoExpr::from_expr(&apply, &no_pc(), &vr, &ar).expect("concrete");
+    let lenient = MonoExpr::lenient_from_expr(&apply, &no_pc(), &vr, &ar);
+    assert_eq!(
+        format!("{strict:?}"),
+        format!("{lenient:?}"),
+        "lenient is byte-identical to strict on a concrete, resolved body"
+    );
+    let MonoExpr::Apply { dispatch, .. } = lenient else { panic!("expected Apply") };
+    assert_eq!(dispatch, ApplyRef::ViaCallee);
+}
+
+// Absence is unrepresentable (no `#[serde(default)]` on the flipped fields): a
+// persisted `Var` node missing `resolution` is schema-invalid — deserialization
+// FAILS rather than conservatively defaulting (the Option-conflation cannot
+// re-enter through the cache).
+#[test]
+fn var_resolution_field_absence_is_unrepresentable_in_serde() {
+    let node = MonoExpr::Var {
+        name: Symbol::from("x"),
+        span: Span::new(1, 2),
+        resolved_call: None,
+        resolution: VarRef::Local { binder: Symbol::from("x"), binding_span: Span::new(0, 5) },
+        ty: ConcreteType::Int,
+    };
+    let mut v = serde_json::to_value(&node).expect("serialize");
+    // Round-trips intact...
+    let back: MonoExpr = serde_json::from_value(v.clone()).expect("round-trip");
+    let MonoExpr::Var { resolution, .. } = back else { panic!("expected Var") };
+    assert_eq!(
+        resolution,
+        VarRef::Local { binder: Symbol::from("x"), binding_span: Span::new(0, 5) }
+    );
+    // ...and refuses the field's absence.
+    v.as_object_mut()
+        .unwrap()
+        .get_mut("Var")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("resolution");
+    assert!(
+        serde_json::from_value::<MonoExpr>(v).is_err(),
+        "a Var without `resolution` must fail deserialization, not default"
+    );
 }
 
 // S114 FIXME 0685 (design/arch/typed-resolution-carrier.md §3.4): the sanctioned
-// all-local builder for SYNTHETIC synthesis bodies (adt.rs ctor + accessor).
-// No resolution-map parameters; byte-identical to the lenient walk with an
-// empty resolution sidecar (the pre-0685 adt.rs encoding); pattern-ctor
-// identities still transported through the `pattern_ctors` sidecar keyed by
-// the synthetic pattern span.
+// all-local builder for SYNTHETIC synthesis bodies (adt.rs ctor + accessor) —
+// the all-local MODE of the ONE shared lenient walk: every Var takes
+// `VarRef::Local { binding_span: SYNTHETIC }`, every Apply `ViaCallee`;
+// pattern-ctor identities still transported through the `pattern_ctors`
+// sidecar keyed by the synthetic pattern span.
 #[test]
-fn synthetic_local_builder_matches_lenient_and_carries_pattern_ctor() {
+fn synthetic_local_builder_is_all_local_mode_and_carries_pattern_ctor() {
     use crate::{FQSymbol, Pattern, SymbolRef};
     // Accessor-shaped synthesis body: (match self [(Box v) v]) — every node
     // Span::SYNTHETIC, every inferred_type None (the lenient placeholder path).
@@ -166,19 +346,17 @@ fn synthetic_local_builder_matches_lenient_and_carries_pattern_ctor() {
         compiler_generated: true,
         inferred_type: None,
     };
-    let mut pc = std::collections::HashMap::new();
+    let mut pc = no_pc();
     pc.insert(syn, fq_ctor.clone());
 
     let via_synthetic = MonoExpr::synthetic_local_from_expr(&body, &pc);
-    let via_lenient =
-        MonoExpr::lenient_from_expr(&body, &pc, &std::collections::HashMap::new());
+    let via_lenient = MonoExpr::lenient_from_expr(&body, &pc, &no_vr(), &no_ar());
     assert_eq!(
         format!("{via_synthetic:?}"),
         format!("{via_lenient:?}"),
-        "the all-local builder is byte-identical to the lenient walk with an empty \
-         resolution sidecar"
+        "the all-local builder IS the shared lenient walk over an all-synthetic body"
     );
-    let MonoExpr::Match { arms, .. } = via_synthetic else {
+    let MonoExpr::Match { scrutinee, arms, .. } = via_synthetic else {
         panic!("expected a Match node");
     };
     assert_eq!(
@@ -186,22 +364,45 @@ fn synthetic_local_builder_matches_lenient_and_carries_pattern_ctor() {
         Some(&fq_ctor),
         "a synthesis-held ctor identity still rides the pattern_ctors sidecar"
     );
+    // Every Var in the synthesis body takes the POSITIVE all-local verdict.
+    let MonoExpr::Var { resolution, .. } = *scrutinee else { panic!("expected Var scrutinee") };
+    assert_eq!(
+        resolution,
+        VarRef::Local { binder: Symbol::from("self$accessor"), binding_span: syn }
+    );
+    let MonoExpr::Var { resolution: arm_res, .. } = &arms[0].body else {
+        panic!("expected Var arm body")
+    };
+    assert_eq!(
+        *arm_res,
+        VarRef::Local { binder: Symbol::from("v"), binding_span: syn }
+    );
 }
 
-// The always-on tier-3 license assert (safety-invariants.md §2): a real-span
-// node must never reach the all-local builder — it would grant a table
-// reference a silent local verdict.
+// The license bound, face 1: a real-span VAR reaching the all-local builder is
+// refused by the shared walk's seam assert BEFORE the span assert — it can
+// never receive a silent local verdict.
+#[test]
+#[should_panic(expected = "no VarRef verdict")]
+fn synthetic_local_builder_rejects_real_span_var_bodies() {
+    let real = Expr::var(Symbol::from("table-ref"), Span::new(3, 12));
+    let _ = MonoExpr::synthetic_local_from_expr(&real, &no_pc());
+}
+
+// The license bound, face 2: a real-span NON-reference node (nothing for the
+// walk's verdict rule to refuse) still trips the whole-body synthetic-span
+// assert — the license is machine-bounded for every node kind.
 #[test]
 #[should_panic(expected = "synthetic_local_from_expr")]
-fn synthetic_local_builder_rejects_real_span_bodies() {
-    let real = Expr::var(Symbol::from("table-ref"), Span::new(3, 12));
-    let _ = MonoExpr::synthetic_local_from_expr(&real, &std::collections::HashMap::new());
+fn synthetic_local_builder_rejects_real_span_non_reference_bodies() {
+    let real = Expr::IntLit { value: 1, span: Span::new(3, 12), inferred_type: int_ty() };
+    let _ = MonoExpr::synthetic_local_from_expr(&real, &no_pc());
 }
 
 #[test]
 fn concrete_int_lit_round_trips() {
     let e = int_lit(42);
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 42, ref ty, .. } if *ty == ConcreteType::Int));
     assert_eq!(m.ty(), &ConcreteType::Int);
 }
@@ -210,19 +411,20 @@ fn concrete_int_lit_round_trips() {
 fn unannotated_node_fails() {
     // inferred_type == None — representation-undetermined.
     let e = Expr::IntLit { value: 1, span: span(), inferred_type: None };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(0));
+    assert_eq!(
+        MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).unwrap_err(),
+        ViewBuildError::NotConcrete(NotConcrete::Var(0))
+    );
 }
 
 #[test]
 fn residual_var_node_fails_at_that_node() {
     // A concrete `If` whose then-branch carries a residual `Var` — the failure
-    // is reported from that node.
-    let then = Expr::Var {
-        name: Symbol::from("x"),
-        span: span(),
-        resolved_call: None,
-        inferred_type: Some(Box::new(Type::Var(7))),
-    };
+    // is reported from that node. (The Var sits at the synthetic span, taking
+    // the all-local carve-out, so the RESOLUTION gate passes and the
+    // CONCRETENESS gate is what fires — the real-span sibling is
+    // `unresolved_gate_takes_precedence_over_not_concrete_at_the_same_node`.)
+    let then = typed_var("x", span(), Type::Var(7));
     let e = Expr::If {
         cond: Box::new(Expr::BoolLit { value: true, span: span(), inferred_type: Some(Box::new(Type::Bool)) }),
         then_branch: Box::new(then),
@@ -230,7 +432,10 @@ fn residual_var_node_fails_at_that_node() {
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(7));
+    assert_eq!(
+        MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).unwrap_err(),
+        ViewBuildError::NotConcrete(NotConcrete::Var(7))
+    );
 }
 
 #[test]
@@ -243,7 +448,7 @@ fn annotate_is_erased() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     // The result is the inner IntLit, NOT a wrapper node.
     assert!(matches!(m, MonoExpr::IntLit { value: 5, .. }));
 }
@@ -264,7 +469,7 @@ fn nested_annotate_erases_to_inner() {
         span: span(),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&two, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&two, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     assert!(matches!(m, MonoExpr::IntLit { value: 9, .. }));
 }
 
@@ -272,14 +477,7 @@ fn nested_annotate_erases_to_inner() {
 fn lambda_param_type_exprs_are_erased() {
     // (fn [:Int x] x) — the param `:Int` TypeExpr is erased; only the name
     // survives. The lambda's `ty` carries the concrete Fn type.
-    let body = Expr::var(Symbol::from("x"), span());
-    // body must carry a concrete inferred_type for from_expr to succeed.
-    let body = match body {
-        Expr::Var { name, span, resolved_call, .. } => {
-            Expr::Var { name, span, resolved_call, inferred_type: int_ty() }
-        }
-        _ => unreachable!(),
-    };
+    let body = typed_var("x", span(), Type::Int);
     let lam_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
     let e = Expr::Lambda {
         params: vec![(
@@ -290,7 +488,7 @@ fn lambda_param_type_exprs_are_erased() {
         span: span(),
         inferred_type: Some(Box::new(lam_ty)),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     match m {
         MonoExpr::Lambda { params, ty, .. } => {
             assert_eq!(params, vec![Symbol::from("x")]);
@@ -302,13 +500,10 @@ fn lambda_param_type_exprs_are_erased() {
 
 #[test]
 fn apply_carries_resolved_call_and_concrete_args() {
-    // (f 1) where f : Int -> Int and the call carries a SigDispatch resolution.
-    let callee = Expr::Var {
-        name: Symbol::from("f"),
-        span: span(),
-        resolved_call: None,
-        inferred_type: Some(Box::new(Type::Fn(vec![Type::Int], Box::new(Type::Int)))),
-    };
+    // (f 1) where f : Int -> Int and the call carries a BuiltinFn resolution.
+    // Both nodes sit at the synthetic span (all-local carve-out) — the Apply's
+    // `dispatch` takes the ViaCallee verdict; `resolved_call` rides verbatim.
+    let callee = typed_var("f", span(), Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     let rc = ResolvedCall::BuiltinFn { name: Symbol::from("add-i64") };
     let e = Expr::Apply {
         callee: Box::new(callee),
@@ -317,10 +512,11 @@ fn apply_carries_resolved_call_and_concrete_args() {
         resolved_call: Some(Box::new(rc)),
         inferred_type: int_ty(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     match m {
-        MonoExpr::Apply { resolved_call, args, ty, .. } => {
+        MonoExpr::Apply { resolved_call, dispatch, args, ty, .. } => {
             assert!(resolved_call.is_some());
+            assert_eq!(dispatch, ApplyRef::ViaCallee);
             assert_eq!(args.len(), 1);
             assert_eq!(ty, ConcreteType::Int);
         }
@@ -343,7 +539,7 @@ fn concrete_adt_node_round_trips() {
         span: span(),
         inferred_type: Some(Box::new(opt_int)),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     match m {
         MonoExpr::ConstrADT { tag, fields, ty, .. } => {
             assert_eq!(tag, 1);
@@ -378,7 +574,7 @@ fn match_arm_pattern_survives_body_converts() {
         }
         _ => unreachable!(),
     };
-    let m = MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete");
+    let m = MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).expect("concrete");
     match m {
         MonoExpr::Match { arms, ty, .. } => {
             assert_eq!(arms.len(), 1);
@@ -391,18 +587,17 @@ fn match_arm_pattern_survives_body_converts() {
 
 #[test]
 fn deeply_nested_var_in_let_binding_is_caught() {
-    // (let [y <var>] 0) — the binding value carries a residual Var.
-    let bad = Expr::Var {
-        name: Symbol::from("z"),
-        span: span(),
-        resolved_call: None,
-        inferred_type: Some(Box::new(Type::Var(3))),
-    };
+    // (let [y <var>] 0) — the binding value carries a residual Var (at the
+    // synthetic span, so the concreteness gate is the one under test).
+    let bad = typed_var("z", span(), Type::Var(3));
     let e = Expr::Let {
         bindings: vec![(Symbol::from("y"), bad)],
         body: Box::new(int_lit(0)),
         span: span(),
         inferred_type: int_ty(),
     };
-    assert_eq!(MonoExpr::from_expr(&e, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap_err(), NotConcrete::Var(3));
+    assert_eq!(
+        MonoExpr::from_expr(&e, &no_pc(), &no_vr(), &no_ar()).unwrap_err(),
+        ViewBuildError::NotConcrete(NotConcrete::Var(3))
+    );
 }

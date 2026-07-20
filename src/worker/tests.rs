@@ -75,14 +75,21 @@
             // first, lenient fallback) so ctor/macro-clause-style synthetic
             // bodies still build. (`name`/`params`/`span` on the view are not
             // read by codegen — only `body`/`mode_summary`.)
+            // S114 carrier flip (`typed-resolution-carrier.md` §4): `from_expr`
+            // now takes the TOTAL typed `var_refs`/`apply_refs` sidecars. This
+            // fixture's bodies are synthetic (all-local carve-out on
+            // `Span::SYNTHETIC`), so empty maps suffice — the carve-out classifies
+            // every synthetic node as `VarRef::Local`/`ApplyRef::ViaCallee`.
             let body = cranelisp_types::MonoExpr::from_expr(
                 &variant.body,
+                &Default::default(),
                 &Default::default(),
                 &Default::default(),
             )
             .unwrap_or_else(|_| {
                 cranelisp_types::MonoExpr::lenient_from_expr(
                     &variant.body,
+                    &Default::default(),
                     &Default::default(),
                     &Default::default(),
                 )

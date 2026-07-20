@@ -2,24 +2,37 @@ use super::*;
 
 /// FIXME 0653 — the ruled name-scan discipline (the Fix-1 template generalised).
 /// A name-scan mono collector's AST callee NAME is only a TRIGGER; the identity
-/// is the per-span recorded carrier. A callee whose span carries NO
-/// `resolved_targets` entry resolved to a §4.6 LOCAL — a `let`/`fn`/param binding
-/// shadowing a top-level constrained/parametric fn — because
-/// `record_reference_target`'s frame-guarded shadow gate (`is_recursion_self_ref`)
-/// declined to record it. Such a call MUST NOT be minted/dispatched by name-match
-/// (it would silently wrong-value the shadow to the top-level fn). Returns TRUE
-/// when the collector should PROCEED (a real keyed reference), FALSE to SKIP.
+/// is the per-span recorded carrier. A callee `Var` whose recorded verdict is a
+/// §4.6 LOCAL (`VarRef::Local`) resolved to a `let`/`fn`/param binding shadowing
+/// a top-level constrained/parametric fn — because `record_reference_target`'s
+/// frame-guarded shadow gate declined the table reference. Such a call MUST NOT
+/// be minted/dispatched by name-match (it would silently wrong-value the shadow
+/// to the top-level fn). Returns TRUE when the collector should PROCEED (a real
+/// keyed TABLE reference), FALSE to SKIP.
+///
+/// **S114 carrier flip.** The old test was `resolved_targets.contains_key(span)`:
+/// pre-flip the map carried an entry ONLY for a table reference, so
+/// contains-key ⇔ "resolved Global". Post-flip `var_refs` is TOTAL — every local
+/// carries a `VarRef::Local` entry too — so the test discriminates the variant:
+/// `VarRef::Global` is the table reference (incl. the self-recursion carve-out),
+/// `VarRef::Local` is the §4.6 shadow. This preserves the exact pre-flip
+/// behaviour (a local resolved to no entry ⇒ false; a Global carrier ⇒ true).
+/// The consumers guard `Expr::Var` callees, so the span is always a `Var` span
+/// (`var_refs`), never an `Apply` span.
 ///
 /// The ONE shared guard (P7): consumed by `collect_local_parametric_calls`,
 /// `collect_imported_constrained_calls`, `collect_constrained_calls_excluding_self`
-/// (pass-4 top-level collectors, reading `state.method_resolutions.resolved_targets`),
+/// (pass-4 top-level collectors, reading `state.method_resolutions.var_refs`),
 /// and `resolve_inner_constrained_calls` / `monomorphise_inner_parametric_hops`
-/// (mono-recheck epilogue, reading the harvested `resolutions.resolved_targets`).
+/// (mono-recheck epilogue, reading the harvested `resolutions.var_refs`).
 pub(crate) fn callee_has_keyed_carrier(
-    resolved_targets: &HashMap<Span, FQSymbol>,
+    var_refs: &HashMap<Span, cranelisp_types::VarRef>,
     callee_span: Span,
 ) -> bool {
-    resolved_targets.contains_key(&callee_span)
+    matches!(
+        var_refs.get(&callee_span),
+        Some(cranelisp_types::VarRef::Global(_))
+    )
 }
 
 // --- Shared Expr child traversal (the single child-enumeration helper) ---
@@ -254,23 +267,62 @@ pub(super) fn annotate_expr_from_maps(
 /// 18). Synthetic ctor/accessor bodies (`Span::SYNTHETIC`, outside span-keyed
 /// transport) are populated DIRECTLY at their synthesis seams (`adt.rs`), not
 /// here.
+///
+/// **S114 carrier flip — the `ViewBuildError` fork (design §4.3).** The strict
+/// `from_expr` now returns `Result<_, ViewBuildError>`, and the two failure arms
+/// route DIFFERENTLY:
+/// - `NotConcrete` — legitimate TYPE incompleteness (multi-sig `f$Var` variants,
+///   forward-reference result vars) — falls back to `lenient_from_expr` exactly
+///   as pre-flip.
+/// - `Unresolved` — a real-span `Var`/`Apply` with no typed verdict: the
+///   phase-boundary gate the carrier exists for. It MUST NOT be swallowed into
+///   the lenient fallback (the lenient walk would seam-assert on the same miss);
+///   it propagates as a LOCATED typecheck-phase error. This is why the helper's
+///   return widens to `Result<Option<..>, CranelispError>`; callers thread `?`.
 pub(crate) fn build_concrete_codegen_view(
     name: &Symbol,
     variant: &DefnVariant,
     pattern_ctors: &HashMap<Span, cranelisp_types::FQSymbol>,
-    resolved_targets: &HashMap<Span, cranelisp_types::FQSymbol>,
-) -> Option<cranelisp_types::MonoDefnVariant> {
-    let body = match cranelisp_types::MonoExpr::from_expr(&variant.body, pattern_ctors, resolved_targets) {
+    var_refs: &HashMap<Span, cranelisp_types::VarRef>,
+    apply_refs: &HashMap<Span, cranelisp_types::ApplyRef>,
+) -> Result<Option<cranelisp_types::MonoDefnVariant>, CranelispError> {
+    let body = match cranelisp_types::MonoExpr::from_expr(
+        &variant.body,
+        pattern_ctors,
+        var_refs,
+        apply_refs,
+    ) {
         Ok(mono_body) => mono_body,
-        Err(_) => cranelisp_types::MonoExpr::lenient_from_expr(&variant.body, pattern_ctors, resolved_targets),
+        Err(cranelisp_types::ViewBuildError::NotConcrete(_)) => {
+            cranelisp_types::MonoExpr::lenient_from_expr(
+                &variant.body,
+                pattern_ctors,
+                var_refs,
+                apply_refs,
+            )
+        }
+        Err(cranelisp_types::ViewBuildError::Unresolved { span, name: ref_name }) => {
+            // The located typecheck-phase gate error (design §4.2/§4.3): a
+            // reference typecheck could not classify surfaces HERE, never a
+            // codegen-time keyed miss (wrong phase).
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "unresolved reference `{ref_name}` in the codegen view of \
+                     `{name}` — typecheck recorded no local/global verdict for \
+                     this reference (in-process producer bug; \
+                     design/arch/typed-resolution-carrier.md §4.2)"
+                ),
+                location: cranelisp_types::ErrorLocation::from_span(span),
+            });
+        }
     };
-    Some(cranelisp_types::MonoDefnVariant {
+    Ok(Some(cranelisp_types::MonoDefnVariant {
         name: name.clone(),
         params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
         body,
         span: variant.span,
         mode_summary: None,
-    })
+    }))
 }
 
 

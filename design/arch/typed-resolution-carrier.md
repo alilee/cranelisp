@@ -193,6 +193,52 @@ Blast radius (measured, Phase 2): `resolved_target` ×368 across 59 files but
 structurally narrow — producer cranelisp-typecheck, consumer
 cranelisp-backend, **zero refs in `src/`** (boundary confirmed right).
 
+### 4.1 As-landed clarifications (types leg, S114 Phase 5 W2 leg 1 — binding on legs 2/3)
+
+The `cranelisp-types` half of §4 is LANDED (leg 1 of the serial wave; the
+workspace is deliberately non-compiling until the typecheck/backend legs).
+Four contract points the pinned diff left open were resolved at
+implementation; they bind the producer/consumer legs:
+
+1. **Gate precedence — `Unresolved` before `NotConcrete` at the same node.**
+   `from_expr`'s `Var`/`Apply` arms read the resolution verdict BEFORE the
+   node type. Were `NotConcrete` to win on a node that is both unresolved and
+   type-incomplete, `build_concrete_codegen_view`'s fallback would route the
+   body to `lenient_from_expr`, whose seam assert then PANICS on the same
+   miss — a panic where the design demands a located error. Unit-pinned
+   (`unresolved_gate_takes_precedence_over_not_concrete_at_the_same_node`).
+2. **The all-local mode is the `Span::SYNTHETIC` carve-out of the ONE shared
+   walk.** In BOTH walks a node whose span is `Span::SYNTHETIC` and has no
+   map entry takes the all-local verdict (`VarRef::Local { binder,
+   binding_span: SYNTHETIC }` / `ApplyRef::ViaCallee`); a map entry under the
+   SYNTHETIC key still wins (synthesis-transported `pattern_ctors` precedent).
+   Grounds: `Span::SYNTHETIC == Span{0,0}` is ONE shared key — span-keyed
+   transport structurally cannot address individual synthetic nodes (§3.4),
+   and synthetic nodes DO occur inside real-body walks (typecheck
+   `builtins.rs` synthesis, `finalize.rs` fn-value rewrap, `mono_collect`'s
+   SYNTHETIC call-span), so demanding entries for them would demand the
+   impossible. `synthetic_local_from_expr`'s interior therefore stays the
+   empty-map delegation to the shared lenient walk + the whole-body
+   synthetic-span assert — the "all-local MODE" is span-directed, not a mode
+   flag, and there is no second walk. The strict gate error and the lenient
+   seam assert accordingly fire on REAL-span misses exactly as §3.2/§3.5
+   scope them. **Leg-2 validation obligation**: confirm no real-body
+   population carries a SYNTHETIC-span *table reference* (the carve-out would
+   classify a miss on one as local; today's known synthetic populations are
+   all compiler-synthesised locals/wrappers).
+3. **`Unresolved.name` for an `Apply` is the callee head** — the callee
+   `Var`'s name (through erased `Annotate` layers), else a
+   `"<computed callee>"` marker. The Apply-side gate fires at the APPLY span
+   with that name.
+4. **Serde/`#[non_exhaustive]` mechanics.** The new `MethodResolutions`
+   maps carry no `#[serde(default)]` (consistent with `resolved_calls`/
+   `pattern_ctors`; the 21→22 bump gates compat — a schema-21 sidecar is a
+   hard deserialize error, deliberately). `ViewBuildError` joins the
+   closed-sum no-`#[non_exhaustive]` exception class (types `CLAUDE.md`):
+   the `NotConcrete`-vs-`Unresolved` routing at the fallback seam is the
+   load-bearing consumer match. Absence-is-unrepresentable is serde-pinned
+   (`var_resolution_field_absence_is_unrepresentable_in_serde`).
+
 ## 5. Sequencing (binding on Phase 4 — mirrors SPRINT.md §Required sequencing)
 
 1. Carrier change-set = ONE coordinated multi-crate wave (serial handoffs,

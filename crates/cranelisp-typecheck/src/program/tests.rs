@@ -1094,17 +1094,21 @@
 
     // --- Ring 2: Constrained polymorphism tests ---
 
-    // A `resolved_targets` map carrying a dummy entry for EVERY `Var` span in
-    // `expr` — so the FIXME-0653 shadow guard (`callee_has_keyed_carrier`) treats
-    // every callee as a genuine keyed reference. These name-scan-mechanism tests
-    // exercise the collector's name matching, not the shadow discipline, so a
-    // full-carrier map keeps them testing exactly what they did before the guard.
-    fn all_var_carriers(expr: &Expr) -> HashMap<Span, FQSymbol> {
-        fn walk(e: &Expr, m: &mut HashMap<Span, FQSymbol>) {
+    // A `var_refs` map carrying a `VarRef::Global` entry for EVERY `Var` span in
+    // `expr` — so the FIXME-0653 shadow guard (`callee_has_keyed_carrier`, which
+    // under the S114 carrier flip discriminates `Global` from `Local`) treats
+    // every callee as a genuine keyed TABLE reference. These name-scan-mechanism
+    // tests exercise the collector's name matching, not the shadow discipline, so
+    // a full-Global map keeps them testing exactly what they did before the guard.
+    fn all_var_carriers(expr: &Expr) -> HashMap<Span, cranelisp_types::VarRef> {
+        fn walk(e: &Expr, m: &mut HashMap<Span, cranelisp_types::VarRef>) {
             if let Expr::Var { span, .. } = e {
                 m.insert(
                     *span,
-                    FQSymbol { module: ModuleFullPath::from("test"), symbol: Symbol::from("x") },
+                    cranelisp_types::VarRef::Global(FQSymbol {
+                        module: ModuleFullPath::from("test"),
+                        symbol: Symbol::from("x"),
+                    }),
                 );
             }
             crate::program::for_each_child_expr(e, |c| walk(c, m));
@@ -1785,6 +1789,56 @@
         );
     }
 
+    // spec: 07-traits §7.11.2 edge (c) (F-D2-10, FIXME 0672) — a NULLARY
+    // return-type-dispatched method (`(zed)`, `Self` in return) pinned by an
+    // annotation to a type with NO impl MUST reject at typecheck with the located
+    // "no impl of trait X for type Y" error naming the owning trait — uniform with
+    // the unary sibling (F-D2-7), NEVER a codegen `undefined function` leak. The
+    // chokepoint is `resolve_deferred_trait_calls`: the nullary dispatch defers at
+    // `infer_apply` (return type still a Var), settles under the `:Widget`
+    // annotation, and the settlement re-attempt now PROPAGATES the located no-impl
+    // error `try_resolve_trait_method` raises (pre-S114 it swallowed it via
+    // `if let Ok(Some(..))`). This unit-pins the producer chokepoint the e2e
+    // F-D2-10 cells flip against; it FAILS on revert of the Err-propagation.
+    #[test]
+    fn nullary_return_dispatch_no_impl_rejects_at_typecheck_naming_trait() {
+        const SRC: &str = "(deftrait Zeroable (zed [] self))\n\
+             (impl Zeroable Int (defn zed [] 0))\n\
+             (deftype Widget (MkW [:Int n]))\n\
+             (defn getw [] (let [x :Widget (zed)] x))\n";
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(SRC).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        let err = tc.check_program_self(&program).expect_err(
+            "a nullary return-dispatch `:Widget (zed)` to a type with NO Zeroable \
+             impl MUST reject at typecheck (F-D2-10, §7.11.2(c)), never leak to codegen",
+        );
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("no impl") && msg.contains("Zeroable"),
+            "the no-impl reject MUST name the owning trait `Zeroable` \
+             (§7.11.2(c)); got: {msg}"
+        );
+    }
+
+    // spec: 07-traits §7.11.2 edge (c) (F-D2-10 precision twin) — the fix must not
+    // over-reject: a nullary return-dispatch pinned to a type that DOES have an
+    // impl (`:Int (zed)`) type-checks cleanly. Guards against the Err-propagation
+    // rejecting a valid dispatch.
+    #[test]
+    fn nullary_return_dispatch_with_impl_type_checks_clean() {
+        const SRC: &str = "(deftrait Zeroable (zed [] self))\n\
+             (impl Zeroable Int (defn zed [] 0))\n\
+             (defn getz [] (let [x :Int (zed)] x))\n";
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(SRC).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).expect(
+            "a nullary return-dispatch `:Int (zed)` to a type WITH a Zeroable impl \
+             MUST type-check cleanly (F-D2-10 must not over-reject)",
+        );
+    }
+
     // spec: 03-types §3.3.1 × 05-definitions §5.1.2 [S109 W6.3] (U9) — sibling
     // multi-arity clauses are DISJOINT lexical scopes: each clause's bare `:a` is
     // pinned INDEPENDENTLY by its OWN body (co-reference merges NESTED scopes
@@ -2096,16 +2150,32 @@
 
     /// Walk a `MonoExpr` collecting `(node_label, resolved_target)` for every
     /// `Var` (labelled by its `name`) and `Apply` (labelled `"@apply"`) node.
+    ///
+    /// **S114 carrier flip.** The `Option<FQSymbol>` carrier the pre-flip tests
+    /// assert against is now the typed `VarRef`/`ApplyRef` sums. This helper
+    /// projects the typed verdict back onto the pre-flip `Option<FQSymbol>` shape
+    /// so every downstream assertion (a table reference carries `Some(fq)`, a
+    /// local / ViaCallee carries `None`) reads unchanged: `VarRef::Global(fq)` /
+    /// `ApplyRef::Dispatch(fq)` → `Some(fq)`; `VarRef::Local` / `ApplyRef::ViaCallee`
+    /// → `None`.
     fn collect_resolved_targets(
         e: &MonoExpr,
         out: &mut Vec<(String, Option<FQSymbol>)>,
     ) {
         match e {
-            MonoExpr::Var { name, resolved_target, .. } => {
-                out.push((name.as_ref().to_string(), resolved_target.clone()));
+            MonoExpr::Var { name, resolution, .. } => {
+                let rt = match resolution {
+                    cranelisp_types::VarRef::Global(fq) => Some(fq.clone()),
+                    cranelisp_types::VarRef::Local { .. } => None,
+                };
+                out.push((name.as_ref().to_string(), rt));
             }
-            MonoExpr::Apply { callee, args, resolved_target, .. } => {
-                out.push(("@apply".to_string(), resolved_target.clone()));
+            MonoExpr::Apply { callee, args, dispatch, .. } => {
+                let rt = match dispatch {
+                    cranelisp_types::ApplyRef::Dispatch(fq) => Some(fq.clone()),
+                    cranelisp_types::ApplyRef::ViaCallee => None,
+                };
+                out.push(("@apply".to_string(), rt));
                 collect_resolved_targets(callee, out);
                 for a in args {
                     collect_resolved_targets(a, out);
@@ -2459,6 +2529,87 @@
             }),
             "self-call `fact` Var must carry resolved_target test/fact (leg 2); \
              collected: {targets:?}"
+        );
+    }
+
+    /// Walk a `MonoExpr` collecting `(name, VarRef)` for every `Var` node — the
+    /// typed-carrier sibling of `collect_resolved_targets` (S114 binder-provenance
+    /// pins).
+    fn collect_var_resolutions(e: &MonoExpr, out: &mut Vec<(String, cranelisp_types::VarRef)>) {
+        if let MonoExpr::Var { name, resolution, .. } = e {
+            out.push((name.as_ref().to_string(), resolution.clone()));
+        }
+        match e {
+            MonoExpr::Apply { callee, args, .. } => {
+                collect_var_resolutions(callee, out);
+                for a in args {
+                    collect_var_resolutions(a, out);
+                }
+            }
+            MonoExpr::If { cond, then_branch, else_branch, .. } => {
+                collect_var_resolutions(cond, out);
+                collect_var_resolutions(then_branch, out);
+                collect_var_resolutions(else_branch, out);
+            }
+            MonoExpr::Let { bindings, body, .. } => {
+                for (_, b) in bindings {
+                    collect_var_resolutions(b, out);
+                }
+                collect_var_resolutions(body, out);
+            }
+            MonoExpr::Lambda { body, .. } => collect_var_resolutions(body, out),
+            MonoExpr::Match { scrutinee, arms, .. } => {
+                collect_var_resolutions(scrutinee, out);
+                for arm in arms {
+                    collect_var_resolutions(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // spec: design/typecheck/typed-resolution-carrier.md §3 (test plan §3.4 item 3)
+    // — binder-identity provenance: a §4.6 LOCAL reference records `VarRef::Local`
+    // carrying the binder name + the span of the BINDING FORM that introduced it.
+    // A defn-param reference and a `let` reference resolve in DIFFERENT frames, so
+    // their `binding_span`s DIFFER (the shadow-frame disambiguation grain) — and
+    // neither is `Span::SYNTHETIC` (a real binding form has a real span). This pins
+    // the `ScopeStack.frame_spans` provenance plumbing threaded through the six
+    // `push_scope` seams; it fails if a seam drops its form span (all-SYNTHETIC) or
+    // shares one frame span across forms.
+    #[test]
+    fn local_var_ref_carries_binding_form_span_per_frame() {
+        let mut tc = tc_with_prims();
+        // (defn f [x] (let [y x] (add-i64 x y)))
+        //  - `x` is a defn PARAM → binding_span = the defn form span
+        //  - `y` is a LET name    → binding_span = the let node span
+        check_src(&mut tc, "(defn f [x] (let [y x] (add-i64 x y)))");
+        let view = main_codegen_view_of(&tc, "f");
+        let mut vars = Vec::new();
+        collect_var_resolutions(&view.body, &mut vars);
+
+        let x_span = vars.iter().find_map(|(n, r)| match (n.as_str(), r) {
+            ("x", cranelisp_types::VarRef::Local { binding_span, .. }) => Some(*binding_span),
+            _ => None,
+        });
+        let y_span = vars.iter().find_map(|(n, r)| match (n.as_str(), r) {
+            ("y", cranelisp_types::VarRef::Local { binding_span, .. }) => Some(*binding_span),
+            _ => None,
+        });
+        let x_span = x_span.expect("param `x` reference must record VarRef::Local");
+        let y_span = y_span.expect("let name `y` reference must record VarRef::Local");
+        assert_ne!(
+            x_span, Span::SYNTHETIC,
+            "the defn-param binding-form span must be real, not SYNTHETIC"
+        );
+        assert_ne!(
+            y_span, Span::SYNTHETIC,
+            "the let binding-form span must be real, not SYNTHETIC"
+        );
+        assert_ne!(
+            x_span, y_span,
+            "a param reference and a let reference bind in DIFFERENT forms — their \
+             binding_spans MUST differ (the shadow-frame disambiguation grain)"
         );
     }
 
@@ -5079,7 +5230,8 @@
         let result_with_warning = FormCheckResult {
             method_resolutions: HashMap::new(),
             pattern_ctors: HashMap::new(),
-            resolved_targets: HashMap::new(),
+            var_refs: HashMap::new(),
+            apply_refs: HashMap::new(),
             expr_types: HashMap::new(),
             constrained_fn: None,
             mono_defns: Vec::new(),

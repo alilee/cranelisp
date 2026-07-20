@@ -19,11 +19,11 @@ fn s() -> Span {
     Span::SYNTHETIC
 }
 fn var(n: &str) -> MonoExpr {
-    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolved_target: None }
+    MonoExpr::Var { name: Symbol::from(n), span: s(), resolved_call: None, ty: ConcreteType::String, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(n), binding_span: cranelisp_types::Span::SYNTHETIC } }
 }
 fn call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::Apply {
-        resolved_target: None,
+        dispatch: cranelisp_types::ApplyRef::ViaCallee,
         callee: Box::new(var(name)),
         args,
         span: s(),

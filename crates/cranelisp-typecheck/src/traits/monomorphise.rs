@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
-    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQSymbol,
+    ApplyRef, ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQSymbol,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant, MonoExpr,
     NotConcrete, ResolvedCall, Scheme,
     Span, Symbol, Type,
-    TypeName, UserFnState, Visibility, apply,
+    TypeName, UserFnState, VarRef, ViewBuildError, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -413,7 +413,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // NO SigDispatch, NO carrier → the Apply reaches the backend fully bare
             // → `compile_var_apply` → `variables` → indirect local call (fixes the
             // TCO-self-loop hang + the non-tail wrong-value sibling).
-            if !resolutions.resolved_targets.contains_key(callee_span) {
+            if !crate::program::callee_has_keyed_carrier(&resolutions.var_refs, *callee_span) {
                 continue;
             }
             let self_arg_types: Vec<Type> = arg_spans
@@ -435,14 +435,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // S110 0583 leg 1 (mono self-recursion carrier, FIXME 0616):
                 // the mono variant is registered in the caller's current module
                 // (`register_mono_entry`), so the storage FQ is
-                // `{current_module, mangled_name}` — the SigDispatch home
-                // `resolved_call_to_fqsymbol` derives.
-                resolutions.resolved_targets.insert(
+                // `{current_module, mangled_name}`. Apply-span dispatch verdict
+                // (S114 carrier flip).
+                resolutions.apply_refs.insert(
                     *self_span,
-                    FQSymbol {
+                    ApplyRef::Dispatch(FQSymbol {
                         module: current_module.clone(),
                         symbol: Symbol::from(mangled_name),
-                    },
+                    }),
                 );
             }
         }
@@ -566,7 +566,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // fix — the template's `pattern_ctors` when the template was checked in a
         // DIFFERENT run (cross-module, or cross-check-run same-module REPL-
         // incremental). Read BOTH sidecars off the one per-instance map.
-        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body(), &resolutions.pattern_ctors, &resolutions.resolved_targets) {
+        let codegen_view = match MonoExpr::from_expr(
+            mono_defn_ast.body(),
+            &resolutions.pattern_ctors,
+            &resolutions.var_refs,
+            &resolutions.apply_refs,
+        ) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
                 MonoDefnVariant {
@@ -583,7 +588,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // (§1.3 / §2.6), reusing the §3.11.1 diagnostic wording (no
             // rejection-coverage regression). Post-part-A this arm fires ONLY for
             // genuinely-ambiguous code, never for a valid program.
-            Err(nc) => {
+            Err(ViewBuildError::NotConcrete(nc)) => {
                 let detail = match nc {
                     NotConcrete::Var(_) => "a residual unbound type variable",
                     NotConcrete::HktHead(_) => "an unresolved higher-kinded type head",
@@ -596,6 +601,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         mangled_name
                     ),
                     location: ErrorLocation::from_span(defn_span),
+                });
+            }
+            // S114 carrier flip (design §4.3): an unresolved reference in a
+            // minted instance body is a distinct producer bug — a located
+            // typecheck error at the reference span (should never fire on a
+            // valid program; the tier-3 seam altitude surfaced as an error since
+            // a `Result` is in hand here).
+            Err(ViewBuildError::Unresolved { span, name: ref_name }) => {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "unresolved reference `{ref_name}` in monomorphised body \
+                         of `{mangled_name}` — typecheck recorded no local/global \
+                         verdict (in-process producer bug; \
+                         design/arch/typed-resolution-carrier.md §4.3)"
+                    ),
+                    location: ErrorLocation::from_span(span),
                 });
             }
         };
@@ -904,7 +925,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Self::collect_constrained_calls(
             defn.body(),
             &constrained_fn_names,
-            &resolutions.resolved_targets,
+            &resolutions.var_refs,
             &mut inner_calls,
         );
         for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
@@ -933,13 +954,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
             // S110 0583 leg 1 (inner constrained-call carrier, FIXME 0616): the
             // inner mono variant registers in the caller's current module, so
-            // its storage FQ is `{current_module, inner_mangled}`.
-            resolutions.resolved_targets.insert(
+            // its storage FQ is `{current_module, inner_mangled}`. Apply-span
+            // dispatch verdict (S114 carrier flip).
+            resolutions.apply_refs.insert(
                 *inner_call_span,
-                FQSymbol {
+                ApplyRef::Dispatch(FQSymbol {
                     module: state.current_module.clone(),
                     symbol: Symbol::from(inner_mangled.as_str()),
-                },
+                }),
             );
         }
     }
@@ -985,7 +1007,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         collect_apply_var_calls(
             defn.body(),
             &defn.name,
-            &resolutions.resolved_targets,
+            &resolutions.var_refs,
             &mut inner_sites,
         );
 
@@ -1086,13 +1108,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 );
                 // S110 0583 leg 1 (inner parametric-hop carrier, FIXME 0616):
                 // `register_mono_entry` stored this instance in the caller's
-                // current module — key its carrier there.
-                resolutions.resolved_targets.insert(
+                // current module — key its carrier there. Apply-span dispatch
+                // verdict (S114 carrier flip).
+                resolutions.apply_refs.insert(
                     *inner_span,
-                    FQSymbol {
+                    ApplyRef::Dispatch(FQSymbol {
                         module: state.current_module.clone(),
                         symbol: Symbol::from(mono.defn.name.as_ref()),
-                    },
+                    }),
                 );
             }
         }
@@ -1163,21 +1186,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 pub(super) fn collect_apply_var_calls(
     expr: &Expr,
     self_name: &Symbol,
-    resolved_targets: &HashMap<Span, FQSymbol>,
+    var_refs: &HashMap<Span, VarRef>,
     out: &mut Vec<(Symbol, Vec<Span>, Span)>,
 ) {
     if let Expr::Apply { callee, args, span, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
         && name != self_name
         // FIXME 0653 — skip a §4.6 LOCAL shadow of a top-level parametric fn: a
-        // callee with no keyed `resolved_targets` carrier resolved to a local.
-        && crate::program::callee_has_keyed_carrier(resolved_targets, callee.span())
+        // callee whose verdict is `VarRef::Local` resolved to a local.
+        && crate::program::callee_has_keyed_carrier(var_refs, callee.span())
     {
         let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
         out.push((name.clone(), arg_spans, *span));
     }
     crate::program::for_each_child_expr(expr, |child| {
-        collect_apply_var_calls(child, self_name, resolved_targets, out)
+        collect_apply_var_calls(child, self_name, var_refs, out)
     });
 }
 

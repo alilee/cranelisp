@@ -10,7 +10,8 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
-    CranelispError, Defn, ModuleFullPath, MonoExpr, ModuleEntry, ResolvedCall, Span, Symbol, Type,
+    ApplyRef, CranelispError, Defn, ModuleFullPath, MonoExpr, ModuleEntry, ResolvedCall, Span,
+    Symbol, Type, VarRef,
 };
 
 use crate::heap::{self, HeapCategory};
@@ -690,7 +691,7 @@ where
                 name,
                 span,
                 resolved_call,
-                resolved_target,
+                resolution,
                 ty,
                 ..
             } => {
@@ -698,19 +699,21 @@ where
                 // type as a `&Type` (for the value-position trait-method arity).
                 // The node's `ConcreteType` embeds losslessly into a `Type`.
                 //
-                // S110 W2 (`backend-keyed-consumer.md` §4; S10–S18): the Var's
-                // `resolved_target` — the terminal STORAGE key typecheck resolved
-                // (§1.1.2) — is threaded to the value-seam keyed reads (fn-as-value
-                // gate, nullary-ctor fold, ctor-as-value, arity, summary, vec-query,
-                // GOT entry). A local/lambda-param Var carries `None` (the backend
-                // `variables` check precedes any keyed read — KC-N6).
+                // S114 carrier flip (`typed-resolution-carrier.md` §4; the S110 W2
+                // `backend-keyed-consumer.md` §4 S10–S18 seams): the Var's typed
+                // `resolution` verdict — `VarRef::Global(storage_fq)` (a table
+                // reference, drives the value-seam keyed reads) or `VarRef::Local`
+                // (a scope-stack reference; the backend `variables` check precedes
+                // any keyed read — KC-N6; a scope-stack miss is a hard invariant
+                // failure carrying the binder identity, §2.7.2). `compile_var`
+                // matches the closed sum exhaustively.
                 let inferred = ty.to_type();
                 self.compile_var(
                     name,
                     *span,
                     resolved_call.as_deref(),
                     Some(&inferred),
-                    resolved_target.as_ref(),
+                    resolution,
                 )
             }
             MonoExpr::Let {
@@ -736,7 +739,7 @@ where
                 args,
                 span,
                 resolved_call,
-                resolved_target,
+                dispatch,
                 ty,
                 ..
             } => {
@@ -754,18 +757,23 @@ where
                 // §13.7 (FIXME 0664): this Apply's recorded escape fact, threaded
                 // to the COW seam (`cow_source_ownership`'s escape gate).
                 let apply_escapes = node_escapes(expr);
+                // S114 carrier flip (`typed-resolution-carrier.md` §4): the Apply's
+                // typed dispatch verdict → the `Option<&FQSymbol>` the keyed fetch
+                // consumes. Exhaustive on the closed `ApplyRef` sum (no `_` arm):
+                // `Dispatch(fq)` carries the STORAGE FQ typecheck's dispatch
+                // selection resolved to (trait/sig-dispatch/auto-curry/operator
+                // legs); `ViaCallee` is the POSITIVE no-Apply-level-dispatch verdict
+                // (the identity rides the callee `Var` node) → `None`.
+                let apply_target = match dispatch {
+                    ApplyRef::Dispatch(fq) => Some(fq),
+                    ApplyRef::ViaCallee => None,
+                };
                 self.compile_apply(
                     callee,
                     args,
                     *span,
                     resolved_call.as_deref(),
-                    // S110 W1: the Apply-span dispatch carrier (`backend-keyed-
-                    // consumer.md` §1.1) — the STORAGE FQ typecheck's dispatch
-                    // selection resolved to (trait/sig-dispatch/auto-curry/operator
-                    // legs). The backend keys its ONE fetch on this instead of
-                    // re-scanning the symbol tables. `None` for a Var-callee direct
-                    // call (that carrier rides on the callee `Var` node).
-                    resolved_target.as_ref(),
+                    apply_target,
                     Some(&apply_type),
                     stack,
                     apply_escapes,
@@ -1507,12 +1515,14 @@ pub(crate) fn body_has_self_call(
 /// gate permits the stack slot).
 ///
 /// A call is a self-call iff EITHER:
-/// - **carrier-keyed (fp1 shape):** the callee `Var`'s `resolved_target` storage
+/// - **carrier-keyed (fp1 shape):** the callee `Var`'s `VarRef::Global` storage
 ///   FQ equals the current fn's storage identity `{current_module,
-///   current_fn_name}` — module AND symbol (the S113 W2b carrier fix). A match
-///   requires the recorded storage target to BE the current fn's identity, so a
-///   false positive is impossible; a carrier-absent callee (e.g. a `let`/`fn`/
-///   param local shadowing the fn name) never matches here; OR
+///   current_fn_name}` — module AND symbol (the S113 W2b carrier fix; S114 typed
+///   flip re-types the compared value from `Option<FQSymbol>` to the
+///   `VarRef::Global` arm). A match requires the recorded storage target to BE
+///   the current fn's identity, so a false positive is impossible; a
+///   `VarRef::Local` callee (e.g. a `let`/`fn`/param local shadowing the fn name)
+///   never matches here — self-recursion arrives as `VarRef::Global`; OR
 /// - **`SigDispatch`-mangled (fp2 shape):** `resolved_call` is `SigDispatch {
 ///   mangled_name }` and `mangled_name == current_fn_name` — the monomorphised
 ///   constrained-poly self-recursion shape, where the callee's written name is
@@ -1531,7 +1541,7 @@ pub(crate) fn is_self_call(
     let Some(fn_name) = current_fn_name else {
         return false;
     };
-    if let MonoExpr::Var { resolved_target: Some(fq), .. } = callee
+    if let MonoExpr::Var { resolution: VarRef::Global(fq), .. } = callee
         && fq.module == *current_module
         && fq.symbol == *fn_name
     {
@@ -1572,13 +1582,15 @@ mod b34_stack_eligibility_tests {
         ModuleFullPath::from("user")
     }
     fn var(name: &str) -> MonoExpr {
-        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(), resolved_target: None }
+        // No carrier ⇒ a `VarRef::Local` (a scope-stack/shadow reference); the
+        // is_self_call carrier arm never matches a `Local`.
+        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(), resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(name), binding_span: Span::SYNTHETIC } }
     }
-    /// A `Var` carrying a `resolved_target` storage FQ — the fp1 carrier shape.
+    /// A `Var` carrying a `VarRef::Global` storage FQ — the fp1 carrier shape.
     fn var_with_target(name: &str, module: &str, symbol: &str) -> MonoExpr {
         MonoExpr::Var {
             name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int(),
-            resolved_target: Some(FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }),
+            resolution: cranelisp_types::VarRef::Global(FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }),
         }
     }
     fn constr(escapes: Option<bool>) -> MonoExpr {
@@ -1591,7 +1603,7 @@ mod b34_stack_eligibility_tests {
     /// An `(f args…)` apply with the given callee name, escape fact, and resolved call.
     fn apply(callee: &str, args: Vec<MonoExpr>, escapes: Option<bool>, resolved: Option<ResolvedCall>) -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(var(callee)), args, span: Span::new(0, 3),
             resolved_call: resolved.map(Box::new), ty: int(),
             escapes, confined: None, unique_static: None, provenance: None,
@@ -1674,7 +1686,7 @@ mod b34_stack_eligibility_tests {
         // callee written `qloop` but carrier == the current fn's storage FQ.
         let callee = var_with_target("qloop", "user", "s1");
         let node = MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(callee.clone()), args: vec![], span: Span::new(0, 3),
             resolved_call: None, ty: int(),
             escapes: None, confined: None, unique_static: None, provenance: None,
@@ -1917,14 +1929,14 @@ mod return_cow_source_tests {
             name: Symbol::from(name),
             span: Span::new(0, 1),
             resolved_call: None,
-            resolved_target: None,
+            resolution: cranelisp_types::VarRef::Local { binder: Symbol::from(name), binding_span: Span::SYNTHETIC },
             ty: int_ty(),
         }
     }
 
     fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(var(prim)),
             args: vec![src, var("i"), var("x")],
             span: Span::new(0, 9),
@@ -2011,9 +2023,9 @@ mod return_protect_tests {
 
     fn apply_body() -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolved_target: None,
+                resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("f"), binding_span: Span::SYNTHETIC },
                 name: Symbol::from("f"),
                 span: Span::new(0, 1),
                 resolved_call: None,
@@ -2033,15 +2045,15 @@ mod return_protect_tests {
     fn if_body() -> MonoExpr {
         MonoExpr::If {
             cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }),
-            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, resolved_target: None, ty: int_ty() }),
-            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, resolved_target: None, ty: int_ty() }),
+            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("v"), binding_span: Span::SYNTHETIC }, ty: int_ty() }),
+            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("w"), binding_span: Span::SYNTHETIC }, ty: int_ty() }),
             span: Span::new(0, 4),
             ty: int_ty(),
         }
     }
 
     fn var_body() -> MonoExpr {
-        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty(), resolved_target: None }
+        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty(), resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("v"), binding_span: Span::SYNTHETIC } }
     }
 
     fn fresh() -> ModeSummary {
@@ -2105,7 +2117,7 @@ mod b33_node_confined_tests {
         MonoExpr::Lambda { params: vec![], body: Box::new(MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: None, confined: c, unique_static: None }
     }
     fn apply(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, resolved_target: None, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None, resolved_target: None }
+        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: "f".into(), binding_span: Span::SYNTHETIC }, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None, dispatch: cranelisp_types::ApplyRef::ViaCallee }
     }
     fn vec_lit(c: Option<bool>) -> MonoExpr {
         // node_confined reads only `confined`; the ty is immaterial here.
@@ -2130,7 +2142,7 @@ mod b33_node_confined_tests {
     // never the fact source.
     #[test]
     fn non_fact_bearing_variants_are_none() {
-        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, resolved_target: None, ty: int() };
+        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, resolution: cranelisp_types::VarRef::Local { binder: "v".into(), binding_span: Span::SYNTHETIC }, ty: int() };
         let iflit = MonoExpr::If { cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }), then_branch: Box::new(var.clone()), else_branch: Box::new(var.clone()), span: Span::new(0, 2), ty: int() };
         let intlit = MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() };
         assert_eq!(node_confined(&var), None);

@@ -71,8 +71,11 @@ Fields that LOOK optional but are contractually required downstream:
   ctor/accessor entries and `f$Var` multi-sig variants are legitimately
   `None` (typecheck CLAUDE.md §codegen_view — do not "fix" the asymmetry).
 - `Expr.inferred_type: Option<Box<Type>>` — `None` past typecheck is not a
-  soft state: `MonoExpr::from_expr` fails it as `NotConcrete::Var(0)`
-  (`mono_expr.rs:451`), the unified ambiguity error.
+  soft state: `MonoExpr::from_expr` fails it as
+  `ViewBuildError::NotConcrete(NotConcrete::Var(0))` (`mono_expr.rs`), the
+  unified ambiguity error. Its sibling arm `ViewBuildError::Unresolved` is
+  the RESOLUTION gate (real-span `Var`/`Apply` with no typed verdict) —
+  routed as a located error, NEVER into the lenient fallback.
 - `ModeSummary` vectors — **never index directly**; `param_mode(i)` /
   `param_flow(i)`/`spark_op(i)` are the ONE home for ⊤-on-absence
   (missing/short ⇒ Owned/Retained/true, `ownership.rs:167`). ABI comparison
@@ -188,8 +191,21 @@ escape grep over `ResultMode`. The **typed resolution sums `VarRef`/`ApplyRef`**
 (`mono_expr.rs`, S114 FIXME 0653 prong 3) join the same exception class:
 closed sums whose exhaustive consumer matches ARE the contract ("unresolved"
 has no constructor; a `_ =>` arm would re-smuggle the ambiguous default) —
-dormant until the Phase-5 carrier wave flips the `resolved_target` fields
-(`design/arch/typed-resolution-carrier.md`). Their sibling
+LIVE since the S114 Phase-5 carrier flip: `MonoExpr::Var.resolution: VarRef`
+/ `MonoExpr::Apply.dispatch: ApplyRef` are non-optional with NO
+`#[serde(default)]` (absence is unrepresentable — a cache missing them is a
+hard serde error by design; `CACHE_SCHEMA_VERSION` 22 window), and
+`MethodResolutions` carries the TOTAL typed `var_refs`/`apply_refs` maps
+(`design/arch/typed-resolution-carrier.md`). **`ViewBuildError`**
+(`from_expr`'s failure sum) is in the exception class too: the
+`NotConcrete`-vs-`Unresolved` routing at the strict-first/lenient-fallback
+seam is the load-bearing match — `NotConcrete` may fall back to
+`lenient_from_expr`; `Unresolved` is a located typecheck error that MUST NOT
+be swallowed into the fallback (and is raised BEFORE the node's type, so a
+miss cannot slip through as `NotConcrete`). `lenient_from_expr` tolerates
+TYPES only — a real-span verdict miss PANICS (always-on tier-3 seam assert);
+a `Span::SYNTHETIC` miss takes the all-local verdict in both walks (synthetic
+nodes are structurally outside span-keyed transport). Their sibling
 `MonoExpr::synthetic_local_from_expr` (FIXME 0685) is the ONE sanctioned
 all-local builder for `Span::SYNTHETIC` synthesis bodies (typecheck adt.rs
 ctor/accessor): no resolution-map params by design, plus an always-on

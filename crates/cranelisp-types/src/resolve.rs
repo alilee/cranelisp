@@ -380,8 +380,8 @@ impl From<ResolveError> for CranelispError {
 ///   chain-follow terminated at (the last followed edge's `source.symbol`,
 ///   or the written name when no edge renamed). `symbol_tables[home]
 ///   [storage_key]` IS the terminal entry, always. This is the identity a
-///   keyed consumer (the backend `entry_at` read, the `resolved_targets`
-///   carrier) must record — captured here, at the ONE place it is knowable,
+///   keyed consumer (the backend `entry_at` read, the `VarRef::Global` /
+///   `ApplyRef::Dispatch` carrier values) must record — captured here, at the ONE place it is knowable,
 ///   because a `ModuleEntry` does not carry its own key (Principle 24
 ///   "Resolve once": the walk that found the entry reports where it found
 ///   it; no consumer ever reconstructs the key from a written spelling).
@@ -405,8 +405,9 @@ pub struct Resolved<C: CodeStore = ()> {
 impl<C: CodeStore> Resolved<C> {
     /// The storage identity as an [`FQSymbol`] — `home` + [`Self::storage_key`].
     /// The key a direct two-level table read (`symbol_tables[module][symbol]`)
-    /// fetches this exact terminal entry with; the `resolved_targets` carrier
-    /// value (`design/arch/backend-keyed-consumer.md` §1.1).
+    /// fetches this exact terminal entry with; the `VarRef::Global` /
+    /// `ApplyRef::Dispatch` carrier value
+    /// (`design/arch/backend-keyed-consumer.md` §1.1).
     pub fn storage_fq(&self) -> FQSymbol {
         FQSymbol { module: self.home.clone(), symbol: self.storage_key.clone() }
     }

@@ -97,7 +97,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         accumulator.method_resolutions.extend(result.method_resolutions);
         accumulator.pattern_ctors.extend(result.pattern_ctors);
-        accumulator.resolved_targets.extend(result.resolved_targets);
+        accumulator.var_refs.extend(result.var_refs);
+        accumulator.apply_refs.extend(result.apply_refs);
         accumulator.expr_types.extend(result.expr_types);
         if let Some(name) = result.constrained_fn {
             accumulator.constrained_fn_names.insert(name);
@@ -826,7 +827,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// enable additional resolutions. Updates the side maps for backward
     /// compatibility; AST annotation is already done per-defn. A multi-sig defn
     /// fans per `__v{i}` variant (the register-side internal-defn keys).
-    pub(super) fn reresolve_deferred_calls(&self, state: &mut CheckState, working_program: &[TopLevel]) {
+    pub(super) fn reresolve_deferred_calls(
+        &self,
+        state: &mut CheckState,
+        working_program: &[TopLevel],
+    ) -> Result<(), CranelispError> {
         for top in working_program {
             if let TopLevel::Defn(defn) = top {
                 if defn.is_multi_sig() {
@@ -843,15 +848,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             visibility: defn.visibility,
                             span: variant.span,
                         };
-                        self.resolve_deferred_trait_calls(state, internal_defn.body());
+                        self.resolve_deferred_trait_calls(state, internal_defn.body())?;
                         self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
                     }
                 } else {
-                    self.resolve_deferred_trait_calls(state, defn.body());
+                    self.resolve_deferred_trait_calls(state, defn.body())?;
                     self.resolve_value_position_trait_methods(state, defn.body(), false);
                 }
             }
         }
+        Ok(())
     }
 
 
@@ -941,14 +947,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) {
         let taken = std::mem::take(&mut state.method_resolutions);
         accumulator.method_resolutions.extend(taken.resolved_calls);
-        // S110 W0.1b (§1.1.1): post-pass `resolved_targets` inserts (the
-        // fn-value mono-rewrite carrier; the finalize-drained auto-curry leg)
-        // land in `state.method_resolutions.resolved_targets` AFTER the per-form
-        // snapshots that feed `accumulator.resolved_targets`. Sweep them into the
-        // accumulator so the finalize view-rebuild
-        // (`finalize_annotations_and_publish`) sees them — the carrier rides
-        // UNREAD until W1, so this is behaviour-invariant.
-        accumulator.resolved_targets.extend(taken.resolved_targets);
+        // S110 W0.1b (§1.1.1) / S114 carrier flip: post-pass typed-verdict
+        // inserts (the fn-value mono-rewrite carrier; the finalize-drained
+        // auto-curry leg) land in `state.method_resolutions.{var_refs,apply_refs}`
+        // AFTER the per-form snapshots that feed the accumulator. Sweep BOTH
+        // typed maps into the accumulator so the finalize view-rebuild
+        // (`finalize_annotations_and_publish`) sees them.
+        accumulator.var_refs.extend(taken.var_refs);
+        accumulator.apply_refs.extend(taken.apply_refs);
         // S110 W3.1 (§1.1.3, FIXME 0622): sweep the THIRD `MethodResolutions`
         // sidecar too. Harmless today (no post-pass records pattern ctors into
         // `state.method_resolutions` — the mono/test-root rechecks swap in their
@@ -977,7 +983,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.regeneralize_defn_schemes(state, accumulator)?;
 
         // Phase 3: re-resolve deferred trait calls with final substitution.
-        self.reresolve_deferred_calls(state, working_program);
+        // Propagates the F-D2-10 no-impl reject (nullary return-dispatch to a
+        // type with no impl) as a located typecheck error.
+        self.reresolve_deferred_calls(state, working_program)?;
 
         // Pass 2.5: resolve multi-sig overloads.
         // Side effect: registers mangled variants on the symbol table.
@@ -1175,7 +1183,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             accumulator,
             working_program,
             &multi_sig_mangled_names,
-        );
+        )?;
 
         // Pass 5: interprocedural ownership inference (S102 CS-1..4;
         // `design/typecheck/ownership-inference.md`). A post-pass over the
@@ -1278,7 +1286,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         accumulator: &ModuleCheckAccumulator,
         working_program: &[TopLevel],
         multi_sig_mangled_names: &MangledNamesByBase,
-    ) {
+    ) -> Result<(), CranelispError> {
         // Final callee write (Decision 21): overwrite the eager writes from
         // merge_form_result with the final canonical version that includes any
         // edges from post-passes.
@@ -1327,17 +1335,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // `state.method_resolutions` (§10.2 requires the sidecar to reach
             // `from_expr`). The map is per-cluster (spans → FQSymbols), cheap.
             let pattern_ctors_for_views = accumulator.pattern_ctors.clone();
-            let resolved_targets_for_views = accumulator.resolved_targets.clone();
+            let var_refs_for_views = accumulator.var_refs.clone();
+            let apply_refs_for_views = accumulator.apply_refs.clone();
             let sym_table = &mut self.current_symbol_table_mut(state);
             // Reannotate `existing` from the final side maps + subst, then, for a
             // `Concrete{slot}` codegen target, rebuild `codegen_view` from the
-            // refreshed (post-mono) variant.
+            // refreshed (post-mono) variant. Returns `Result` (S114 carrier
+            // flip): `build_concrete_codegen_view` propagates the located
+            // `ViewBuildError::Unresolved` gate error rather than swallowing a
+            // real-span resolution miss into the lenient fallback.
             let reannotate_and_refresh_view =
                 |name: &Symbol,
                  entry: &mut ModuleEntry<C>,
                  resolved_expr_types: &HashMap<Span, Type>,
                  method_resolutions: &HashMap<Span, ResolvedCall>,
-                 subst: &Subst| {
+                 subst: &Subst|
+                 -> Result<(), CranelispError> {
                     if let ModuleEntry::Def { ast: Some(existing), kind, codegen_view: cv, .. } =
                         entry
                     {
@@ -1347,9 +1360,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             kind.as_ref(),
                             DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
                         ) {
-                            *cv = build_concrete_codegen_view(name, existing, &pattern_ctors_for_views, &resolved_targets_for_views);
+                            *cv = build_concrete_codegen_view(
+                                name,
+                                existing,
+                                &pattern_ctors_for_views,
+                                &var_refs_for_views,
+                                &apply_refs_for_views,
+                            )?;
                         }
                     }
+                    Ok(())
                 };
             for top in working_program {
                 match top {
@@ -1372,7 +1392,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                         &resolved_expr_types,
                                         &accumulator.method_resolutions,
                                         &state.subst,
-                                    );
+                                    )?;
                                 }
                             }
                         }
@@ -1385,7 +1405,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                 &resolved_expr_types,
                                 &accumulator.method_resolutions,
                                 &state.subst,
-                            );
+                            )?;
                         }
                     }
                     TopLevel::TraitImpl(ti) => {
@@ -1400,7 +1420,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                     &resolved_expr_types,
                                     &accumulator.method_resolutions,
                                     &state.subst,
-                                );
+                                )?;
                             }
                         }
                     }
@@ -1408,6 +1428,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+        Ok(())
     }
 
     // =================================================================

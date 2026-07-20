@@ -733,7 +733,10 @@ mod find_var_type_tests {
 
     fn var(name: &str, ty: ConcreteType) -> MonoExpr {
         MonoExpr::Var {
-            resolved_target: None,
+            resolution: cranelisp_types::VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
             name: Symbol::from(name),
             span: Span::SYNTHETIC,
             resolved_call: None,
@@ -743,7 +746,7 @@ mod find_var_type_tests {
 
     fn apply(callee: MonoExpr, args: Vec<MonoExpr>) -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(callee),
             args,
             span: Span::SYNTHETIC,

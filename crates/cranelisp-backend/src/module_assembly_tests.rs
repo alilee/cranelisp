@@ -1420,12 +1420,21 @@ fn decision_23_got_data_size_matches_slot_count() {
             concretize_test_body(&mut v.body);
             v
         });
-        let codegen_view = variant.as_ref().map(|v| MonoDefnVariant {
-            name: defn.name.clone(),
-            params: vec![],
-            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete test body"),
-            span: v.span,
-            mode_summary: None,
+        let codegen_view = variant.as_ref().map(|v| {
+            // S114 carrier flip: build the TOTAL typed maps (empty carriers ⇒
+            // every Var Local, every Apply ViaCallee — this fixture's all-local
+            // body).
+            let (var_refs, apply_refs) = crate::test_support::resolved_targets_to_typed_maps(
+                &v.body,
+                &std::collections::HashMap::new(),
+            );
+            MonoDefnVariant {
+                name: defn.name.clone(),
+                params: vec![],
+                body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs).expect("concrete test body"),
+                span: v.span,
+                mode_summary: None,
+            }
         });
         st.insert(
             defn.name.clone(),
@@ -1546,10 +1555,14 @@ fn decision_36_no_cross_module_function_imports() {
     let int_view = |d: &Defn| {
         let mut v = d.variants.first().cloned().unwrap();
         concretize_test_body(&mut v.body);
+        let (var_refs, apply_refs) = crate::test_support::resolved_targets_to_typed_maps(
+            &v.body,
+            &std::collections::HashMap::new(),
+        );
         Some(MonoDefnVariant {
             name: d.name.clone(),
             params: vec![],
-            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &std::collections::HashMap::new()).expect("concrete test body"),
+            body: MonoExpr::from_expr(&v.body, &std::collections::HashMap::new(), &var_refs, &apply_refs).expect("concrete test body"),
             span: v.span,
             mode_summary: None,
         })

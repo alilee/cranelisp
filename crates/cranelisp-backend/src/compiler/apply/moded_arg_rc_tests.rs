@@ -128,9 +128,9 @@ mod projection_elision_predicate {
 
     fn vecget_apply(provenance: Option<Symbol>) -> MonoExpr {
         MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolved_target: None,
+                resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("_"), binding_span: cranelisp_types::Span::SYNTHETIC },
                 name: Symbol::from("vec-get"),
                 span: Span::new(0, 7),
                 resolved_call: None,
@@ -167,9 +167,9 @@ mod projection_elision_predicate {
     #[test]
     fn projectionof_user_call_is_not_direct_vecget() {
         let accessor = MonoExpr::Apply {
-            resolved_target: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(MonoExpr::Var {
-                resolved_target: None,
+                resolution: cranelisp_types::VarRef::Local { binder: cranelisp_types::Symbol::from("_"), binding_span: cranelisp_types::Span::SYNTHETIC },
                 name: Symbol::from("cell-at"),
                 span: Span::new(0, 7),
                 resolved_call: None,
@@ -191,7 +191,7 @@ mod projection_elision_predicate {
     #[test]
     fn non_apply_is_not_projection() {
         let v = MonoExpr::Var {
-            resolved_target: None,
+            resolution: cranelisp_types::VarRef::Local { binder: Symbol::from("g"), binding_span: Span::SYNTHETIC },
             name: Symbol::from("g"),
             span: Span::new(0, 1),
             resolved_call: None,

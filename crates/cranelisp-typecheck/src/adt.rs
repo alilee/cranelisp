@@ -207,9 +207,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 *codegen_view = Some(cranelisp_types::MonoDefnVariant {
                     name: key.clone(),
                     params: v.params.iter().map(|(n, _)| n.clone()).collect(),
-                    body: cranelisp_types::MonoExpr::lenient_from_expr(
+                    body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
                         &v.body,
-                        &HashMap::new(),
                         &HashMap::new(),
                     ),
                     span: v.span,
@@ -609,10 +608,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let accessor_view = cranelisp_types::MonoDefnVariant {
             name: qualified_key.clone(),
             params: vec![Symbol::from("self$accessor")],
-            body: cranelisp_types::MonoExpr::lenient_from_expr(
+            body: cranelisp_types::MonoExpr::synthetic_local_from_expr(
                 &ast.body,
                 &accessor_pattern_ctors,
-                &HashMap::new(),
             ),
             span: body_span,
             mode_summary: None,
