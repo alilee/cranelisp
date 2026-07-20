@@ -189,9 +189,18 @@ Every definition head — `deftrait`, `deftype`, `defn`, a trait method name, an
 impl method — is a **binder**, so it must be a **bare, unqualified** name. A
 qualified spelling like `(deftrait fmt/Foo …)` or `(deftype user/Circle …)` is a
 compile-time error: you can only *define* a name into the current module, never
-into another. The [errors catalogue](../errors/trait-impl-diagnostics.md#qualified-name-in-a-binder-position)
-covers these messages; the rule is [spec §5](../../spec/05-definitions.md)'s
-binder-positions table.
+into another.
+
+The rule is not limited to definition heads. **Every** binder is bare — including
+the *value-level* ones: a `defn`/`fn` parameter, a `let` name, and a `match`
+variable pattern all reject a qualified spelling too (only a `match` pattern's
+constructor *name* stays a reference and may be qualified). And a name is malformed
+outright if either half around a `/` is empty — `foo/` or `/bar` are *dangling
+qualifiers*, rejected in any position. The
+[errors catalogue](../errors/trait-impl-diagnostics.md#qualified-name-in-a-binder-position)
+covers the qualified-binder messages and the
+[dangling-qualifier](../errors/trait-impl-diagnostics.md#dangling-qualifier--an-empty-module-or-local-half)
+ones; the rule is [spec §5](../../spec/05-definitions.md)'s binder-positions table.
 
 ## See also
 

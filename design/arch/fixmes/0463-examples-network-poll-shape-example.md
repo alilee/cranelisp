@@ -108,6 +108,18 @@ touched **no** `platforms/` files and landed nothing enabling. NOT ready; remain
 deferred pending `/platform` net-leaf or `/qa` harness-driver infra per the
 resolution paths above. Trigger UNMET — defers by rationale, not habit.
 
+## S114 Phase-6a readiness re-check (2026-07-20, /examples)
+
+All three blockers re-verified STANDING at S114 Phase 6a. `platforms/` is
+`async-demo boom poll-pool pool-demo shapes shapes-badabi stdio test-capture` —
+none binds a socket (`grep -riE 'TcpListener|accept-conn|bind-listener|client.connect|TcpStream::connect' platforms/`
+→ zero hits), no client-connect leaf exists anywhere, and `tests/examples.rs`
+remains the bare exit-code umbrella. S114 (the `:`-reader-macro / dangling-qualifier
+frontend work + the annotation-whitespace-tolerance example touch-up) landed
+NOTHING in `platforms/` and nothing enabling. NOT ready; remains deferred
+pending `/platform` net-leaf or `/qa` harness-driver infra per the resolution
+paths above. Trigger UNMET — defers by rationale, not habit.
+
 ## Operational implication / Context
 
 This is close-out housekeeping, not a headline gap — a learner still meets the

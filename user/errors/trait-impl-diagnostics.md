@@ -37,6 +37,23 @@ method-signature names, impl method names, and the constructor and field names a
 (e.g. the prelude `def`/`const` forms expanding to `defn`) — the reject applies to
 the expanded head.
 
+The same rule reaches **value-level binders**, not just definition heads. A
+qualified spelling in a `defn`/`fn` **parameter**, a `let` **name**, or a `match`
+**variable pattern** is rejected too — these positions *introduce* a name into a
+local scope, so they are binders and must be bare:
+
+```
+user> (defn f [user/x] x)
+user> (let [user/y 5] y)
+user> (match v [(Some user/w) w])
+```
+
+each rejects the qualified binder. (In a `match` constructor pattern only the
+*bindings* are binders — the constructor name itself, e.g. `Some` above, is a
+reference and may be qualified.) The exact message at these value-level positions
+is terser than the head-position one and is being sharpened; the **reject itself**
+is firm today, and the remedy is the same — drop the module prefix.
+
 **Why:** there is no mechanism for declaring a name into another module; a
 definition always binds where it is written. Qualification is a *reference* form
 (reaching across modules), never a *binder* form. **Fix:** drop the module prefix
@@ -45,6 +62,87 @@ value position, not in a definition head.
 
 Normative: [spec §5](../../spec/05-definitions.md) (binder-positions table),
 [spec §8.5](../../spec/08-modules.md) (references carry qualifiers; binders do not).
+
+## Dangling qualifier — an empty module or local half
+
+A qualified name has two halves around the `/`: a **module** and a **local
+name**, and **both must be non-empty**. A `/` with nothing on one side is a
+*dangling qualifier* — a malformed name caught at read time, in **every** position
+(value, operand, annotation, and binder alike). The check is purely lexical, so it
+does not depend on what the name would have meant, and the message differs by
+*which* half is empty.
+
+**Empty module half — `/bar`** (nothing before the `/`):
+
+```
+user> (add-i64 /bar 1)
+Error: parse error at 9..10: `/` here has no module name before it — a qualified name needs a non-empty module (`mod/name`); a bare `/` division must be separated (`(/ a b)`)
+```
+
+The message deliberately separates this from the **division operator**: a lone `/`
+with whitespace around it (`(/ 6 2)`) is arithmetic and stays legal — only a `/`
+*immediately* followed by a name is the dangling-qualifier error.
+
+> At the bare REPL prompt, `/bar` is read as a REPL **slash-command** (you get
+> `unknown command '/bar'`); the located reader reject above is what you see when
+> the token appears inside a form.
+
+**Empty local half — `foo/`** (nothing after the `/`):
+
+```
+user> foo/
+Error: parse error at 4..4: expected local name after '/'
+```
+
+This is the same rule from the other side, and it fires in a binder slot too —
+`(defn f [foo/] …)`, `(let [foo/ 5] …)` — with the same message. This message is
+currently terser than the empty-module one; a wording improvement to bring it in
+line is in flight. The **remedy** is stable regardless.
+
+**Fix:** write both halves (`mod/name`), or remove the stray `/`. If you meant
+division, separate the `/` with spaces (`(/ a b)`).
+
+Normative: [spec §8.5.1](../../spec/08-modules.md) (both halves non-empty; a lone
+`/` is division) and [spec §1.4.5](../../spec/01-lexical.md) (a dangling qualifier
+is a located reader error).
+
+## The form after `:` must be a type
+
+A `:` annotation binds the single form that immediately follows it, and that form
+**must be a type**. Pointing `:` at a value — an integer literal, say — is a
+compile-time error that names what it found:
+
+```
+user> :3 5
+Error: parse error at 0..1: the form bound by `:` must be a type expression; found `3`
+```
+
+**Fix:** put a type after the `:` (`:Int`, `:String`, `:(Fn [Int] Int)`), or drop
+the annotation if you did not mean to ascribe one. Because the annotation binds the
+*next* form, `:Int 3` reads as "the `Int`-typed value `3`", whereas `:3` tries to
+use `3` itself as a type.
+
+Normative: [spec §1.4.5](../../spec/01-lexical.md) (`:` is a reader macro that
+binds the following form) and [spec §2.8.3](../../spec/02-grammar.md) (the bound
+form is a type expression).
+
+## A type parameter must be lowercase
+
+In a parameterised `deftype` or `deftrait` head, the parameters are **type
+variables**, written **lowercase**. An uppercase name in a parameter slot reads as
+a *named-type reference*, not a fresh parameter binder, so it is rejected:
+
+```
+user> (deftype (Box A) (Box [:A x]))
+Error: parse error at 14..15: type parameter `A` must be a lowercase symbol (a type variable); an uppercase name is a named-type reference, not a parameter (spec §2.2.2)
+```
+
+**Fix:** spell the parameter lowercase — `(deftype (Box a) (Box [:a x]))`. The same
+rule governs a `deftrait` constructor variable `(Functor f)` and every other
+type-parameter binder.
+
+Normative: [spec §2.2.2](../../spec/02-grammar.md) (a type parameter is a lowercase
+symbol).
 
 ## `deftrait` and `impl` declaration diagnostics
 

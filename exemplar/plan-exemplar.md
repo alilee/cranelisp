@@ -1140,27 +1140,53 @@ single idiomatic multi-sig `defn` — the common Clojure shape
 serial, no UAF under `QUARANTINE+SCRUB`). Its return is a plain `Bool`, so no
 polymorphic consumer is involved.
 
-**Deferred — blocked by the MC-X4 return-consumer residual**
-(`tests/mc_x4_multi_sig_return_consumer.rs`; consumer-side sibling of the
-carrier-loss family, `class=carrier-loss`, owner `/dev(typecheck)`):
+**Deferred — blocked by the parameter-distance carrier residual (FIXME 0719 —
+/qa-RULED DEFECT, S114 §12, now retargeted /testing).** The earlier "collapse
+once MC-X4 is green" record is FALSIFIED. The MC-X4 unit/e2e battery
+(`tests/mc_x4_multi_sig_return_consumer.rs` — all three GREEN; both
+`…_mc_x4`/`…_mc_x4b` typecheck units GREEN) IS green, yet the exemplar's
+collapse still fails — because the exemplar's shape is NOT the one MC-X4 pins.
+MC-X4's green `poly_consumer_of_multi_sig_return_mono_miss` consumes the
+multi-sig result **immediately, in the same expression**; the exemplar binds
+the result to a **bound parameter** that a **separately-monomorphised**
+downstream consumer reads (`peers idx` → `peer-list` arg of the recursive
+`eliminate-from-peers-helper`; `make-grid puzzle` → `g` matched then fed onward
+through `report`), so a free element var travels **through a bound parameter
+into a distinct monomorphisation** — the *parameter-distance* variant, the
+untested cell. The failure has **PROGRESSED, not closed**: no longer a silent
+codegen leak / `undefined function`, but now a LOCATED carrier-gate type error
+— the W2 carrier-totality gate catches it as `ambiguous type … residual unbound
+type variable reached a codegen position` (`class=carrier-loss`, owner
+`/dev(typecheck)`, S115 — RULED A DEFECT):
 
 - `make-grid` / `make-grid-helper` — collapsing it makes `make-grid`'s
   `(Option Grid)` return carry a free element-type var (the `Grid`/`SolveResult`
   ADT fields are *deliberately untyped*, inference-driven), so `user/report`,
   which **uses** the built grid (feeds `g` to `solve`/`format-board`/
-  `solution-page`), hits `ambiguous type … residual unbound type variable`
-  (`user/report$String`). **Refines MC-X4:** an ADT-wrapped multi-sig return
-  does NOT universally "dodge" — it dodges only when the wrapped value is merely
-  *matched*; when the built value flows into a further polymorphic consumer and
-  the ADT field is untyped, the residual resurfaces (the type-ambiguity face,
-  vs the `undefined function` face MC-X4 pins directly).
-- `peers` / `peers-helper` — bare `(Vec Int)` return consumed by the solver's
-  polymorphic Vec verbs (`count`/`get`) → codegen `undefined function`
-  (the direct MC-X4 shape).
+  `solution-page`), hits the located carrier-gate error monomorphised in
+  `user/report$String`.
+- `peers` / `peers-helper` — bare `(Vec Int)` return whose free element var
+  flows through a bound parameter into the solver's polymorphic Vec verbs
+  (`count`/`get`), tripping the same located carrier-gate error (monomorphised
+  in `solver/eliminate-from-peers$…`). plan-exemplar predicted this face as
+  codegen `undefined function`; it now surfaces as the located type error
+  instead — the face changed, the block did not.
 
 Both stay two-function (annotating the seed or the ADT field to force the
 back-flow would be fighting the language — un-idiomatic for a showcase).
-**Collapse `make-grid`/`peers` once MC-X4 is green.**
+**RULED A DEFECT (/qa, S114 §12; durable record
+`tests/plan/s114-test-plan.md`).** Inference is REQUIRED here: spec §5.1.2 holds
+a multi-sig `defn` type-checks identically to the same logic written as separate
+mutually-recursive functions — since the two-function form ships, the collapse
+of the SAME logic must too, and annotating to pin it would be "fighting the
+language" (this section's position CONFIRMED). Classed `wrong-reject`/
+`carrier-loss`; fix owner `/dev(typecheck)`, S115. The collapse stays
+two-function until the 0719 *consume-at-distance* family flips — /testing owns
+the reduction (start from the deterministic scratch-collapse recipe, shrink) and
+upgrades the mc_x4 family's bar to the §5.1.2 **equivalence-twin** assertion
+(both forms compile AND agree on output). FIXME 0719 retargets /testing and
+deletes when the family cells land. `is-solved` (collapsed S113) stays collapsed
+— its `Bool` return has no polymorphic consumer, so the residual cannot arise.
 
 **Diagnostic-mode note (S113):** the `is-solved` collapse is memory-neutral in
 every mode except `CRANELISP_ALLOC_PARITY`, where it moves the `user.cl` leak

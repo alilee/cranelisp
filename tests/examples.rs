@@ -147,8 +147,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("27-lazy-seq.cl", &[183]),
         ("28-parallel.cl", &[67]),
         // 29: type annotations (:Type binds the following form). Sum of
-        // sub-test pass counts = 42 + 42 + 11 + 7 + 17 = 119.
-        ("29-annotations.cl", &[119]),
+        // sub-test pass counts = 7 + 1 + 42 + 5 + 64 + 1 = 120 (the S114
+        // `space-form` sub-test — `: Int` whitespace tolerance — adds +1 over
+        // the prior 119; verified 120 both modes by /examples).
+        ("29-annotations.cl", &[120]),
         // 30: self-parallelising map-reduce (lenient eval). main returns
         // 8 * fib(38) / 1_000_000 = 312; process exit truncates to u8 => 56.
         ("30-parallel-map-reduce.cl", &[56]),

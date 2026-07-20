@@ -76,7 +76,7 @@ documented `main` return (sum of sub-test passes); it is the value
 | 26 | `26-functor.cl` | The `Functor` trait (higher-kinded `fmap`) | 91 |
 | 27 | `27-lazy-seq.cl` | Lazy sequences (`take`, `filter`, `iterate`) | 183 |
 | 28 | `28-parallel.cl` | Parallel evaluation: automatic sparking of independent `let` bindings (lenient eval) | 67 |
-| 29 | `29-annotations.cl` | The `:Type` annotation model (capstone): constraining function typing + disambiguating expressions | 119 |
+| 29 | `29-annotations.cl` | The `:Type` annotation model (capstone): constraining function typing + disambiguating expressions; `:` is a `^`-style reader macro so `: Int` == `:Int` (whitespace-tolerant) | 120 |
 | 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 | 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
@@ -114,6 +114,24 @@ documented `main` return (sum of sub-test passes); it is the value
   and rejected; the annotation selects the instance). The earlier
   annotate-a-bare-literal framing is demoted to a single "simplest form"
   line, since it does no inference work.
+  - **S114 Phase 6b — whitespace tolerance + the located dangling-qualifier
+    error beat.** The rule prose was corrected from the stale "binds the
+    immediately-following form (no space)" to the S114 §1.4.5 truth: `:` is a
+    reader macro in the manner of Clojure's `^` type hint, so **whitespace
+    between `:` and the type form is permitted** — `: Int` reads identically
+    to `:Int` in every position. The no-space form remains the idiom the
+    example uses everywhere; a new runnable sub-test `space-form` proves the
+    spaced spelling is the SAME annotation by pinning the ambiguous
+    `(default)` with `: Int` (selects `Default Int` = 7 → contributes 1;
+    ambiguous and non-compiling if the annotation were inert). Exit code moved
+    **119 → 120** (`tests/examples.rs:151` expectation lands via /testing in
+    the same phase commit). The error-cases comment block gained a "what the
+    compiler tells you" beat: the empty-MODULE-half `/bar` located reject is
+    quoted verbatim (stable message — "`/` here has no module name before
+    it…"); the symmetric empty-LOCAL-half `foo/`/`:foo/` located-reject
+    *contract* is DESCRIBED (located reject at the `/`, never a degradation to
+    the module-less name) without pinning the terse string, since that wording
+    is still being refined (0710 in flight).
 
 - **30-parallel-map-reduce** — reworked (S92 Phase 6b) for the post-slice-1
   world: lenient evaluation now sparks independent, individually-expensive
@@ -390,7 +408,7 @@ the spec when annotating coverage.)
 | Parallel evaluation (lenient eval: independent `let` bindings + apply-arguments) | 28, 30 |
 | Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
 | Poll-shape platform IO leaf (async effect suspends/resumes on the reactor; independent leaves overlap) | 34 |
-| `:Type` annotation model | 29 |
+| `:Type` annotation model (incl. `^`-style whitespace tolerance: `: Int` == `:Int`) | 29 |
 | Redefinition (later `defn` replaces; dependents rebind) | 33 |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 
@@ -414,6 +432,14 @@ to reconcile that table.
 
 ## Next skills
 
+- `/testing` (S114 Phase 6b) — the `tests/examples.rs:151` `29-annotations.cl`
+  expected exit **119 → 120** (new `space-form` whitespace-tolerance sub-test,
+  +1). Lands in the SAME phase commit as this example change (binding handoff);
+  `/examples` does NOT edit `tests/`. Verified `--run` == `--link` == 120,
+  2026-07-20. NOTE the file-internal sub-test breakdown comment there
+  (`42 + 42 + 11 + 7 + 17 = 119`) is a different grouping than the example's own
+  `7 + 1 + 42 + 5 + 64 (+1) = 120` tally; whichever `/testing` keeps, the total
+  is now 120.
 - `/qa` + `/testing` (S113 Phase 6b) — reconcile the `tests/examples.rs`
   expected-exit table: NEW multi-file project `37-method-import/main.cl` => **4**
   (verified `--run` == `--link`, fresh cache, 2026-07-19). It is driven the same

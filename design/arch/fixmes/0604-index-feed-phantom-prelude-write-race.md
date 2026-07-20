@@ -21,6 +21,55 @@ status: open
 
 # Phantom undeclared-PUBLIC `bit-and` entry in prelude's live table (S114: foreground writer, deterministic on this VM; formerly "index-feed write-race")
 
+## /qa S114 Phase-6b re-base (2026-07-20 — folds /stdlib FIXME 0713, now deleted; AMENDS the pre-W7 plan's step 1)
+
+**The 25/25 determinism EVAPORATED at HEAD.** /stdlib (Phase 6a, FIXME 0713)
+measured the deterministic recipe at HEAD `31101126` (debug binary rebuilt at
+HEAD, this VM): **0 fires across 85 runs** (25 exact-recipe + 25 with-main +
+30 exact-recipe; every run reaches the clean import, residual error only the
+expected `entry module has no 'main' function`). The num.bits self-test is
+stable 27/27 across 5 runs. The FIXME's own "preserve THIS record even if the
+VM state drifts" instruction is now active: **the drift has occurred.** Fire
+history is now: /sprint S109 16/16 → /testing S109 0/140 → /dev S110 0/~175 →
+/dev S114-W5 25/25 → S114-6a **0/85**. The S114 carrier/settlement window is
+the suspected perturbation (the same window shifted the ctor-as-value crash
+[0712, verified fixed] and the 0694 load-flap) — but suppressed-by-timing vs
+incidentally-fixed is UNDECIDABLE from quiet sweeps (that evidence class is
+spent; ~320 cumulative no-fires before W5 already proved quiet runs prove
+nothing).
+
+**Re-based S115 plan (supersedes "a single instrumented run" in step 1
+below — the one-run-names-it assumption no longer holds):**
+
+1. **The structural gate lands ON ITS OWN MERITS, not gated on a firing.**
+   /dev(src, narrow int): disposition the missed census row
+   (`commit_staging_to_live`, src/worker.rs:439/:513 — route through the
+   chokepoint or a named legal-skip with rationale), and land the corrected
+   **declared-export-closure** predicate (provider-existence is structurally
+   unable to catch the live defect) as an unconditional diagnosed error at
+   the chokepoint, honoring the deadlock hazard (precompute the closure; no
+   map read under the `get_mut` guard). `MODULE_TRACE` emission at the seam
+   rides the same change-set — the instrumentation is the OBSERVABILITY
+   deliverable (any future firing names its writer), not the ship gate.
+2. **The guard rides a SYNTHESIZED trigger, not the dead recipe.** /testing:
+   a unit test at the corrected predicate that INJECTS an out-of-closure
+   public write at the chokepoint and asserts the diagnosed error
+   (fail-on-revert by construction, interleaving-independent). The 25/25
+   recipe demotes to a bounded behavioural sweep (≥25×, expect 0-fire — a
+   no-regression check, NOT the acceptance gate).
+3. **A load-amplified recipe attempt is bounded, not open-ended**: one
+   time-boxed /testing attempt to re-induce the fire (suite-load
+   concurrent-compile pressure alongside the recipe, per the 0694
+   load-flap mechanism), abandoned without prejudice if quiet — the
+   structural gate does not wait for it.
+4. Acceptance re-based: census CLOSED including `commit_staging_to_live`;
+   corrected predicate unconditional + unit-pinned (injected trigger); twin
+   guards GREEN; /design(int) §2.2 correction + fixture-comment correction
+   ride the wave. Writer identification is DESIRED (via the landed trace, if
+   it ever fires again), no longer REQUIRED for this file to retire.
+
+Disposition record: `tests/plan/s114-test-plan.md` §12 item 4.
+
 ## /qa S114 pre-W7 re-attribution (2026-07-20 — PLAN OF RECORD; folds /review FIXME 0698, now deleted)
 
 **Supersedes the S114 Phase-3 section below.** The W5 change-set `58ac8e46`

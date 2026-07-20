@@ -8,10 +8,15 @@
 ;; doing REAL WORK: changing what typechecks and which trait instance the
 ;; compiler selects.
 ;;
-;; The rule: `:Type` is a type-unifying annotation. It is a reader-level
-;; prefix that binds the IMMEDIATELY-FOLLOWING form (no space) -- in EVERY
-;; position -- and unifies that form's inferred type with the named type.
-;; It is never a standalone atom; it always attaches to the next form.
+;; The rule: `:Type` is a type-unifying annotation. It is a reader macro --
+;; in the manner of Clojure's `^` type hint -- that binds the
+;; IMMEDIATELY-FOLLOWING form, in EVERY position, and unifies that form's
+;; inferred type with the named type. Like `^`, the reader tolerates
+;; WHITESPACE between the `:` and the form it binds: `: Int` is read
+;; identically to `:Int` (S114; spec Section 1.4.5). The no-space spelling is
+;; the idiom -- this example uses it everywhere -- but the two are the SAME
+;; annotation. `:Type` is never a standalone atom; it always attaches to the
+;; next form.
 ;;
 ;;   :Int x       ;; annotate the name x with Int
 ;;   :Int (f y)   ;; annotate the call (f y) with Int
@@ -111,6 +116,18 @@
 (defn annotate-literal []
   :Int 64)                                                ;; -> 64
 
+;; --- Whitespace tolerance: `: Int` is the SAME annotation as `:Int` (S114) --
+;;
+;; Because `:` is a `^`-style reader macro, a space between it and the type
+;; form is permitted, in EVERY position (param, let-value, return,
+;; sub-expression). `: Int` reads identically to `:Int`. The no-space spelling
+;; is the idiom this example uses everywhere else; this sub-test proves the
+;; spaced spelling is the same annotation by pinning the ambiguous `(default)`
+;; with `: Int` -- exactly as `:Int (default)` did in `disambiguate-int`.
+(defn space-form []
+  (let [x : Int (default)]                                ;; `: Int` == `:Int`
+    (if (eq-i64 x 7) 1 0)))                               ;; -> 1
+
 ;; --- Error cases (comments -- a runnable example cannot type-error) --------
 ;;
 ;; WITHOUT the annotation, the disambiguation cases above are REJECTED,
@@ -137,8 +154,24 @@
 ;;
 ;;   :Foo 42
 ;;   ;; error: unknown type `Foo`
+;;
+;; A DANGLING QUALIFIER in the annotated type -- a `/` with an empty half --
+;; is a LOCATED compile-time error, never a silent degradation to the
+;; module-less name. What the compiler tells you: the empty-MODULE-half form
+;; `/bar` reports, verbatim (stable message):
+;;
+;;   :/bar x
+;;   ;; error: `/` here has no module name before it -- a qualified name needs
+;;   ;;        a non-empty module (`mod/name`); a bare `/` division must be
+;;   ;;        separated (`(/ a b)`)
+;;
+;; The symmetric empty-LOCAL-half forms `foo/` and `:foo/` are likewise
+;; rejected AT the offending `/` token -- the compiler points at the dangling
+;; qualifier rather than quietly reading it as `foo`. (The exact wording of
+;; that located message is being refined; the CONTRACT to rely on is a located
+;; reject at the `/`, never a degradation to the module-less name.)
 
-;; Expected: 7 + 1 + 42 + 5 + 64 = 119
+;; Expected: 7 + 1 + 42 + 5 + 64 + 1 = 120
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
@@ -147,4 +180,5 @@
       (add-i64 (disambiguate-float)
         (add-i64 (constrain-return)
           (add-i64 (constrain-param)
-                   (annotate-literal)))))))
+            (add-i64 (annotate-literal)
+                     (space-form))))))))

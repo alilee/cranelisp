@@ -13,6 +13,11 @@ A lambda takes **exactly one** parameter list and one body:
 (fn [:Int x :Bool y] (if y x 0))
 ```
 
+A parameter name is a **binder**, so it must be **bare** — `x`, never `mod/x`; a
+qualified spelling in a parameter (as in a `let` name or a `match` variable) is a
+compile-time error, because a binder *introduces* a name rather than referencing
+one (see the [errors catalogue](../errors/trait-impl-diagnostics.md#qualified-name-in-a-binder-position)).
+
 That is the whole shape: one `[params]` bracket, one body expression. There is no
 multi-clause `fn`. If you try to write one — several `([params] body)` clauses
 inside a single `fn` — you get a parse error that tells you exactly what to reach

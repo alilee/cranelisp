@@ -42,21 +42,38 @@
 ;; entered via a cross-arity self-call now monomorphises) unblocked collapsing
 ;; an "entry seeds the accumulator" helper pair into ONE idiomatic multi-sig
 ;; `defn`. `is-solved` is collapsed this way (see its site): the 1-arg clause
-;; seeds the scan index and delegates cross-arity to the 2-arg clause.
+;; seeds the scan index and delegates cross-arity to the 2-arg clause. That
+;; collapse STAYS landed (its return is a plain `Bool` — no polymorphic
+;; consumer downstream, so the residual below cannot arise).
 ;;
 ;; `make-grid`/`make-grid-helper` and `peers`/`peers-helper` are DELIBERATELY
-;; kept two-function — collapsing them hits a still-open multi-sig residual: a
-;; multi-sig fold whose accumulator element type is not pinned by an annotation
-;; (the exemplar's `Grid`/`SolveResult` fields are deliberately UNTYPED,
-;; inference-driven) leaves the fold's result type carrying a free type var
-;; when consumed downstream, so a caller that USES the built value (not merely
-;; matches it) hits `ambiguous type … residual unbound type variable`
-;; (`make-grid` → `user/report`), and a bare-`(Vec _)` return consumed by a
-;; polymorphic Vec verb hits codegen `undefined function` (`peers` → `count`/
-;; `get`). Pinned as MC-X4 (`tests/mc_x4_multi_sig_return_consumer.rs`) — the
-;; consumer-side sibling of the carrier-loss family. `is-solved` is exempt
-;; because its return is a plain `Bool` (no polymorphic consumer). Collapse
-;; `make-grid`/`peers` once MC-X4 is green (see `plan-exemplar.md`).
+;; kept two-function. NOTE the earlier "collapse once MC-X4 is green" record
+;; was FALSIFIED (S114): the MC-X4 unit/e2e battery
+;; (`tests/mc_x4_multi_sig_return_consumer.rs`, both typecheck units) is now
+;; GREEN, yet the exemplar's own shape still fails to collapse — because it is
+;; NOT the shape MC-X4 pins. The green tests consume the multi-sig result
+;; IMMEDIATELY, in the same expression; the exemplar binds the result to a
+;; BOUND PARAMETER that a separately-monomorphised downstream consumer reads —
+;; a free element type var travelling through a parameter into a distinct
+;; monomorphisation (the *parameter-distance* variant). The failure has
+;; PROGRESSED, not closed: no longer a silent codegen leak / `undefined
+;; function`, but now a LOCATED carrier-gate type error (the W2 carrier-totality
+;; gate catches it as `ambiguous type … residual unbound type variable reached
+;; a codegen position`): `make-grid` → `user/report` (which USES the built
+;; grid — feeds `g` to `solve`/`format-board`/`solution-page`), and `peers` →
+;; the solver's polymorphic Vec verbs (`count`/`get`). The exemplar's
+;; `Grid`/`SolveResult` fields are deliberately UNTYPED (inference-driven);
+;; annotating the seed or the ADT field to force the back-flow would be
+;; fighting the language — un-idiomatic for a showcase. RULED A DEFECT (/qa,
+;; S114 §12; durable record `tests/plan/s114-test-plan.md`): inference is
+;; REQUIRED here per spec §5.1.2 — a multi-sig `defn` type-checks identically to
+;; the same logic written as separate mutually-recursive functions, so since the
+;; two-function form ships, the collapse of the SAME logic must too (annotating
+;; would indeed be "fighting the language"; this position CONFIRMED).
+;; `class=carrier-loss`, fix owner /dev(typecheck), S115. The collapse stays
+;; two-function until the 0719 consume-at-distance family flips — /testing owns
+;; the reduction + the §5.1.2 equivalence-twin matrix cells (see
+;; `plan-exemplar.md` §"Multi-sig Vec-helper showcase").
 
 (import [collections.vec [count get assoc conj]])
 (import [primitives [char-at str-len str-concat not]])
@@ -174,10 +191,17 @@
 ;; row, column, or box with idx (but are not idx itself).
 ;;
 ;; NOTE: kept two-function (NOT collapsed to a multi-sig entry+scan like
-;; `is-solved`) because `peers` returns a bare `(Vec Int)` consumed by the
-;; solver's polymorphic Vec verbs (`count`/`get`) — the MC-X4 return-consumer
-;; residual (`tests/mc_x4_multi_sig_return_consumer.rs`). Collapse once MC-X4
-;; is green (see the header "multi-sig showcase" note + `plan-exemplar.md`).
+;; `is-solved`) because `peers` returns a bare `(Vec Int)` whose free element
+;; var flows through a BOUND PARAMETER into the solver's polymorphic Vec verbs
+;; (`count`/`get`) — the parameter-distance carrier residual, NOT the direct
+;; shape MC-X4 pins. The MC-X4 battery
+;; (`tests/mc_x4_multi_sig_return_consumer.rs`) is now GREEN, but this exemplar
+;; shape still trips a LOCATED carrier-gate type error (`ambiguous type …
+;; residual unbound type variable reached a codegen position`) — progress from
+;; the old silent codegen `undefined function`, but still blocking. RULED A
+;; DEFECT (/qa, S114 §12): inference is required per spec §5.1.2, fix owner
+;; /dev(typecheck), S115; stays two-function until the 0719 consume-at-distance
+;; family flips (see the header "multi-sig showcase" note + `plan-exemplar.md`).
 (defn peers-helper [idx i acc]
   (if (= i 81) acc
     (if (= i idx)

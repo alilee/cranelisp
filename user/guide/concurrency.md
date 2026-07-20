@@ -337,9 +337,6 @@ state them plainly rather than imply production-unattended readiness.
 A few shapes currently miscompile or are unsound — avoid them, and use the supported
 shape instead. The snippets above all sidestep these on purpose:
 
-- **A bare ADT constructor used as a first-class function value crashes.** Wrap it in
-  a lambda: write `(fn [x] (Some x))`, not a bare `Some`, when passing a constructor
-  to a higher-order function. (This is why `timeout`'s definition wraps `Some`.)
 - **`race` with an *inline* `bind`-lambda argument miscompiles** under the default
   lenient evaluation. Use **named-helper branches** (as every snippet above does)
   rather than passing an inline `(bind …)` expression directly to `race`. `select` is

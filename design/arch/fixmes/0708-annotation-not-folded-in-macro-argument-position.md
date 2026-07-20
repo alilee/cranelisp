@@ -1,6 +1,8 @@
 ---
 number: 0708
-target: /qa
+target: /spec
+retargeted_from: /qa (S114 Phase-6b disposition, 2026-07-20 — attribution done;
+  the fork is language-normative; /spec frames it for the USER)
 filed_by: /repl
 filed_at: 2026-07-20
 sprint_filed: 114
@@ -8,6 +10,32 @@ refers_to: spec §1.4.5 / §2.3.8 (`:`-annotation reader macro) vs macro-argumen
   collection (frontend reader ↔ int macro-expansion seam)
 status: open
 ---
+
+## /qa S114 Phase-6b disposition (2026-07-20 — durable record: tests/plan/s114-test-plan.md §12 item 1)
+
+**Reproduced free-standing at HEAD `9fda5f40`** (no stdlib): `(defmacro mydef
+([name value] \`(defn ~name [] ~value)))` + `(mydef x :primitives/Int 5)` →
+the same 3-vs-2 arity error. **Attribution confirmed (the layered shape):**
+the reader emits `:primitives/Int` as ONE `Sexp::Symbol` with NO pairing
+(`reader.rs::read_colon_prefix`); pairing lives exclusively in the AST builder
+(`ast_builder.rs::try_consume_annotation` via `build_one_expr_at`); int's macro
+expansion (`src/process_form/macro_resolution.rs::try_expand_sexp`) counts raw
+Sexp children BEFORE AST build, so macro args see `:Int` standalone. The
+visible arity diagnostic is int's; the missing fold is a frontend↔int
+seam-ordering question.
+
+**Why /spec:** the spec does not settle the fork. §1.4.5's "never a standalone
+atom" (lexical) argues the fold must precede macro-arg collection; §2.3.8's
+"every *expression* position" does not obviously cover an unevaluated macro
+argument; and a sexp-level fold changes what every macro observably receives
+(a synthetic annotation pair) — language surface. Frame for the user:
+(a) fold before macro-arg collection (annotated macro args work uniformly;
+`(def x :Int 5)` succeeds) vs (b) deliberate carve-out (spec wording amended
++ a located diagnostic naming the annotation-in-macro-arg situation). Under
+EITHER ruling the current internal-sounding `returned malformed sexp … N
+argument(s)` message is nonconforming — the polarity-safe pin is specified in
+plan §12 item 1; /repl's diagnostic request is satisfied by both outcomes.
+S115 scope input (not a trivial fix).
 
 # `:Type` annotation does not bind the following form in macro-argument position
 

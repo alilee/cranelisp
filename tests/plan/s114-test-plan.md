@@ -1061,6 +1061,237 @@ entry-return leak (item 4); typecheck fix for the fn-as-value carrier-loss
    a genuine regression; a flap RED reopens per item 2 (root-cause row,
    never "flake").
 
+## 12. Phase-6b disposition batch (/qa, 2026-07-20 — the six 6a-filed FIXMEs, probed at HEAD `9fda5f40`)
+
+Durable record for FIXMEs 0708/0709/0712/0713/0719/0720 (all `target: /qa`,
+filed Phase 6a). All probes run on this VM against the HEAD debug build;
+repro sources preserved in the item bodies. 0712 + 0713 are DELETED with this
+batch; 0708 retargets `/spec`; 0709/0719/0720 retarget `/testing` and delete
+in their pin commits.
+
+1. **0708 — `:Type` annotation not folded in macro-argument position:
+   REPRODUCED free-standing; layered attribution CONFIRMED; spec fork →
+   /spec frames for the USER; S115 scope input (NOT a trivial fix).**
+   Free-standing repro (no stdlib): `(defmacro mydef ([name value]
+   \`(defn ~name [] ~value)))` then `(mydef x :primitives/Int 5)` →
+   `macro error … no matching clause for macro user/mydef with 3 argument(s);
+   clauses accept 2 argument(s)`. The control `(mydef y 5)` works, and
+   function-application folding works (`(one :primitives/Int 5)` → one arg).
+   **Attribution (the layered shape the filer flagged, confirmed by source):**
+   the reader tokenizes `:primitives/Int` as ONE `Sexp::Symbol` but performs
+   no pairing (`reader.rs::read_colon_prefix`); the pairing is exclusively an
+   AST-build concern (`ast_builder.rs::try_consume_annotation` via
+   `build_one_expr_at`); int's macro expansion
+   (`src/process_form/macro_resolution.rs::try_expand_sexp`) counts raw Sexp
+   children BEFORE AST build — so a macro argument list sees `:Int` as a
+   standalone atom. The visible arity error is int's; the missing fold is a
+   frontend↔int seam-ordering question. **The spec does not settle the fork**:
+   §1.4.5 says a `colon_prefix` is "never a standalone atom" (lexical claim —
+   argues the fold precedes macro-arg collection), while §2.3.8's "every
+   *expression* position" does not obviously cover an unevaluated macro
+   argument; and a sexp-level fold changes what every macro observably
+   receives (a synthetic annotation pair), which is language surface.
+   → **Routing: FIXME 0708 retargets /spec** (frame for the user: fold before
+   macro-arg collection vs deliberate carve-out + diagnostic). **Polarity-safe
+   pin (author with the S115 batch, after or with the ruling): under EITHER
+   ruling the internal-sounding `returned malformed sexp … N argument(s)`
+   message for an annotated macro arg is nonconforming** (ruling (a): the form
+   works; ruling (b): a located diagnostic naming annotation-in-macro-arg).
+   Cell: the free-standing repro above, assert stdout does-not-contain
+   `returned malformed sexp` — RED at HEAD, GREEN under both rulings; sharpen
+   the positive assertion after the ruling (0702-precedent: pins whose correct
+   assertion differs by ruling wait for /spec; this one does not differ on the
+   negative face). Fix owner after ruling: /dev(src, expansion seam) for (a);
+   /dev(src) diagnostic + /spec carve-out for (b).
+
+2. **0709 — nullary non-dispatchable trait method leaks to codegen: SPEC
+   ALREADY SETTLES THE FORK — rejection at DECLARATION; no user question.**
+   Reproduced at HEAD (no prelude): `(deftrait Zeroable (zed [] Int))` is
+   accepted; `(zed)` → `codegen error … undefined function: zed`.
+   **spec/07-traits.md §7.1 (occurrence rule):** a method that mentions the
+   implementing type nowhere "has nothing to dispatch on and MUST be rejected
+   **for 'no occurrence of the implementing type to dispatch on'**" — with the
+   diagnostic reason pinned by the spec, and explicitly distinct from the
+   §7.2.3 HKT reason. So the filer's option 1 IS the spec; the current
+   behaviour is a `silent-accept` at declaration whose downstream symptom is
+   the F-D2 check-gate-leak face. **Attribution:** /dev(typecheck), the
+   `check_form_register` TraitDecl registration arm (no occurrence-rule
+   enforcement exists anywhere — the only §7.1.1-adjacent text is a comment in
+   `traits/impl_check.rs:225`; the well-formed return-dispatch twin
+   `(zed [] self)` must stay accepted, §7.1's own example). **Pin directive
+   (/testing, S115 batch; polarity CERTAIN):** (i) RED — `(deftrait Zeroable
+   (zed [] Int))` MUST produce a located error containing "no occurrence of
+   the implementing type" (spec-pinned reason; assert substring); (ii) RED
+   negative twin — the three-line transcript MUST NOT surface a codegen
+   `undefined function` (flips green as a consequence of (i)); (iii) GREEN
+   control — `(deftrait Zero (z [] self))` + resolved `:Int (z)` stays
+   accepted. `// defect: class=silent-accept
+   locus=crates/cranelisp-typecheck check_form_register TraitDecl arm — §7.1
+   occurrence rule unenforced found=S114 owner=/dev`. Fix = S115 typecheck
+   scope input (small; rides any typecheck wave). FIXME 0709 retargets
+   /testing; deletes in the pin commit.
+
+3. **0712 — ctor-as-first-class-value crash: VERIFIED FIXED at HEAD, both
+   modes; regression guards directed; FIXME DELETED.** Verified e2e at HEAD
+   `9fda5f40` (free-standing, primitives-glob prelude, `--run` AND `--link`,
+   exit-code-carried values):
+   - bare user ctor to a HOF (`(apply-it Bx 7)`), bare seeded ctor to a HOF
+     (`(apply-it Some 8)`), ctor bound-then-applied (`(let [f Some] (f 9))`)
+     — one program, exit 7 in BOTH modes;
+   - the composed `map-io`+bare-`Some` shape (the /stdlib io.cl gate):
+     `(my-map-io Some (Pure 5))` with `my-map-io = (bind io (fn [x] (Pure (f
+     x))))` — exit 5 in BOTH modes (+ REPL echo correct);
+   - the docs `timeout` shape (race + map-io with bare `Some` + sleep-arm
+     `None`) — exit 6 in BOTH modes.
+   **Boundary statement (what still fails — none of it ctor-shaped):** see
+   item 6 below ("0712/0705 boundary"). **Regression-guard directive
+   (/testing, with the S115 batch or sooner):** land the three shapes above
+   as GREEN guards (one file, e.g. `tests/ctor_as_value.rs`; run+link via the
+   `assert_run_and_link` pattern; `// defect:` retro-tag `class=null-got-slot`
+   → past tense, the 0476 family, `found=S102 owner=/dev` at the S114
+   carrier/GOT-slot fix locus) — the composed map-io cell is the named gate
+   for /stdlib's io.cl `timeout` simplification and the docs concurrency.md
+   rough-edge retirement. **Unblocked by this verdict: /docs item 4
+   (concurrency.md rough-edge edit — delete the ctor bullet outright, no
+   narrowing needed; the surviving fn-as-value defects are partial-application
+   shapes a doc reader would not conflate) and /stdlib item 1 (io.cl `timeout`
+   may drop the `(fn [x] (Some x))` wrapper once its own conformance run is
+   green; the stdlib comment citing FIXME 0476 retires with it).**
+
+4. **0713 — 0604 determinism evaporated: FOLDED into FIXME 0604 (§"/qa S114
+   Phase-6b re-base"); FIXME 0713 DELETED.** The S115 0604 plan is re-based:
+   structural gate (census close + declared-export-closure predicate +
+   MODULE_TRACE at `commit_staging_to_live`) lands on its own merits;
+   the fail-on-revert guard rides a SYNTHESIZED injected trigger, not the
+   dead 25/25 recipe (demoted to a bounded no-regression sweep); one
+   time-boxed load-amplified re-induction attempt; writer identification
+   desired-not-required. Carrier/settlement-window perturbation noted (same
+   window shifted the 0712 crash and the 0694 load-flap). S115 scope input
+   §11's item "0604 writer identification (front-load … single instrumented
+   run)" is AMENDED accordingly.
+
+5. **0719 — MC-X4 exemplar residual: RULED A DEFECT (spec-settled; no user
+   question). Inference is REQUIRED; the exemplar hold stays until the family
+   flips; the coverage-matrix gap is the §5.1.2 equivalence-TWIN assertion.**
+   - **The ruling's ground:** spec §5.1.2 "Inference — clause-equivalent to
+     separate mutually-recursive functions": a multi-sig defn "type-checks
+     identically to the same logic written as two separate mutually-recursive
+     functions", and a clause is ambiguous "only when the equivalent
+     standalone function would also fail to infer it … never merely because
+     it belongs to a multi-signature form." The exemplar's two-function form
+     COMPILES AND SHIPS; the collapse of the SAME logic fails. That is the
+     spec's own acid test — annotating to pin it would indeed be "fighting
+     the language" (plan-exemplar's position CONFIRMED). This is
+     `wrong-reject` by §5.1.2 (surfaced from the W2 carrier-totality gate;
+     mechanism family `carrier-loss`, the MC-X4/P26-temporal root).
+   - **Repro re-confirmed at HEAD `9fda5f40`:** scratch-copy peers collapse
+     (1-arg + 3-arg clauses, exactly the recorded recipe) → `type error at
+     3460..3547: ambiguous type … monomorphised in
+     \`solver/eliminate-from-peers$grid/Grid$primitives/Vec$grid/Cell+Int+Int\`
+     (a residual unbound type variable reached a codegen position)`. Exact
+     match to the filer's record; the un-collapsed exemplar is green.
+   - **Axis isolation (probed — all these SINGLE/DOUBLE-axis synthetics are
+     GREEN at HEAD, i.e. the S113 pins' fix reaches further than the green
+     battery shows):** parameter-distance through a recursive consumer
+     (bare `(Vec Int)`, seeded `[0]` AND seeded `[]`) — green; untyped-ADT-
+     field × distance — green; cross-module × untyped-field × distance —
+     green. The exemplar's failing combination adds trait-operator-constrained
+     clauses (`=`/`+`), stdlib `conj`/`count`/`get` poly verbs, and a
+     multi-param ADT-consuming downstream instance; the discriminating axis is
+     NOT yet named — that is the reduction /testing owns (start from the
+     deterministic scratch-collapse, shrink; partial reductions commit with
+     the FIXME note per protocol).
+   - **Matrix directive (/testing, S115; the S108 coverage-by-variants lens):
+     the mc_x4 family gains the *consume-at-distance* variant rows, and the
+     family's acceptance bar is upgraded to the EQUIVALENCE-TWIN assertion**
+     (both forms of the same program must compile AND agree on output — the
+     X4b bar "monomorphise OR reject cleanly" is too weak: it lets a §5.1.2
+     wrong-reject read as green). Rows: (i) the three born-green controls
+     above (land them — they pin the fixed variants); (ii) the exemplar-
+     combination RED cell (reduced free-standing; until reduction completes,
+     the committed cell MAY be the scratch-collapse recipe as a
+     fixture-copied e2e, marked partial-reduction). `// defect:
+     class=carrier-loss locus=crates/cranelisp-typecheck consumer mono
+     harvest — multi-sig return consumed at parameter distance
+     (exemplar-combination axis unreduced) found=S114 owner=/dev`.
+   - **Record corrections:** the S114 "MC-X4 hold is now RELEASED" assertion
+     is FALSIFIED for the exemplar shape (this batch is the durable
+     correction); /port keeps `make-grid`/`peers` two-function and re-words
+     the collapse trigger from "once MC-X4 is green" to "when the 0719
+     consume-at-distance family flips" (grid.cl's NOTE already says
+     substantially this; plan-exemplar.md's §"Multi-sig Vec-helper showcase"
+     inherits the wording via /port at its next touch — no exemplar edit
+     needed this phase). Fix owner: /dev(typecheck), S115 scope input.
+     FIXME 0719 retargets /testing; deletes when the family cells land.
+
+6. **0720 — exemplar solve leak: verdict (b) — a RESIDUAL NEVER-FREED FACE
+   the W4 MS-P8 fix does not cover; minimal 2-objects-per-iteration scaling
+   repro FOUND; S115 backend fix + pin directive.**
+   - **Filer's numbers confirmed at HEAD:** solver.cl serial
+     `CRANELISP_RC_STATS=1` → allocs=26457 deallocs=14634 residue=11823
+     (byte-identical to 6a; also rc_inc=131278 vs rc_dec=37665).
+   - **RC_TRACE adjudication (full serial solve, 43,683 events, per-pointer
+     reconciliation):** leaked total = 11,823 exactly; **11,772 of them are
+     allocated and then NEVER inc'd, never dec'd, never freed** (born rc=1,
+     dropped). Not an accounting artifact (option (a) REJECTED): the tail-COW
+     control loop balances exactly (reuse_hit=N, allocs==deallocs), and the
+     copy-discard-while-original-live control balances exactly at N=200/400.
+   - **The minimal repro (scales 2/iteration, deterministic):** the
+     ADT-WRAPPED COW supersede loop —
+     `(deftype G2 (Gr [cells]))`,
+     `(defn set0 [g n] (match g [(Gr cells) (Gr (vec-set cells 0 n))]))`,
+     tail loop superseding `g` with `(set0 g n)` → N=200: allocs=403
+     deallocs=2; N=400: allocs=803 deallocs=2 (the superseded `Gr` box AND
+     its cells vec both leak every iteration; rc_inc=1 total — no inc/dec is
+     ever emitted for the superseded pair). The BARE-vec twin of the same
+     loop is fully balanced (reuse_hit=N) — **the W4 MS-P8 tail-jump release
+     covers the bare heap loop-param only; the ADT-wrapped loop-param (the
+     exemplar's `set-cell` shape: match-extract → COW → re-wrap → supersede)
+     gets NO release at all.** Exemplar scale agrees: ~5.9k supersedes × 2
+     objects ≈ 11.8k/solve; serial ≡ parallel (filer) fits — no concurrency
+     involved.
+   - **Attribution:** /dev(backend), RC emission for the superseded
+     ADT-wrapped tail-call argument (MS-P8 sibling; plausibly the same seam
+     family as §2.1 F-R1 — the consume-side release is keyed on the vec
+     shape, not on "heap loop-param" generally). `class=rc-miscount
+     locus=crates/cranelisp-backend TCO tail-jump superseded-param release —
+     ADT-wrapped loop param (MS-P8 sibling; bare-vec face fixed W4)
+     found=S114 owner=/dev`.
+   - **Pin directive (/testing, S115 batch): RED ×2** — the wrap-loop repro
+     under `CRANELISP_RC_STATS=1`, assert `allocs - deallocs` ≤ small-const
+     (serial; RC-test threading convention), at two N values asserting the
+     residue does NOT scale with N; GREEN control: the bare-vec twin. FIXME
+     0720 retargets /testing; deletes in the pin commit. **0408's framing
+     stands unchanged** (copy COST is the performance finding; this is a
+     distinct correctness leak — `exemplar/CLAUDE.md`'s "not a correctness
+     defect" sentence remains true of 0408 itself). `test-hard-puzzle` stays
+     excluded (0408 carry). Oracle note: this leak also poisons any future
+     `allocs==deallocs` differential-oracle cell over ADT-wrapped loops —
+     same lane-criticality argument as §11 item 4; the S115 backend slot
+     should treat the two as one RC-release sweep.
+
+**Examples reconciliation rider (/examples 6b handoff, binding on /testing):**
+the /examples Phase-6b change lands a 29-annotations sub-test making the
+documented exit 119 → **120**. `tests/examples.rs:151` (`("29-annotations.cl",
+&[119])`) and the :150 breakdown comment MUST be updated to 120 **in the same
+change-set** as the examples edit (or the suite reddens on a non-defect).
+/testing lands it with the examples change; suite-state certification counts
+it as an expectation reconciliation, not a flip.
+
+**S115 scope inputs added by this batch (for /sprint Phase 1):**
+- /spec: 0708 macro-argument annotation-fold fork (frame for the user);
+  then /dev(src) fix per ruling + the polarity-safe pin.
+- /dev(typecheck): 0709 §7.1 occurrence-rule enforcement (small);
+  0719 consume-at-distance carrier fix (the exemplar-combination axis —
+  sized AFTER /testing's reduction names the axis).
+- /dev(backend): 0720 ADT-wrapped superseded-loop-param release, folded into
+  ONE RC-release sweep with §11 item 4's entry-return leak (both faces).
+- /testing: the §12 pin batch — 0709 (i)–(iii), 0719 twins + RED
+  combination cell (reduction), 0720 wrap-loop pins + control, 0712 GREEN
+  guards, the 0708 polarity-safe pin (after/with the /spec ruling), the
+  examples 119→120 reconciliation.
+- 0604 re-based plan per item 4 (amends §11's S115 input).
+
 ## Next skills
 
 - `/testing` — riders (§8): M2-TP1/TP2 (with/before W-D1), BI-H-heap ×2

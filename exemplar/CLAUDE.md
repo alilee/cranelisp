@@ -90,6 +90,23 @@ representation (persistent/structural-share Vec or in-place masks) plus a
 Phase-H release backend is the fix. `test-hard-puzzle` stays excluded from the
 runner until then.
 
+**Solve-path never-freed leak (FIXME 0720 → S115 backend; distinct from 0408).**
+A full serial solve leaks ~11.8k objects (`CRANELISP_RC_STATS=1`: allocs 26457,
+deallocs 14634, residue 11823 — /qa reconciled the RC_TRACE and found 11,772 are
+born rc=1 then dropped, never inc'd/dec'd/freed; NOT an accounting artifact).
+Verdict (/qa, S114 §12; durable record `tests/plan/s114-test-plan.md`): the
+**ADT-wrapped superseded loop-param never-freed face** — `set-cell`'s
+match-extract → COW → re-wrap → supersede shape leaks 2 objects/iteration (the
+`Gr` box AND its cells vec) × ~5.9k supersedes ≈ 11.8k/solve. W4's MS-P8
+tail-jump release covers the BARE-vec loop-param only; the ADT-wrapped
+loop-param gets no release at all. Attributed `/dev(backend)`
+(`class=rc-miscount`, TCO tail-jump superseded-param release), fixed S115 in one
+RC-release sweep with the entry-return leak. This is a **correctness leak** and
+is **distinct from 0408** — 0408's copy-churn *performance* framing (the
+quadratic whole-Vec copy per guess) stands unchanged. A solve is *correct*, just
+leaky, so no exemplar source change is warranted (the leak is the compiler's to
+fix; serial ≡ parallel, no concurrency involved).
+
 ## Headline entry
 
 `user.cl` is the showcase command. It wires all four pure modules exactly as
@@ -195,3 +212,9 @@ serialising (≈K·D).
   directory with copies of the modules for REPL work.
 - **Hard-puzzle backtracking is quadratic** (performance, not correctness) — the
   0408 perf carry; see Current State.
+- **`--link` requires a consistent workspace build.** Before an exemplar
+  `--link`, the workspace must be built coherently: `cargo build` plus
+  `tests/scripts/build-link-prereqs.sh`. A piecemeal build (some crates stale,
+  some fresh) yields spurious `undefined reference to cranelisp_platform::…` at
+  the link step. This is the documented build-skew gotcha (Linux VM baseline),
+  **not a compiler defect** — a coherent rebuild clears it.

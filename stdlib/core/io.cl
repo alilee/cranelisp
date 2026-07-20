@@ -39,14 +39,11 @@
 ;; `IO (Option a)`. `timeout` adds NO cancellation plumbing — it inherits the four
 ;; race-loser drop-release paths from `race` (reactor.md §2.18: "per-request timeout
 ;; is one stdlib line over the `race` primitive").
-;; NB: the winner-arm wraps the `Some` constructor in an explicit lambda
-;; (`(fn [x] (Some x))`) rather than passing `Some` itself as `map-io`'s `f`. A
-;; bare ADT constructor applied as a first-class fn-value currently miscompiles
-;; (FIXME 0476 — `(apply-it Some 7)` SIGSEGVs, no IO involved); the lambda form
-;; applies the constructor directly and is the supported shape.
+;; The winner-arm passes the bare `Some` constructor as `map-io`'s `f`: an ADT
+;; constructor is a first-class fn-value (ctor-as-value fixed, 0712 — S114 Phase 6).
 (defn timeout "Run io against a d-millisecond timer: (Some v) if io wins, None if the timer fires (cancelling io)"
   [d io]
-  (race (map-io (fn [x] (Some x)) io)
+  (race (map-io Some io)
         (map-io (fn [_] None) (sleep d))))
 
 (defn when-io "Perform an IO action only if condition is true, otherwise pure unit"

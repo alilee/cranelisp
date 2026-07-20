@@ -67,6 +67,13 @@ where `discover-tests` — a host-promised extern — resolves):
 (tally-line (tally (vec-map run-one (discover-tests ["<module>.test"]))))
 ```
 
+**Import a REAL public name, never the null-import `[]`.** The force-load line
+must name an actual public symbol (`(import [<module> [<a-public-name>]])`). A
+null-import `(import [<module> []])` compiles the module but does **not** register
+its `(mod- test)` child for discovery — `discover-tests ["<module>.test"]` then
+returns empty and the recipe silently reports zero tests (a false green). Naming a
+public name pulls the module (and its private test child) into the discovery graph.
+
 The pure runner helpers (`run-one`, `tally`, `report`, `passed?`) work in every
 mode; only discovery is REPL-only.
 
