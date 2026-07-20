@@ -108,10 +108,19 @@ where
     pub(crate) variable_types: HashMap<Symbol, Type>,
     /// Last-use information: (var_name, span) -> is_last_use.
     pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
-    /// Variables that borrow from a parent (e.g., pattern match field bindings).
-    /// Borrowed vars skip both inc (at extraction) and dec (at scope exit).
-    /// The owner (scrutinee) handles cleanup via its own RC management.
-    pub(crate) borrowed_vars: std::collections::HashSet<Symbol>,
+    /// Variables that borrow from a parent (e.g., pattern match field bindings,
+    /// R1 alias-`let` bindings, `Borrowed` params). Borrowed vars skip both inc
+    /// (at extraction) and dec (at scope exit) — the owner (scrutinee / aliased
+    /// root / caller) handles cleanup via its own RC management.
+    ///
+    /// SCOPE-STRATIFIED, parallel to `scope_stack` (FIXME 0692): the borrowed
+    /// mark is a property of a *binder*, not a *name* (Principle 20). The set at
+    /// index `i` holds the borrowed names of `scope_stack[i]`, so a later
+    /// shadow/sibling binding of the same name to an OWNED value is NOT wrongly
+    /// treated as borrowed. `is_borrowed` resolves a name against its INNERMOST
+    /// binding. The prior fn-lifetime, name-keyed set leaked a second owned
+    /// binding whenever a name was reused (a regression the R1 widening exposed).
+    borrowed_stack: Vec<std::collections::HashSet<Symbol>>,
     /// Captured variable names (variables closed over by a lambda).
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
@@ -364,7 +373,7 @@ where
             fn_param_count,
             variable_types: HashMap::new(),
             last_uses,
-            borrowed_vars: std::collections::HashSet::new(),
+            borrowed_stack: vec![std::collections::HashSet::new()],
             captured_vars: std::collections::HashSet::new(),
             current_mode_summary: None,
             tail_arg_protect: false,
@@ -512,7 +521,7 @@ where
             fn_param_count: defn.params().len(),
             variable_types: HashMap::new(),
             last_uses,
-            borrowed_vars: std::collections::HashSet::new(),
+            borrowed_stack: vec![std::collections::HashSet::new()],
             captured_vars: std::collections::HashSet::new(),
             current_mode_summary: mode_summary,
             tail_arg_protect: false,
@@ -564,7 +573,7 @@ where
         debug_assert!(
             skip_var
                 .as_ref()
-                .is_none_or(|rv| !compiler.borrowed_vars.contains(rv)),
+                .is_none_or(|rv| !compiler.is_borrowed(rv)),
             "§3.2 invariant violated: Borrowed param {skip_var:?} reached the return path \
              — the ownership analysis must widen returned params off Borrowed"
         );
@@ -1001,9 +1010,15 @@ where
 
     pub(crate) fn push_scope(&mut self) {
         self.scope_stack.push(vec![]);
+        // Keep `borrowed_stack` frame-synced with `scope_stack` (FIXME 0692):
+        // the new frame's borrowed marks live at the matching index.
+        self.borrowed_stack.push(std::collections::HashSet::new());
     }
 
     pub(crate) fn pop_scope(&mut self) {
+        // Pop the parallel borrowed frame with the scope frame so a re-bound name
+        // in an enclosing frame recovers its own borrowed status (FIXME 0692).
+        self.borrowed_stack.pop();
         if let Some(frame) = self.scope_stack.pop() {
             for name in frame {
                 self.variables.remove(&name);
@@ -1038,7 +1053,7 @@ where
                         return true;
                     }
                 // Skip borrowed variables (owner handles cleanup).
-                this.borrowed_vars.contains(name)
+                this.is_borrowed(name)
             });
             self.emit_heap_binding_decs(&to_dec);
         }
@@ -1158,7 +1173,7 @@ where
                 if transfer_skip.contains(name) {
                     return true;
                 }
-                this.borrowed_vars.contains(name)
+                this.is_borrowed(name)
             });
             to_dec.append(&mut frame_decs);
         }
@@ -1178,13 +1193,17 @@ where
     ///    (a MOVE — `transfer_skip`, self- or cross-slot): the box carries forward,
     ///    so dec'ing it would double-free the value the next iteration owns (the
     ///    exact contract the let flush honors);
-    ///  - a `borrowed_vars` param (the caller owns it);
-    ///  - a param whose matching arg is an IN-PLACE COW primitive on THAT param
-    ///    (`(vec-set p …)` / `(vec-push p …)` returns `p`'s OWN box when it reuses
-    ///    in place, so the slot is NOT superseded — dec'ing it would free the
-    ///    carried box; SKIP = leak-safe, the both-polarity fence's safe direction:
-    ///    never an under-count / UAF). `conj`/`assoc` are USER-fn calls, not these
-    ///    primitives, so the persistent-op leak is still fixed.
+    ///  - a borrowed param (the caller owns it);
+    ///  - **analysis-ON only** — a param that SOME tail arg is an in-place COW
+    ///    rooted at (`(vec-set p …)` / `(vec-push p …)` anywhere in the arg list,
+    ///    not only at `p`'s own position — FIXME 0691): the mutate branch returns
+    ///    `p`'s OWN box and forwards it into that slot, so the slot is NOT
+    ///    superseded — dec'ing it would free the carried box; SKIP = leak-safe,
+    ///    the both-polarity fence's safe direction: never an under-count / UAF.
+    ///    Under `CRANELISP_NO_OWNERSHIP` the COW always copies (rc≥2 force-count),
+    ///    so nothing is carried forward and the dec is always owed — the exemption
+    ///    does NOT apply toggle-off (FIXME 0695). `conj`/`assoc` are USER-fn
+    ///    calls, not these primitives, so the persistent-op leak is still fixed.
     ///
     /// The frames are NOT popped (the loop header reuses the param slots) — this
     /// only releases the superseded slot references.
@@ -1197,17 +1216,18 @@ where
             Some(f) => f.clone(),
             None => return,
         };
+        let analysis_off = cranelisp_types::ownership_analysis_off();
         let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
-            if transfer_skip.contains(name) || this.borrowed_vars.contains(name) {
+            if transfer_skip.contains(name) || this.is_borrowed(name) {
                 return true;
             }
-            // In-place COW hazard: the arg in THIS param's position mutates the
-            // param and may return its own box (skip — leak-safe).
-            param_frame
-                .iter()
-                .position(|p| p == name)
-                .and_then(|pos| args.get(pos))
-                .is_some_and(|arg| arg_is_inplace_cow_on(arg, name))
+            // In-place COW hazard (analysis-ON only): if SOME tail arg is an
+            // in-place COW rooted at this param, the mutate branch may forward
+            // the param's OWN box into that slot — dec'ing it would free the
+            // carried box (skip, leak-safe). Positional-blind: the COW can feed
+            // a DIFFERENT slot than the param's own (FIXME 0691). Toggle-off
+            // always copies, so the dec is always owed (FIXME 0695).
+            param_flush_exempts_inplace_cow(args, name, analysis_off)
         });
         self.emit_heap_binding_decs(&to_dec);
     }
@@ -1224,7 +1244,7 @@ where
             .iter()
             .skip(1)
             .any(|frame| frame.contains(name));
-        if !in_let_frame || self.borrowed_vars.contains(name) {
+        if !in_let_frame || self.is_borrowed(name) {
             return false;
         }
         self.variable_types
@@ -1327,7 +1347,7 @@ where
             // Captured variables are NEVER eligible for last-use transfer.
             return false;
         }
-        if self.borrowed_vars.contains(name) {
+        if self.is_borrowed(name) {
             // Borrowed variables (extracted from a match scrutinee's field)
             // do NOT own the value — the scrutinee still holds it. A
             // textually-last use of a borrowed var does not imply ownership
@@ -1348,8 +1368,23 @@ where
     }
 
     /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
+    /// The mark is recorded on the INNERMOST scope frame (FIXME 0692), so it is
+    /// released when that frame pops and never bleeds into a later shadow/sibling
+    /// binding of the same name.
     pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
-        self.borrowed_vars.insert(name.clone());
+        if let Some(top) = self.borrowed_stack.last_mut() {
+            top.insert(name.clone());
+        }
+    }
+
+    /// Is `name`'s CURRENT (innermost) binding borrowed? Resolves against the
+    /// scope-stratified `borrowed_stack` (FIXME 0692): find the innermost scope
+    /// frame that binds `name` and report THAT frame's borrowed mark. A borrowed
+    /// mark on a name-colliding OUTER binding must not classify an inner
+    /// shadow/sibling binding as borrowed (Principle 20 — borrowed is a property
+    /// of a binder, not a name).
+    pub(crate) fn is_borrowed(&self, name: &Symbol) -> bool {
+        resolve_borrowed(&self.scope_stack, &self.borrowed_stack, name)
     }
 
     // === 0668 binding-indirection consume contract (W-B1 classifier) ==========
@@ -1445,6 +1480,51 @@ where
         }
         *escapes != Some(false)
     }
+}
+
+/// Resolve a name's borrowed status against the scope-stratified stacks
+/// (FIXME 0692). Finds the INNERMOST scope frame that binds `name` and reports
+/// that frame's borrowed mark; a name-colliding OUTER binding's mark never bleeds
+/// into an inner shadow/sibling binding. Pure over the two parallel stacks so the
+/// shadow/sibling resolution is unit-testable without a live `FnCompiler`.
+fn resolve_borrowed(
+    scope_stack: &[Vec<Symbol>],
+    borrowed_stack: &[std::collections::HashSet<Symbol>],
+    name: &Symbol,
+) -> bool {
+    scope_stack
+        .iter()
+        .zip(borrowed_stack)
+        .rev()
+        .find(|(frame, _)| frame.contains(name))
+        .is_some_and(|(_, borrowed)| borrowed.contains(name))
+}
+
+/// The MS-P8 param-flush in-place-COW exemption decision (pure — FIXMEs 0691,
+/// 0695). A superseded heap param is EXEMPT from the tail-jump dec (SKIP,
+/// leak-safe) iff analysis is ON **and** SOME tail arg is an in-place COW rooted
+/// at the param:
+///
+/// - **Positional-blind (0691):** the scan is over ALL args, not just the arg at
+///   the param's own position. An in-place `vec-set`/`vec-push` on param `p` can
+///   forward `p`'s OWN box into a DIFFERENT slot (e.g. `(go (vec-set v 0 n) …)`
+///   where `v`'s own slot takes a fresh value); the positional-only check dec'd
+///   `v` and freed the carried box (UAF). Any-arg scan is leak-safe in the copy
+///   case, correct in the mutate case — honouring the flush's own invariant
+///   (never an under-count / UAF).
+/// - **Toggle-off never exempts (0695):** under `CRANELISP_NO_OWNERSHIP` the COW
+///   source is force-counted (rc≥2) so the op ALWAYS copies — nothing is carried
+///   forward in place, the mutate-in-place rationale never holds, and the
+///   superseded param's dec is always owed.
+pub(crate) fn param_flush_exempts_inplace_cow(
+    args: &[MonoExpr],
+    name: &Symbol,
+    analysis_off: bool,
+) -> bool {
+    if analysis_off {
+        return false;
+    }
+    args.iter().any(|arg| arg_is_inplace_cow_on(arg, name))
 }
 
 /// Structural: is `arg` an IN-PLACE COW primitive (`vec-set`/`vec-push`) whose
@@ -2545,6 +2625,76 @@ mod binding_indirection_classifier_tests {
         assert!(!arg_is_inplace_cow_on(&cow_call("conj", var("v")), &p));
         // A non-COW primitive is not skipped.
         assert!(!arg_is_inplace_cow_on(&cow_call("vec-get", var("v")), &p));
+    }
+
+    // MS-P8 exemption matrix (FIXMEs 0691, 0695) — the param-flush in-place-COW
+    // exemption decision, over {position × toggle}. Analysis-ON, exempt iff SOME
+    // arg is an in-place COW rooted at the param (positional-blind); toggle-off,
+    // never exempt.
+    #[test]
+    fn param_flush_exempts_inplace_cow_all_positions_analysis_on() {
+        use super::param_flush_exempts_inplace_cow;
+        let v = Symbol::from("v");
+        // Own position: `(go (vec-set v …) …)`, `v` at slot 0.
+        let own = [cow_call("vec-set", var("v")), var("n")];
+        assert!(param_flush_exempts_inplace_cow(&own, &v, false));
+        // CROSS position (0691): the COW on `v` feeds slot 0 (param `a`) while
+        // `v`'s own slot (1) takes a fresh `[1 2 3]`. Positional-blind ⇒ exempt.
+        let cross = [cow_call("vec-set", var("v")), vec_lit(), var("n")];
+        assert!(param_flush_exempts_inplace_cow(&cross, &v, false));
+        // No arg is an in-place COW rooted at `v` ⇒ NOT exempt (dec owed).
+        let none = [var("v"), vec_lit(), var("n")];
+        assert!(!param_flush_exempts_inplace_cow(&none, &v, false));
+        // A user-fn call (`conj`) is not an in-place primitive ⇒ NOT exempt.
+        let conj = [cow_call("conj", var("v")), var("n")];
+        assert!(!param_flush_exempts_inplace_cow(&conj, &v, false));
+    }
+
+    #[test]
+    fn param_flush_never_exempts_toggle_off() {
+        use super::param_flush_exempts_inplace_cow;
+        let v = Symbol::from("v");
+        // Even the own-position in-place COW is NOT exempt toggle-off (0695): the
+        // COW always copies (rc≥2 force-count), so the superseded dec is owed.
+        let own = [cow_call("vec-set", var("v")), var("n")];
+        assert!(!param_flush_exempts_inplace_cow(&own, &v, /* analysis_off = */ true));
+        let cross = [cow_call("vec-set", var("v")), vec_lit(), var("n")];
+        assert!(!param_flush_exempts_inplace_cow(&cross, &v, true));
+    }
+
+    // R1 borrowed-mark scope stratification (FIXME 0692) — `resolve_borrowed`
+    // reports the INNERMOST binding's mark, so a name-colliding outer alias never
+    // bleeds into an inner shadow/sibling binding.
+    #[test]
+    fn resolve_borrowed_is_innermost_binding_shadow_aware() {
+        use super::resolve_borrowed;
+        use std::collections::HashSet;
+        let q = Symbol::from("q");
+        let set = |names: &[&str]| -> HashSet<Symbol> {
+            names.iter().map(|n| Symbol::from(*n)).collect()
+        };
+        let frame = |names: &[&str]| -> Vec<Symbol> {
+            names.iter().map(|n| Symbol::from(*n)).collect()
+        };
+
+        // Shadow: outer `q` borrowed (frame 1), inner `q` OWNED (frame 2). The
+        // inner binding resolves to its OWN (empty) mark ⇒ NOT borrowed.
+        let scope = [frame(&["v"]), frame(&["q"]), frame(&["q"])];
+        let borrowed = [set(&[]), set(&["q"]), set(&[])];
+        assert!(!resolve_borrowed(&scope, &borrowed, &q));
+
+        // After the inner frame pops, the OUTER borrowed `q` is recovered.
+        let scope = [frame(&["v"]), frame(&["q"])];
+        let borrowed = [set(&[]), set(&["q"])];
+        assert!(resolve_borrowed(&scope, &borrowed, &q));
+
+        // A borrowed param in frame 0 resolves when unshadowed.
+        let scope = [frame(&["v"])];
+        let borrowed = [set(&["v"])];
+        assert!(resolve_borrowed(&scope, &borrowed, &Symbol::from("v")));
+
+        // An unbound name is not borrowed.
+        assert!(!resolve_borrowed(&scope, &borrowed, &q));
     }
 
     // F-R1 fresh-construction — a `ConstrADT` and a `let`-forwarded `ConstrADT` are

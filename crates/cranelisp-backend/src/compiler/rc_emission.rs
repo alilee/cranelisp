@@ -314,7 +314,7 @@ where
         // an inflated RC that the caller cannot balance.
         let has_cleanup_targets = self.scope_stack.last().is_some_and(|frame| {
             frame.iter().any(|name| {
-                if self.borrowed_vars.contains(name) {
+                if self.is_borrowed(name) {
                     return false;
                 }
                 self.variable_types.get(name).is_some_and(|ty| self.is_heap_type(ty))

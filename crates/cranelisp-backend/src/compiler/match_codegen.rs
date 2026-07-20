@@ -437,7 +437,7 @@ where
         // reference, but the return value must survive the scrutinee's
         // eventual dec. This is the sketch's "auto-upgrade borrowed on return".
         if let Some(ref sv) = skip_var
-            && self.borrowed_vars.contains(sv)
+            && self.is_borrowed(sv)
         {
             if let Some(ty) = self.variable_types.get(sv).cloned() {
                 let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
