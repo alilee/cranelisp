@@ -1377,14 +1377,17 @@ fn hkt_impl_new_form_persists_and_reloads() {
 }
 
 // spec: repl/spec.md §15.4 — §5–7 regen fidelity: a `deftype` authored/defined at
-// the REPL MUST survive backing-file regeneration faithfully. RED on HEAD (FIXME
-// 0538): `save.rs::generate_types` (§5–7) drops the type declaration.
+// the REPL MUST survive backing-file regeneration faithfully. Green regression
+// guard for the FIXME-0538 fix (`save.rs::generate_types`, §5–7, no longer drops
+// the type declaration). Seed uses the canonical single-bracket product ctor
+// `(MkPt [:Int x :Int y])` per spec §5.2 (the two-bracket spelling was an invalid
+// fixture silently accepted pre-S114-W-D1; corrected FIXME 0701).
 #[test]
 fn persist_type_decl_regen_preserves_source() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin("(deftype Pt (MkPt [:Int x] [:Int y]))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .stdin("(deftype Pt (MkPt [:Int x :Int y]))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
         .output();
     assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
     let regenerated = out.read_tmp("user.cl");

@@ -2656,9 +2656,9 @@ fn impl_form_display_result_is_exactly_impl_trait_for_type() {
 // (`impl_form_display_result_is_exactly_impl_trait_for_type`) only covers a
 // conventional bare-head impl, so this HKT surface slipped through.
 //
-// The assertion is on the EXACT resolved-type string `for user/Option`, which
-// the defective output (`for user/Functor`) does NOT contain — a substring both
-// outputs share (`impl user/Functor for user/`) would not catch it. The twin
+// The assertion is on the EXACT resolved-type string `for primitives/Option` —
+// the type's CANONICAL home (0671 canonical-home fix, S114; repl/spec.md §1.3),
+// which the defective output (`for user/Functor`) does NOT contain. The twin
 // `; impl:`-section asserts pin the same invariant on the type-lookup surface:
 // the implementing CONSTRUCTOR is listed, the pairing head is NOT.
 // defect: class=display-envelope-mirror locus=src/eval.rs::impl_echo_type_name found=S112 owner=/dev
@@ -2675,13 +2675,14 @@ fn hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_h
     );
 
     // (1) The registration echo MUST be exactly `impl user/Functor for
-    // user/Option` — the RESOLVED implementing constructor, never the pairing
-    // head. The defect printed `impl user/Functor for user/Functor`.
+    // primitives/Option` — the RESOLVED implementing constructor at its CANONICAL
+    // home (0671, repl/spec.md §1.3), never the pairing head. The defect printed
+    // `impl user/Functor for user/Functor`.
     assert!(
-        out.stdout.contains("impl user/Functor for user/Option"),
+        out.stdout.contains("impl user/Functor for primitives/Option"),
         "the echo-the-head HKT impl registration echo MUST name the resolved \
-         constructor: `impl user/Functor for user/Option` per repl/spec.md §1.1 \
-         (§7.3.5 Case 2); got:\n{}",
+         constructor at its canonical home: `impl user/Functor for \
+         primitives/Option` per repl/spec.md §1.1/§1.3 (§7.3.5 Case 2); got:\n{}",
         out.stdout
     );
     // (1-neg) It MUST NOT pair the head against itself — the S112 defect string.

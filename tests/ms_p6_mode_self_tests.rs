@@ -21,9 +21,17 @@ mod helpers;
 
 use helpers::e2e::{Cranelisp, PreludeVariant};
 
-// A program with a planted alloc/dealloc IMBALANCE (the entry-`main` IO-teardown
-// leak: the final IO/result box is never freed — 2 allocs / 1 free).
-const LEAK_PROG: &str = "(defn main [] (let [s \"hi\"] (Pure 9)))\n";
+// A program with a planted alloc/dealloc IMBALANCE — a NON-`main` fresh-`Apply`
+// teardown leak: `g` binds a heap string then returns `(Pure 9)`; the general
+// G2/item-26 protect over-inc leaves one of the two heap boxes unfreed on `g`'s
+// return (2 allocs / 1 free, delta=1). RE-PLANTED S114 (FIXME 0690): the original
+// plant was the entry-`main` teardown shape `(defn main [] (let [s "hi"] (Pure 9)))`,
+// which the W4 F-R1 fix (`rc_emission.rs::protect_return_value`) balanced — so the
+// plant went stale and the fence inverted to RED. This shape is UNTOUCHED by F-R1
+// (a non-`main`, non-single-consumer-IO return), so the parity mode has a live
+// imbalance to catch again. FLIP-HAZARD: if the G2/item-26 protect over-inc is
+// ever fixed this fence re-inverts — re-plant on another deterministic imbalance.
+const LEAK_PROG: &str = "(defn g [] (let [s \"hi\"] (Pure 9)))\n(defn main [] (g))\n";
 // A memory-clean program — a vec build + indexed read, balanced. → 20.
 const CLEAN_PROG: &str = "(defn main [] (Pure (vec-get [10 20 30] 1)))\n";
 

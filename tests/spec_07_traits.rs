@@ -96,9 +96,12 @@ fn trait_multiple_impls() {
          (impl Tag Bool (defn tag [_] 2))\n\
          (tag 0)\n",
     )
+    // spec: repl/spec.md §1.3 — the impl registration echo names the TYPE's
+    // canonical home (`primitives/Int`/`primitives/Bool`), resolved once, not the
+    // asking module's `user/…` re-spelling (0671 canonical-home fix, S114).
     .assert_stdout_contains_all(&[
-        "impl user/Tag for user/Int",
-        "impl user/Tag for user/Bool",
+        "impl user/Tag for primitives/Int",
+        "impl user/Tag for primitives/Bool",
         ":primitives/Int 1",
     ]);
 }
@@ -1184,7 +1187,14 @@ fn hkt_impl_pairing_head_qualified_resolves_to_slot1_trait_accepts_and_dispatche
          (impl (Functor f) (fmt/Functor Option)\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
     )
-    .assert_stdout_contains_all(&["impl user/Functor for user/Option", ":primitives/Int 100"]);
+    // spec: repl/spec.md §1.3 — the impl echo names BOTH resolved canonical
+    // homes: the trait's real home `user.fmt/Functor` (declared in nested module
+    // `fmt`) and the type's canonical home `primitives/Option` — not the asking
+    // module's `user/…` re-spelling (0671 canonical-home fix, S114).
+    .assert_stdout_contains_all(&[
+        "impl user.fmt/Functor for primitives/Option",
+        ":primitives/Int 100",
+    ]);
 }
 
 // spec: spec/07-traits.md §7.3.5 Case 3 — Pairing-head identity, NEGATIVE / R-1
@@ -1426,7 +1436,10 @@ fn conventional_impl_exactly_arity_target_accepts_arity_gate_fence() {
         "(deftrait Disp (shw [self] Int))\n\
          (impl Disp (Option Int) (defn shw [w] 5))\n",
     )
-    .assert_stdout_contains("impl user/Disp for user/Option");
+    // spec: repl/spec.md §1.3 — the impl echo names the TYPE's canonical home
+    // `primitives/Option`, resolved once, not the asking module's `user/…`
+    // re-spelling (0671 canonical-home fix, S114).
+    .assert_stdout_contains("impl user/Disp for primitives/Option");
 }
 
 // spec: spec/07-traits.md §7.5 + spec/04-expressions.md §4.6.3 — calling a
@@ -1781,8 +1794,9 @@ fn deftrait_method_nameless_annotation_param_rejected_neg() {
 // contrast so the fix target is unambiguous.
 
 // spec: spec/07-traits.md §7.3.1 — CONTROL (green today): a BARE impl target
-// `(impl Num2 Int …)` registers `impl user/Num2 for user/Int`, and `(add2 3 4)`
-// dispatches to the Int impl → `:a 7`. Pins the contrast for the qualified case.
+// `(impl Num2 Int …)` registers `impl user/Num2 for primitives/Int`, and
+// `(add2 3 4)` dispatches to the Int impl → `:a 7`. Pins the contrast for the
+// qualified case.
 #[test]
 fn impl_bare_type_target_dispatches_control() {
     repl_prims(
@@ -1790,7 +1804,10 @@ fn impl_bare_type_target_dispatches_control() {
          (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
          (add2 3 4)\n",
     )
-    .assert_stdout_contains_all(&["impl user/Num2 for user/Int", ":a 7"]);
+    // spec: repl/spec.md §1.3 — the impl echo names the TYPE's canonical home
+    // `primitives/Int`, resolved once, not the asking module's `user/…`
+    // re-spelling (0671 canonical-home fix, S114).
+    .assert_stdout_contains_all(&["impl user/Num2 for primitives/Int", ":a 7"]);
 }
 
 // spec: spec/07-traits.md §7.3.1 + spec/08-modules.md §8.5 — a QUALIFIED impl

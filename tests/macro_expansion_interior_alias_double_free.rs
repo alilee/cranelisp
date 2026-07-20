@@ -217,35 +217,36 @@ fn macro_clause_interior_alias_double_free_m1_on_quarantine_face() {
     );
 }
 
-// MS-P6 self-test (GREEN capability fence) — M1 (quarantine) CATCHES the planted
-// double-free deterministically. With `CRANELISP_QUARANTINE_FREED`, the 0638
-// double-free surfaces as a deterministic "double free" abort at the faulting op
-// (exit 134) rather than the layout-luck/perturbation "match failed" it shows
-// off. GREEN = the mode sees the planted fault (kept SEPARATE from the pin above,
-// which asserts the spec-correct contract). Mirrors the MS-P7 detection-fence
-// discipline.
-// spec: design/intrinsics/diagnostic-modes.md §3 M1 — quarantine makes a
-// stale/second free deterministically detected.
-#[test]
-fn m1_quarantine_makes_double_free_deterministic_capability_green() {
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
-        .env("CRANELISP_QUARANTINE_FREED", "1")
-        .file("dthelp.cl", DTHELP)
-        .file("mac.cl", MAC)
-        .file("usemac.cl", USEMAC)
-        .run("usemac.cl")
-        .output();
-    let c = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        out.status.code() != Some(3)
-            && (c.contains("double free") || c.contains("invalid free")),
-        "M1 (CRANELISP_QUARANTINE_FREED) MUST make the planted 0638 double-free \
-         DETERMINISTICALLY detected (a 'double free' abort at the faulting op), \
-         proving the mode sees the fault; got exit {:?}:\n{c}",
-        out.status.code()
-    );
-}
+// MS-P6 M1-double-free capability fence — RETIRED S114 (was the W5/0638
+// flip-hazard, `sprints/SPRINT.md` §Notes; the pattern FIXME 0690 sanctions:
+// re-plant on a synthetic fault OR retire with rationale).
+//
+// This e2e fence proved M1 (quarantine) makes a double-free deterministically
+// detected — but it could ONLY exist while a real double-free DEFECT was open:
+// it rode the LIVE 0638 macro-clause double-free as its planted fault. The W5
+// 0638 fix (deep marshal protect-on-build) closed that fault, so under
+// `CRANELISP_QUARANTINE_FREED` the program now runs clean to exit 3 (fenced GREEN
+// by `macro_clause_interior_alias_double_free_m1_on_quarantine_face` above) and
+// this capability cell inverted to RED.
+//
+// It CANNOT be re-planted this sprint: every listed free-class double-free
+// (0638, 0641, 0633) is fixed, and the only remaining open free-class defect —
+// MS-P7 / cow-set (`safety_oracle_lane.rs`) — is (a) W7-scheduled, so planting on
+// it re-creates the exact in-sprint flip-hazard this cleanup removes, and
+// (b) a reuse-corruption UAF, NOT a genuine second-`dealloc`: under quarantine it
+// runs clean to exit 9 in `--run` AND `--link` (measured S114), so it never
+// triggers M1's "double free" abort. Well-typed source cannot double-free, so no
+// synthetic plant survives quarantine as a detectable second-free.
+//
+// The DURABLE M1 double-free verification is the `/dev`(intrinsics) unit seam
+// (design/intrinsics/diagnostic-modes.md §6 MS-P6: "the e2e face is the oracle
+// lane" — it only demonstrates against an open defect; the mechanism is unit-
+// pinned): `crates/cranelisp-intrinsics/src/alloc/tests.rs::test_double_free_detected`
+// (direct double-`dealloc` → "double free" panic) +
+// `.../diagnostics/tests.rs::{quarantine_withholds_all_blocks_without_cap,
+// parity_report_flags_double_free}`. Escalated to /qa for the standing MS-P6
+// e2e-face disposition — reinstate this fence if a new open double-free defect
+// gives it a live fault to catch.
 
 // --link face — same defect through the linked binary.
 // spec: spec/09-macros.md §9.2 — macro-clause invocation is memory-safe in all modes.
