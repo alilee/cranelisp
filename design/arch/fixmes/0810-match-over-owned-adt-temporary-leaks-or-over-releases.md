@@ -103,8 +103,20 @@ a tail-call loop parameter; C1 consumes an Int).
 
 ## Exemplar attribution (why this matters at scale)
 
+**Quantified by ablation at S115 Phase 6b (/port): this defect is 88.9% of the
+exemplar's residue — 10,508 of 11,820 objects — and the acceptance criterion
+for the fix is that the warm-cache serial-solve residue drops to ≈1,300, not to
+zero.** De-`Option`ing the propagation path (`eliminate`,
+`eliminate-from-peers`, `propagate-pass-helper`, `propagate` return a `Grid`
+directly; the easy puzzle still solves, exit 0) takes `--run
+exemplar/solver.cl` from 26457/14637 (residue 11,820) to 14771/13459 (residue
+**1,312**), warm cache both times. The earlier phrasing below — "this defect and
+essentially nothing else" — is **corrected**: the ~1,300 remainder is a real,
+separate, work-scaling leak, filed as FIXME 0840. Everything else in this
+section stands and is re-confirmed:
+
 The Sudoku exemplar's `~11.8k-objects-per-solve` residue (FIXME 0720, S114) is
-**this defect and essentially nothing else**:
+**this defect at ~89%**:
 
 - HEAD serial solve (`--run exemplar/solver.cl`, `CRANELISP_NO_LENIENT=1`,
   `CRANELISP_RC_STATS=1`): allocs **26457** / deallocs **14637** → residue
@@ -116,8 +128,13 @@ The Sudoku exemplar's `~11.8k-objects-per-solve` residue (FIXME 0720, S114) is
 - Inside propagation, the leaking call is `solver/eliminate`, which returns
   `(Some g)`: a loop of N `eliminate` calls leaks exactly N objects (N=100 →
   1082/980; N=1100 → 2082/980), with or without a let-bound scrutinee — Face A.
-- Order of magnitude agrees: ~500 `eliminate-from-peers` calls × 20 peers ≈ 10^4
-  `Some` wrappers per solve.
+- Order of magnitude agrees — now measured EXACTLY, not estimated: an
+  alloc-counter probe (one extra, always-freed Vec allocation per call; read the
+  ALLOCS delta) counts **11,120 `eliminate` calls** and **556
+  `eliminate-from-peers` calls** per solve (11,120 = 556 × 20 peers). Each
+  `eliminate` call returns one `(Some g)` box; ablating just that one wrapper
+  accounts for 9,945 of the residue, and the three outer wrapper sites for a
+  further 564.
 
 `exemplar/set-cell` — the shape S114 blamed — now **balances exactly** (N=100 and
 N=1100 both residue 2, no scaling), so the 0720 fix landed on its own repro.

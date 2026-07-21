@@ -46,6 +46,13 @@ CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
 `solver.cl` also carries its own simpler `main` (solve-and-print a hard-coded
 puzzle) for a quick smoke test.
 
+**S115 Phase-6a re-verification.** `--run` and `--link` are **byte-identical**
+on the headline entry; `tests.cl` is **40/40 under both** the default (parallel)
+and `CRANELISP_NO_LENIENT=1` (serial) toggles; the sprint's language rulings had
+**zero impact** on exemplar source — no line changed. The exemplar's one open
+finding at S115 is the solve-path leak below, which is a compiler defect, not an
+exemplar one.
+
 **Parallel search (no `spark`/`par` in the source).** The backtracking search
 in `solver.cl` is expressed as `collections.parallel/par-map-reduce` over the
 candidate digits at each guess node — **map** each candidate to its recursive
@@ -90,22 +97,79 @@ representation (persistent/structural-share Vec or in-place masks) plus a
 Phase-H release backend is the fix. `test-hard-puzzle` stays excluded from the
 runner until then.
 
-**Solve-path never-freed leak (FIXME 0720 → S115 backend; distinct from 0408).**
-A full serial solve leaks ~11.8k objects (`CRANELISP_RC_STATS=1`: allocs 26457,
-deallocs 14634, residue 11823 — /qa reconciled the RC_TRACE and found 11,772 are
-born rc=1 then dropped, never inc'd/dec'd/freed; NOT an accounting artifact).
-Verdict (/qa, S114 §12; durable record `tests/plan/s114-test-plan.md`): the
-**ADT-wrapped superseded loop-param never-freed face** — `set-cell`'s
-match-extract → COW → re-wrap → supersede shape leaks 2 objects/iteration (the
-`Gr` box AND its cells vec) × ~5.9k supersedes ≈ 11.8k/solve. W4's MS-P8
-tail-jump release covers the BARE-vec loop-param only; the ADT-wrapped
-loop-param gets no release at all. Attributed `/dev(backend)`
-(`class=rc-miscount`, TCO tail-jump superseded-param release), fixed S115 in one
-RC-release sweep with the entry-return leak. This is a **correctness leak** and
-is **distinct from 0408** — 0408's copy-churn *performance* framing (the
-quadratic whole-Vec copy per guess) stands unchanged. A solve is *correct*, just
-leaky, so no exemplar source change is warranted (the leak is the compiler's to
-fix; serial ≡ parallel, no concurrency involved).
+**Solve-path never-freed leak (FIXME 0810 + 0782; distinct from 0408).**
+A full serial solve leaks ~11.8k objects. All numbers below are `--run
+exemplar/solver.cl` with `CRANELISP_NO_LENIENT=1 CRANELISP_RC_STATS=1`, warm
+cache (a cold cache adds a constant ~1,042 compile-session objects — always
+compare warm to warm):
+
+| Measurement | allocs / deallocs | residue |
+|---|---|---|
+| Full serial solve, HEAD | 26457 / 14637 | **11,820** |
+| Full serial solve, `4d20cea1` (pre-S115 RC wave) | — | 11,823 |
+| Propagation-only probe (no closure, no `par-map-reduce`, no guessing) | — | 11,765 |
+| Full solve with the `Option` wrappers ablated off the propagation path | 14771 / 13459 | **1,312** |
+
+**The S114 attribution is FALSIFIED.** S114 blamed `set-cell`'s match-extract →
+COW → re-wrap → supersede shape ("2 objects/iteration × ~5.9k supersedes").
+`set-cell` is **exonerated by measurement**: in isolation, a tail loop of N
+`set-cell` calls is exact and non-scaling (N=100 → 1278/1277, N=1100 →
+4278/4277 — residue 1, slope 0). So is `peers` (N=1100 → 23101/23101, exact).
+The S115 RC wave moved the total by **3 objects (0.025%)**, which is why the
+"fixed S115 in one RC-release sweep" expectation never landed.
+
+**The real mechanism is FIXME 0810** — `match` over an **owned ADT temporary**
+under a constructor pattern, which has two faces and no correct spelling:
+
+- **Face A (leak)** — the scrutinee spelled INLINE never releases the wrapper
+  box: `(match (eliminate g peer-idx d) [None … (Some g2) …])`. Slope is exactly
+  1 object/iteration; with a heap payload the box AND its field strand together
+  (slope 2).
+- **Face B (over-release)** — the SAME program with the scrutinee LET-BOUND
+  frees the wrapper while the extracted payload is still live: SIGBUS in
+  `--run`, heap-corruption abort in `--link`, from **N=1**. RC *balances* on this
+  face, so a balance-only check cannot see it.
+
+FIXME 0782 is the var-pattern sibling of the same seam (double release). Both
+are pinned by `tests/match_owned_temporary_scrutinee_0810.rs` (14 cells, 10 RED
+/ 4 GREEN controls, both modes, both ownership toggles) — that file, not this
+paragraph, is the durable record and the trigger.
+
+**How much of the exemplar's residue is 0810 — measured, not inferred.**
+Ablating the `Option` wrapper off the propagation path (`eliminate`,
+`eliminate-from-peers`, `propagate-pass-helper`, `propagate` return a `Grid`
+directly; the easy puzzle still solves, exit 0) drops the residue from 11,820 to
+**1,312** — **10,508 objects, 88.9%, is 0810 and nothing else**. Of that,
+~9,945 is `eliminate` alone: an alloc-counter probe shows **11,120 `eliminate`
+calls** per solve (556 `eliminate-from-peers` × 20 peers), each returning one
+`(Some g)` box that is never released.
+
+**Acceptance criterion for the fix: the warm-cache serial-solve residue must
+drop from 11,820 to ≈1,300 — not to zero.** Landing materially above ~2,000
+means the fix is partial.
+
+**The remaining ~1,300 is a SEPARATE, smaller, work-scaling leak** (FIXME
+0840), not the wrapper mechanism and not a constant: 81 `eliminate-from-peers`
+calls with zero `set-cell`s leave residue 83 (≈1.0/call), while 556 calls with
+392 `set-cell`s leave 1,256 (≈1.0/call + ≈1.8/set-cell). Neither component
+reproduces in isolation — `peers` and `set-cell` are each exact on their own —
+so it only appears in **composition**, where a `Gr` box owning a cells `Vec` is
+carried alongside a peer-list `Vec` through a tail loop.
+
+**Both of these are the same class as FIXME 0837** (`/arch`): *ownership of heap
+that owns further heap — exact at depth 1, wrong at depth ≥ 2*. The exemplar's
+residue is the application-scale instance of it. 0810's heap-payload face
+strands the box AND its field; the ~1,300 residual is only visible once a
+heap-owning ADT and a heap loop parameter compose. If 0837 is ruled one class,
+the exemplar is the measurement that says how much the class costs in a real
+program: **89% of every object a Sudoku solve leaks.**
+
+This is a **correctness leak** and is **distinct from 0408** — 0408's copy-churn
+*performance* framing (the quadratic whole-Vec copy per guess) stands unchanged.
+A solve is *correct*, just leaky, so **no exemplar source change is warranted**:
+`(Some g)`-returning `eliminate` is idiomatic and correct, the defect is the
+compiler's, and rewriting the exemplar around it would destroy the sentinel
+value of the measurement.
 
 ## Headline entry
 

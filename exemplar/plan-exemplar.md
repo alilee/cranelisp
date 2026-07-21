@@ -1129,6 +1129,14 @@ Module-level macro dependency matrix, refined from the Sprint 9 readiness assess
 
 ## Multi-sig Vec-helper showcase (S113 Phase 6b)
 
+> **Collapse trigger (re-worded S115 Phase 6b, discharging the S114 carry):**
+> `make-grid`/`make-grid-helper` and `peers`/`peers-helper` collapse **when the
+> FIXME-0719 consume-at-distance family flips** — NOT "once MC-X4 is green".
+> The MC-X4 battery has been green since S114 and the exemplar's collapse still
+> fails, so MC-X4 was never the right gate; the parameter-distance variant is
+> (see the falsification below, and `grid.cl`'s two NOTEs, which already carry
+> this wording).
+
 The S113 §5.1.2 back-flow + D3 fix (a polymorphic callee reached from a
 multi-sig clause body entered via a cross-arity self-call now monomorphises)
 unblocked collapsing an "entry seeds the accumulator" helper *pair* into a
