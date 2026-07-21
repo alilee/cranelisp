@@ -1,10 +1,11 @@
 ---
 number: 0745
-target: /design
+target: /design (int) — /qa re-attributed 2026-07-21 (was /design backend); /arch consult REQUIRED on the release mechanism
 filed_by: /dev (cranelisp-backend, S115 W3)
 filed_at: 2026-07-21
 sprint_filed: 115
-refers_to: design/backend/s115-carrier-and-rc-sweep.md §2.1 (faces 1+2); crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value; tests/adt_drop_glue_underkey.rs::entry_main_ioresult_heap_payload_toggle_off_leak_r2
+refers_to: tests/plan/s115-test-plan.md §8.1 (the /qa attribution brief); tests/adt_drop_glue_underkey.rs::entry_main_ioresult_heap_payload_toggle_off_leak_r2; src/pipeline.rs::program_outcome_to_result + src/main.rs:331 + src/repl display consumer (the result-value lifetime seam); crates/cranelisp-intrinsics/src/{panic.rs::cranelisp_run_program, io.rs:236, drop.rs:303} (verified coherent — NOT the seam); design/backend/s115-carrier-and-rc-sweep.md §2.1 (re-scoped to face 3 / 0720)
+scheduled: S116 (needs a /design(int) pass + an /arch mechanism ruling; carries out of S115 as an attributed carry)
 status: open
 ---
 
@@ -98,3 +99,47 @@ Found while executing S115 W3 change-set 2. Note that
 ("the IO trampoline and the result-tree teardown live in `cranelisp-intrinsics`,
 not backend … attribution is unsettled") and named the discriminator; these
 measurements run it and settle it against the backend seam.
+
+## /qa ATTRIBUTION (2026-07-21, S115 mid-Phase-5 disposition batch)
+
+**Re-attribution ACCEPTED; both §2.1 mechanisms verified falsified against
+source.** Full brief + fix constraints: `tests/plan/s115-test-plan.md` §8.1
+(the durable record — read it before opening any wave on this).
+
+**Owner: `/design`(int) → `/dev`(src), with a REQUIRED `/arch` consult on the
+release mechanism.** `target:` re-pointed accordingly. Not backend, not
+intrinsics-alone.
+
+Summary of the placement:
+
+- The residual reference is the **program RESULT VALUE's**, and **nobody
+  releases it in any mode** — verified by absence (`src/` contains no
+  rc-dec/value-release call site at all). `--run`/`--link`:
+  `ProgramOutcome.exit_code` → `src/main.rs:331` truncation. REPL:
+  `src/pipeline.rs:148-151` → `program_outcome_to_result` →
+  `ExprOutcome::Value` → `display::result_value_doc`.
+- **Only int knows the result TYPE** (the driver has only
+  `main_returns_io: bool`; `main.rs:331` already branches on `ty`), so the
+  heap-vs-immediate judgment and glue selection can only live there. This is
+  Decision 24's consuming convention at the ONE call boundary whose caller is
+  Rust host code rather than generated code.
+- **Citation correction to §"Why mechanism (b) is unsound":** the UAF is on
+  the LIVE REPL path, not only the defensive one — `src/repl/format.rs:598`
+  is documented-unreachable for current callers; the live dereference is
+  `pipeline.rs:149` → `ExprOutcome::Value` → `display::result_value_doc`.
+  The conclusion is unchanged and stronger.
+- **No type-erased release exists today**: `HeapHeader`
+  (`crates/cranelisp-types/src/heap.rs:18-24`) is `{alloc_size, rc}` — no
+  drop-glue pointer. Choosing between a type-directed release entry (trivial
+  in JIT, not free under `--link`) and a scoped mechanism is the `/arch` half.
+- Defect class: **`rc-miscount`**. Scope question (IO-specific vs general
+  result-value ownership) is OPEN and decides fix size, not owner; the
+  confirming one-liner is named in plan §8.1.
+
+**Sprint routing: this RED does not flip in S115** (needs a design pass +
+an /arch mechanism ruling; no wave carries that). §1.4's three-face sweep
+row is re-scoped to the two 0720 faces (both flipped); the entry-payload
+face leaves it and enters certification as an **attributed carry with a NEW
+owner**. Do NOT author the toggle-ON sibling pin (a second RED for one
+unfixed defect). `/testing` rider: re-locus the pin's `// defect:` off
+`protect_return_value` onto the int result-value lifetime seam.

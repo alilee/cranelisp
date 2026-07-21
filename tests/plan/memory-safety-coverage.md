@@ -348,6 +348,33 @@ e.g. the S114→S115 chained-MayAliasOf pins double as live signal-4 plants
 while they stay RED; when that family drains, the capability question
 returns to prong 1 + this note.
 
+**Prong-2 amendment — a live-defect plant is SELF-EXPIRING (S115, standing).**
+Twice now the same e2e fence has inverted to RED because its planted fault was
+fixed: `ms_p6_mode_self_tests::m3_parity_catches_planted_leak` went stale at
+S114 (FIXME 0690 — the W4 F-R1 fix balanced the entry-`main` plant) and again
+at S115 W3 (FIXME 0746 — the item-26 generalisation balanced the non-`main`
+plant), the second time exactly as the test's own FLIP-HAZARD comment
+predicted. The lesson is not "re-plant harder": a plant drawn from a defect
+class **under active repair** has a half-life measured in waves, and each
+expiry costs a triage cycle plus an unattributed RED carried toward
+certification.
+
+Standing rule, binding on every new or re-planted capability fence:
+
+- **Prefer a SYNTHETIC plant** — a test-only fault injected at the seam the
+  mode instruments (e.g. an env-gated imbalance hook at the intrinsics
+  allocator), so the fence is fail-on-revert of **the MODE**, not of some
+  unrelated fix. Any such hook lands in the same change-set as its
+  byte-identical-off fence (`diagnostics/tests.rs::all_gates_default_off`).
+- **Draw from a live defect only when a synthetic plant is not
+  constructible**, and then say so on the test: name the defect, its owner,
+  and the expectation that the fence expires when it drains.
+- **Never plant on a live defect that already has an owner and a fix path**
+  — the fence becomes collateral of someone else's wave.
+- When a plant expires, the compliant dispositions are (i) synthetic
+  re-plant or (ii) retirement with the §4.1 tombstone; a fence must not
+  linger RED into a certification run while the choice is pending.
+
 ---
 
 ## §5. Current exposure — quantified (S111, post-CS-5)

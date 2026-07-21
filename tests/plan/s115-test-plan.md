@@ -447,6 +447,282 @@ and recorded on the matrix row + here — not silent.
    source — no Track-B row may close on a landing CLAIM (the same lens that
    opened this sprint).
 
+## 8. Mid-Phase-5 disposition batch (post-W3, 2026-07-21, /qa)
+
+Evidence-only batch (no suite run — /review(backend) held the run token).
+Every verdict below was checked against SOURCE at the W3 tree, not against
+the wave reports.
+
+### 8.1 FIXME 0745 — ATTRIBUTION: the entry-`main` heap-payload leak is the
+### PROGRAM-RESULT-VALUE lifetime seam, owned by int
+
+**Falsification claims VERIFIED.** /dev's two measurements are consistent
+with source:
+
+- `crates/cranelisp-intrinsics/src/panic.rs::cranelisp_run_program` (step 4)
+  calls `io::drive_io(main_result)` then `drop::consume_io_tree(main_result)`
+  and returns `ProgramOutcome { exit_code: inner, .. }`.
+- `io.rs:236-243` (and the `:986` twin): the `IO_TAG_PURE` arm reads
+  `field0` and returns it **without an inc**.
+- `drop.rs:303-307`: the `IO_TAG_PURE` arm is a deliberate no-op on the
+  payload ("Pure's payload is opaque — the trampoline returns it to the
+  caller as the final value"), while the box itself is freed.
+
+So the payload's single reference **transfers to the returned value**, and
+the accounting inside the compiled code is coherent. `protect_return_value`
+is NOT the seam, mechanism (a) has no referent (the leak reproduces with no
+`let`), and §2.1 is re-scoped to faces 3 (0720) only. **The re-attribution
+is ACCEPTED.**
+
+**Owner (my placement): `/design`(int) → `/dev`(src), with a REQUIRED
+`/arch` consult on the release mechanism.** Grounds:
+
+1. **Nobody releases the program result value, in any mode.** Verified by
+   absence: `src/` contains no rc-dec / value-release call site at all
+   (`grep -rn "release_value\|consume_value\|rc_dec" src/` → only a
+   `src/CLAUDE.md` prose hit). `--run`/`--link` route
+   `main` → `cranelisp_run_program` → `ProgramOutcome.exit_code` →
+   `src/main.rs:331` (truncate to exit code); the REPL routes
+   `src/pipeline.rs:148-151` → `program_outcome_to_result` →
+   `ExprOutcome::Value` → `display::result_value_doc` (which DEREFERENCES a
+   heap result). Neither path decs.
+2. **Only int knows the result TYPE.** The driver's whole type knowledge is
+   `main_returns_io: bool`; `src/main.rs:331` already branches on
+   `ty == Type::Int`. The heap-vs-immediate judgment and the drop-glue
+   selection can only be made where `ty` lives.
+3. **This is Decision 24 (consuming convention) at the ONE call boundary
+   whose caller is Rust host code rather than generated code.** Framing the
+   defect that way is what makes it a single seam instead of an IO quirk.
+
+**Defect class: `rc-miscount`** (leak). Not `carrier-loss`, not `uaf` — the
+accounting is coherent, the final owner simply does not exist. Locus for
+the pin's `// defect:` re-locus (a /testing rider, since the current locus
+`compiler/rc_emission.rs::protect_return_value` is now falsified):
+`src/` program-result-value lifetime seam (`pipeline.rs::
+program_outcome_to_result` + `main.rs` exit conversion + the REPL display
+consumer), `owner=/dev` unchanged, `found=S114` unchanged.
+
+**Fix constraints (binding on whoever takes it):**
+
+- **Release strictly AFTER consumption.** Decing the payload inside
+  `consume_io_tree`'s `Pure` arm, or backend-side before the return, is a
+  **UAF on the LIVE REPL path** — not merely the defensive one. Correction
+  to 0745's citation: `src/repl/format.rs:598` is documented-unreachable for
+  current callers; the live dereference is `pipeline.rs:149` →
+  `ExprOutcome::Value` → `display::result_value_doc`. The UAF conclusion is
+  unchanged and now stronger (it is on the ordinary path).
+- **Mode-uniform by construction.** REPL / `--run` / `--link` must reach the
+  release through ONE path (P11); a `--run`-only release is a
+  `mode-divergence` defect in waiting. Note the asymmetry that makes this
+  easy to get wrong: under `--run`/`--link` the leak is harmless in effect
+  (process teardown reclaims it) and is observable ONLY through the M3
+  parity mode / the tier-4 oracle lane; at the REPL it is a real
+  per-expression accumulating leak. The oracle lane is the acceptance
+  instrument precisely because the `--run` face is otherwise invisible.
+- **A type-erased release does not exist today.** `HeapHeader`
+  (`crates/cranelisp-types/src/heap.rs:18-24`) is `{alloc_size, rc}` — no
+  drop-glue pointer. Releasing an arbitrary typed result therefore needs
+  either (a) a type-directed release entry int can call (glue lookup —
+  trivial in JIT, NOT free under `--link`), or (b) a scoped mechanism
+  covering the shapes a program result can take. **Choosing between these
+  is an `/arch` call, not a `/dev` one** — it is the cross-crate half of
+  this attribution.
+- **Do not add a second ownership model at `consume_io_tree`.** The
+  opaque-payload contract there is correct as documented; the symmetric
+  hygiene option (inc in `drive_io`'s Pure arm + dec in the `consume_io_tree`
+  Pure arm) is accounting-neutral and does NOT fix the leak — it must not be
+  mistaken for the fix.
+
+**Scope question (open; decides fix size, NOT the owner).** Is the class
+IO-specific or general result-value ownership? Source says general (see 1
+above — no release exists for any result). Confirming one-liner, for the
+owning skill, not a blocker for placement: at the REPL with
+`CRANELISP_RC_STATS=1`, compare `(let [s "hi"] s)` (heap result, non-IO)
+against `(let [s "hi"] 9)` (immediate result). If the former leaks 1 and the
+latter balances, the entry-payload pin is ONE FACE of a general seam and the
+fix must be authored at that grain (and `/testing` owes a non-IO sibling pin
+in the same change-set).
+
+**Routing verdict for /sprint: this RED does NOT flip in S115.** It needs a
+`/design`(int) pass plus an `/arch` mechanism ruling; W3/W4 are backend and
+typecheck; W6 is a scheduled src window but is scoped to impl-redefinition +
+0718 and has no design input for this. Carry
+`adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2`
+into certification as an **attributed carry with a NEW owner** (the S115
+exit statement must say so explicitly — a carry whose attribution moved is
+not the same carry). §1.4's "ONE sweep, three faces" acceptance is
+**re-scoped to the two 0720 faces, both of which flipped**; the
+entry-payload face leaves that row. Do NOT author the toggle-ON sibling pin
+now (0745 is right: a second RED for one unfixed defect).
+
+### 8.2 FIXME 0746 — m3 re-plant: §4.1 prong-2 lifecycle case, CONFIRMED;
+### re-plant SYNTHETIC
+
+**Confirmed, on source.** `tests/ms_p6_mode_self_tests.rs`'s `LEAK_PROG`
+(`(defn g [] (let [s "hi"] (Pure 9)))`) plants exactly the general
+G2/item-26 `protect_return_value` over-inc that W3 change-set 2 fixed. The
+test's own FLIP-HAZARD comment predicted this verbatim, and this is the
+**second** staleness of the same plant (first: S114 FIXME 0690, when the F-R1
+fix balanced the entry-`main` shape). **Not a regression** — the compiler
+moved in the correct direction and the fence's stimulus evaporated.
+
+This is `memory-safety-coverage.md` §4.1 **prong 2** (an e2e capability
+fence whose plant is a live compiler defect) reaching its end of life. Both
+compliant dispositions are available; I rule the order:
+
+1. **PREFERRED — re-plant SYNTHETIC** (the S114 MS-P6 precedent,
+   `safety_lane_detects_falsified_clean_expectation_capability_green`,
+   `7c2d5168`): a test-only injected imbalance at the intrinsics allocator /
+   diagnostics seam, behind an env gate that is inert unless set. This makes
+   the fence fail-on-revert of **the MODE** rather than of an unrelated fix
+   — the only shape with a non-expiring half-life. Requires a small
+   `/dev`(intrinsics) hook + a `/testing` re-plant, and the hook MUST join
+   `diagnostics/tests.rs::all_gates_default_off` (the byte-identical-off
+   fence) in the same change-set.
+2. **FALLBACK (compliant, no user sign-off needed) — retire
+   `m3_parity_catches_planted_leak` with a §4.1 tombstone.** Prong 1 is
+   already in place (four parity self-tests at
+   `crates/cranelisp-intrinsics/src/diagnostics/tests.rs:100/:108/:116/:124`)
+   and prong 3 is already in place (`m3_parity_no_false_abort_on_clean` keeps
+   the M3 env wiring exercised end-to-end). The tombstone must name the
+   drained fault set (0690 F-R1 entry-`main`; S115 W3 item-26 general
+   protect), the unit-tier successor, and the surviving wiring face.
+
+**REJECTED: 0746's candidate 1** (re-plant on the entry-`main` heap-payload
+leak). Per §8.1 that defect is real, live, and owned outside backend — but
+planting on it repeats the exact anti-pattern for a third time, and it now
+has an owner and a fix path. A capability fence must not be collateral of
+someone else's fix.
+
+**Routing: W7, and it must NOT reach certification RED.** 0746 stays
+`target: /testing` with the ruling appended and a named `/dev`(intrinsics)
+dependency for shape 1; if W7 capacity does not admit the hook, `/testing`
+takes shape 2 in the same slot. Either way the RED is gone before the ≥2
+certification runs, and the outcome is recorded on this row.
+
+**Standing rule (added to `memory-safety-coverage.md` §4.1):** a prong-2
+plant drawn from a live defect is **self-expiring** — prefer a synthetic
+plant whenever a test-only injection hook is constructible at the seam the
+mode instruments; draw from a live defect only when it is not.
+
+### 8.3 FIXME 0741 — SharedState field-count guard: RATIFIED (16→17)
+
+**Ratified.** The `declared_exports` addition is mechanical and
+designed-to-admit: int-internal, unserialized, `prelude_fallback` model, no
+types/schema/public-api impact, and the guard's actual purpose — that
+`module_sexps`/`suspend_states` do not creep back — is untouched. The
+in-body comment at `tests/regression.rs:3287-3294` documents the addition
+alongside the two prior sanctioned ones. No parking-map creep. The
+cross-boundary edit into a `/testing`-owned test was correct in substance;
+the ratification is the process step, now discharged.
+
+**Residual (NOT mine to execute — routed to `/testing`, 0741 re-targeted):**
+the guard function is named `shared_state_field_count_at_target_14` while
+guarding 17 — doubly stale, and the file's preceding comment block still
+narrates the 14/15/16 lineage. A rename alone only defers the next stale
+numeral, so the specified re-shape is:
+
+- assert the two forbidden fields are **ABSENT by name**
+  (`module_sexps`, `suspend_states`) — a direct, non-rotting statement of
+  what the guard actually protects;
+- **retain** the count as a creep tripwire, under a name carrying no
+  numeral (e.g. `shared_state_pub_field_count_guard`), with the sanctioned
+  additions listed in-body as they are today.
+
+That kills the bump-and-stale-name cycle rather than paying it again.
+0741 is NOT deleted: it carries the /testing residual.
+
+### 8.4 FIXME 0705 — RETIRES (fully spent)
+
+All three requested dispositions are discharged:
+
+1. **Re-locus DONE** — `tests/shadowing_scope_lookup.rs:367` already reads
+   `class=carrier-loss locus=crates/cranelisp-backend AutoCurry-over-local-target
+   fn-as-value wrapper …`; the falsified typecheck locus is gone.
+2. **Backend fix LANDED and the cell FLIPPED** (W3 change-set 3: totality
+   enum over the closed carrier sums, no `_ =>`, `ViaCallee`+`Global` = a
+   located producer-contradiction error).
+3. **Typecheck side confirmed complete** by the same evidence (the carrier
+   arrives correct; /design(backend)'s dump verdict said so before the fix).
+
+The fn-as-value `'='` sibling is **separately tracked and needs no FIXME**:
+its record and trigger are the committed RED
+`fn_as_value_carrier_loss::trait_operator_partial_app_impl_present_has_got_carrier`
+(plan §1.5), its owner is `/dev`(typecheck) per the /design(backend)
+carrier dump (producer gap at `mono_collect.rs::resolve_auto_curry`), and it
+is scheduled in **W4**. Per the no-FIXME-with-a-failing-test rule the pin IS
+the record. **0705 resolved and deleted.**
+
+`/testing` riders at this flip (batch, W7):
+- strip the present-tense "DEFECT (open)" framing from the auto-curry cell's
+  comment block per `tests/CLAUDE.md` (a GREEN repro must read past-tense, or
+  a future regression poses as a known guard);
+- add the born-green non-trait control 0705 asked for —
+  `(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))` — which isolates
+  AutoCurry-over-local from trait dispatch and would have named this gap
+  without the trait-shadow cell. It is a **coverage-by-definition-variants**
+  cell (the local-closure variant of the auto-curry family), not a nice-to-have.
+
+### 8.5 FIXME 0604 — does NOT retire yet; exactly ONE residual
+
+**Everything on the re-based acceptance is discharged except census
+closure.** Verified: corrected destination-keyed declared-export-closure
+predicate at the chokepoint, unconditional diagnosed error self-identifying
+as an R7 breach, `commit_staging_to_live` routed with `D(M)` precomputed
+before the `get_mut` guard (deadlock hazard honored), MODULE_TRACE at the
+seam, `SharedState.declared_exports`, falsified-comment rider, synthesized
+trigger RED-on-revert demonstrated, twin guards GREEN,
+`/design`(int) §2.2 correction landed in Phase 3.
+
+**Writer identification is NOT a residual** — the re-based acceptance
+demoted it to DESIRED. The 0/30 deterministic sweep and the 0/496
+load-amplified attempt discharge the no-regression check; the
+load-amplified line of attack is **closed without prejudice and no further
+attempt is scheduled** (quiet sweeps have been spent evidence since ~320
+cumulative no-fires). The landed trace + diagnosed error are the
+observability deliverable: any future firing names its seam.
+
+**The one residual is /review's FIXME 0740** — the census closure claim is
+materially false while `src/bootstrap.rs:446` (cross-module PUBLIC `Import`
+edges into the live `macros` table — the exact phantom shape) and
+`src/platform.rs:407` (public own-def `PlatformEffect`) are neither routed
+nor legal-skipped. Re-based acceptance item 4 says "census CLOSED including
+`commit_staging_to_live`", and the census IS the acceptance instrument; a
+closure claim that a `/review` grep falsifies is precisely the S114 lesson
+this wave was meant to end. **So yes: 0604's retirement WAITS on 0740**,
+which is `/design`(int)'s and scheduled W6.
+
+**Retirement is mechanical at W6 close**, on these two checks (no further
+/qa analysis owed):
+1. `prelude-table-write-isolation.md` §2.1/§2.4 dispositions both seams
+   (scope-boundary statement and/or named legal-skip rows), and the
+   `src/imports.rs` census-comment mirror tracks whatever wording lands;
+2. the twin guards + the trigger/false-fire/routing pins are still GREEN in
+   the certification runs.
+
+`/testing` rider at retirement (W7): `tests/index_race_foreground_0604.rs`
+keeps its 8-iteration sweep as the standing no-regression lane, but its
+module banner must move to past tense and point at the landed structural
+gate — the inline `FIXME(/testing): the exact foreground write seam is
+UNLOCATED` block and the assertion's "This is FIXME 0604" text outlive the
+FIXME otherwise. The `// defect:` line stays (a GREEN repro still carries
+its class/locus for frequency analysis).
+
+Not orphaned by retirement: `concurrency_capacity::same_token_capacity_…`
+(0604's VERIFY-AFTER-FIX family row) already has a home — SPRINT §Scope
+carries it as a sanctioned effect-concurrency-track deferral.
+
+### 8.6 Instrumentation-matrix O-row status (see the matrix for the rows)
+
+O1 DELIVERED (W2), O2 DELIVERED (W3, 6 cells), **O3 BLOCKED at W3** with a
+finding routed to `/arch` (FIXME 0748 — `got_data_symbol_name` is
+duplicated and the TYPES copy is the definer's, so the injectivity fix
+cannot land backend-side), O4 unchanged (W7, per the accepted OWED
+recommendation), O5 done at Phase 3. The matrix's Track-B exit check is
+amended accordingly: **O3 can no longer close as VERIFIED this sprint** —
+its honest exit state is the census artifact plus the routed cross-crate
+finding, and the matrix now says so.
+
 ## Next skills
 
 - `/spec` — 0714 scribe FIRST (gates §1.6's flip assertion), 0702 + 0708

@@ -435,3 +435,51 @@ is quiet in the `/dev` environment: 0 fires across ~175 iterations spanning
   change). This is a timing-threshold / effect-concurrency-overlap defect on the
   `/dev` VM, unrelated to the index-feed write-race and unaffected by this
   change-set. Owner: `/qa` triage (effect-concurrency track), NOT folded here.
+
+## /qa S115 RETIREMENT RULING (2026-07-21, mid-Phase-5 disposition batch)
+
+**Does NOT retire now. Exactly ONE residual: the census closure claim
+(/review FIXME 0740).** Durable record: `tests/plan/s115-test-plan.md` §8.5.
+
+Discharged by the W2 change-set, verified against source: corrected
+destination-keyed declared-export-closure predicate; unconditional diagnosed
+error self-identifying as an R7 breach; `commit_staging_to_live` routed with
+`D(M)` precomputed before the `get_mut` guard; MODULE_TRACE at that seam;
+`SharedState.declared_exports`; falsified-comment rider; synthesized trigger
+with RED-on-revert demonstrated; twin guards GREEN; `/design`(int) §2.2
+correction landed in Phase 3.
+
+**Writer identification is NOT a residual** (the re-based acceptance demoted
+it to DESIRED). The 0/30 sweep + 0/496 load-amplified attempt discharge the
+no-regression check; **the load-amplified line is closed without prejudice
+and no further attempt is scheduled** — quiet sweeps have been spent evidence
+since ~320 cumulative no-fires.
+
+**The residual**: re-based acceptance item 4 requires the census CLOSED, and
+the census is the acceptance instrument. FIXME 0740 shows the closure claim
+is materially false while `src/bootstrap.rs:446` (cross-module PUBLIC Import
+edges into the live `macros` table — the exact phantom shape) and
+`src/platform.rs:407` (public own-def PlatformEffect) are neither routed nor
+legal-skipped. Both are benign in effect, so gate soundness is intact — but a
+closure claim a `/review` grep falsifies is precisely the S114 lesson this
+wave existed to end. 0740 is `/design`(int)'s, scheduled W6.
+
+**Retirement is mechanical at W6 close**, on two checks — no further /qa
+analysis owed:
+
+1. `prelude-table-write-isolation.md` §2.1/§2.4 dispositions both seams
+   (scope-boundary statement and/or named legal-skip rows), and the
+   `src/imports.rs` census-comment mirror tracks whatever wording lands;
+2. the twin guards + the trigger / false-fire / routing pins are still GREEN
+   in the certification runs.
+
+`/testing` rider at retirement: `tests/index_race_foreground_0604.rs` keeps
+its 8-iteration sweep as the standing no-regression lane, but its module
+banner moves to past tense pointing at the landed structural gate — the
+inline `FIXME(/testing): the exact foreground write seam is UNLOCATED` block
+and the assertion's "This is FIXME 0604" text would otherwise outlive the
+FIXME. The `// defect:` line stays.
+
+Not orphaned by retirement: the `concurrency_capacity` VERIFY-AFTER-FIX family
+row already has a home (SPRINT §Scope, sanctioned effect-concurrency-track
+deferral).

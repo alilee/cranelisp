@@ -70,3 +70,41 @@ Surfaced by the S115 W3 full-suite run. Not a regression: the compiler behaviour
 moved in the CORRECT direction (one fewer leak), and the RED is the fence's
 stimulus evaporating. `/dev`(backend) does not author `tests/` sources, hence
 this FIXME rather than an in-place re-plant.
+
+## /qa RULING (2026-07-21, S115 mid-Phase-5 disposition batch)
+
+**Confirmed on source: this is the `memory-safety-coverage.md` §4.1 prong-2
+lifecycle case** (an e2e capability fence whose plant is a live compiler
+defect, reaching end of life when that defect drains). NOT a regression.
+Durable record: `tests/plan/s115-test-plan.md` §8.2.
+
+**Re-plant shape — SYNTHETIC, per the S114 MS-P6 precedent**
+(`safety_lane_detects_falsified_clean_expectation_capability_green`,
+`7c2d5168`): a test-only injected imbalance at the intrinsics
+allocator/diagnostics seam behind an inert-unless-set env gate, so the fence
+is fail-on-revert of **the MODE**. The hook must join
+`diagnostics/tests.rs::all_gates_default_off` in the same change-set.
+Requires a small `/dev`(intrinsics) hook alongside the `/testing` re-plant.
+
+**Candidate 1 REJECTED** (re-plant on the entry-`main` heap-payload leak):
+per FIXME 0745's /qa attribution that defect now has an owner
+(`/design`(int) → `/dev`(src)) and a fix path, so planting on it repeats the
+anti-pattern a third time.
+
+**Compliant FALLBACK if W7 capacity does not admit the hook** — retire
+`m3_parity_catches_planted_leak` with the §4.1 tombstone. This needs no user
+sign-off and is not a coverage regression: prong 1 is in place (four M3
+parity self-tests, `crates/cranelisp-intrinsics/src/diagnostics/tests.rs`
+`:100/:108/:116/:124`) and prong 3 is in place
+(`m3_parity_no_false_abort_on_clean` keeps the env wiring exercised).
+Tombstone names the drained fault set (0690 F-R1; S115 W3 item-26), the
+unit-tier successor, and the surviving wiring face.
+
+**Binding on the schedule: this must not reach certification RED.** W7, one
+slot; `/testing` takes the fallback in the same slot if the hook slips.
+
+**Standing rule added** (`tests/plan/memory-safety-coverage.md` §4.1,
+prong-2 amendment): a plant drawn from a live defect is self-expiring —
+prefer a synthetic plant whenever a test-only injection hook is
+constructible; never plant on a live defect that already has an owner and a
+fix path.
