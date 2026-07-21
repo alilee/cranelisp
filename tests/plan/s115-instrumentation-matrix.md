@@ -106,3 +106,166 @@ Disposition detail: `s115-test-plan.md` §8.6.
 statement must say this in those words rather than counting O3 as landed.
 O4 is a W7 gate. R7's matrix row and the 0604 FIXME retire together, at the
 W6 census disposition, not at O1's landing.
+
+---
+
+# W7 RE-AUDIT AGAINST THE STRONGER BAR (FIXME 0767, 2026-07-21, /qa)
+
+**The bar changed mid-sprint and this section re-runs every row against it.**
+Per FIXME 0767 (`target: /qa`, now discharged here) and METHOD §2.2, a row is
+**VERIFIED** only when it cites, alongside the mechanism's file:line, the
+**capability test that plants the fault the instrument claims to catch and
+observes detection**. Two things that are NOT that bar, and each of which
+carried rows in the Phase-3 pass:
+
+- "the mechanism exists at file:line" — proves the code is present, not that it
+  fires;
+- "a test exercises it" — proves the code runs, not that it discriminates.
+
+The S115 lane taught this the hard way: the RC face asserted
+`imbalance(ON) == imbalance(OFF)` over two configurations of ONE codepath, five
+real leaks lived in the shared non-gated part, and every cell compared
+`0 == 0`. Tests exercised the lane constantly. In `/testing`'s words, *the
+lane's pass was not weak evidence, it was NO evidence*.
+
+**MOVEMENT IS THE FINDING, NOT A REGRESSION.** Nothing below got worse this
+sprint; the instruments are the same or better than at Phase 3. What changed is
+that the register now reports what it can prove instead of what it can point
+at. A row moving from VERIFIED to `asserted-but-unproven` is the audit working.
+
+## Verdict movement summary
+
+**Eight rows move. Seven demote (in whole or in part); one is conditional.**
+
+| Row | Phase-3 verdict | W7 verdict | Why it moved |
+|---|---|---|---|
+| R1 producer-split half | VERIFIED-IN-PLACE | **partially proven** | join half now has a real plant (below); the `origin_to_result_mode` hard-claim arms have none |
+| R3 declared-fact truthfulness | VERIFIED-per-register | **asserted-but-unproven** | "matrix-tested; CW-F3a/Fence-3 pins" is exercise, not detection — no cell plants a false declared fact and observes the sweep catching it |
+| R5 GOT index in range | VERIFIED-IN-PLACE | **asserted-but-unproven** | always-on `assert!` at `got.rs:135–159`, but nothing constructs an out-of-range slot and observes the abort |
+| R9 differential-oracle equivalence | VERIFIED-IN-PLACE | **asserted-but-PARTIALLY-proven** | the S114 re-plant proves the combinator notices a falsified *expectation*; nothing plants the **differential-blindness** class (a leak in the shared, non-ownership-gated part, where ON and OFF agree) that 0767 was written about |
+| R14 COW count-truth (instr. half) | VERIFIED | **partially proven** | its checks ARE R9 + R8; inherits R9's gap |
+| §1.2/§1.3 oracle gate wiring | VERIFIED | **partially proven** | same mechanism as R9 |
+| Standing `RC_DEC_CHECK` positive set | VERIFIED | **partially proven** | the two direct positives + M1/M3 planted faces are proven (R8); the *systemic carrier* — `SafetyMatrix` face 4, the leg the design says is how positive coverage SCALES — inherits R9's blindness |
+| R10 resolve-once keyed hard-fail | VERIFIED-IN-PLACE | **VERIFIED, transient proof** | its only detection evidence is two LIVE REDs firing as designed. Per §4.1 ("synthetic, never a live defect") that proof **dies with the fix** — the m1/m3 lesson, third occurrence |
+
+**The demotions are not eight independent findings. They are ONE.** R9, §1.2/§1.3,
+R14 and the `RC_DEC_CHECK` systemic carrier are the same instrument counted four
+times: a single unproven differential propagated an unearned VERIFIED to three
+dependent rows. That is 0767's thesis, now measured rather than argued — *the
+proofs of the parts do not compose into a proof of the composition*, and the
+inverse is worse: an unproven composition silently certifies its consumers.
+
+### Rows the bar does NOT apply to (re-labelled, NOT demoted)
+
+Recording these explicitly so a future reader does not "fix" them:
+
+- **Tier-1 unconstructable — R2, R11.** The detection proof is the Rust compiler.
+  Reverting R2's mechanism (adding `#[non_exhaustive]` to the mode enums) breaks
+  every downstream exhaustive match; reverting R11's is a type error. A build
+  that fails IS the fault being planted and detected. **VERIFIED, bar satisfied
+  by tier.**
+- **Process rows — §3 adversarial authorship, §4 standing audit category.**
+  These are practices, not instruments; there is no fault to plant. **In force
+  (process).** Do not carry them in the instrument count.
+- **Observability — MODULE_TRACE seam coverage.** Trace emission is a
+  diagnostic aid, not a fault detector. The safety claim at that seam is the
+  0604 predicate, and *that* is proven (below). **Bar N/A.**
+
+## Rows that now MEET the bar, with their proofs
+
+New proofs landed this sprint. Each cites a planted fault and observed
+detection:
+
+| Row | Detection proof (the plant + the observation) |
+|---|---|
+| **R7 prelude export closure** | **The 0604 gate's fail-on-revert trigger.** The synthesized trigger is the discriminating shape (source PROVIDES the name, entry OUTSIDE the declared export closure) and **RED-on-revert was demonstrated** — reverting the predicate correction reddens it. Second, independent proof at the same wave: `bootstrap_seeds_pass_the_terminal_closure_gate` sweeps every seeded entry under the STRICTEST closure `D(M) = {}` so an unknown-`D` permit cannot mask, and detection was demonstrated by flipping the `macros` seeds to Public → RED, revert → GREEN. This row's Phase-3 finding (that the *pre-existing* chokepoint test could not fail on a revert of the correction) is exactly what the bar exists to catch, and it was caught prospectively. |
+| **R6 persisted-index trust boundary** | **Per-variant RED-then-GREEN + a false-fire fence.** Each of the four validation arms was demonstrated RED before its `CacheStale` class landed and GREEN after; the false-fire fence pins that a *valid* persisted index is not rejected. Both polarities, per family. |
+| **R8 RC balance** | Unchanged and still the strongest row: per-mode synthetic self-tests (quarantine ×2, scrub ×2, parity ×4) plant faults at the unit tier, and `ms_p6_mode_self_tests:55` plants a **teardown leak** e2e and observes the M3 abort. Planted, synthetic, per mode. |
+| **R1 join half** | **The `Origin`-lattice property cells** (`ownership/transfer.rs` → `transfer/tests.rs::join_lattice_*`): **3 of 4 are RED on revert, and each names the mechanism it protects.** These are seam-level algebraic-property cells over the lattice with no program involved — structurally capable of failing on an order asymmetry, which the pre-existing program-SHAPE cells were not. The 4th cell's non-reddening is honest residue, recorded not hidden. |
+| **Backend RC/ownership gates** | **The structural fence `rc_ownership_fence_tests`** — reverting any gate names the offending file:line. A fence that reports *where* on revert is stronger than one that merely reddens. |
+| **Dead-lookup enrolment** | **The `force_enroll` predicate**, extracted as a testable predicate with a measured detection proof, plus a **false-fire measurement**: zero spurious fires across 5333 tests, release-mode byte-for-byte identical to HEAD. The false-fire half is the leg most instruments skip. |
+| **§4.1 capability-fence lifecycle** | Prongs 1 and 3 proven per mode under R8; prong 2's worked example is the S114 re-plant. The mandate itself is met **at the mode grain** — 0767's generalisation of §4.1 from "mode" to "instrument, including a composed one" is what the R9 demotion above records as not yet met. |
+
+## O3 and O4 — the two owed items, honestly
+
+**O4 — §2 generative harness v1: CLOSED, and it is more than a coverage item.**
+`tests/gen_ownership_flows.rs` landed at W7 (5 owning types × 9 positions × 2
+toggles × 2 iteration counts = 45 cells / 180 runs / 1.59s), carrying **4
+synthetic capability fences — planted constant leak, planted over-release,
+planted per-iteration scaling leak, planted unmeasured run — each fail-on-revert
+proven, plus an anti-vacuity guard** that measures a real clean cell as clean.
+Exclusions are pre-registered and structural (no suppressed assertions; the
+0745 program-result-heap face has no template in the generator at all, and the
+0760 capture exclusion carries its measured rates so removing it is the
+post-fix acceptance check).
+
+Two things follow, and the second matters more than the first:
+
+1. The matrix item closes. O4 is **VERIFIED with detection proof** — the only
+   owed row that landed already meeting the new bar, because the bar was known
+   when it was specified.
+2. **The harness is the structural answer to the R9 demotion.** Its instrument
+   is an *absolute* balance (`allocs == deallocs` exactly, both polarities, with
+   a scaling rate), not a differential between two configurations — so the
+   `0 == 0` blindness that made the lane's pass no evidence **cannot arise by
+   construction**. The four plants prove it detects the classes the lane could
+   not. The lane keeps its job (differential equivalence across the ownership
+   toggle, which the harness does not replace); the harness supplies the
+   detection floor underneath it. On its FIRST run it found a reaching context
+   nobody had enumerated (0796, curried partial application stranding at the
+   identical rate as an explicit capture) — the return on a generative
+   instrument arriving inside one wave.
+
+**O3 — R4 mangle-family injectivity: NOT DELIVERED. It exits the sprint
+OWED-with-owner and must not read as delivered.** What landed: the
+/design(backend) census artifact, the P7 de-duplication of
+`got_data_symbol_name` (backend body reduced to a one-line forward to the
+`cranelisp-types` definer), and a corpus-equality fence. What did NOT land: the
+injectivity witness-or-disambiguator, because the fix belongs at the
+`cranelisp-types` home and a backend-only change broke 40+ cross-module calls.
+**Routed to `/arch` as FIXME 0748.** LinkerSymbol, the method-mangle `$`-join,
+and platform export names were already routed cross-crate by the census and are
+equally open. Phase-7 wording is binding: *O3 is owed, its owner is `/arch`, and
+its instrument is 0748* — one census plus one de-duplication is not an
+injectivity proof, and this row has no detection proof of any kind (nothing
+plants a colliding mint and observes a diagnostic).
+
+## S116 obligations this re-audit creates
+
+Ordered by what a failure would cost, not by effort:
+
+1. **Plant the differential-blindness class** (closes R9 → §1.2/§1.3 → R14 →
+   `RC_DEC_CHECK` carrier, all four, with one fence). The plant: a leak in the
+   shared, non-ownership-gated codepath, where `imbalance(ON) == imbalance(OFF)`
+   and both are wrong. Synthetic, per §4.1 — never planted on a live defect.
+   The harness's `gen_flows_capability_detects_planted_constant_leak` is the
+   template; the work is porting that discipline into the combinator.
+2. **Replace R10's transient proof before the carrier-loss family drains.** Its
+   detection evidence is currently two live REDs. When they flip, the row silently
+   becomes unproven and nobody will notice — this is the m1/m3 lesson for the
+   third time. A synthetic keyed-consumer miss, planted at the unit tier, lands
+   BEFORE the fix.
+3. **R5 and R3 are cheap** — one `#[should_panic]` cell constructing an
+   out-of-range GOT slot; one cell planting a false declared fact and observing
+   the whole-table sweep reject it. Both are afternoon work and both close a row.
+4. **O3 / 0748** — `/arch` disposition on the `cranelisp-types` injectivity home.
+
+## Amended verdict summary (supersedes the Phase-3 counts)
+
+- **VERIFIED with detection proof: 7** — R6, R7, R8, R1 (join half), §4.1
+  (mode grain), O4 harness, backend structural fence + dead-lookup predicate.
+- **VERIFIED by tier (unconstructable; bar N/A): 2** — R2, R11.
+- **VERIFIED, transient proof (expires at the fix): 1** — R10.
+- **Partially proven: 4** — R1 (producer-split half), R9, R14, §1.2/§1.3,
+  `RC_DEC_CHECK` systemic carrier *(one mechanism, four rows)*.
+- **asserted-but-unproven: 2** — R3, R5.
+- **Process / observability (bar N/A): 3** — §3, §4, MODULE_TRACE.
+- **OWED-with-owner: 1** — O3 (→ `/arch`, FIXME 0748).
+- **DEFERRED/PARKED with sanction: 3** — R13 (user, S115 Phase 1), R12
+  (session-transaction sprint), 0637/R5-sibling (parked to first consumer).
+
+FIXME 0767 is **discharged by this section**: the criterion is upgraded, the
+`asserted-but-unproven` status exists and is populated, the re-audit ran, and
+the movement is recorded as a finding. The §4.1 generalisation from "diagnostic
+mode" to "instrument, including a composed one" is adopted — item 1 above is its
+first bill.

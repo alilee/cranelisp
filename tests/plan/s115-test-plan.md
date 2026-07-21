@@ -683,22 +683,54 @@ cumulative no-fires). The landed trace + diagnosed error are the
 observability deliverable: any future firing names its seam.
 
 **The one residual is /review's FIXME 0740** — the census closure claim is
-materially false while `src/bootstrap.rs:446` (cross-module PUBLIC `Import`
-edges into the live `macros` table — the exact phantom shape) and
-`src/platform.rs:407` (public own-def `PlatformEffect`) are neither routed
-nor legal-skipped. Re-based acceptance item 4 says "census CLOSED including
+materially false while `src/bootstrap.rs:446` and `src/platform.rs:407`
+(public own-def `PlatformEffect`) are neither routed nor legal-skipped.
+Re-based acceptance item 4 says "census CLOSED including
 `commit_staging_to_live`", and the census IS the acceptance instrument; a
 closure claim that a `/review` grep falsifies is precisely the S114 lesson
 this wave was meant to end. **So yes: 0604's retirement WAITS on 0740**,
 which is `/design`(int)'s and scheduled W6.
 
-**Retirement is mechanical at W6 close**, on these two checks (no further
-/qa analysis owed):
-1. `prelude-table-write-isolation.md` §2.1/§2.4 dispositions both seams
-   (scope-boundary statement and/or named legal-skip rows), and the
-   `src/imports.rs` census-comment mirror tracks whatever wording lands;
-2. the twin guards + the trigger/false-fire/routing pins are still GREEN in
-   the certification runs.
+> **CORRECTION (W7, 2026-07-21, /qa) — the bootstrap characterisation above
+> was FALSE, and it was mine.** The paragraph as first written described
+> `src/bootstrap.rs:446` as a *"cross-module PUBLIC `Import` edging into the
+> live `macros` table — the exact phantom shape"*. It is not. `/dev` and
+> `/review` independently verified that the entry carries
+> **`Visibility::Private`** (`src/bootstrap.rs:451`) at HEAD **and** at the
+> reviewed commit `d9f2caea` — it never drifted; the characterisation was
+> wrong when it was written. A private `Import` returns `Ok` before any arm of
+> the gate is reached, so it is not a public write, not the phantom shape, and
+> not a soundness question. Bootstrap's one genuinely public `Import`
+> (`:812`) is intra-module and takes the self-alias arm.
+>
+> This is the **third** record to repeat the same misdiagnosis: `/review`
+> filed it in 0740, `/sprint` copied it into `sprints/SPRINT.md` (since
+> corrected), and **this plan and my 0604 retirement ruling repeated it
+> without checking `refers_to` against source** — the exact failure METHOD
+> §3.3's new first-act rule was written to stop, committed by the skill that
+> asked for the rule. The residual itself survives correction: the census is
+> still not closed, because a legal skip must be *named as one*, and
+> `src/platform.rs:407` is still undispositioned. What changes is that
+> bootstrap's disposition is **"private, therefore out of the gate's domain —
+> a named legal skip"**, not "an unrouted public write".
+
+**Retirement is mechanical**, on these two checks (no further /qa analysis
+owed, and — per `/dev`'s W6 report — **no further `/dev` work is owed
+either**: the code half is complete, with `platform.rs` ROUTED through the
+chokepoint, `bootstrap.rs` a named legal-skip carrying an asserting sweep,
+and the `src/imports.rs` census-comment mirror updated for both rows):
+
+1. **`/design`(int) lands the census rows** in
+   `design/int/prelude-table-write-isolation.md` §2.1/§2.4 — both seams
+   dispositioned (scope-boundary statement and/or named legal-skip rows,
+   bootstrap's row stating the PRIVATE ground above, not the phantom-shape
+   ground), **plus the 0793 `PRIMITIVES_TABLE` session-init install rider**,
+   which is part of the same census and not a separate gate;
+2. the twin guards + the trigger / false-fire / routing pins are still GREEN
+   in the certification runs — **satisfied**, verified in both W7 runs.
+
+Check 2 is discharged. **0604 retires the moment /design(int) lands the check-1
+rows — nothing else gates it, and no further work is owed by any other skill.**
 
 `/testing` rider at retirement (W7): `tests/index_race_foreground_0604.rs`
 keeps its 8-iteration sweep as the standing no-regression lane, but its
@@ -722,6 +754,524 @@ recommendation), O5 done at Phase 3. The matrix's Track-B exit check is
 amended accordingly: **O3 can no longer close as VERIFIED this sprint** —
 its honest exit state is the census artifact plus the routed cross-crate
 finding, and the matrix now says so.
+
+## 9. CERTIFICATION — the S115 suite state (W7, 2026-07-21, /qa)
+
+This section is the durable record of what the sprint's suite state IS. It is
+written to the standing counting convention (s114 §11 item 3): **a certification
+is never one scalar** — it is stable-REDs-exact PLUS a named flap set, and a
+run-dependent guard is never folded into the exact count.
+
+### 9.1 The numbers
+
+**Suite at HEAD `9088c82e`: 5351 run / 5346 passed / 5 stable REDs / 1 skipped.**
+
+Evidence: **six full `cargo nextest run --no-fail-fast` runs this sprint**, four
+of which landed exactly on this stable set. The two runs bracketing the
+certification window are logged verbatim:
+
+| Run | Tree | Result | Log |
+|---|---|---|---|
+| W6b | `99bd23a8` | 5333 run / 5328 passed / **5 REDs** / 1 skipped, 105.8s | `…/scratchpad/w6b/suite.log` |
+| W7 | `9088c82e` | 5351 run / 5346 passed / **5 REDs** / 1 skipped, 104.1s | `…/scratchpad/w7testing/suite1.log` |
+
+The run totals differ (5333 → 5351) because W7 *added* 18 cells; the RED set is
+**byte-identical between the two runs** — same five test names, same binaries.
+That is the ≥2-identical-runs SPRINT exit condition, met on the RED set rather
+than on a scalar, which is the stronger reading.
+
+### 9.2 The 5 stable REDs — each re-verified as attributed
+
+Every RED traces to an open defect with a named owner. **Zero unattributed REDs;
+zero genuine regressions.**
+
+| # | Test | Defect | Owner | Class | Fix constraint for S116 |
+|---|---|---|---|---|---|
+| 1 | `adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2` | 0745 | **/design(int) + /arch** | `rc-miscount` | Re-attributed at W3 (§8.1): this is the **program-result-value lifetime seam** — nobody releases the program result in ANY mode — not the `protect_return_value` gap it was first filed as. Needs an `/arch` mechanism ruling on where a program result's lifetime ends before int can implement. The pre-registered exclusion in `gen_ownership_flows.rs` lifts when it lands. |
+| 2 | `annotation_fold_macro_arg_0708::annotation_folds_in_macro_argument_position` | 0708 | **/arch → /dev(frontend+types)** | `silent-accept` | Flips with the S116 implementation, per `/arch`'s landed contract `annotated-sexp-node.md`: `:Type <form>` folds at READ time into `Sexp::Annotated`, ONE fold rule in `read_colon_prefix` covering every position — the macro-arg case fixed **by construction**, not by a macro-arg arm. Staged W0 types → W1 frontend → W2 int/fixture → W3 flip, one `CACHE_SCHEMA_VERSION` window. This pin is the flip trigger. |
+| 3 | `capture_drop_glue_strands_nested_heap_0760::closure_capturing_adt_with_string_field_does_not_leak` | 0760 | **/design(backend)** | `rc-miscount` | All three await ONE ruling: (a) borrowed-builder-parameterised type-directed release vs (b) per-type named drop-glue functions called from every release site. **0796 widens the census (b) must collapse** — see §10.1. |
+| 4 | `capture_drop_glue_strands_nested_heap_0760::closure_capturing_vec_of_strings_does_not_leak` | 0760 | **/design(backend)** | `rc-miscount` | as above |
+| 5 | `capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_past_glue_depth_limit_does_not_leak` | 0760 | **/design(backend)** | `rc-miscount` | as above; this is the `MAX_DROP_GLUE_DEPTH = 4` cliff face |
+
+Three of the five are one defect. **The sprint carries three distinct open
+defects into S116, each with an owner and a named next act** — and two of the
+three (0708, 0760) are blocked on a *design ruling that has been framed*, not on
+undiagnosed behaviour.
+
+### 9.3 The named flap set — FIVE members
+
+Not folded into the exact count, per the convention. Each passes in isolation
+and fails only under full-suite parallel load; none may be dispositioned as
+"flaky" (`tests/CLAUDE.md` §Failing-test discipline).
+
+| # | Test | First seen | In-suite output captured? |
+|---|---|---|---|
+| 1 | `nullary_return_dispatch_method_only_import::…_no_codegen_leak` | S114 | **YES** (W6 r2) — `Error: codegen error at 14..15: undefined function: z` |
+| 2 | `agent::y_short_flag_errors_on_non_agent_build` | S115 W3c | no |
+| 3 | `multi_sig_module_locality::imported_multi_sig_base_direct_call_repl` | S115 W3c | no |
+| 4 | `macro_expansion_interior_alias_double_free::macro_clause_interior_alias_double_free_run` | S115 W6 | **YES** (W6 r3) — `free(): chunks in smallbin corrupted`, exit `None` |
+| 5 | `repl_persist::imported_trait_impl_survives_restart` | S115 W6 | no — lost to a summary-only tail (self-disclosed; mitigated by 34/34 ×5 in-binary and no recurrence across four subsequent full runs) |
+
+Adjudication of this set is §9.5.
+
+### 9.4 The sprint arc
+
+**30 REDs at W1 → 5 at close. Every S114 carry either flipped or was
+re-attributed with evidence** — none was carried on a scheduling claim, and none
+was hidden behind `#[ignore]`.
+
+- S114 closed at 11 attributed carries. W1 opened at **30** (11 carries + 19
+  deliberately-authored new REDs: the 18-cell 0702 dotted-binder matrix and the
+  0708 fold pin), with the arithmetic exact and zero unattributed drift — the
+  spike is QA-first authoring working as designed, not decay.
+- The fix waves drained it to 5. Of the original 11: MS-P7 chained ×2, 0719 ×1,
+  0709 ×2, the RC-release sweep, the GOT-slot carrier-loss pair, and
+  impl-redefinition all **flipped**; the entry-payload leak was **re-attributed**
+  from backend to int with a carrier-state evidence dump (§8.1); 0708 was
+  **re-attributed** to an S116 structural implementation with a landed `/arch`
+  contract.
+- The 0760 triple is NEW this sprint, probe-discovered and attributed on
+  discovery — the SPRINT exit clause ("REDs that are NEW, probe-discovered, and
+  attributed this sprint") covers it exactly.
+- Along the way, four instrumentation items landed with detection proofs (O1,
+  O2, O4, plus the backend structural fence) and O3 was honestly blocked and
+  routed.
+
+### 9.5 FIXME 0694 — the flap family adjudicated: TWO phenomena, not one
+
+The evidence that was missing for three sprints arrived at W6: two in-suite
+failures captured **verbatim**. They are not the same kind of event, and the
+single most consequential thing this section says is that **treating them as one
+"flap family" would have sent one investigation after two different bugs**.
+
+**Member 4 — `macro_clause_interior_alias_double_free_run`** (`…/scratchpad/suite_r3.log:1235`):
+
+```
+thread 'macro_clause_interior_alias_double_free_run' panicked at
+tests/macro_expansion_interior_alias_double_free.rs:132:5:
+… → `main` returns `(Pure 3)` → exit 3; got exit None:
+free(): chunks in smallbin corrupted
+```
+
+`free(): chunks in smallbin corrupted` is **glibc's own heap-consistency
+detector aborting the subprocess**. Exit `None` = killed by signal, no exit
+code. This is not a threshold, not a timeout, not a slow machine: it is the
+allocator finding its free-list metadata overwritten. **A memory-safety datum.**
+Note what else that run shows — the file's four sibling faces (`_repl`, `_link`,
+`_m1_on_quarantine_face`, `_m1_off_assert_face`) all PASSED in the same run, so
+this is per-process and per-mode, not a machine-wide condition.
+
+**Member 1 — `nullary_return_dispatch_method_only_import_no_codegen_leak`** (`…/scratchpad/suite_r2.log:1299`):
+
+```
+Error: codegen error at 14..15: codegen failed for /:
+codegen error at 14..15: undefined function: z
+```
+
+A **compile-time diagnostic**, produced by a subprocess that then exited
+cleanly. Nothing was corrupted; a symbol the compiler needed was not there when
+it looked. This is the signature of a **publication/enrolment ordering
+question** — the `shared-state-write-race` class, the same class 0604 hardened.
+
+**Verdict: TWO phenomena, sharing ONE enabling condition.**
+
+The shared enabling condition is real and explains why both look like "load
+flaps": every e2e test spawns its own `cranelisp` subprocess, and each subprocess
+is itself multi-threaded (index worker, rayon sparks, IO reactor). Host CPU
+oversubscription under a full nextest run changes *intra-subprocess* thread
+interleaving. That is one condition, and it is why both families surface only
+under suite load.
+
+But what breaks is different, the owners are different, and the severity is not
+comparable:
+
+- **Class I — heap-invariant violation** (member 4). A memory-safety defect.
+  Candidate mechanism: concurrent RC/drop on a shared cell, or a
+  double-release/overrun, in a subprocess whose workers interleave differently
+  under contention. Note the aggravating history: this test is the repro for
+  0638, a double-free *fixed* at S114 W5 (`58ac8e46`). Either the fix was
+  incomplete, or a *second* mechanism reaches the same heap — and the S98 lesson
+  is binding here: **a "fix" verified by symptom absence under one condition may
+  be a false green from perturbation**. Severity: highest in the set.
+- **Class II — publication/enrolment ordering** (members 1 and 3; both are
+  REPL-mode cells of the SAME multi-sig / no-impl-fallback seam family, which is
+  itself a discriminating datum and argues one bug, not two). A correctness
+  defect with no memory-unsafety. If it happened deterministically it would be a
+  plain `carrier-loss`/`wrong-reject`.
+- **Class III — unclassified** (members 2 and 5). One observation each, no
+  captured output. Member 2 explicitly is NOT explained by the 0615
+  binary-provenance race (the `cfg(not(feature = "agent"))` face runs in the
+  DEFAULT suite). **Honest status: unclassified.** Two observations do not make a
+  class, and I decline to assign them to I or II.
+
+**Which parts of the above are hypothesis.** Per METHOD §2.2, an attribution
+needs a **discriminating control** and a **seam observation**. Stating it plainly:
+
+- **Established (observed):** the two failure signatures, verbatim; that they are
+  categorically different kinds of event; that sibling faces passed in the same
+  run; that members 1 and 3 sit on the same seam family; that all five pass in
+  isolation.
+- **Hypothesis (NOT established):** that intra-subprocess thread interleaving is
+  the mechanism for either class; that Class II is a publication-order race;
+  that Class I is a data race rather than a latent deterministic overrun whose
+  manifestation is layout-dependent. **I have symptom captures and zero seam
+  observations.** No part of the mechanism story below should be cited as
+  attributed until S116 runs the experiments.
+
+### 9.6 S116 attack plan for 0694, and the discriminating experiment
+
+The experiments are ordered so that the cheapest one can invalidate the shared
+premise before anyone builds a rig on it.
+
+**D1 — the primary discriminator (cheap, run it first). Does the fault need the
+SUBPROCESS to be concurrent, or only the HOST to be loaded?**
+Run the single test binary in isolation ~200× while the host carries an equal
+CPU load from a **non-cranelisp** source (`stress`/`yes` on N−1 cores).
+
+- Reproduces → host CPU contention alone suffices; the fault is *intra-subprocess*
+  interleaving, and the shared premise holds. Proceed to D2.
+- Does NOT reproduce, but the full suite does → something about *other cranelisp
+  subprocesses* matters, and the premise is wrong. That points at inter-process
+  shared state (cache dir, `CRANELISP_LIB`, tmpdir reuse, `user.cl` in a shared
+  cwd — the repo-root pollution that bit twice this sprint), which is directly
+  testable and a completely different fix.
+
+This single experiment is worth more than any amount of repeated full-suite
+sampling, because it can **falsify the framing** rather than accumulate more
+symptom counts.
+
+**D2 — separates Class I from Class II at the seam (the seam observation METHOD
+§2.2 requires).**
+
+- *Class I face:* re-run member 4 under (a) the M1/M3 diagnostic modes +
+  `CRANELISP_RC_DEC_CHECK=1`, and (b) with the subprocess forced
+  single-threaded (rayon threads = 1, spark budget 0). If forcing the subprocess
+  single-threaded eliminates it **under identical host load**, the mechanism is
+  intra-subprocess concurrency on the heap — a real data race, seam named. If it
+  survives single-threaded, the corruption is a latent deterministic
+  overrun whose manifestation is layout-dependent, and the S98 rule applies:
+  **do not accept symptom absence under a perturbing tool as a fix.**
+- *Class II face:* run members 1 and 3 under load with `CRANELISP_MODULE_TRACE=1`
+  captured to a file. **This is newly possible** — the 0604 wave landed
+  MODULE_TRACE emission at the staging→live commit seam, which is exactly the
+  publication edge in question. If a failing run's trace shows the eval read
+  preceding the publication of the missing symbol, Class II is *demonstrated* as
+  a publication-order race and the owner is /dev(src) at the seam 0604 hardened.
+
+**D3 — the anti-vacuity control that converts hypothesis into attribution.**
+Env-gated, dev-only: inject an artificial delay at the publication seam and show
+member 1 goes RED **deterministically, with the same error text**
+(`undefined function: z`). A planted fault reproducing the exact observed
+signature is a demonstrated mechanism; anything less is a story that fits.
+This is the same discipline as the capability fences in §9.5's matrix — and note
+that if D3 succeeds it also *becomes* the standing regression guard.
+
+**Standing hygiene, binding on all three:** every run is `tee`'d. The W6 loss of
+member 5's output to a summary-only tail cost the single highest-value datum for
+that member, and it is not recoverable after the fact.
+
+**Sequencing note:** D1 gates everything. If D1 falsifies the premise, D2 and D3
+are re-designed, not merely re-run.
+
+### 9.7 Would I certify this suite state as stable?
+
+**Yes for the 5 REDs. No for the flap set — and the flap set is what I would not
+sign.** Full statement in §11.
+
+## 10. New dispositions (W7, /qa)
+
+### 10.1 FIXME 0796 — capture stranding also reached by curried partial application: ACCEPTED as evidence; does NOT get a fourth pin
+
+`/testing`'s judgment is right and I am ratifying it explicitly so nobody
+"corrects" it later: **do not add a fourth failing-not-ignored pin for 0760 now.**
+Three pins already carry one unfixed defect through every certification run;
+a fourth buys no signal and costs a triage cycle each time. The measured
+`balance_exclusion` in `gen_ownership_flows.rs`, carrying its rates, is the
+better record — and removing the exclusion is the post-fix acceptance check,
+which a pin would not give.
+
+**What 0796 changes is the ruling's obligation, and it is not small.** 0760 asks
+`/design`(backend) to choose between (a) borrowed-builder-parameterised
+type-directed release and (b) per-type named drop-glue functions at every
+release site. 0796 shows the stranding is reached from a **compiler-synthesised**
+capture set — auto-curry's implicit closure env (§4.6.3), with no `fn` anywhere
+in the user's source — at the **identical per-iteration rate** as an explicit
+capture, for every owning type, under both toggles. Therefore:
+
+> **"Fix the `fn` capture path" is not a scoping option.** The site census the
+> ruling must satisfy includes every site that mints a capture set, whether or
+> not the user wrote a closure. `/design`(backend) states the census
+> explicitly in the ruling.
+
+This is additional weight behind option (b), on the same argument as the
+`MAX_DROP_GLUE_DEPTH = 4` cliff. **Disposition: 0796 CARRIES to S116, folded into
+the 0760 ruling — not a separate work item.** Its acceptance cell lands with the
+fix wave.
+
+Worth recording for the method: the harness found this **on its first run**,
+because it enumerates {owning type × position} rather than a hand-written shape
+list. A reaching context nobody thought to enumerate showed up as a cell. That
+is the argument for generative coverage, made concrete inside one wave.
+
+### 10.2 FIXME 0787 — dotted-reference over-reach cells: RETIRED
+
+`/review`'s finding was correct and material: of the 13 "fences" claimed as the
+over-reach control for the `.` axis, **10 carry no dot at all** and would stay
+GREEN under a coarse `name.contains('.')` over-reach. They discriminate a real
+and different thing (the reject did not eat legal bare binders); they do not
+discriminate the `.` axis. The design's own named hazard — `core.io/pure`, a
+qualified reference whose MODULE half is dotted — was unfenced in both tiers.
+
+`/testing` landed all four proposed cells at W7. **Disposition, all four items:**
+
+1. **The matrix records them** — PLAN rows in `PLAN.md` §"Sprint 115" (§10.6
+   below), five cells: `--run` and REPL faces of the dotted-module-half
+   reference, the `export` twin, the alias form, and the degenerate case.
+2. **The unit tier is NOT the agreed home for the degenerate case.** `/testing`
+   pinned `a.` / `.b` / bare `.` e2e as located reader errors, and that is the
+   right call — it is a Principle-16 twin of bare `/`, and bare `/` is pinned
+   e2e. Keep both tiers.
+3. **The REPL face earns its place** by asserting the *rendered* type keeps the
+   whole dotted home (`:user.util/Wid`), so a truncating splitter fails on
+   display as well as on resolution. Two independent observations of one fault
+   is what the reference column was missing.
+4. **The missing mutation proof is noted, not waived.** `/testing` could not run
+   one (it requires editing `crates/cranelisp-frontend/`, outside its boundary).
+   The cells are structural over-reach controls by construction, but per §9.5's
+   bar that is *argument*, not *demonstration*. **`/dev`(frontend) confirms
+   fail-on-revert in one line at its next touch of that seam** — carried as a
+   rider, not a gate.
+
+**0787 retires.** Its ask is discharged.
+
+**Its undispositioned tail is NOT discharged, and it is a defect** — see §10.3.
+`/testing` correctly flagged `(u/helper)` as "outside this FIXME's ask" and
+routed it to me rather than silently dropping it. That routing is what caught a
+spec violation.
+
+### 10.3 NEW DEFECT — a module alias is not usable as a qualifier (spec §8.3.4/§8.3.6 violation)
+
+Probed live at HEAD `9088c82e` (scratchpad cwd, `PrimitivesOnly`):
+
+```clojure
+;; main/util.cl
+(defn helper [] 7)
+
+;; alias-only import — the spec's own "qualified access only" case
+(import [(main.util u) []])
+(defn main [] (Pure (u/helper)))
+;; => error: module 'u' referenced by 'u/...' not found     EXIT 1
+```
+
+The spec is not ambiguous about this. §8.3.4: *"registers `str` as an alias for
+`core.string`. **The alias can then be used for qualified references:
+`str/split`.**"* §8.3.6: *"Registers `opt` as an alias for `core.option` without
+importing any bare names. **Useful when you only want qualified access:
+`opt/Some`.**"*
+
+**Controls (all at the same HEAD, same fixture):**
+
+| Program | Result |
+|---|---|
+| `(import [(main.util u) []])` + `(u/helper)` — alias-only | **exit 1**, alias not found |
+| `(import [(main.util u) [helper]])` + `(u/helper)` | **exit 1**, alias not found |
+| `(import [(main.util u) [helper]])` + `(helper)` — bare | exit 7 ✓ |
+| `(import [main.util [helper]])` + `(main.util/helper)` — full path | exit 7 ✓ |
+
+So the alias form imports its *names* correctly; the alias itself is simply never
+registered as a referenceable qualifier. In the alias-only form — where
+qualified access is the **entire** purpose of the import — the feature is
+non-functional end to end.
+
+**Attribution: `wrong-reject`** (a spec-conforming program rejected), at
+qualified-name resolution. I have a discriminating control (bare vs
+alias-qualified vs full-path, one variable) but **no seam observation**, so the
+owning crate is *not* attributed here — `/testing` reduces and the seam names the
+owner, per the standard protocol.
+
+**This is a textbook coverage-by-definition-variants miss** — the standing lens,
+exactly as `tests/CLAUDE.md` describes it: the family is *import shape × reference
+form*, the suite is dense on `(bare import × bare ref)` and `(bare import ×
+full-path ref)`, and the `(alias import × alias-qualified ref)` cell is empty.
+A whole documented language feature sat unexercised because no cell asked for it.
+**Filed as FIXME 0798 (`/testing`).**
+
+### 10.4 FIXME 0797 — auto-curry over an unconstrained generic parameter: adjudicated as a DEFECT (`wrong-reject`), not a spec fork
+
+`/testing` asked whether this is a `wrong-reject` or deliberate-and-needs-a-spec
+sentence, and correctly declined to decide it alone. **I rule: `wrong-reject`, a
+defect. No user ruling is needed for the case as filed** — and the probes below
+also sharpen the repro axis materially, which changes the handoff.
+
+**Re-verified at HEAD `9088c82e`, then extended.** 0797's table reproduces
+exactly. The extension:
+
+| # | Program (`x` unannotated ⇒ free type var) | Result |
+|---|---|---|
+| a | `(defn g [x y] (add-i64 y 0))` → `((g 5) 3)` | **rejected**: `expected (Fn [Int] Int), got Int` |
+| b | same `g`, full application `(g 5 3)` | exit 3 ✓ |
+| c | `(defn g [:Int x :Int y] …)` → `((g 5) 3)` — annotated twin | exit 3 ✓ |
+| e | `(defn g2 [:Int x y] (add-i64 x 0))` → `((g2 5) 3)` — free var in the **residual** | rejected, but by the **§3.11 ambiguity gate** ("a residual unbound type variable reached a codegen position") — a *different, principled* rejection |
+| f | `(defn g3 [x :Int y] …)` → `((g3 5) 3)` — free var in the **supplied** position only | **rejected**, same message as (a) |
+| h | `(defn g4 [x :Int y :Int z] …)` → `((g4 5 3) 4)` — 3-arity | **rejected**, same message — not arity-specific |
+| **j** | same `g` as (a), curried value used as a **non-callee**: `(add-i64 (g 5) 1)` | rejected with `expected Int, got (Fn [Int] Int)` — **the curry DID form** |
+| m | same `g`, let-bound then applied: `(let [h (g 5)] (h 3))` | **rejected**, same message as (a) |
+| n | annotated twin of (m) | exit 3 ✓ |
+
+**Two findings, and the second supersedes 0797's own characterisation.**
+
+**(1) The rejection has no semantic content.** Compare (c) and (f): identical
+bodies, identical residual closure type `(Fn [Int] Int)` — fully determined,
+containing no type variable — and one is accepted, one rejected. The only
+difference is whether a type *nobody reads* was written down. A boundary
+invisible in the residual type is an implementation artifact, not a semantics
+call. §4.6.3's "currying is only defined where the residual is determinable"
+reading does not even carve this case out, because the residual **is**
+determined: the supplied argument pins `a := Int` at the curry point.
+
+**(2) The discriminator is NOT "partial application is rejected".** Cell (j)
+shows the curry **forms correctly** over the very same unconstrained parameter
+when its result flows to a non-application use — the checker reports
+`(Fn [Int] Int)`, which is right. The curry fails only when the curried result
+is subsequently **applied** (immediately in (a)/(f)/(h), or via a let binder in
+(m)); there `(g 5)` types as `Int`, i.e. the inner node was accepted as a *full*
+application of a 2-parameter function to 1 argument. So the implementation
+already supports currying over a free-var parameter — it just loses it under an
+application demand. That is an internal inconsistency, which settles the
+adjudication: **you cannot call a boundary deliberate when the implementation
+observably crosses it in the adjacent cell.**
+
+**Candidate seam (NOT an attribution).** `infer.rs::try_auto_curry:1040` guards
+on `Type::Fn(params, ret) if arg_types.len() < params.len()`, with a **silent**
+`_ => return Ok(None)` fallthrough for any other callee shape; the deferred
+settlement machinery is `mono_collect.rs::resolve_auto_curry` +
+`AutoCurryDrain`. A callee type not yet resolved to `Fn` at that guard would
+fall through silently, after which an ordinary-apply unification against a bare
+type variable cannot enforce arity — which fits every observation, including why
+the error surfaces at the *outer* node with a message describing the
+application rather than the curry. **This is a hypothesis. It has a
+discriminating control (the table above) and NO seam observation.** Per METHOD
+§2.2 the first act of the owning `/dev` is to observe which arm is taken —
+before any fix.
+
+Note the adjacency: FIXME 0779 already records that **five of six**
+`resolve_auto_curry` drain seams have no cell that reddens on a flip. If the
+seam observation lands in that machinery, these are one finding, and 0779's
+detection gap is why it was invisible.
+
+**The genuinely normative residue — framed, not ruled.** Cell (e) — currying
+where the **residual** carries a free type variable — is rejected by the §3.11
+ambiguity gate. Whether that is the intended interaction between §4.6.3
+("auto-currying applies at any depth", extended to *constrained* polymorphism
+with monomorphisation at the supplying call site) and §3.11 (pin the type) is a
+question the spec does not answer, and it is **not** what 0797 asked. That one is
+the user's. Routed to `/sprint` for an S116 `/spec` slot (outside my 0798–0799
+band); it blocks nothing.
+
+**Disposition: 0797 RETIRES** (its ask — adjudication — is discharged here).
+The work it generates is **FIXME 0799 (`/testing`)**: the failing repro at the
+sharpened axis, plus the free-type-variable column the §4.6.3 matrix lacks. All
+twelve existing auto-curry tests curry over a determined type — another
+coverage-by-definition-variants cell, and the second one this wave (§10.3 is the
+first).
+
+### 10.5 FIXME 0740 — the four-record misdiagnosis chain: my two records are CORRECTED
+
+`/dev` and `/review` independently verified that `src/bootstrap.rs:451` carries
+`Visibility::Private` at HEAD **and** at `d9f2caea` — it never drifted. The
+"cross-module PUBLIC Import … the exact phantom shape" characterisation is
+**false**, and it propagated through four records before anyone checked it
+against source.
+
+Two of the four are mine, and both are corrected in place:
+
+1. **`design/arch/fixmes/0604-…md`** — my S115 retirement ruling (§"/qa S115
+   pre-W7 disposition"). Corrected.
+2. **`tests/plan/s115-test-plan.md` §8.5** — this plan. Corrected, with the
+   correction stated as a correction rather than a silent edit (§8.5 blockquote).
+
+0740's body is `/design`(int)'s to correct; `sprints/SPRINT.md` is already
+corrected by `/sprint`.
+
+**The lesson is about me, and I am recording it as such.** METHOD §3.3's new
+rule — *a FIXME disposition or carry decision verifies the claim against
+`refers_to` source as its FIRST act* — was adopted this sprint at my own
+prompting, and I then wrote a retirement ruling that repeated an unverified
+`/review` characterisation without opening `bootstrap.rs`. A ruling that decides
+whether a three-sprint carry retires is precisely the artifact that cannot
+inherit a premise. The residual survives the correction (the census still is not
+closed; `platform.rs:407` still needed disposition), which is exactly why the
+error was cheap to miss and would have been expensive to keep: **a true
+conclusion resting on a false premise reads as verified.**
+
+### 10.6 PLAN rows for the W7 cells
+
+Landed in `tests/plan/PLAN.md` §"Sprint 115 — W7 cells". Three groups: the 10
+`gen_ownership_flows` fns + the product statement; the 3 new + 1 sharpened
+`impl_redefinition_dispatch` cells; the 5 dotted reference-column controls.
+
+## 11. PHASE-5 EXIT STATEMENT (/qa, for the user)
+
+**What shipped.** Sprint 115 set out to flip 11 attributed carries and close the
+gap between the safety recommendations and what is actually in place. Both
+happened. The suite is **5351 run / 5346 passed / 5 stable REDs / 1 skipped**,
+verified over six full runs with the RED set byte-identical across the two
+certification runs. The RED count went **30 at W1 → 5 at close**; of the 11
+S114 carries, nine flipped and two were re-attributed with evidence rather than
+excuses. On the instrumentation side, the 0604 structural gate landed with a
+demonstrated fail-on-revert trigger (a three-sprint carry, finally gated on
+merits), the cache trust-boundary got its ONE validation seam with per-variant
+proofs, impl-redefinition hot-reload works and was verified behaviourally
+(12 → 7 → 99 across three re-impls), and the generative flow harness landed —
+45 cells, four synthetic capability fences, an anti-vacuity guard, and a real
+finding on its first run.
+
+**What carries, with owners.** Three defects: **0745** (program-result-value
+lifetime — /design(int), needs an /arch mechanism ruling first), **0708** (the
+`:Type` fold — /arch's contract is landed, S116 implements it in four staged
+waves), **0760 ×3** (capture drop-glue stranding — awaiting /design(backend)'s
+a-vs-b ruling, now widened by 0796 to include compiler-synthesised captures).
+Two instrumentation items: **O3** mangle-family injectivity is **owed, not
+delivered**, routed to /arch as 0748; and the four differential-oracle rows
+demoted in this sprint's matrix re-audit need one planted fence to close.
+Plus **0694**, the flap set, below.
+
+**Would I certify this suite state as stable? A qualified yes — with one
+explicit exception that I will not sign.**
+
+The five REDs are not a stability concern and I certify them without
+reservation. Every one traces to an open defect with a named owner, a named
+class, and a named next act; three of the five are one defect; two are blocked
+on design rulings that are *framed and waiting*, not on undiagnosed behaviour.
+A suite whose failures are this well-characterised is doing its job — these are
+guards, not decay, and the discipline that keeps them un-`#[ignore]`d is why we
+can read them at all.
+
+**The flap set is a different matter, and I would not certify it.** Five tests
+that pass in isolation and fail under load is not a stability profile I will
+call clean, and one of them is qualitatively worse than the rest: `free():
+chunks in smallbin corrupted` is glibc detecting that its own free-list metadata
+has been overwritten. That is a memory-safety event, in a test that is the repro
+for a double-free we already believed we fixed at S114. It has been observed
+once, under load, with no seam observation and no mechanism. I cannot bound it:
+I do not know whether it is rare-and-narrow or common-and-lucky, and the
+honest reading of "we saw it once in six runs" is that we do not know the rate.
+
+So the certification I am willing to give is: **the deterministic state of this
+suite is stable and well-attributed; the load-dependent state contains an
+uncharacterised memory-safety event and is not.** Those should not be averaged
+into a single verdict, which is exactly why the counting convention forbids one
+scalar. I would not let the heap-corruption member ride into S116 as one of five
+"flaps" — it needs to be pulled out by name and given the D1/D2/D3 experiments in
+§9.6 as first-class sprint work, ahead of the flap family as a whole.
+
+One further note in fairness to the sprint: the reason I can say any of this is
+that W6 captured the failures verbatim instead of counting them. Three sprints
+of "the nullary flap" produced no progress; two captured stderr blocks produced
+a two-class adjudication, an attack plan, and a discriminating experiment in one
+sitting. The lesson generalises past 0694 — **capture the output, always tee**;
+a symptom count is not evidence, and the fifth flap member's output was lost to a
+summary-only tail this sprint and is not recoverable.
 
 ## Next skills
 

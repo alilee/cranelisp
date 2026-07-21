@@ -287,7 +287,44 @@ Findings route per normal attribution; a surface with NO structural/
 differential argument (example-verified only) is an audit finding even with
 zero known defects — that is the whole point of the category.
 
-### 4.1 Diagnostic-mode capability fences — lifecycle ruling (S114, standing)
+### 4.1 Capability fences — lifecycle ruling (S114, standing; SCOPE GENERALISED S115)
+
+> **SCOPE GENERALISATION (S115 W7, /qa — FIXME 0767 item 3).** This section was
+> written for a **diagnostic mode**. It now governs **any instrument, including
+> a composed one** — a lane, a combinator, an oracle, a harness, a validation
+> seam, a predicate gate. The generalisation was forced by evidence: the
+> per-mode fences below exist and pass, and the *lane composed of those modes*
+> had no fence of its own, so five real leaks lived in the shared,
+> non-ownership-gated part where its differential compared `0 == 0`. **The
+> proofs of the parts do not compose into a proof of the composition.**
+>
+> Two consequences, both binding:
+>
+> 1. **An instrument is unverified until it is proven to detect** (METHOD §2.2).
+>    A new lane/combinator/oracle ships with its own capability fences from day
+>    one, planting each class it claims to cover — and, where the instrument
+>    reports a *rate* or a *balance*, both polarities (a planted leak AND a
+>    planted over-release; the latter is the one no residue-allowance ever
+>    catches).
+> 2. **`/qa`'s instrumentation matrix marks a row VERIFIED only with a cited
+>    detection proof.** "The mechanism exists at file:line" and "a test exercises
+>    it" are both weaker and neither substitutes; a row with a mechanism but no
+>    plant takes the distinct status `asserted-but-unproven`, which is an open
+>    item, not a pass. Worked example, including the movement this produced
+>    across the S115 register: `tests/plan/s115-instrumentation-matrix.md`
+>    §"W7 re-audit against the stronger bar".
+>
+> The worked exemplar of an instrument that met this bar on arrival is the S115
+> generative harness (`tests/gen_ownership_flows.rs`, §2 below): four synthetic
+> capability fences — planted constant leak, planted over-release, planted
+> per-iteration scaling leak, planted unmeasured run — each fail-on-revert
+> proven, plus an anti-vacuity guard measuring a real clean cell as clean. Its
+> instrument is an **absolute** balance rather than a differential between two
+> configurations, so the `0 == 0` blindness cannot arise by construction.
+>
+> The three prongs below stand unchanged for diagnostic modes; read "mode" as
+> "instrument" throughout.
+
 
 Escalated from the S114 cleanup batch (`adb8d3fb`): the `m1_quarantine`
 e2e capability fence was retired when its planted fault — the last live

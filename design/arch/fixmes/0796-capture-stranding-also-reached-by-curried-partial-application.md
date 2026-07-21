@@ -72,6 +72,34 @@ discipline). Until then the generative harness records it as a named, measured
 `balance_exclusion` with these rates, so removing the exclusion after the fix is
 the acceptance check.
 
+## /qa disposition (S115 W7, 2026-07-21) — ACCEPTED as evidence; CARRIES to S116 folded into the 0760 ruling
+
+Durable record: `tests/plan/s115-test-plan.md` §10.1.
+
+1. **The no-fourth-pin judgment is RATIFIED**, recorded here so nobody
+   "corrects" it later. 0760 already carries three failing-not-ignored pins for
+   one unfixed defect; a fourth buys no signal and costs a triage cycle every
+   certification run. The measured `balance_exclusion` in
+   `tests/gen_ownership_flows.rs`, carrying its rates, is the better record —
+   and *removing the exclusion is the post-fix acceptance check*, which a pin
+   would not give.
+2. **The census obligation is binding on the ruling.** The stranding is reached
+   from a **compiler-synthesised** capture set — auto-curry's implicit closure
+   env (§4.6.3), no `fn` in the user's source — at the identical per-iteration
+   rate as an explicit capture, for every owning type, under both toggles.
+   Therefore **"fix the `fn` capture path" is not a scoping option**:
+   `/design`(backend)'s a-vs-b ruling must state the site census explicitly, and
+   that census covers every site that mints a capture set, user-written or not.
+   Additional weight behind option (b), on the same argument as the
+   `MAX_DROP_GLUE_DEPTH = 4` cliff.
+3. **Not a separate work item.** 0796 carries to S116 folded into the 0760
+   ruling; its acceptance cell lands with the fix wave, not before.
+
+Method note worth keeping: the harness found this on its **first run**, because
+it enumerates {owning type × position} instead of a hand-written shape list. A
+reaching context nobody thought to enumerate surfaced as a cell — the concrete
+argument for generative coverage, returned inside one wave.
+
 ## Context
 
 Filed by `/testing` at S115 W7 while landing the generative harness (matrix item

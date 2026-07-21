@@ -152,6 +152,122 @@ none may be dispositioned as "flaky".
 
 This FIXME stays OPEN (roster update only; no disposition change).
 
+## /qa S115 W7 ADJUDICATION — the family is TWO phenomena, not one
+
+Durable record + the S116 attack plan: `tests/plan/s115-test-plan.md` §9.5/§9.6.
+This FIXME **stays OPEN** and carries to S116 with the scope below.
+
+**The evidence this row waited three sprints for arrived at W6: two in-suite
+failures captured VERBATIM.** They are categorically different events, and the
+single most consequential conclusion here is that treating them as one "flap
+family" would have pointed one investigation at two different bugs.
+
+**Member — `macro_clause_interior_alias_double_free_run`** (verbatim,
+`…/scratchpad/suite_r3.log:1235`):
+
+```
+… `main` returns `(Pure 3)` → exit 3; got exit None:
+free(): chunks in smallbin corrupted
+```
+
+`free(): chunks in smallbin corrupted` is **glibc's own heap-consistency
+detector aborting the subprocess**; exit `None` = killed by signal. Not a
+timeout, not a threshold, not a slow machine — the allocator found its free-list
+metadata overwritten. A **memory-safety datum**. In that same run the file's
+four sibling faces (`_repl`, `_link`, `_m1_on_quarantine_face`,
+`_m1_off_assert_face`) all PASSED, so it is per-process and per-mode.
+
+**Member — `nullary_return_dispatch_method_only_import_no_codegen_leak`**
+(verbatim, `…/scratchpad/suite_r2.log:1299`):
+
+```
+Error: codegen error at 14..15: codegen failed for /:
+codegen error at 14..15: undefined function: z
+```
+
+A **compile-time diagnostic** from a subprocess that then exited cleanly.
+Nothing corrupted; a symbol was not there when the compiler looked. The
+signature of a **publication/enrolment ordering** question — the
+`shared-state-write-race` class, the same class this FIXME originally named.
+
+### Verdict: TWO phenomena, ONE shared enabling condition
+
+The shared condition is real and explains why both read as "load flaps": every
+e2e test spawns its own `cranelisp` subprocess, each subprocess is itself
+multi-threaded (index worker, rayon sparks, IO reactor), and host CPU
+oversubscription under a full nextest run changes *intra-subprocess* interleaving.
+One condition — but what breaks, who owns it, and how bad it is all differ:
+
+- **Class I — heap-invariant violation** (macro_clause `_run`). Memory-safety.
+  Aggravating history: this test is the repro for 0638, a double-free *fixed* at
+  S114 W5 (`58ac8e46`). Either that fix was incomplete or a second mechanism
+  reaches the same heap. The S98 rule binds: a fix verified by symptom absence
+  under a perturbing tool may be a false green. **Highest severity in the set.**
+- **Class II — publication/enrolment ordering** (nullary; and
+  `multi_sig_module_locality::imported_multi_sig_base_direct_call_repl`, a
+  REPL-mode cell of the SAME multi-sig/no-impl-fallback seam family — a
+  discriminating datum arguing one bug, not two). Correctness, no memory-unsafety.
+- **Class III — unclassified** (`agent::y_short_flag_errors_on_non_agent_build`;
+  `repl_persist::imported_trait_impl_survives_restart`). One observation each,
+  no captured output; the agent face is explicitly NOT explained by 0615 (that
+  cell runs in the DEFAULT suite). **They are not assigned to I or II** — two
+  observations do not make a class.
+
+### Which parts are hypothesis (METHOD §2.2)
+
+- **Observed:** the two signatures verbatim; that they are different kinds of
+  event; that sibling faces passed in the same run; that the nullary and
+  multi_sig members share a seam family; that all five pass in isolation.
+- **Hypothesis, NOT established:** that intra-subprocess interleaving is the
+  mechanism for either class; that Class II is a publication-order race; that
+  Class I is a data race rather than a latent deterministic overrun whose
+  manifestation is layout-dependent. **Symptom captures exist; seam observations
+  do not.** Nothing above is an attribution until S116 runs the experiments.
+
+### The discriminating experiment (S116)
+
+**D1 — run FIRST; it can falsify the shared premise cheaply.** Run the single
+test binary in isolation ~200× while the host carries equal CPU load from a
+**non-cranelisp** source. Reproduces → host contention suffices, the fault is
+intra-subprocess, premise holds. Does NOT reproduce while the full suite does →
+other *cranelisp subprocesses* matter, and the premise is wrong: that points at
+inter-process shared state (cache dir, `CRANELISP_LIB`, tmpdir reuse, shared-cwd
+`user.cl`) and a completely different fix. Worth more than any further
+full-suite sampling, because it can invalidate the framing instead of
+accumulating symptom counts.
+
+**D2 — the seam observation, per class.** Class I: re-run under M1/M3 +
+`CRANELISP_RC_DEC_CHECK=1`, and again with the subprocess forced single-threaded
+(rayon = 1, spark budget 0) under *identical* host load — elimination names
+intra-subprocess concurrency on the heap; survival names a latent deterministic
+overrun (and S98 forbids reading absence as a fix). Class II: run under load with
+`CRANELISP_MODULE_TRACE=1` tee'd — **newly possible**, because the 0604 wave
+landed MODULE_TRACE emission at the staging→live commit seam, exactly the
+publication edge in question. A trace showing the eval read preceding publication
+*demonstrates* Class II and names /dev(src) as owner.
+
+**D3 — anti-vacuity control, converts hypothesis to attribution.** Env-gated
+dev-only delay injected at the publication seam; show the nullary face goes RED
+**deterministically with the same error text**. A planted fault reproducing the
+observed signature is a demonstrated mechanism; anything less is a story that
+fits. If D3 succeeds it also becomes the standing regression guard.
+
+**Binding hygiene:** every run is `tee`'d. The fifth member's output was lost to
+a summary-only tail this sprint and is not recoverable.
+
+**D1 gates D2/D3** — if it falsifies the premise, they are re-designed, not
+re-run.
+
+### Scope change for S116
+
+1. **The heap-corruption member is pulled OUT of the flap family by name.** It
+   is a memory-safety event, not a fifth flap, and it gets first-class sprint
+   work ahead of the family. `/qa` will not certify a suite state that folds it
+   into a flap count.
+2. The ≥3-consecutive-green close condition still applies to the nullary face
+   only. Classes I and III each owe their own characterisation before closing.
+3. "Flaky" remains banned for all five.
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

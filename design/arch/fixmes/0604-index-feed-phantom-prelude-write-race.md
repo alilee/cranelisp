@@ -457,21 +457,59 @@ since ~320 cumulative no-fires.
 
 **The residual**: re-based acceptance item 4 requires the census CLOSED, and
 the census is the acceptance instrument. FIXME 0740 shows the closure claim
-is materially false while `src/bootstrap.rs:446` (cross-module PUBLIC Import
-edges into the live `macros` table — the exact phantom shape) and
+is materially false while `src/bootstrap.rs:446` ~~(cross-module PUBLIC Import
+edges into the live `macros` table — the exact phantom shape)~~ **[STRUCK —
+see the W7 correction below]** and
 `src/platform.rs:407` (public own-def PlatformEffect) are neither routed nor
 legal-skipped. Both are benign in effect, so gate soundness is intact — but a
 closure claim a `/review` grep falsifies is precisely the S114 lesson this
 wave existed to end. 0740 is `/design`(int)'s, scheduled W6.
 
-**Retirement is mechanical at W6 close**, on two checks — no further /qa
-analysis owed:
+> **CORRECTION (/qa, W7 2026-07-21) — the struck clause above was FALSE, and it
+> was my error.** `/dev` and `/review` independently verified that the
+> bootstrap entry carries **`Visibility::Private`** (`src/bootstrap.rs:451`) at
+> HEAD **and** at the reviewed commit `d9f2caea` — it never drifted; the
+> characterisation was wrong when written. A private `Import` returns `Ok`
+> before any arm of the gate is reached: it is not a public write, not "the
+> exact phantom shape", and raises no soundness question. Bootstrap's one
+> genuinely public `Import` (`:812`) is intra-module and takes the self-alias
+> arm.
+>
+> I inherited the characterisation from `/review`'s 0740 without opening
+> `bootstrap.rs` — making this ruling the **third** of four records to repeat
+> it. METHOD §3.3's rule (*verify the claim against `refers_to` source as the
+> FIRST act of any disposition or carry decision*) was adopted this sprint at
+> my own prompting, and this is the ruling that violated it. Note why it was
+> cheap to miss: **the conclusion survives the correction.** The census is
+> still not closed and `src/platform.rs:407` still needed disposition — a true
+> conclusion resting on a false premise reads as verified.
+>
+> **What actually changes:** bootstrap's census disposition is *"private,
+> therefore outside the gate's domain — a named legal skip"*, not *"an unrouted
+> public write"*. `/design`(int)'s census row must state the PRIVATE ground.
 
-1. `prelude-table-write-isolation.md` §2.1/§2.4 dispositions both seams
-   (scope-boundary statement and/or named legal-skip rows), and the
-   `src/imports.rs` census-comment mirror tracks whatever wording lands;
-2. the twin guards + the trigger / false-fire / routing pins are still GREEN
-   in the certification runs.
+**Retirement is mechanical**, on two checks. **No further `/qa` analysis is
+owed, and — per `/dev`'s W6 report — no further `/dev` work is owed either**:
+the code half is complete (`platform.rs` ROUTED through the chokepoint;
+`bootstrap.rs` a named legal-skip carrying an asserting sweep,
+`bootstrap_seeds_pass_the_terminal_closure_gate`, which sweeps every seeded
+entry under the strictest closure `D(M) = {}` and whose detection was
+demonstrated — flip the `macros` seeds to Public → RED, revert → GREEN; and the
+`src/imports.rs` census-comment mirror updated for both rows).
+
+1. **`/design`(int) lands the census rows** — `prelude-table-write-isolation.md`
+   §2.1/§2.4 dispositions both seams (scope-boundary statement and/or named
+   legal-skip rows, bootstrap's stating the PRIVATE ground per the correction
+   above), **plus the 0793 `PRIMITIVES_TABLE` session-init install rider**,
+   which belongs to the same census and is not a separate gate. The
+   `src/imports.rs` census-comment mirror tracks whatever wording lands.
+2. **The twin guards + the trigger / false-fire / routing pins are still GREEN
+   in the certification runs — DISCHARGED**, verified in both W7 certification
+   runs (`99bd23a8`: 5333/5328/5/1; `9088c82e`: 5351/5346/5/1 — the 5 stable
+   REDs are byte-identical between them and none of them is this one).
+
+**Check 2 is met. This FIXME retires the moment `/design`(int) lands the check-1
+rows — nothing else gates it, and no other skill owes work against it.**
 
 `/testing` rider at retirement: `tests/index_race_foreground_0604.rs` keeps
 its 8-iteration sweep as the standing no-regression lane, but its module

@@ -3892,3 +3892,114 @@ lives in `plan/s113-risk-assessment.md`.** Durable index:
   matrix (each family names its twin explicitly).
 - **Risk read**: `risks.md` §"S113 risk read" (S113-1..6 execution risks;
   the global ranking is the W0 artifact).
+
+## Sprint 115 — W7 cells (2026-07-21, /qa)
+
+**The full S115 plan lives in `plan/s115-test-plan.md`** (certification §9,
+dispositions §10, exit statement §11); the Track-B instrumentation register
+lives in `plan/s115-instrumentation-matrix.md`. Rows below are the W7-authored
+cells, which have no earlier row.
+
+### A. Generative ownership-flow harness — `tests/gen_ownership_flows.rs` (matrix item O4)
+
+Provenance: `plan/memory-safety-coverage.md` §2 (generative harness v1) +
+§4.1 as generalised S115; spec `spec/12-runtime.md` §12.3.1 (a heap value MUST
+be freed when unreachable and MUST NOT be freed while reachable).
+
+**The product statement — this is the row that matters, and it is one row, not
+45.** The harness enumerates **5 owning types × 9 positions × 2 ownership
+toggles × 2 iteration counts = 45 cells / 180 subprocess runs / 1.59s**,
+asserting per cell: **exact RC balance in both polarities** (`allocs ==
+deallocs` — a planted over-release fails as loudly as a planted leak),
+**scaling rate** (a per-iteration leak multiplies by the iteration count, so a
+rate of 1 is unmissable), and **NoMeasurement-is-a-fault** (a run that produced
+no measurement is a failure, never a silent skip). Owning types and positions
+are enumerated **independently**, which is the point: a reaching context nobody
+hand-listed appears as a cell. It did, on the first run — see 0796.
+
+Exclusions are **pre-registered and STRUCTURAL**, not suppressed assertions:
+the 0745 program-result-heap face has no template in the generator at all, and
+the 0760 capture exclusion carries its measured per-iteration rates so that
+*removing the exclusion is the post-fix acceptance check*.
+
+| Test | Covers | Status |
+|---|---|---|
+| `gen_flows_str_exact_balance_and_differential` | owning type `String` × 9 positions × 2 toggles × 2 counts | `[Tested+Neg]` |
+| `gen_flows_vec_of_scalars_exact_balance_and_differential` | `(Vec Int)`, same product | `[Tested+Neg]` |
+| `gen_flows_vec_of_heap_exact_balance_and_differential` | `(Vec String)`, same product | `[Tested+Neg]` |
+| `gen_flows_adt_with_heap_field_exact_balance_and_differential` | ADT with a `String` field, same product | `[Tested+Neg]` |
+| `gen_flows_vec_of_adt_with_heap_field_exact_balance_and_differential` | `(Vec Bx)` — nesting depth 3, the `MAX_DROP_GLUE_DEPTH` axis | `[Tested+Neg]` |
+
+**Capability fences — the §4.1-generalised mandate, met on arrival.** Each
+plants a fault of a class the harness claims to catch and observes detection;
+each is fail-on-revert proven; all are SYNTHETIC (never planted on a live
+defect, per §4.1 prong 2 — the m1/m3 lesson).
+
+| Test | Planted fault | Why it is owed |
+|---|---|---|
+| `gen_flows_capability_detects_planted_constant_leak` | a fixed leak independent of iteration count | the base detection claim |
+| `gen_flows_capability_detects_planted_over_release` | an over-release (opposite polarity) | **no residue-allowance instrument ever catches this**; the polarity a differential hides |
+| `gen_flows_capability_detects_planted_per_iteration_scaling_leak` | a leak proportional to iteration count | proves the *rate* assertion discriminates, not just the total |
+| `gen_flows_capability_detects_unmeasured_run` | a run producing no measurement | proves NoMeasurement fails rather than passing vacuously |
+| `gen_flows_capability_measures_a_real_clean_cell_as_clean` | *nothing* — anti-vacuity guard | proves the fences above are not fired by a clean program; without it the four plants prove only that the instrument is noisy |
+
+### B. Impl-redefinition hot-reload — `tests/impl_redefinition_dispatch.rs`
+
+Provenance: spec `spec/05-definitions.md` §5.4.5 (Implementation Semantics —
+redefinition is hot-reload under the same-type constraint; user-ruled at S114
+close, scribed via 0714). Standing lens: **coverage by definition variants** —
+the variant family is *what a re-`impl` does to each method it does or does not
+mention*.
+
+| Test | Covers | Status |
+|---|---|---|
+| `reimpl_same_type_hot_reloads_dispatch` | **SHARPENED** — was a single re-impl; now verifies **12 → 7 → 99** across three successive re-impls, so a one-shot fix cannot pass | `[Tested]` |
+| `reimpl_omitting_a_method_reverts_it_to_the_trait_default` | a re-`impl` that omits a method reverts it to the trait default (not "keeps the old override") | `[Tested]` |
+| `reimpl_default_then_override_then_default_cycles` | default → override → default cycles cleanly — the state machine, not one edge | `[Tested]` |
+| `reimpl_neg_type_changing_body_rejected_and_prior_impl_keeps_dispatching` | **negative**: a type-changing re-`impl` is rejected at the conformance seam, nothing is staged, and the prior impl **keeps dispatching** | `[Tested+Neg]` |
+
+The negative cell is the load-bearing one: it verifies the `/arch` §4
+inherited-constraint claim (the same-type constraint comes free from defn's
+existing rule, no new gate) **behaviourally rather than by assertion**. Open
+`/qa` note carried to S116: that rejection's message reads with **inverted
+expected/got polarity** for a conformance failure — cosmetic, but it is a
+diagnostic a user sees.
+
+### C. Dotted reference-column over-reach controls — `tests/dotted_binder_reject_0702.rs` (FIXME 0787, retired)
+
+Provenance: spec `spec/08-modules.md` §8.3/§8.4/§8.5 + `spec/02-syntax.md` §2.2;
+design `design/frontend/binder-head-reject.md` §2.2 constraint 1 (*"widening
+`split_qualified_name` to `.` would corrupt legitimate dotted references
+(`Maybe.Some`, `core.io/pure`)"*).
+
+**Why these are owed.** `/review` found the S115 over-reach control set was
+thinner than it read: of 13 claimed "fences", **10 carry no dot at all** and
+would stay GREEN under a coarse `name.contains('.')` over-reach. The design's
+own named hazard — a qualified reference whose **module half** is dotted — was
+unfenced in both tiers. This is the `{/, .} × {binder, reference} × position`
+matrix with a dense binder column and a sparse reference column.
+
+| Test | Covers | Status |
+|---|---|---|
+| `dotted_module_half_in_qualified_reference_stays_legal_run_green` | `--run`: dotted module half in a call, a ctor, AND a `:main.util/Wid` param annotation — the `core.io/pure` hazard, three positions | `[Tested]` |
+| `dotted_module_half_in_qualified_reference_stays_legal_repl_green` | REPL twin; additionally asserts the **rendered type keeps the whole dotted home** (`:user.util/Wid`), so a truncating splitter fails on display as well as on resolution | `[Tested]` |
+| `dotted_module_path_in_export_stays_legal_green` | `(export [main.util [helper]])` — the twin of the already-fenced import direction | `[Tested]` |
+| `dotted_module_alias_form_in_import_stays_legal_green` | `(import [(main.util u) [helper]])` — the alias form's module path | `[Tested]` |
+| `degenerate_dot_spellings_are_located_reader_errors_neg` | **negative**: `a.` / `.b` / bare `.` are located reader errors — the Principle-16 twin of bare `/`, pinned e2e (NOT left unit-only; bare `/` is pinned e2e and these must match) | `[Tested+Neg]` |
+
+**Discrimination is by construction, not by demonstration.** A
+`split_qualified_name` widened to `.` turns `main.util/helper` into module
+`main` / name `util/helper`, so cells 1–2 fail on resolution and (REPL) on the
+rendered home, and cells 3–4 fail on the module-path half. **No mutation proof
+was run** — that requires editing `crates/cranelisp-frontend/`, outside
+`/testing`'s boundary. Per §4.1 as generalised, argument is not demonstration:
+**`/dev`(frontend) confirms fail-on-revert in one line at its next touch of that
+seam** (rider, not a gate).
+
+**Gap this column surfaced but does NOT close: FIXME 0798.** The alias form
+imports its *names* correctly, but the alias is never registered as a
+**qualifier** — `(import [(main.util u) [helper]])` then `(u/helper)` fails with
+`module 'u' … not found`, and the alias-ONLY form `(import [(main.util u) []])`
+is non-functional end to end, against explicit spec §8.3.4/§8.3.6 text. The
+owed matrix is **import shape × reference form**, whose
+`(alias import × alias-qualified ref)` cell is empty — see 0798 for the table.
