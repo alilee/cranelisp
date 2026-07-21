@@ -771,16 +771,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// This converts them to `ResolvedCall::AutoCurry` entries that the
     /// backend can use for codegen.
     ///
-    /// `drain` selects the S115 settlement discipline (see
-    /// [`AutoCurryDrain`]). Callers that run at a PRE-settlement seam (the
-    /// per-form / per-variant body drains) pass [`AutoCurryDrain::Deferrable`];
-    /// every recheck-scoped or settled seam passes [`AutoCurryDrain::Final`].
-    pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState) {
-        self.resolve_auto_curry_with(state, AutoCurryDrain::Final)
-    }
-
-    /// [`Self::resolve_auto_curry`] with an explicit settlement discipline.
-    pub(crate) fn resolve_auto_curry_with(&self, state: &mut CheckState, drain: AutoCurryDrain) {
+    /// `drain` is a REQUIRED parameter, deliberately (Principle 18 — enforce
+    /// invariants structurally; FIXME 0775). The drain runs at six
+    /// non-equivalent seams and the safe answer differs between them, so there
+    /// is **no default and no short convenience name**: every call site names
+    /// its discipline, and a seam added later cannot inherit "never defer"
+    /// silently by calling the obvious function. `Final` is the dangerous
+    /// polarity — it asserts "this seam is settled", and asserting that at a
+    /// pre-settlement seam strands an unresolved trait-operator curry on the
+    /// `ViaCallee` fallback, diagnosed one crate away as the backend's located
+    /// producer contradiction.
+    ///
+    /// The seam census (the mapping this parameter forces each caller to
+    /// answer, and which `mono_collect::tests::auto_curry_drain_*` pins
+    /// behaviourally):
+    ///
+    /// | Seam | Discipline | Why |
+    /// |---|---|---|
+    /// | `program/body.rs:88` (per-form body post-pass) | `Deferrable` | a later form may still pin the operand type |
+    /// | `program/body.rs:441` (per-variant body post-pass) | `Deferrable` | same, per multi-sig clause |
+    /// | `traits/impl_check.rs:762` / `:1024` (impl-method recheck) | `Final` | recheck-scoped — the resolution map and module scope are swapped, so nothing may be deferred OUT of it |
+    /// | `traits/monomorphise.rs:856` (mono-body recheck) | `Final` | same recheck scoping |
+    /// | `program/finalize.rs:607` (finalize) | `Final` | post-drain / post-Phase-A: the state IS settled, and this is where a `Deferrable` seam's held-back entries are retried |
+    pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState, drain: AutoCurryDrain) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
         for (span, name, applied_count, total_count, callee_ty, mut trait_resolution, callee_var_span)
             in pending

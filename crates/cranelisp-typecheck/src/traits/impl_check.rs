@@ -759,7 +759,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Run under the switched module too (auto-curry resolution mirrors the
         // body's scope), matching `recheck_body_for_mono`.
         if body_result.is_ok() {
-            self.resolve_auto_curry(state);
+            self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
         }
 
         // Restore the writer's module before the writeback (unconditional, mirrors
@@ -1021,7 +1021,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)?;
 
         // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
-        self.resolve_auto_curry(state);
+        self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
 
         // Build the mangled name and create annotated defn for symbol table.
         // FQ `$Type` suffix, lock-step with the dispatch site

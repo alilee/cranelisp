@@ -1141,3 +1141,47 @@ fn fq_is_trait_method_decl_discriminates_decl_from_callable() {
          boundary must not over-reach and strand ordinary plain-fn curries"
     );
 }
+
+
+// spec: design/backend/s115-carrier-and-rc-sweep.md §1.3 — the MULTI-SIG
+// per-variant TWIN of `autocurry_over_trait_operator_never_carries_the_decl_fq`
+// (FIXME 0775; the standing "coverage by definition variants" lens — one
+// invariant, both def forms, SAME assertion). A trait operator partially applied
+// inside a multi-sig CLAUSE must not transport the trait-method declaration FQ
+// as its dispatch carrier, exactly as in the single-sig form.
+//
+// DETECTION, stated honestly (METHOD §2.2 — an instrument is unverified until it
+// is proven to detect). This cell pins the CONTRACT for the multi-sig form; it
+// does NOT detect a discipline flip at the per-variant drain seam
+// (`program/body.rs:441` `Deferrable`→`Final` leaves it GREEN, measured S115
+// W4b). The reason is structural: the 1-arity clause here stays a `$Var`
+// template, so the observable carrier is minted by the mono-body RECHECK — a
+// `Final` seam — which re-derives it from settled state regardless of what the
+// per-variant drain concluded. Five of the six drain seams have no unit-tier
+// detection today; that gap is FIXME 0779 (`target: /qa`), not something this
+// cell can close.
+#[test]
+fn autocurry_in_a_multi_sig_clause_never_carries_the_decl_fq() {
+    let mut tc = tc_with_prims();
+    register_num_trait_inline(&mut tc);
+    check_src(
+        &mut tc,
+        "(defn g ([x] (+ x)) ([x y] (+ x y)))\n\
+         (defn h [] ((g 3) 4))",
+    );
+    // The 1-arity clause is a `$Var` template; `(g 3)` mints its instance.
+    let view = mono_instance_view_containing(&tc, "g$");
+    match autocurry_dispatch_in(&view) {
+        cranelisp_types::ApplyRef::Dispatch(fq) => {
+            assert!(
+                !tc.env().fq_is_trait_method_decl(&fq),
+                "the multi-sig clause's auto-curry carrier MUST NOT be the \
+                 trait-method DECLARATION `{fq}` — the per-variant drain seam is \
+                 pre-settlement exactly like the single-sig one"
+            );
+        }
+        other => panic!(
+            "expected a slotted dispatch carrier for the settled operator curry; got {other:?}"
+        ),
+    }
+}

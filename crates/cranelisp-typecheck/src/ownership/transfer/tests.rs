@@ -2154,3 +2154,216 @@ fn fold_chain_in_shadowing_scope_drains_in_defining_scope() {
     );
 }
 
+
+// ============ §17.2 row 4 — `join_origin` LATTICE PROPERTY cells (0772) ============
+//
+// These are SEAM-LEVEL ALGEBRAIC-PROPERTY cells over the `Origin` lattice: no
+// program, no `MonoExpr` tree, no allocator. They exist because the two §17
+// cells above (`msp7_chained_*`) are program-SHAPE cells — they assert an escape
+// fact for ONE hand-built tree, so they can only ever exercise the operand order
+// that tree happens to produce, and a shape cell is structurally incapable of
+// failing on an order asymmetry. FIXME 0772 was exactly that asymmetry
+// (`join_origin` kept the union it computed only when the FIRST operand was a
+// `Conditional`), and it passed review-by-suite for that reason.
+//
+// The generalisable rule these cells instantiate: **a join/merge/fold seam takes
+// property cells over its operand lattice, not example cells over one syntax
+// tree** — and over a small representative operand set the properties are cheap
+// enough to be exhaustive (every ordered pair, both orders).
+
+/// A distinct one-character span, for building link sets.
+fn lsp(n: u32) -> Span {
+    Span::new(n, n + 1)
+}
+
+/// A bare [`Walker`] over two non-`Copy` params `p` (index 0) and `q` (index 1),
+/// plus one non-param local `z`, for direct calls to [`Walker::join_origin`].
+/// Nothing is walked — only the `bindings` map matters, because that is all
+/// `reach`/`param_root` consult.
+fn lattice_walker(env: &TestEnv) -> Walker<'_, TestEnv> {
+    let mut bindings = HashMap::new();
+    for (i, n) in ["p", "q"].iter().enumerate() {
+        bindings.insert(
+            Symbol::from(*n),
+            BindState {
+                origin: Origin::unconditional(Symbol::from(*n), false),
+                param_idx: Some(i),
+            },
+        );
+    }
+    // A local that roots in NO param — the `reach == None` operand source.
+    bindings.insert(Symbol::from("z"), BindState { origin: Origin::Fresh, param_idx: None });
+    Walker {
+        env,
+        bindings,
+        param_modes: vec![Mode::Borrowed; 2],
+        param_flow: vec![ParamFlow::Consumed; 2],
+        param_copy: vec![false; 2],
+        facts: SiteFacts::default(),
+        deps: DepSet::new(),
+        value_uses: HashSet::new(),
+        escaped: Vec::new(),
+    }
+}
+
+/// The representative operand set: every `Origin` SHAPE the walk hands
+/// `join_origin`, crossed with {same param, different param} × {alias,
+/// projection} × {carries links, carries none}. Every element here either is
+/// `Fresh` or roots in a param — the documented no-param-reach exception (row 8:
+/// a container with no param reach joins to `Fresh` and records no link) is a
+/// deliberate asymmetry and is pinned by its own cell below, not folded in here.
+fn lattice_operands() -> Vec<(&'static str, Origin)> {
+    vec![
+        ("Fresh", Origin::Fresh),
+        ("Uncond(p,alias)", Origin::unconditional(Symbol::from("p"), false)),
+        ("Uncond(p,proj)", Origin::unconditional(Symbol::from("p"), true)),
+        ("Uncond(q,alias)", Origin::unconditional(Symbol::from("q"), false)),
+        ("Cond(p,alias,[])", Origin::conditional(Symbol::from("p"), false, vec![])),
+        ("Cond(p,alias,[1])", Origin::conditional(Symbol::from("p"), false, vec![lsp(1)])),
+        ("Cond(p,proj,[2])", Origin::conditional(Symbol::from("p"), true, vec![lsp(2)])),
+        ("Cond(q,alias,[3])", Origin::conditional(Symbol::from("q"), false, vec![lsp(3)])),
+        (
+            "Cond(p,alias,[1,4])",
+            Origin::conditional(Symbol::from("p"), false, vec![lsp(1), lsp(4)]),
+        ),
+    ]
+}
+
+/// The observable content of an `Origin`, for equality across operand orders.
+///
+/// Two axes are normalised away, and ONLY these two — both because the design
+/// says they carry no information:
+/// - the `rep`/`root` SYMBOL is a *representative* param-rooted binding (the
+///   `Origin` rustdoc's word); two operands reaching the same param may name it
+///   through different bindings, so the param INDEX is what is compared;
+/// - `cow` is a SET (`union_cow` is order-stable only for readability), so it is
+///   compared sorted.
+///
+/// The variant, the reached param index, and the projection flag are compared
+/// exactly — those are the three facts a consumer acts on.
+fn lattice_norm(w: &Walker<'_, TestEnv>, o: &Origin) -> (bool, Option<(usize, bool)>, Vec<Span>) {
+    let mut cow = o.cow_spans().to_vec();
+    cow.sort_by_key(|s| (s.start, s.end));
+    (matches!(o, Origin::Conditional { .. }), w.reach(o).map(|(i, p, _)| (i, p)), cow)
+}
+
+#[test]
+fn join_lattice_is_commutative_over_the_representative_operand_set() {
+    // §17.2 row 4 / P24 "Resolve once" acid test — `MonoExpr::If` joins its arms
+    // in SOURCE order, so any asymmetry in `join_origin` makes the safety verdict
+    // depend on which arm the programmer wrote the may-alias producer in. 0772
+    // was precisely that: `match a { Conditional => …, other => other }` read the
+    // joined variant off the FIRST operand alone.
+    let env = TestEnv::default();
+    let w = lattice_walker(&env);
+    for (na, a) in lattice_operands() {
+        for (nb, b) in lattice_operands() {
+            let ab = w.join_origin(a.clone(), b.clone());
+            let ba = w.join_origin(b.clone(), a.clone());
+            assert_eq!(
+                lattice_norm(&w, &ab),
+                lattice_norm(&w, &ba),
+                "join_origin must be commutative: join({na}, {nb}) = {ab:?} but \
+                 join({nb}, {na}) = {ba:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn join_lattice_preserves_the_union_of_both_operands_link_sets() {
+    // §17.2 row 4 stated as a PROPERTY rather than as one example: the joined
+    // value carries every may-alias link either operand carried, so the terminal
+    // projection-out (row 6) discharges whichever arm ran. Monotone — the set
+    // only ever grows along a chain.
+    let env = TestEnv::default();
+    let w = lattice_walker(&env);
+    for (na, a) in lattice_operands() {
+        for (nb, b) in lattice_operands() {
+            for (x, y, nx, ny) in
+                [(a.clone(), b.clone(), na, nb), (b.clone(), a.clone(), nb, na)]
+            {
+                let expected = union_cow(x.cow_spans(), y.cow_spans());
+                let joined = w.join_origin(x.clone(), y.clone());
+                for link in &expected {
+                    assert!(
+                        joined.cow_spans().contains(link),
+                        "join({nx}, {ny}) = {joined:?} dropped may-alias link {link:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn join_lattice_variant_is_the_top_ward_of_both_operands() {
+    // The second half of the 0772 defect, independent of the link set: a hard
+    // `AliasOf`/`ProjectionOf` claim must never be published from a join one of
+    // whose operands is a may-alias (§16.3 P20 — `Unconditional ⊑ Conditional`,
+    // and `Conditional` is the ⊤-ward, always-sound direction). Pre-0772 a
+    // `Conditional` operand in the SECOND position was silently discarded, so
+    // `Cond(p,alias,[])` joined with `Uncond(p,alias)` produced a hard claim in
+    // one order and a may-alias in the other.
+    let env = TestEnv::default();
+    let w = lattice_walker(&env);
+    for (na, a) in lattice_operands() {
+        for (nb, b) in lattice_operands() {
+            let either_conditional = matches!(a, Origin::Conditional { .. })
+                || matches!(b, Origin::Conditional { .. });
+            if !either_conditional {
+                continue;
+            }
+            for (x, y, nx, ny) in
+                [(a.clone(), b.clone(), na, nb), (b.clone(), a.clone(), nb, na)]
+            {
+                let joined = w.join_origin(x, y);
+                // `Fresh` is the one legal weakening: when NEITHER operand reaches
+                // a param there is no aliased param to over-claim (row 8).
+                assert!(
+                    matches!(joined, Origin::Conditional { .. } | Origin::Fresh),
+                    "join({nx}, {ny}) = {joined:?} published a HARD claim from a \
+                     may-alias operand"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn join_lattice_no_param_reach_drops_the_link_set_by_design() {
+    // The documented asymmetry, pinned so it stays deliberate: a `Conditional`
+    // whose `rep` roots in NO param joins to `Fresh` and its links are NOT
+    // carried. That is row 8's own rule (`walk_apply`'s `MayAliasOf` arm: "a
+    // container with NO param reach joins to `Fresh` — no aliased param can be
+    // double-dec'd, so no link is recorded"), not an oversight of the 0772 fix:
+    // a link set exists to force a protect on a param the consumer would
+    // otherwise double-dec, and there is no such param here.
+    let env = TestEnv::default();
+    let w = lattice_walker(&env);
+    // `z` is a non-param local ⇒ `reach` is `None` for both operands.
+    let orphan = Origin::conditional(Symbol::from("z"), false, vec![lsp(9)]);
+    for (x, y) in [
+        (orphan.clone(), Origin::Fresh),
+        (Origin::Fresh, orphan.clone()),
+        (orphan.clone(), orphan.clone()),
+    ] {
+        let joined = w.join_origin(x, y);
+        assert!(
+            matches!(joined, Origin::Fresh),
+            "a join with no param reach is Fresh, links included: got {joined:?}"
+        );
+    }
+    // …but the SAME orphan joined with a param-reaching operand keeps its links:
+    // the join now reaches a param, so the protect obligation is live again.
+    for (x, y) in [
+        (orphan.clone(), Origin::unconditional(Symbol::from("p"), false)),
+        (Origin::unconditional(Symbol::from("p"), false), orphan.clone()),
+    ] {
+        let joined = w.join_origin(x, y);
+        assert!(
+            joined.cow_spans().contains(&lsp(9)),
+            "a param-reaching join carries the orphan operand's links: got {joined:?}"
+        );
+    }
+}

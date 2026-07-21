@@ -357,25 +357,43 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// representative = the reaching param of LOWEST index (deterministic);
     /// `projection` only when EVERY reaching path is a projection (a mixed
     /// alias/projection join is the stronger `AliasOf`, keeping protect).
-    /// **Row 4 (§17.2) — the may-alias link sets UNION across the join.** An
-    /// `If`/`Match`-produced `Conditional` container carries the links of BOTH
-    /// arms, so the terminal projection-out (row 6) discharges whichever arm ran.
-    /// Widening and monotone (the set only grows), and it is the composition —
-    /// not a new consumer arm — that covers the face-3 container shape (§17.4).
+    /// **Row 4 (§17.2, as CORRECTED by FIXME 0772) — the may-alias link sets
+    /// UNION across the join, and the joined VARIANT is the ⊤-ward of the two
+    /// operands, both INDEPENDENTLY OF OPERAND ORDER (P24).** An `If`/`Match`-
+    /// produced container carries the links of BOTH arms, so the terminal
+    /// projection-out (row 6) discharges whichever arm ran. Widening and
+    /// monotone (the set only grows, and `Unconditional ⊑ Conditional`), and it
+    /// is the composition — not a new consumer arm — that covers the face-3
+    /// container shape (§17.4).
+    ///
+    /// The as-built pre-0772 arm read the joined variant off `a` alone
+    /// (`match a { Conditional => …, other => other }`), which BOTH discarded
+    /// the union it had just computed AND published a hard `AliasOf` claim from
+    /// a may-alias operand — whenever `a` happened to be the `Unconditional`
+    /// one. `MonoExpr::If` joins in source order, so the answer depended on
+    /// which arm the COW producer was written in: the P24 acid test. Order
+    /// symmetry is pinned by the `join_lattice_*` property cells in
+    /// `transfer/tests.rs` (seam-level, no program involved).
     fn join_origin(&self, a: Origin, b: Origin) -> Origin {
         let cow = union_cow(a.cow_spans(), b.cow_spans());
+        // `Conditional` is the ⊤-ward point of the variant lattice: a join with a
+        // may-alias operand is a may-alias, whichever side contributed it.
+        let conditional =
+            matches!(a, Origin::Conditional { .. }) || matches!(b, Origin::Conditional { .. });
         match (self.reach(&a), self.reach(&b)) {
             (None, None) => Origin::Fresh,
-            (Some((ia, pa, _)), Some((ib, pb, _))) if ia == ib && pa == pb => {
-                // Same param, same kind ⇒ both paths definitely alias it: keep
-                // the definite origin (over-claiming aliasing is the safe
-                // direction if either input was itself a may-alias) — but a
-                // `Conditional` keeps the UNIONED link set (row 4).
-                match a {
-                    Origin::Conditional { rep, projection, .. } => {
-                        Origin::conditional(rep, projection, cow)
-                    }
-                    other => other,
+            (Some((ia, pa, sa)), Some((ib, pb, _sb))) if ia == ib && pa == pb => {
+                // Same param, same kind ⇒ both paths definitely reach it that
+                // way, so the definite origin is preserved (a full-`if` /
+                // same-param-`match` stays the precise `AliasOf(i)` /
+                // `ProjectionOf(i)`) — but ONLY when NEITHER operand was itself a
+                // may-alias. `rep`/`root` is a REPRESENTATIVE: `sa` and `sb` both
+                // root in param `ia`, so either serves; `sa` keeps the
+                // both-`Unconditional` path byte-identical to pre-0772.
+                if conditional {
+                    Origin::conditional(sa, pa, cow)
+                } else {
+                    Origin::unconditional(sa, pa)
                 }
             }
             (Some((ia, pa, sa)), Some((ib, pb, sb))) => {

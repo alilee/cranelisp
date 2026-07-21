@@ -699,10 +699,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             //
             // The dispatch DECISION is settled here (the clause is selected and
             // its params are back-flow-unified above), so the node's type is
-            // recorded from that decision, not re-derived later. Any residual
-            // var is grounded by the final `resolve_expr_types` subst
-            // application — the same monotone subst §11.8.10 obligation 2 relies
-            // on, so this can only move toward ground.
+            // recorded from that decision, not re-derived later (Principle 26).
+            // The NAME is still deferred (the paragraph above) — that is a
+            // separate carrier with a separate hazard; the TYPE has no ordering
+            // hazard, because any var still unbound at this point is grounded by
+            // the final `resolve_expr_types` subst application
+            // (`mono_collect.rs` — it maps `apply(&state.subst, ty)` over EVERY
+            // recorded node type), the same monotone subst §11.8.10 obligation 2
+            // relies on. So this can only move toward ground.
+            //
+            // Read the params/return back out of the subst AFTER the back-flow
+            // unifies above — `resolved_variant_params` was computed before them
+            // and is therefore pre-settlement (0774).
+            let settled_params: Vec<Type> =
+                param_types.iter().map(|t| apply(&state.subst, t)).collect();
+            let settled_ret = apply(&state.subst, &ret_ty);
+            self.record_expr_type(
+                state,
+                callee_span,
+                Type::Fn(settled_params, Box::new(settled_ret)),
+            );
+
             return Ok(());
         }
 

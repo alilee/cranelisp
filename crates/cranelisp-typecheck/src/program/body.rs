@@ -85,7 +85,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // site may still pin this body's operand types — so a trait operator with
         // no resolvable impl yet is held for the settled finalize drain instead of
         // transporting its declaration FQ as a dispatch carrier.
-        self.resolve_auto_curry_with(state, AutoCurryDrain::Deferrable);
+        self.resolve_auto_curry(state, AutoCurryDrain::Deferrable);
 
         // Eager constrained-fn detection + the S83 determination point: finalise
         // this defn's `fn_state` (Concrete{slot} / Constrained / Polymorphic)
@@ -438,7 +438,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Per-variant post-passes (auto-curry only; overloads deferred to
             // finalize). DEFERRABLE for the same pre-settlement reason as the
             // single-sig seam above.
-            self.resolve_auto_curry_with(state, AutoCurryDrain::Deferrable);
+            self.resolve_auto_curry(state, AutoCurryDrain::Deferrable);
 
             // Per-variant AST annotation
             {

@@ -853,7 +853,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let drain_result = if result.is_ok() {
             let r = self.resolve_pending_overloads(state);
             if r.is_ok() {
-                self.resolve_auto_curry(state);
+                self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
             }
             r
         } else {

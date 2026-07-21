@@ -6,6 +6,7 @@
 use super::*;
 
 use crate::program::test_support::*;
+use cranelisp_types::ConcreteType;
 
 
 
@@ -569,4 +570,111 @@ fn wrapper_indirected_multi_sig_return_monomorphises_from_settled_state() {
          got {minted:?}"
     );
     let _view = mono_instance_view_containing(&tc, "peers$Var$");
+}
+
+// spec: spec/05-definitions.md §5.1.2 — a multi-sig defn type-checks identically
+// to the equivalent two-function form, and every node of the checked body
+// carries its own type. The SELF-CALL face of FIXME 0719/0774: a cross-clause
+// self-call is drained in pass 1 (`is_self_call`), and until S115 W4b that arm
+// carried a 21-line comment describing a callee retype it did not perform — the
+// callee `Var` kept the PRE-DISPATCH instantiation of the overloaded base, which
+// the drain's own back-flow unify had by then bound to the call's RESULT var. The
+// observable symptom is sharp and needs no program shape to provoke: the callee
+// of an application is typed `Int` instead of `Fn([Int, Int], Int)` — a node type
+// no consumer can act on. This cell asserts the callee node's type is a function
+// type in BOTH clauses of a self-recursive multi-sig, so the arm cannot regress
+// to comment-only again (verified by revert, S115 W4b: both assertions go RED,
+// each reporting `Int`).
+#[test]
+fn self_call_drain_retypes_the_callee_node_from_settled_state() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn cnt\n\
+         \x20 ([n]   (cnt n 0))\n\
+         \x20 ([n a] (if (eq-i64 n 0) a (cnt (add-i64 n -1) (add-i64 a 1)))))\n\
+         (defn top [] (cnt 3))",
+    );
+    // Both clauses self-call `cnt`; both drained through the pass-1 self-call arm.
+    for variant in ["cnt$Int", "cnt$Int+Int"] {
+        let view = main_codegen_view_of(&tc, variant);
+        let mut callees = Vec::new();
+        collect_callee_types_named(&view.body, "cnt", &mut callees);
+        assert!(
+            !callees.is_empty(),
+            "{variant} must contain a self-call to `cnt`"
+        );
+        for ty in &callees {
+            assert!(
+                matches!(ty, ConcreteType::Fn(..)),
+                "{variant}: the self-call callee node must be typed from the settled \
+                 dispatch decision (a Fn type), got {ty:?}"
+            );
+        }
+    }
+}
+
+/// Collect the `ty` of every `Var` in CALLEE position whose name is `name`.
+fn collect_callee_types_named(e: &MonoExpr, name: &str, out: &mut Vec<ConcreteType>) {
+    if let MonoExpr::Apply { callee, .. } = e
+        && let MonoExpr::Var { name: n, ty, .. } = callee.as_ref()
+        && n.as_ref() == name
+    {
+        out.push(ty.clone());
+    }
+    match e {
+        MonoExpr::Apply { callee, args, .. } => {
+            collect_callee_types_named(callee, name, out);
+            for a in args {
+                collect_callee_types_named(a, name, out);
+            }
+        }
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            collect_callee_types_named(cond, name, out);
+            collect_callee_types_named(then_branch, name, out);
+            collect_callee_types_named(else_branch, name, out);
+        }
+        MonoExpr::Let { bindings, body, .. } => {
+            for (_, rhs) in bindings {
+                collect_callee_types_named(rhs, name, out);
+            }
+            collect_callee_types_named(body, name, out);
+        }
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            collect_callee_types_named(scrutinee, name, out);
+            for arm in arms {
+                collect_callee_types_named(&arm.body, name, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// spec: spec/05-definitions.md §5.1.2 — the TEMPLATE-clause face of FIXME 0719
+// (the third arm, unpinned until S115 W4b). An EXTERNAL call to a
+// genuinely-polymorphic multi-sig clause monomorphises the clause at this call's
+// args and dispatches to the MINTED INSTANCE; the callee node must be retyped to
+// that instance's signature for the same reason the concrete arm is — otherwise
+// it keeps the overloaded base's pre-dispatch instantiation. Pinned by asserting
+// the caller's callee node is a `Fn` over the call's concrete args (verified by
+// revert, S115 W4b: RED, reporting the bare result type).
+#[test]
+fn template_clause_external_call_retypes_the_callee_node_to_the_instance() {
+    let mut tc = tc_with_prims();
+    check_src(
+        &mut tc,
+        "(defn idpoly ([x] x) ([x y] (add-i64 x y)))\n\
+         (defn top [] (idpoly 3))",
+    );
+    let view = main_codegen_view_of(&tc, "top");
+    let mut callees = Vec::new();
+    collect_callee_types_named(&view.body, "idpoly", &mut callees);
+    assert_eq!(callees.len(), 1, "top must contain one call to `idpoly`");
+    assert!(
+        matches!(&callees[0], ConcreteType::Fn(p, r)
+            if p.as_slice() == [ConcreteType::Int] && **r == ConcreteType::Int),
+        "the template-clause call's callee node must carry the minted instance's \
+         signature Fn([Int], Int), got {:?}",
+        callees[0]
+    );
 }

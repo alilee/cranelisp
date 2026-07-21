@@ -604,7 +604,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // swapped.
         let deferred = std::mem::take(&mut state.deferred_auto_curry);
         state.pending_auto_curry.splice(0..0, deferred);
-        self.resolve_auto_curry(state);
+        self.resolve_auto_curry(state, AutoCurryDrain::Final);
 
         // S110 C-4 — re-settle any caller whose stored scheme was left spuriously
         // `Polymorphic` because the call in its body was an overloaded/multi-arity

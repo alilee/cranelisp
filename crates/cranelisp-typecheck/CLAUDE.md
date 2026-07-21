@@ -392,6 +392,39 @@ universe scan. `resolve_terminal_entry_and_home` / `chain_follow_to_home` are
 the navigation primitives; staging-aware via `probe_module_entry_owned`
 (FIXME 0179 — staging shadows live when `module_path == staging.module`).
 
+## The two order/settlement seams (S115 W4b — 0772, 0775)
+
+Two seams in this crate were order- or default-sensitive in ways the suite could
+not see. Both cures are structural; both have a measured detection proof.
+
+**`ownership/transfer.rs::join_origin` is COMMUTATIVE (0772, P24).** The join's
+result — variant, param reach, projection flag, and may-alias link set — does not
+depend on which operand is `a`. The pre-fix arm read the joined variant off `a`
+alone (`match a { Conditional => …, other => other }`), which both dropped the
+§17.2 row-4 union it had just computed AND published a hard `AliasOf` claim from
+a may-alias operand — but only when the `Conditional` happened to be the SECOND
+operand. `MonoExpr::If` joins its arms in source order, so the memory-safety
+verdict depended on which `If` arm the programmer wrote the COW producer in
+(`--link` exit 134 in one order, clean in the other, same runtime path). The
+lattice rule now stated plainly: `Unconditional ⊑ Conditional`, the join takes
+the ⊤-ward variant of the two operands, and the link sets UNION — always, both
+orders. **When you touch a join/merge/fold seam here, extend the property cells
+(`transfer/tests.rs::join_lattice_*`), not just the example cells.** Those are
+seam-level algebraic-property cells over the `Origin` lattice with no program
+involved; the pre-existing `msp7_chained_*` cells are program-SHAPE cells over
+one hand-built tree and are structurally incapable of failing on an order
+asymmetry, which is exactly why 0772 passed review-by-suite.
+
+**`mono_collect.rs::resolve_auto_curry` takes a REQUIRED `AutoCurryDrain`
+(0775, P18).** There is no defaulting wrapper and no short convenience name: the
+drain runs at six non-equivalent seams and `Final` — "this seam is settled,
+nothing is held back" — is the dangerous polarity, so it must never be what a new
+seam gets for free. The seam census lives in that function's own rustdoc (two
+`Deferrable` per-form body seams; four `Final` recheck-scoped/settled seams).
+Detection is honest-but-thin: only `body.rs:88` has a unit cell that reddens on a
+flip — see FIXME 0779 (`target: /qa`) for the measured five-of-six gap, and do
+not read the census table as an instrument.
+
 ## Testing
 
 ### Test homes in `program/` (S115 FIXME 0722)
