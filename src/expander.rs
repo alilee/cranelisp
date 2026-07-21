@@ -723,11 +723,49 @@ pub(crate) fn expand_sexp_recursive(
 
 /// The reader-quote head the [`expand_scoped`] shield recognizes at the top of a
 /// non-empty list arm (`design/int/quote-shield.md` §3).
-enum QuoteHead {
+pub(crate) enum QuoteHead {
     /// `(quote X)` — fully verbatim, no descent (Rule Q).
     Quote,
     /// `(quasiquote T)` — descend only into live unquotes, tracking depth (Rule QQ).
     Quasiquote,
+    /// `(unquote X)` / `(unquote-splicing X)` — an escape back to expression
+    /// position; live or nested according to the walker's `qq_depth`.
+    Unquote,
+}
+
+/// Structural recognition of the reader-quote family — bare-symbol head +
+/// `len() == 2`, consulting neither `shadows` nor any resolver (the SAME test
+/// the frontend fold applies in `quasiquote.rs::is_quote`/`is_quasiquote`).
+///
+/// **Single source for BOTH int-side scope-aware walks** (Principle 7): the
+/// expander shield here (`expand_scoped` / [`shield_qq`]) and the qualify shield
+/// in `process_form::macro_resolution::qualify_scoped` (S115, FIXME 0718 /
+/// `expansion-qualification-scope.md` §2.4). If the two tests ever diverge a
+/// subtree gets double-desugared or mis-qualified — so neither walk may keep a
+/// private copy. (The frontend fold's own predicates are crate-private in
+/// `cranelisp-frontend`; collapsing all three onto one exported predicate is
+/// FIXME 0789, `target: /arch`.)
+pub(crate) fn quote_head(children: &[Sexp]) -> Option<QuoteHead> {
+    if children.len() != 2 {
+        return None;
+    }
+    match &children[0] {
+        Sexp::Symbol(h, _) if h == "quote" => Some(QuoteHead::Quote),
+        Sexp::Symbol(h, _) if h == "quasiquote" => Some(QuoteHead::Quasiquote),
+        Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => {
+            Some(QuoteHead::Unquote)
+        }
+        _ => None,
+    }
+}
+
+/// Is `head` a `defmacro`/`defmacro-` head? The CS-D1 shield's structural test,
+/// shared with the qualify walk's §2.6 shield (FIXME 0718) so the two stay in
+/// lockstep. Deliberately NOT folded into [`is_binding_form`]: that predicate
+/// gates `expand_binding_form`/`qualify_binding_form`, whose arms do not cover
+/// `defmacro`, and the expander's shield over it is narrower (head + name).
+pub(crate) fn is_defmacro_head(head: &str) -> bool {
+    matches!(head, "defmacro" | "defmacro-")
 }
 
 /// The quasiquote template walker (Rule QQ, `design/int/quote-shield.md` §4).
@@ -758,20 +796,14 @@ fn shield_qq(
 ) -> Result<Sexp, CranelispError> {
     match node {
         Sexp::List(children, span) if !children.is_empty() => {
-            if children.len() == 2 {
+            {
                 // unquote / unquote-splicing share ONE arm — the shield never
                 // errors on `~@` at qq_depth 0 (that is the fold's diagnostic);
                 // it expands the body and hands the tree on (§4 note).
-                let head_kind = match &children[0] {
-                    Sexp::Symbol(h, _) if h == "unquote" || h == "unquote-splicing" => {
-                        Some(false)
-                    }
-                    Sexp::Symbol(h, _) if h == "quasiquote" => Some(true),
-                    _ => None,
-                };
-                match head_kind {
+                // Recognition via the shared `quote_head` classifier (P7).
+                match quote_head(&children) {
                     // unquote / unquote-splicing.
-                    Some(false) => {
+                    Some(QuoteHead::Unquote) => {
                         let mut children = children;
                         let body = children.pop().expect("len == 2: unquote body");
                         let head_sym = children.pop().expect("len == 2: unquote head");
@@ -785,7 +817,7 @@ fn shield_qq(
                         return Ok(Sexp::List(vec![head_sym, inner], span));
                     }
                     // Nested quasiquote — increment depth, stay shielded.
-                    Some(true) => {
+                    Some(QuoteHead::Quasiquote) => {
                         let mut children = children;
                         let body = children.pop().expect("len == 2: quasiquote body");
                         let head_sym = children.pop().expect("len == 2: quasiquote head");
@@ -793,7 +825,10 @@ fn shield_qq(
                             shield_qq(body, resolver, depth, origin_span, shadows, qq_depth + 1)?;
                         return Ok(Sexp::List(vec![head_sym, inner], span));
                     }
-                    None => {}
+                    // A nested `(quote …)` is NOT short-circuited here (§5.1) —
+                    // it falls through to structural recursion at the same depth
+                    // so inner live unquotes are still found.
+                    Some(QuoteHead::Quote) | None => {}
                 }
             }
             // Ordinary list under quasiquote (INCLUDING a nested `(quote …)`, §5.1
@@ -855,13 +890,8 @@ fn expand_scoped(
             //    consults neither `shadows` nor the resolver, keeping the two in
             //    lockstep (`design/int/quote-shield.md` §§2–5). Placed FIRST: a
             //    reader-quote head is handled by the shield and nothing else.
-            if children.len() == 2 {
-                let quote_kind = match &children[0] {
-                    Sexp::Symbol(h, _) if h == "quote" => Some(QuoteHead::Quote),
-                    Sexp::Symbol(h, _) if h == "quasiquote" => Some(QuoteHead::Quasiquote),
-                    _ => None,
-                };
-                match quote_kind {
+            {
+                match quote_head(&children) {
                     // Rule Q — quoted data is pure structural quotation; never
                     // expanded, no descent (mirrors `expand_quote_template`).
                     Some(QuoteHead::Quote) => return Ok(Sexp::List(children, span)),
@@ -875,7 +905,9 @@ fn expand_scoped(
                             shield_qq(body, resolver, depth, origin_span, shadows, 0)?;
                         return Ok(Sexp::List(vec![head_sym, inner], span));
                     }
-                    None => {}
+                    // A bare `(unquote X)` outside any quasiquote is not shielded
+                    // here — it stays an ordinary list (the fold diagnoses it).
+                    Some(QuoteHead::Unquote) | None => {}
                 }
             }
             // 1. Binding special forms establish a lexical scope (§8.6.3). Handle
@@ -918,7 +950,7 @@ fn expand_scoped(
             // are recursed normally.
             let is_defmacro_form = matches!(
                 children.first(),
-                Some(Sexp::Symbol(head, _)) if head == "defmacro" || head == "defmacro-"
+                Some(Sexp::Symbol(head, _)) if is_defmacro_head(head)
             );
             let hold_verbatim = if is_defmacro_form { 2 } else { 0 };
             let expanded: Vec<Sexp> = children
@@ -1156,6 +1188,19 @@ fn expand_defn(
     let mut out: Vec<Sexp> = Vec::with_capacity(children.len());
     out.push(children[0].clone()); // defn / defn-
     out.push(children[1].clone()); // name (a binder — verbatim)
+    // S115 (FIXME 0718 / `expansion-qualification-scope.md` §2.5): the defn NAME
+    // is in scope inside its own body — a self-call is a reference to THIS
+    // definition. Seed it into the body scope so the walk honours the §2.3
+    // enumeration's defn-name binder slot. `qualify_defn` carries the identical
+    // seeding (P7 — one binder model, two walks).
+    let shadows = &match &children[1] {
+        Sexp::Symbol(n, _) => {
+            let mut s = shadows.clone();
+            s.insert(n.clone());
+            s
+        }
+        _ => shadows.clone(),
+    };
     let mut idx = 2;
     if let Some(Sexp::Str(..)) = children.get(idx) {
         out.push(children[idx].clone()); // docstring

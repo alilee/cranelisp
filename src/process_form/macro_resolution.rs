@@ -478,7 +478,47 @@ fn qualify_scoped(
             qualify_free_symbol(ctx, sexp)
         }
         Sexp::List(children, span) => {
-            // A binding special form establishes a lexical scope: its binder
+            // 0. SHIELD (reader-quote family) — S115, FIXME 0718 /
+            //    `expansion-qualification-scope.md` §2.4. A symbol inside quoted
+            //    DATA is not a reference at all, so the §2.1 rule ("qualify iff a
+            //    free reference") excludes it: qualifying `'(name)` to `'(dm/name)`
+            //    would change a runtime VALUE. Structurally identical to
+            //    `expand_scoped`'s Rule Q / Rule QQ and recognized by the SAME
+            //    shared classifier (`expander::quote_head`) — never a private copy
+            //    (Principle 7). Placed FIRST, as in the expander.
+            match crate::expander::quote_head(&children) {
+                // Rule Q — held fully verbatim, no descent.
+                Some(crate::expander::QuoteHead::Quote) => {
+                    return Sexp::List(children, span);
+                }
+                // Rule QQ — the body is walked verbatim at qq_depth 0; only the
+                // body of a LIVE unquote/unquote-splicing is re-entered.
+                Some(crate::expander::QuoteHead::Quasiquote) => {
+                    let mut children = children;
+                    let body = children.pop().expect("len == 2: quasiquote body");
+                    let head_sym = children.pop().expect("len == 2: quasiquote head");
+                    let inner = qualify_shield_qq(ctx, body, shadows, 0);
+                    return Sexp::List(vec![head_sym, inner], span);
+                }
+                Some(crate::expander::QuoteHead::Unquote) | None => {}
+            }
+            // 1. `defmacro`/`defmacro-` (§2.6): a macro-emitted macro definition
+            //    carries the SAME binder slots as `defn` — head, name, optional
+            //    docstring, param bracket(s) — and qualifying the NAME would emit
+            //    `(defmacro dm/name …)`, which the frontend rejects as a qualified
+            //    binder head (a wrong-reject). Route to `qualify_defn`, which
+            //    already holds exactly those slots verbatim and qualifies only the
+            //    clause bodies under the param scope (P7 — no second shape).
+            //    `defmacro` deliberately stays OUT of `expander::is_binding_form`
+            //    (that predicate gates `expand_binding_form`, whose arms do not
+            //    cover it); the shield is expressed here, structurally, via the
+            //    shared `expander::is_defmacro_head` test.
+            if let Some(Sexp::Symbol(head, _)) = children.first()
+                && crate::expander::is_defmacro_head(head)
+            {
+                return qualify_defn(ctx, children, span, shadows);
+            }
+            // 2. A binding special form establishes a lexical scope: its binder
             // slots are held verbatim and its value/body children are qualified
             // under the EXTENDED scope. Dispatch through the SHARED enumeration
             // (`expander::is_binding_form`) so both walks stay in lockstep.
@@ -504,6 +544,66 @@ fn qualify_scoped(
             Sexp::Bracket(qualified_children, span)
         }
         // Other sexp types (Int, Float, String, Bool) pass through unchanged.
+        other => other,
+    }
+}
+
+/// The qualify walk's quasiquote shield — the P7 twin of `expander::shield_qq`
+/// (S115, FIXME 0718 / `expansion-qualification-scope.md` §2.4).
+///
+/// Everything under a `quasiquote` is held VERBATIM except the body of a **live**
+/// `unquote`/`unquote-splicing`, which is ordinary expression position (§9.4.2)
+/// and is re-entered through [`qualify_scoped`] under the enclosing scope. The
+/// nesting math mirrors the expander exactly: live at `qq_depth == 0`; a nested
+/// `quasiquote` increments; an unquote under a nested quasiquote decrements. A
+/// nested `(quote …)` is NOT short-circuited (the expander's §5.1 rule) — the
+/// walk descends structurally at the same depth so inner live unquotes are found.
+fn qualify_shield_qq(
+    ctx: &QualifyCtx,
+    node: Sexp,
+    shadows: &std::collections::HashSet<String>,
+    qq_depth: usize,
+) -> Sexp {
+    match node {
+        Sexp::List(children, span) if !children.is_empty() => {
+            match crate::expander::quote_head(&children) {
+                Some(crate::expander::QuoteHead::Unquote) => {
+                    let mut children = children;
+                    let body = children.pop().expect("len == 2: unquote body");
+                    let head_sym = children.pop().expect("len == 2: unquote head");
+                    let inner = if qq_depth == 0 {
+                        // LIVE unquote — ordinary expression position: qualify.
+                        qualify_scoped(ctx, body, shadows)
+                    } else {
+                        qualify_shield_qq(ctx, body, shadows, qq_depth - 1)
+                    };
+                    return Sexp::List(vec![head_sym, inner], span);
+                }
+                Some(crate::expander::QuoteHead::Quasiquote) => {
+                    let mut children = children;
+                    let body = children.pop().expect("len == 2: quasiquote body");
+                    let head_sym = children.pop().expect("len == 2: quasiquote head");
+                    let inner = qualify_shield_qq(ctx, body, shadows, qq_depth + 1);
+                    return Sexp::List(vec![head_sym, inner], span);
+                }
+                Some(crate::expander::QuoteHead::Quote) | None => {}
+            }
+            let mapped: Vec<Sexp> = children
+                .into_iter()
+                .map(|c| qualify_shield_qq(ctx, c, shadows, qq_depth))
+                .collect();
+            Sexp::List(mapped, span)
+        }
+        Sexp::Bracket(children, span) => {
+            // Brackets can't head an unquote but CAN contain live unquotes (`[~x]`).
+            let mapped: Vec<Sexp> = children
+                .into_iter()
+                .map(|c| qualify_shield_qq(ctx, c, shadows, qq_depth))
+                .collect();
+            Sexp::Bracket(mapped, span)
+        }
+        // Atoms (INCLUDING bare symbols — quoted data, never references) and the
+        // empty list are held verbatim.
         other => other,
     }
 }
@@ -649,7 +749,12 @@ fn qualify_fn(
 
 /// `(defn name "doc"? [params] body…)` / multi-arity `(defn name (…) …)` — head,
 /// name, docstring held verbatim; each variant's params verbatim and its body
-/// qualified with the params shadowing. Mirrors `expander::expand_defn`.
+/// qualified with the params (and the defn NAME, §2.5) shadowing. Mirrors
+/// `expander::expand_defn`.
+///
+/// Also serves `(defmacro …)`/`(defmacro-)` (§2.6 shield): the clause shape is
+/// identical — head, name, optional docstring, param bracket(s), bodies — so the
+/// defmacro shield is this function, not a second copy.
 fn qualify_defn(
     ctx: &QualifyCtx,
     children: Vec<Sexp>,
@@ -660,8 +765,22 @@ fn qualify_defn(
         return qualify_children_unchanged(ctx, children, span, shadows);
     }
     let mut out: Vec<Sexp> = Vec::with_capacity(children.len());
-    out.push(children[0].clone()); // defn / defn-
+    out.push(children[0].clone()); // defn / defn- / defmacro / defmacro-
     out.push(children[1].clone()); // name (a binder — verbatim)
+    // S115 (FIXME 0718 / `expansion-qualification-scope.md` §2.5): the defn NAME
+    // is in scope inside its own body. Without this seeding a first-definition
+    // self-call `(defn f [x] (f x))` mis-qualifies to `dm/f` whenever a defining
+    // module also provides `f` — the current-module availability skip in
+    // `qualify_free_symbol` cannot fire, because `f` is being defined this
+    // instant. `expander::expand_defn` carries the identical seeding (P7).
+    let shadows = &match &children[1] {
+        Sexp::Symbol(n, _) => {
+            let mut s = shadows.clone();
+            s.insert(n.clone());
+            s
+        }
+        _ => shadows.clone(),
+    };
     let mut idx = 2;
     if let Some(Sexp::Str(..)) = children.get(idx) {
         out.push(children[idx].clone()); // docstring
@@ -1082,6 +1201,159 @@ mod tests {
         assert!(
             flat.contains("dm/helper"),
             "a free defining-module reference must still qualify: {flat}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0718 — the three residual qualify-walk asymmetries
+    // (`expansion-qualification-scope.md` §2.4/§2.5/§2.6). Each fixture puts
+    // the colliding name in a DEFINING module and NOT in the current module, so
+    // the `qualify_free_symbol` availability skip cannot mask the defect;
+    // fail-on-revert holds for all three.
+    // -----------------------------------------------------------------------
+
+    // spec: expansion-qualification-scope.md §2.4 — the quote shield (Rule Q).
+    // A symbol inside quoted DATA is not a reference; qualifying it would change
+    // a runtime VALUE (`'(name)` -> `'(dm/name)`).
+    #[test]
+    fn qualify_holds_quoted_datum_verbatim() {
+        let tables = tables_with_defs("dm", &["name", "wrap"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(defn f [] (wrap (quote (name))))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/name"),
+            "a symbol inside quoted data must stay bare: {flat}"
+        );
+        // Discriminating control: the SAME name outside the quote still
+        // qualifies, so the shield is scoped to quoted data, not a blanket skip.
+        assert!(
+            flat.contains("dm/wrap"),
+            "a free reference outside the quote must still qualify: {flat}"
+        );
+    }
+
+    // spec: expansion-qualification-scope.md §2.4 — the quasiquote shield
+    // (Rule QQ): template body verbatim, LIVE unquote bodies re-entered.
+    #[test]
+    fn qualify_quasiquote_holds_template_but_qualifies_live_unquote() {
+        let tables = tables_with_defs("dm", &["name", "wrap"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(defn f [] (quasiquote (name (unquote (wrap 1)))))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/name"),
+            "a template symbol under quasiquote must stay bare: {flat}"
+        );
+        assert!(
+            flat.contains("dm/wrap"),
+            "a LIVE unquote body is ordinary expression position and must \
+             qualify: {flat}"
+        );
+    }
+
+    // spec: expansion-qualification-scope.md §2.4 — nesting math: an unquote
+    // under a NESTED quasiquote is not live, so its body stays verbatim.
+    #[test]
+    fn qualify_quasiquote_nested_unquote_is_not_live() {
+        let tables = tables_with_defs("dm", &["wrap"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(quasiquote (quasiquote (unquote (wrap 1))))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/wrap"),
+            "an unquote under a nested quasiquote is not live; its body must \
+             stay verbatim: {flat}"
+        );
+    }
+
+    // spec: expansion-qualification-scope.md §2.5 — the defn name is in scope in
+    // its own body, so a first-definition self-call is never qualified away.
+    #[test]
+    fn qualify_seeds_defn_name_into_its_body_scope() {
+        // `dm` provides `f`; `user` does not yet (the defn is being defined now),
+        // so the current-module availability skip cannot fire.
+        let tables = tables_with_defs("dm", &["f"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(defn f [x] (f x))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/f"),
+            "a recursive self-call refers to the defn being defined and must \
+             stay bare: {flat}"
+        );
+    }
+
+    // spec: expansion-qualification-scope.md §2.5 — multi-arity variants share
+    // the same self-name scope.
+    #[test]
+    fn qualify_seeds_defn_name_into_multi_arity_variant_bodies() {
+        let tables = tables_with_defs("dm", &["f"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(defn f ([x] (f x)) ([x y] (f x)))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/f"),
+            "multi-arity variant bodies must also see the defn self-name: {flat}"
+        );
+    }
+
+    // spec: expansion-qualification-scope.md §2.6 — the defmacro shield: a
+    // macro-emitted `(defmacro name ...)` keeps a BARE name/params (a qualified
+    // binder head is a frontend wrong-reject), while clause bodies still qualify.
+    #[test]
+    fn qualify_holds_defmacro_name_and_params_verbatim() {
+        let tables = tables_with_defs("dm", &["name", "x", "wrap"]);
+        let current = ModuleFullPath::from("user");
+        let dms = vec![ModuleFullPath::from("dm")];
+        let out = qualify_expanded_sexp(
+            &tables,
+            &current,
+            &dms,
+            parse_one("(defmacro name [x] (wrap x))"),
+        );
+        let flat = out.format_flat();
+        assert!(
+            !flat.contains("dm/name"),
+            "the emitted defmacro NAME is a binder and must stay bare: {flat}"
+        );
+        assert!(
+            !flat.contains("dm/x"),
+            "the emitted defmacro PARAM (and its body read) must stay bare: {flat}"
+        );
+        assert!(
+            flat.contains("dm/wrap"),
+            "a free reference in a clause body must still qualify: {flat}"
         );
     }
 }

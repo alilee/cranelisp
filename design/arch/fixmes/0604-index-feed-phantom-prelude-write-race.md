@@ -483,3 +483,27 @@ FIXME. The `// defect:` line stays.
 Not orphaned by retirement: the `concurrency_capacity` VERIFY-AFTER-FIX family
 row already has a home (SPRINT §Scope, sanctioned effect-concurrency-track
 deferral).
+
+## /dev(src) S115 W6 — NOT retired; check 1 of /qa's two mechanical checks is still open
+
+`/qa`'s S115 retirement ruling above makes retirement mechanical at W6 close on
+two checks. State after the W6 `/dev`(src) change-set:
+
+- **Check 2 — GREEN.** The twin guards (`tests/spec_08_prelude_outer_scope.rs`)
+  plus the trigger / false-fire / unknown-D / `commit_staging_to_live` routing
+  pins (`src/imports/tests.rs`, `src/worker/tests.rs`) all pass in the W6
+  certification run (full suite: 5329 run / 5324 passed / 5 stable REDs / 1
+  skipped; every RED traces to a known open defect, none of them this one).
+- **Check 1 — OPEN, and it is not `/dev`'s to close.** The census disposition
+  must land in `design/int/prelude-table-write-isolation.md` §2.1/§2.4, which is
+  `/design`(int)-owned (FIXME 0740). The **code half is done** — `platform.rs`
+  ROUTED through the chokepoint, `bootstrap.rs` a named legal-skip carrying an
+  asserting sweep test, and the `src/imports.rs` census-comment mirror updated
+  with both rows — but the acceptance instrument is the DESIGN doc's census, and
+  it has not been amended yet. Details + two factual corrections to 0740's
+  characterisation of the bootstrap seam (it is `Visibility::Private`, so not a
+  public write at all) are appended to `0740-*.md`.
+
+**Verdict: acceptance is NOT fully discharged; this file stays open.** It should
+retire the moment `/design`(int) lands the two census rows — no further `/dev`
+work is owed against it, and no further `/qa` analysis is owed either.

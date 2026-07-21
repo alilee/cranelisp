@@ -1014,8 +1014,45 @@ pub fn derive_codegen_batch(
                 try_push(&Symbol::from("__expr"), &mut names, &mut seen);
             }
             TopLevel::TraitImpl(impl_) => {
-                for method in &impl_.methods {
-                    try_push(&method.name, &mut names, &mut seen);
+                // S115 (spec §5.4.5, `design/int/impl-redefinition-hot-reload.md`
+                // §3): enroll the impl's MANGLED method `Def`s into this FORCED
+                // loop, exactly as the multi-sig `defn` arm above enrolls its
+                // `base$…` variants. The callable an impl method compiles to is
+                // `Trait.method$<fq-type>` (`mangle_trait_method`), homed in the
+                // impl WRITER's module (D45 as amended, S110 W0.1) — never the
+                // unmangled `method.name`, which was a dead lookup here (and,
+                // worse, could hit an unrelated same-named plain `defn`).
+                //
+                // Because the forced loop ignores `already_compiled`, a re-impl
+                // whose staged Def carried over the prior code at
+                // `commit_slotted_def` (AbiPreserving) is still recompiled, and
+                // the reused GOT slot is patched in place — the same hot-reload
+                // mechanism a redefined `defn` uses (P11/P7: no impl-specific
+                // path). Pre-fix these Defs were reachable only through the
+                // `already_compiled`-gated sweep below, which skipped them, so
+                // the re-impl's new body never took (silent ignore).
+                //
+                // The prefix is derived from the SAME AST field the mangle used
+                // (`impl_.trait_name`), so writer and reader stay in lockstep;
+                // matching by prefix (rather than resolving the impl target)
+                // keeps int out of the resolution business (Principle 24) — a
+                // sibling impl of the same trait+method for a different type may
+                // be co-enrolled, which costs a recompile and changes nothing
+                // observable.
+                if let Some(ref table) = table_ref {
+                    let mangled: Vec<Symbol> = impl_
+                        .methods
+                        .iter()
+                        .flat_map(|method| {
+                            let prefix = format!("{}.{}$", impl_.trait_name, method.name);
+                            table.defined_symbols().filter_map(move |(sym, _)| {
+                                sym.as_ref().starts_with(&prefix).then(|| sym.clone())
+                            })
+                        })
+                        .collect();
+                    for m in &mangled {
+                        try_push(m, &mut names, &mut seen);
+                    }
                 }
             }
             _ => {}

@@ -658,6 +658,80 @@
         );
     }
 
+    // spec: spec/05-definitions.md §5.4.5 — a re-`impl` of an existing
+    // (trait, target-type) pair REPLACES the previous implementation; dispatch
+    // afterwards runs the NEW method bodies (hot-reload, like `defn`).
+    // Design: design/int/impl-redefinition-hot-reload.md §2/§3.
+    //
+    // The seam: `derive_codegen_batch`'s FORCED first loop must enroll the
+    // impl's MANGLED method Defs (`Trait.method$<fq-type>` — the callables), so
+    // an already-compiled entry (`code: Some(_)`, which `commit_slotted_def`
+    // carries over on the AbiPreserving re-impl commit) is still recompiled.
+    // The fixture is DISCRIMINATING by construction: the entry carries
+    // `code: Some(_)`, so the `already_compiled`-gated sweep at the end of
+    // `derive_codegen_batch` cannot enroll it — only the TraitImpl arm can.
+    // Fail-on-revert: the pre-fix arm pushed the UNMANGLED `size`, a dead
+    // lookup, and this assertion fails.
+    #[test]
+    fn derive_codegen_batch_enrolls_mangled_impl_methods_even_when_compiled() {
+        use cranelisp_backend::cache::linker::Linker;
+        use cranelisp_types::{
+            Defn, TopLevel, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
+        };
+        use std::sync::Arc;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
+
+        // The callable an `(impl Sizeable Box (defn size [x] …))` compiles to,
+        // homed in the impl writer's module (D45 as amended, S110 W0.1).
+        let mangled = Symbol::from("Sizeable.size$user/Box");
+        let mut entry = mk_def_with_got(
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
+            },
+            Some(trivial_variant()),
+            Some(slot),
+        );
+        // Prior compiled code, as carried over by `commit_slotted_def` on the
+        // AbiPreserving re-impl commit — the state that made the sweep skip it.
+        if let ModuleEntry::Def { code, .. } = &mut entry {
+            let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
+            *code = Some(crate::code::Code::linker(linker));
+        }
+        st.insert(mangled.clone(), entry);
+
+        let symbol_tables = dashmap::DashMap::new();
+        symbol_tables.insert(module.clone(), st);
+
+        let program = vec![TopLevel::TraitImpl(TraitImpl {
+            trait_name: TraitRef::new(None, TraitName::from("Sizeable")),
+            head_con_var: None,
+            target: TypeExpr::Named(TypeRef::new(None, TypeName::from("Box"))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("size"),
+                docstring: None,
+                variants: vec![trivial_variant()],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        })];
+
+        let names = derive_codegen_batch(&module, &program, &symbol_tables);
+        assert!(
+            names.contains(&mangled),
+            "a re-impl's MANGLED method Def must enter the FORCED codegen batch even \
+             though its live entry already carries compiled code (spec §5.4.5 \
+             hot-reload); got {names:?}"
+        );
+    }
+
     // `cross_module_pre_registration_reads_code_from_symbol_table` — DELETED
     // S76 W-Collapse. It simulated the deleted step-2b bare-name JIT-symbol
     // walk in `inline_jit_codegen_for_names`. Cross-module references now

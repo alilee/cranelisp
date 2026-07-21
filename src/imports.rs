@@ -331,6 +331,27 @@ fn prelude_write_is_closure_valid(
 // |   install_module_session_env             |         | side maps: fallback    |
 // |                                          |         | bit + aliases, NOT a   |
 // |                                          |         | symbol-table entry)    |
+// | bootstrap.rs::mount_synthetic_modules    | yes     | LEGAL-SKIP, ASSERTED   |
+// |   (session-init synthetic seeds; S115    |         | (see note below)       |
+// |    W6, FIXME 0740 disposition)           |         |                        |
+// | platform.rs::register_platform_in_tc     | yes     | ROUTE through gate     |
+// |   (DLL-load orchestration)               |         | (own-def arm, D=None)  |
+//
+// **bootstrap legal-skip, with a detection proof (not an argument).**
+// `mount_synthetic_modules` runs ONCE at session init, single-threaded, BEFORE
+// any worker is spawned — it is outside the foreground concurrent-compile path
+// entirely — and it seeds only (a) own definitions (special forms at root,
+// intrinsic types / TypeDefs / synthetic ADT ctors + Defs in `primitives`, the
+// `macros` ADTs) and (b) ONE intra-module public self-alias
+// (`primitives/Bind → primitives/IO.Bind`, `bootstrap.rs` step 5). The four
+// `macros`-module edges to `primitives` (`Int`/`Bool`/`Float`/`String`) are
+// `Visibility::Private`, so they are not public writes at all. Making the whole
+// init path fallible to route an unreachable rejection would buy no soundness
+// (Principle 6/8); instead the skip is ASSERTED by
+// `bootstrap::tests::bootstrap_seeds_pass_the_terminal_closure_gate`, which
+// sweeps EVERY seeded entry through `check_terminal_closure` under the strictest
+// closure `D(M) = {}` — so a future cross-module PUBLIC `Import` seed (the
+// phantom shape) turns that test RED.
 //
 // The census's job is to prove the set is CLOSED: no OTHER foreground seam can
 // insert a public table entry without routing through the gate. The greppable

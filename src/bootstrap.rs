@@ -225,6 +225,18 @@ fn insert_primitive(
 /// `cranelisp_typecheck::register_builtins` (FIXME 0242). The caller has
 /// already mounted `user` and `primitives` (via `PRIMITIVES_TABLE`) before
 /// this runs.
+///
+/// **FIXME 0604 census disposition (S115 W6, FIXME 0740): NAMED LEGAL-SKIP of
+/// the foreground public-write chokepoint** (`imports.rs::check_terminal_closure`;
+/// `design/int/prelude-table-write-isolation.md` §2.1/§2.4). This runs ONCE at
+/// session init, single-threaded, before any worker is spawned — outside the
+/// foreground concurrent-compile path — and every entry it seeds is either the
+/// module's OWN definition or ONE intra-module public self-alias
+/// (`primitives/Bind → primitives/IO.Bind`), both of which the gate admits with
+/// no map read. The skip is ASSERTED, not argued:
+/// `tests::bootstrap_seeds_pass_the_terminal_closure_gate` sweeps every seeded
+/// entry through the gate under `D(M) = {}`, so seeding a cross-module PUBLIC
+/// `Import` edge here turns that test RED.
 pub(crate) fn mount_synthetic_modules(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
@@ -1163,6 +1175,47 @@ mod tests {
             SessionSymbolTable::new_with_params(ModuleFullPath::from("primitives")),
         );
         (tables, AtomicU32::new(0))
+    }
+
+    // spec: design/int/prelude-table-write-isolation.md §2.1/§2.4 (FIXME 0604
+    // census; 0740 disposition) — `mount_synthetic_modules` is a NAMED LEGAL-SKIP
+    // of the foreground public-write chokepoint, and this is its DETECTION PROOF
+    // rather than an argument. Every entry the bootstrap seeds is swept through
+    // `check_terminal_closure` with the STRICTEST possible declared-export
+    // closure — `D(M) = {}` — so the unknown-D permit arm cannot mask anything:
+    // the sweep passes iff bootstrap seeds ONLY own-definitions and intra-module
+    // self-aliases (`Bind → primitives/IO.Bind`). A future seed of a
+    // cross-module PUBLIC `Import` edge — the phantom shape the gate exists to
+    // reject — turns this test RED, which is exactly the census closure claim.
+    #[test]
+    fn bootstrap_seeds_pass_the_terminal_closure_gate() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id);
+        let empty: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        let mut checked = 0usize;
+        for module in tables.iter() {
+            let path = module.key().clone();
+            for (name, entry) in module.value().symbols.iter() {
+                crate::imports::check_terminal_closure(
+                    &path,
+                    name.as_ref(),
+                    entry,
+                    cranelisp_types::Span::SYNTHETIC,
+                    Some(&empty),
+                )
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "bootstrap seed `{name}` in module `{path}` is not a legal \
+                         skip of the 0604 chokepoint: {e:?}"
+                    )
+                });
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 20,
+            "the sweep must actually see the seeded entries; checked {checked}"
+        );
     }
 
     #[test]

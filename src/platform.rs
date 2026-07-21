@@ -404,7 +404,26 @@ pub fn register_platform_in_tc(
             if !desc.docstring.is_empty() {
                 builder = builder.docstring(desc.docstring.clone());
             }
-            table.insert(Symbol::from(desc.name.as_str()), builder.build());
+            let entry = builder.build();
+            // FIXME 0604 census (0740 disposition, S115 W6): this is a live-table
+            // PUBLIC write, so it ROUTES through the ONE chokepoint rather than
+            // arguing itself safe. The entry is always the platform module's OWN
+            // definition (a `PlatformEffect` `Def`, never an `Import`), so the
+            // gate takes its own-def arm — Ok with NO map read, which is what
+            // makes the call safe under the held `get_mut` guard (the deadlock
+            // hazard 0604 names). `declared_exports = None`: a synthetic
+            // `platform.<name>` module records no `(export …)` surface; the
+            // unknown-D arm permits, and the own-def arm precedes it anyway.
+            // Routing is therefore behaviour-preserving by construction — no
+            // reachable rejection.
+            crate::imports::check_terminal_closure(
+                &module_path,
+                desc.name.as_str(),
+                &entry,
+                Span::SYNTHETIC,
+                None,
+            )?;
+            table.insert(Symbol::from(desc.name.as_str()), entry);
         }
     }
 
