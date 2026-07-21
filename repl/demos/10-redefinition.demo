@@ -86,5 +86,35 @@ invoice
 (defn id [x] (+ x 100))
 (g 1)
 
+; Redefinition reaches the DISPATCH layer too. An impl is a body you can edit:
+; re-enter it and subsequent dispatch follows the new bodies.
+
+(deftype Box (MkBox [:Int w :Int h]))
+(deftrait Sizeable (size [x] Int) (tag [x] Int))
+(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])) (defn tag [b] 7))
+(size (MkBox 3 4))
+
+; Re-impl the pair with a new size body — same signature, so this is a body edit
+; like any other, and the next call sees it:
+
+(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (+ w h)])) (defn tag [b] 7))
+(size (MkBox 3 4))
+
+; The truthfulness payoff: introspection lists ONE impl of Sizeable for Box, not
+; one entry per impl form typed. The session reports what dispatches today, not
+; the history of how it got there:
+
+/info Sizeable
+
+; A re-impl REPLACES — it is the whole implementation, not a patch. Omit a
+; required method and it is rejected at the conformance seam, named:
+
+(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (- w h)])))
+
+; Rejected means rejected: the previous impl is untouched and still dispatching.
+
+(size (MkBox 3 4))
+(tag (MkBox 3 4))
+
 ; Edit boldly: body edits are free, signature edits are accounted for,
 ; and nothing is ever silently wrong.

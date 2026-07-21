@@ -44,15 +44,29 @@ vec-reverse
 
 ; A qualified name has a shape: a non-empty module on the left of the `/`, a
 ; non-empty local name on the right. A dangling `/` — a half missing — is a
-; located reader error at the offending token, not a silent guess:
+; located reader error at the offending token, not a silent guess. Either half
+; can be the missing one, and each says which:
 
 (count /bar)
+(count foo/)
 
-; Qualifiers are REFERENCE syntax: they reach ACROSS modules. A binder names a
-; NEW name in the CURRENT module, so it never carries one. Qualify a definition
-; head and the REPL rejects it, pointing at the name and saying what to write:
+; A full dotted module path is an ordinary REFERENCE — reach into a module you
+; have not imported and it just resolves:
+
+(collections.vec/count (vec 1 2 3))
+
+; But qualification is reference-only syntax: it reaches ACROSS modules. A binder
+; names a NEW name in the CURRENT module, so it never carries one. Qualify a
+; definition head and the REPL rejects it, pointing at the name and saying what
+; to write:
 
 (defn foo/bar [x] x)
+
+; The same rule covers dotted names, in every binder position — a definition head
+; or a let binder — and the message names why `.` cannot appear there:
+
+(defn a.bar [x] x)
+(let [a.b 1] a.b)
 
 ; You can import just a trait's METHOD — you do not need the trait itself in
 ; scope. Dispatch follows from the method's own identity. `default` lives in

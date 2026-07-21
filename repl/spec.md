@@ -468,7 +468,7 @@ Types MUST be displayed using Cranelisp type notation with fully-qualified names
 | ADT (no args) | `user/Color` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_negative::display_neg_type_always_qualified] |
-| Constrained variable | `:core.numerics/Num a` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| Constrained variable | `:num.num/Num a` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 
 Type names MUST always be fully qualified with their module path. Type variables are bare lowercase — they are not module-scoped.
 
@@ -476,7 +476,7 @@ Polymorphic type schemes MUST display quantified variables as consecutive lowerc
 
 ```
 :(Fn [a] a) user/id
-:(Fn [:core.numerics/Num a :a] a) core.numerics/+
+:(Fn [:num.num/Num a :a] a) num.num/+
 ```
 
 ### 1.5 Value Display
@@ -787,7 +787,7 @@ From prelude:
 
 **Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). [Tested tests/repl_introspection::imports_lists_special_forms] This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
 
-**Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports prelude` shows `+` under `From prelude:` — because that is the module the user imported from. The ultimate origin is available via `/info +` (§3.6).
+**Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `num.num`, `/imports prelude` shows `+` under `From prelude:` — because that is the module the user imported from. The ultimate origin is available via `/info +` (§3.6).
 
 **Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. [Tested tests/repl_introspection::imports_lists_special_forms] A symbol re-exported through the prelude is still an import from the user's perspective.
 
@@ -1196,7 +1196,7 @@ user> Display
 ;  Bool Float Int List Vec
 
 user> Num
-:core.numerics/Num ; deftrait - Numeric operations
+:num.num/Num ; deftrait - Numeric operations
 ; defn:
 ;  + - * /
 ; impl:
@@ -1370,23 +1370,42 @@ here — both settled in the language spec, both surfaced at the prompt:
   (Language spec: [`spec/01-lexical.md §1.4.5`](../spec/01-lexical.md),
   [`spec/02-grammar.md §2.3.8`](../spec/02-grammar.md).) [S114]
 
-- **Qualified name in a binder position is rejected, locatedly.** A module
-  qualifier (or dotted path) is **reference** syntax — it reaches across modules.
-  A **binder** names a new name in the current module (or lexical scope) and
-  therefore never carries one. A qualified spelling in any binder position (a
-  definition head, a `let` binder) is a compile-time error with the span **on the
-  offending binder name**, and the message MUST say what to write instead (the
-  bare name) — the REPL never silently coins a name into another module. (Language
-  spec: [`spec/05-definitions.md §5`](../spec/05-definitions.md),
-  [`spec/04-expressions.md §4`](../spec/04-expressions.md).) [S114]
+- **Dotted or qualified name in a binder position is rejected, locatedly.** Both
+  forms of qualification — a module qualifier (`mod/name`) and a dotted path
+  (`a.b`) — are **reference** syntax: they reach across modules, and both are
+  legal wherever a name is *read*. Neither is legal where a name is *introduced*.
+  A **binder** names a new name in the current module (or lexical scope), so it
+  never carries either. A qualified **or dotted** spelling in any binder position
+  (a definition head — `defn`, `def`, `deftype`, `deftrait`, `defmacro`, `const`
+  — or a `let` binder) is a compile-time error with the span **on the offending
+  binder name**, and the message MUST say what to write instead (the bare name)
+  — the REPL never silently coins a name into another module. The dotted case
+  MUST additionally say why `.` cannot appear there (it is reserved for
+  type/trait qualification), because a user who writes `(defn a.bar …)` is
+  usually reaching for a namespace, not a typo. (Language spec:
+  [`spec/05-definitions.md §5`](../spec/05-definitions.md),
+  [`spec/04-expressions.md §4`](../spec/04-expressions.md),
+  [`spec/08-modules.md §8.5.1`](../spec/08-modules.md).) [S115]
+
+  The reference/binder boundary is the whole of the rule, and it is symmetric:
+  the same spelling that is rejected as a binder MUST resolve as a reference when
+  a name by that path exists. `(collections.vec/count (vec 1 2 3))` is an
+  ordinary call; `(defn a.bar [x] x)` is an error. A conforming REPL demonstrates
+  both sides — a reject alone teaches "`.` is forbidden", which is false.
 
 These reader diagnostics are exercised end-to-end in the `06-modules` showcase
-demo (dangling `/bar`, `(defn foo/bar …)` binder reject, `: Int` ≡ `:Int`
-tolerance) as replayed sentinels. The terse empty-local-half spelling (`foo/`) and
-the degenerate no-form-to-bind spelling (`: Int` alone) have diagnostic-parity
-polish pending (frontend, tracked separately); the requirement above is on the
-**located + self-documenting + no-silent-degradation** contract, which holds for
-every case, not on any single message's exact prose. [S114]
+demo (dangling `/bar` **and** `foo/`, the `(collections.vec/count …)` legal
+dotted reference paired with the `(defn foo/bar …)` and `(defn a.bar …)` /
+`(let [a.b 1] …)` binder rejects, and `: Int` ≡ `:Int` tolerance) as replayed
+sentinels. Both dangling-qualifier halves now report at parity — each names which
+half is missing and how to fix it. One residual remains: the **degenerate
+no-form-to-bind spelling**, where `:Int` alone reports `annotation missing
+expression` but the spaced `: Int` alone reports `undefined variable: :` — the
+space defeats the reader macro in exactly the position where §5.4's second bullet
+promises it does not matter. That case is tracked with the rest of the `:`-fold
+seam (FIXME 0708); the requirement above is on the **located +
+self-documenting + no-silent-degradation** contract, which holds for every case,
+not on any single message's exact prose. [S115]
 
 ## 6. Discoverability [Tested]
 
@@ -4242,3 +4261,79 @@ Consequences:
   (same errors surfaced, no stale code, no silent drop). [S101]
 - Definitions recompiled or redefined across signature changes MUST restore correctly from a valid
   cache after restart — a program that ran before `/quit` runs identically after. [Tested tests/repl_persist_redefine.rs::persist_abi_change_redefinition_restart_runs_correctly_from_cache]
+
+### 18.9 Impl Redefinition — Re-entering an `impl` [S115]
+
+A trait implementation is a body the user can edit, exactly like a function. Re-entering an
+`impl` for a (trait, target-type) pair that already has an implementation in the live session
+**replaces** it. This section is the user-facing contract for the language rule in
+[`spec/05-definitions.md §5.4.5`](../spec/05-definitions.md), which forward-references this
+section; §5.4.5 governs what is legal, §18.9 governs what the user *sees*.
+
+**The dispatch-layer body edit.** A conforming re-`impl` leaves each method's compiled signature
+unchanged — it is the trait's declared signature for that type, and conformance is what makes the
+form legal at all. It is therefore **signature-preserving** (§18.1), and the observable behaviour
+is §18.2's: subsequent dispatch (`spec/07-traits.md` §7.4) reaches the **new** method bodies, at
+the next call, with no cascade report and no ceremony. [S115]
+
+```
+user> (deftrait Sizeable (size [x] Int) (tag [x] Int))
+user> (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])) (defn tag [b] 7))
+impl user/Sizeable for user/Box
+user> (size (MkBox 3 4))
+:primitives/Int 12
+user> (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (+ w h)])) (defn tag [b] 7))
+impl user/Sizeable for user/Box
+user> (size (MkBox 3 4))
+:primitives/Int 7
+```
+
+**The confirmation line is unchanged.** A re-`impl` prints the ordinary §5.4 impl confirmation —
+the same `impl <trait-home>/<Trait> for <type-home>/<Type>` line, naming both canonical homes —
+with no "redefined" marker. A redefinition that behaves identically to a first definition SHOULD
+read identically; the user's mental model is *this is the impl now*, not *this is the second one*.
+An implementation MUST NOT print the confirmation while continuing to dispatch to the **first**
+implementation — accepting the form and ignoring it is the one outcome §5.4.5 names as a defect,
+and it is invisible in the confirmation line, so the observable pin is the dispatch result above.
+[S115]
+
+**Replacement is wholesale, and introspection tells the truth about it.** The unit of replacement
+is the whole implementation for the pair, not the individual method. Two consequences the user
+observes:
+
+- **`/info <Trait>` and `/info <Type>` MUST list exactly one impl entry per (trait, target-type)
+  pair**, however many `impl` forms were entered for it. The impl list reports what dispatches
+  today, never the history of how it got there — a session that shows three `Box` entries after
+  three `impl` forms is stating something false about dispatch. The same holds for `/list` and
+  every other route that enumerates implementations. [S115]
+- **A re-`impl` that omits a required method is rejected**, because the replacement, taken alone,
+  does not implement the trait. The error names the trait, the target type, and the missing method
+  — `impl Sizeable for Box: missing required method tag` — and is the ordinary conformance error,
+  not a redefinition-specific one. [S115]
+
+**A rejected re-`impl` changes nothing.** Whether it fails conformance (a method whose body does
+not typecheck against the declared signature) or completeness (a missing required method), a
+rejected re-`impl` leaves the previous implementation installed and dispatching. The session MUST
+NOT be left with the pair partially replaced, unimplemented, or broken: the user's next call
+returns exactly what it returned before the rejected form. This is the impl-layer face of §18's
+coherence guarantee — never silently wrong, and here, never silently *emptied*. [S115]
+
+```
+user> (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (- w h)])))
+Error: type error at 0..67: impl Sizeable for Box: missing required method tag
+user> (size (MkBox 3 4))
+:primitives/Int 7
+user> (tag (MkBox 3 4))
+:primitives/Int 7
+```
+
+**Persistence.** The backing file follows §15.6: it holds the **latest** `impl` for the pair and
+only that one, so the regenerated source reproduces the dispatching session rather than replaying
+the edit history. A rejected re-`impl` is never written. [S115]
+
+**Known gap (S115).** A trait **default method** (`spec/07-traits.md` §7.1.5) whose body calls a
+sibling method of the same trait does not survive a re-`impl` of that trait for the type: the
+default body's call to the sibling fails to link, and the diagnostic points inside the
+`deftrait` — a location the user did not edit. Until that is fixed, the default-method surface is
+outside this section's guarantees. (FIXME 0832; the spelling of a default method is itself under
+a pending ruling, FIXME 0825.)

@@ -13,6 +13,17 @@
 (adder 10)
 ((adder 10) 5)
 
+; A returned closure can be applied one argument at a time. Bind it and feed it
+; partially — the first call yields a function, the second finishes the job:
+
+(defn mk [n] (fn [a b] (+ n (+ a b))))
+(let [g (mk 10)] ((g 1) 2))
+
+; Both spellings mean the same thing — supplying the arguments together is just
+; the un-curried way to say it:
+
+(let [g (mk 10)] (g 1 2))
+
 ; Functions take functions. apply-twice is generic over any f : a -> a:
 
 (defn apply-twice [f x] (f (f x)))
