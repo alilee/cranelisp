@@ -931,6 +931,25 @@ pub(crate) fn ensure_typecheck_product(
 // internally by `Jit::new(symbol_tables)` (backend, BC §3). int assembles no
 // JIT symbols by hand.
 
+/// The predicate behind `derive_codegen_batch`'s forced-enrollment
+/// `debug_assert!` — "this name resolves to a live `ModuleEntry::Def` in the
+/// module's table".
+///
+/// Split out as a named function so the instrument's DISCRIMINATION is itself
+/// unit-testable without needing production code to be wrong (see
+/// `worker::tests::forced_enrollment_predicate_discriminates`). `None` table =
+/// the module is not in `tc_modules` yet; that is a legitimate no-table case,
+/// not a dead lookup, so it answers `true`.
+fn forced_enrollment_resolves(
+    table: Option<&crate::code::SessionSymbolTable>,
+    name: &Symbol,
+) -> bool {
+    let Some(table) = table else {
+        return true;
+    };
+    matches!(table.get(name.as_ref()), Some(ModuleEntry::Def { .. }))
+}
+
 /// Derive the codegen batch — a `Vec<Symbol>` — from a `program` and the
 /// module's symbol table. Separated out from `inline_jit_codegen_for_module`
 /// so unit tests can exercise the name-derivation logic without standing up
@@ -943,7 +962,10 @@ pub(crate) fn ensure_typecheck_product(
 ///   instances carry the bodies that codegen), or an `Overloaded` base);
 /// - every mangled multi-sig variant whose base name appears in `program`;
 /// - `__expr` when `program` contains a `TopLevel::Expr`;
-/// - each trait-impl method's mangled name;
+/// - for each `TopLevel::TraitImpl`, every live mangled method `Def` of that
+///   TRAIT (`{trait}.` prefix + a `$` in the remainder) — not only the methods
+///   the impl explicitly provides, so a method whose source changes explicit ->
+///   default re-enrolls too (FIXME 0791);
 /// - any symbol-table entry with `$` in its name (mono specialisation or
 ///   other mangling) that is not already compiled (`code: Some(_)` on the
 ///   entry).
@@ -985,10 +1007,47 @@ pub fn derive_codegen_batch(
         false
     };
 
+    // S115 W6b (FIXME 0792's sibling ask; /review's dead-lookup finding): every
+    // name the FORCED loop offers for enrollment MUST resolve to a live `Def` in
+    // this module's table. `try_push` returns `bool` and every call site
+    // discards it, so an enrollment naming a symbol that does not resolve is
+    // silently `false` — which is exactly how the pre-S115 `TopLevel::TraitImpl`
+    // arm shipped a dead unmangled-name push while `derive_codegen_batch`'s own
+    // rustdoc asserted "each trait-impl method's mangled name" was an enrolled
+    // category. The doc claimed a contract the code did not keep, and nothing
+    // could tell.
+    //
+    // TIER: `debug_assert!` (Principle 5 — the cheapest instrument that turns a
+    // silent no-op into a loud failure at the seam; Principle 25 — the forced
+    // loop NARROWS by skipping the `already_compiled` sweep, so it carries the
+    // check that its narrowing is well-founded).
+    //
+    // RELEASE-MODE BEHAVIOUR (explicit, per the S115 0751 lesson): in a
+    // `debug_assertions`-off build the predicate is NOT evaluated and the whole
+    // wrapper degenerates to the bare `try_push` call — byte-for-byte today's
+    // behaviour, a dead lookup silently enrolling nothing. There is NO release
+    // fallback, no alternate path, and therefore no polarity to get wrong: the
+    // instrument is a detector, never a gate. A `None` table (module not yet in
+    // `tc_modules`) is a legitimate no-table case and never fires.
+    let force_enroll = |name: &Symbol,
+                        names: &mut Vec<Symbol>,
+                        seen: &mut std::collections::HashSet<Symbol>| {
+        let pushed = try_push(name, names, seen);
+        debug_assert!(
+            pushed || forced_enrollment_resolves(table_ref.as_deref(), name),
+            "derive_codegen_batch: the forced loop enrolled `{name}` in module \
+             `{module}`, but no live `ModuleEntry::Def` resolves under that name \
+             — a DEAD LOOKUP. The push silently no-ops and the symbol is left to \
+             the `already_compiled`-gated sweep, which skips any entry that \
+             already carries code (the S115 impl-redefinition silent-ignore \
+             class). See `design/int/impl-redefinition-hot-reload.md` §2."
+        );
+    };
+
     for tl in program {
         match tl {
             TopLevel::Defn(defn) => {
-                try_push(&defn.name, &mut names, &mut seen);
+                force_enroll(&defn.name, &mut names, &mut seen);
 
                 if defn.is_multi_sig()
                     && let Some(ref table) = table_ref
@@ -1006,12 +1065,12 @@ pub fn derive_codegen_batch(
                         })
                         .collect();
                     for m in &mangled {
-                        try_push(m, &mut names, &mut seen);
+                        force_enroll(m, &mut names, &mut seen);
                     }
                 }
             }
             TopLevel::Expr(_) => {
-                try_push(&Symbol::from("__expr"), &mut names, &mut seen);
+                force_enroll(&Symbol::from(SYNTHETIC_EXPR_WRAPPER), &mut names, &mut seen);
             }
             TopLevel::TraitImpl(impl_) => {
                 // S115 (spec §5.4.5, `design/int/impl-redefinition-hot-reload.md`
@@ -1039,19 +1098,36 @@ pub fn derive_codegen_batch(
                 // sibling impl of the same trait+method for a different type may
                 // be co-enrolled, which costs a recompile and changes nothing
                 // observable.
+                //
+                // S115 W6b (FIXME 0791): the prefix is the TRAIT's alone —
+                // `{trait}.` + a `$` in the remainder — NOT `{trait}.{method}$`
+                // per `impl_.methods`. Narrowing to the methods the new impl
+                // EXPLICITLY provides reopened the same silent-ignore hole one
+                // method-source away: a method whose source changes explicit ->
+                // DEFAULT is not in `impl_.methods` (nor in `program` at all —
+                // `finalize_cluster` appends the synthesised default `Defn`s to
+                // the WORKING program only, never to the `expanded_program` that
+                // reaches here), so it was never enrolled, `commit_slotted_def`
+                // carried the prior override's code over (AbiPreserving), the
+                // sweep skipped it as `already_compiled`, and the STALE OVERRIDE
+                // kept dispatching where spec §7.1.5's default MUST take over.
+                // The trait-wide prefix covers explicit, default-synthesised and
+                // omitted-then-restored methods uniformly — the same accepted
+                // over-enrolment tradeoff, one notch wider (Principle 18: the
+                // enrollment set is structural, not a per-form enumeration).
                 if let Some(ref table) = table_ref {
-                    let mangled: Vec<Symbol> = impl_
-                        .methods
-                        .iter()
-                        .flat_map(|method| {
-                            let prefix = format!("{}.{}$", impl_.trait_name, method.name);
-                            table.defined_symbols().filter_map(move |(sym, _)| {
-                                sym.as_ref().starts_with(&prefix).then(|| sym.clone())
-                            })
+                    let prefix = format!("{}.", impl_.trait_name);
+                    let mangled: Vec<Symbol> = table
+                        .defined_symbols()
+                        .filter(|(sym, _)| {
+                            sym.as_ref()
+                                .strip_prefix(&prefix)
+                                .is_some_and(|rest| rest.contains('$'))
                         })
+                        .map(|(sym, _)| sym.clone())
                         .collect();
                     for m in &mangled {
-                        try_push(m, &mut names, &mut seen);
+                        force_enroll(m, &mut names, &mut seen);
                     }
                 }
             }

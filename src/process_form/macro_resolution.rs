@@ -1268,20 +1268,29 @@ mod tests {
     // under a NESTED quasiquote is not live, so its body stays verbatim.
     #[test]
     fn qualify_quasiquote_nested_unquote_is_not_live() {
-        let tables = tables_with_defs("dm", &["wrap"]);
+        let tables = tables_with_defs("dm", &["wrap", "helper"]);
         let current = ModuleFullPath::from("user");
         let dms = vec![ModuleFullPath::from("dm")];
         let out = qualify_expanded_sexp(
             &tables,
             &current,
             &dms,
-            parse_one("(quasiquote (quasiquote (unquote (wrap 1))))"),
+            parse_one("(helper (quasiquote (quasiquote (unquote (wrap 1)))))"),
         );
         let flat = out.format_flat();
         assert!(
             !flat.contains("dm/wrap"),
             "an unquote under a nested quasiquote is not live; its body must \
              stay verbatim: {flat}"
+        );
+        // Discriminating control (FIXME 0792): the free `helper` OUTSIDE the
+        // quasiquote still qualifies, so this cell fails under a blanket
+        // "qualify nothing here" regression instead of being rescued by a
+        // sibling cell's control.
+        assert!(
+            flat.contains("dm/helper"),
+            "control: a free reference outside the quasiquote must still \
+             qualify: {flat}"
         );
     }
 
@@ -1291,14 +1300,14 @@ mod tests {
     fn qualify_seeds_defn_name_into_its_body_scope() {
         // `dm` provides `f`; `user` does not yet (the defn is being defined now),
         // so the current-module availability skip cannot fire.
-        let tables = tables_with_defs("dm", &["f"]);
+        let tables = tables_with_defs("dm", &["f", "wrap"]);
         let current = ModuleFullPath::from("user");
         let dms = vec![ModuleFullPath::from("dm")];
         let out = qualify_expanded_sexp(
             &tables,
             &current,
             &dms,
-            parse_one("(defn f [x] (f x))"),
+            parse_one("(defn f [x] (f (wrap x)))"),
         );
         let flat = out.format_flat();
         assert!(
@@ -1306,25 +1315,38 @@ mod tests {
             "a recursive self-call refers to the defn being defined and must \
              stay bare: {flat}"
         );
+        // Discriminating control (FIXME 0792): a free defining-module reference
+        // in the SAME body still qualifies — the seeding is defn-name-scoped,
+        // not a blanket "qualify nothing in a defn body".
+        assert!(
+            flat.contains("dm/wrap"),
+            "control: a free reference in the same body must still qualify: {flat}"
+        );
     }
 
     // spec: expansion-qualification-scope.md §2.5 — multi-arity variants share
     // the same self-name scope.
     #[test]
     fn qualify_seeds_defn_name_into_multi_arity_variant_bodies() {
-        let tables = tables_with_defs("dm", &["f"]);
+        let tables = tables_with_defs("dm", &["f", "wrap"]);
         let current = ModuleFullPath::from("user");
         let dms = vec![ModuleFullPath::from("dm")];
         let out = qualify_expanded_sexp(
             &tables,
             &current,
             &dms,
-            parse_one("(defn f ([x] (f x)) ([x y] (f x)))"),
+            parse_one("(defn f ([x] (f x)) ([x y] (f (wrap x))))"),
         );
         let flat = out.format_flat();
         assert!(
             !flat.contains("dm/f"),
             "multi-arity variant bodies must also see the defn self-name: {flat}"
+        );
+        // Discriminating control (FIXME 0792): a free defining-module reference
+        // inside a VARIANT body still qualifies.
+        assert!(
+            flat.contains("dm/wrap"),
+            "control: a free reference in a variant body must still qualify: {flat}"
         );
     }
 

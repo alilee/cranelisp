@@ -1520,6 +1520,72 @@ mod tests {
         assert!(!resolver.asked.contains(&"g".to_string()), "asked={:?}", resolver.asked);
     }
 
+    // spec: spec/08-modules.md §8.6.3 — the defn NAME is in scope inside its own
+    // body (a self-call is a reference to THIS definition), so a module-scope
+    // zero-arg macro whose name collides with the `defn` being defined does NOT
+    // expand in that body. `expansion-qualification-scope.md` §2.5 rules that
+    // BOTH scope-aware walks seed the name; this is the EXPANDER half of that
+    // mirror (`qualify_defn`'s half is pinned by
+    // `macro_resolution::tests::qualify_seeds_defn_name_into_its_body_scope`).
+    //
+    // On this side the seeded set gates macro EXPANSION, so the seeding is a real
+    // behaviour change and needs its own standing guard: reverting the expander
+    // half alone left the whole suite green (FIXME 0792).
+    //
+    // Fail-on-revert: without the seeding, `(g)` in the body is recognized, the
+    // walk attempts invocation, and the stub (which holds no clause code) makes
+    // `expand_sexp_recursive` return `Err` — the `.expect` below fires.
+    //
+    // Discriminating control IN CELL: the free, unshadowed `h` in the same body
+    // IS still asked about, so a blanket "skip the whole defn body" regression
+    // cannot pass this cell (it would be rescued only by sibling cells otherwise).
+    #[test]
+    fn defn_name_shadows_zero_arg_macro_in_its_own_body() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(defn g [] (add-i64 (g) h))")
+            .unwrap()
+            .remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("the defn's own name must not be macro-invoked inside its body");
+        assert_eq!(expanded.format_flat(), form.format_flat());
+        assert!(
+            !resolver.asked.contains(&"g".to_string()),
+            "the defn self-name must not even be recognized in its own body: asked={:?}",
+            resolver.asked
+        );
+        assert!(
+            resolver.asked.contains(&"h".to_string()),
+            "control: a free symbol in the SAME body is still walked — the seeding \
+             is defn-name-scoped, not a blanket body skip: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // spec: spec/08-modules.md §8.6.3 — multi-arity variant bodies share the same
+    // defn self-name scope (`expansion-qualification-scope.md` §2.5; the twin of
+    // `macro_resolution::tests::qualify_seeds_defn_name_into_multi_arity_variant_bodies`).
+    // Same fail-on-revert and same in-cell control as the single-arity cell.
+    #[test]
+    fn defn_name_shadows_zero_arg_macro_in_multi_arity_variant_bodies() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(defn g ([] (g)) ([x] (add-i64 (g) h)))")
+            .unwrap()
+            .remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("multi-arity variant bodies must also see the defn self-name");
+        assert_eq!(expanded.format_flat(), form.format_flat());
+        assert!(
+            !resolver.asked.contains(&"g".to_string()),
+            "the defn self-name must not be recognized in any variant body: asked={:?}",
+            resolver.asked
+        );
+        assert!(
+            resolver.asked.contains(&"h".to_string()),
+            "control: a free symbol in a variant body is still walked: asked={:?}",
+            resolver.asked
+        );
+    }
+
     // Negative twin (don't over-shield reads): a `g` in VALUE position — a `let`
     // binding whose VALUE reads `g` (a genuine read of the module-scope macro,
     // NOT shadowed by the unrelated binder `h`) — IS still recognized and

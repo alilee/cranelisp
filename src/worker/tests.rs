@@ -732,6 +732,137 @@
         );
     }
 
+    // spec: spec/07-traits.md §7.1.5 — "Methods with defaults are automatically
+    // synthesized if not explicitly provided"; spec/05-definitions.md §5.4.5 — a
+    // re-`impl` REPLACES the previous implementation. Together: a re-impl that
+    // OMITS a method the prior impl overrode MUST fall back to the trait's
+    // DEFAULT body, not keep dispatching the stale override.
+    // Design: design/int/impl-redefinition-hot-reload.md §3. FIXME 0791.
+    //
+    // The seam: the re-impl's `TopLevel::TraitImpl` names only `size` in
+    // `impl_.methods` (`weight` is omitted, and its re-staged DEFAULT `Defn`
+    // rides `finalize_cluster`'s WORKING program, never the `program` slice that
+    // reaches `derive_codegen_batch`). So the enrollment set must be derived from
+    // the TRAIT, not from the methods this impl form happens to spell.
+    // Fail-on-revert: with a `{trait}.{method}$` per-method prefix the omitted
+    // `weight` is absent from the batch and this assertion fails.
+    #[test]
+    fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
+        use cranelisp_backend::cache::linker::Linker;
+        use cranelisp_types::{
+            Defn, TopLevel, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
+        };
+        use std::sync::Arc;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+
+        let provided = Symbol::from("Sizeable.size$user/Box");
+        let omitted = Symbol::from("Sizeable.weight$user/Box");
+        for name in [&provided, &omitted] {
+            let slot = st.allocate_got_slot().expect("fresh table has free slots");
+            let mut entry = mk_def_with_got(
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
+                },
+                Some(trivial_variant()),
+                Some(slot),
+            );
+            // The prior impl's compiled code, carried over by
+            // `commit_slotted_def` on the AbiPreserving re-impl commit — the
+            // state that makes the `already_compiled` sweep skip the entry, so
+            // ONLY the forced TraitImpl arm can enroll it.
+            if let ModuleEntry::Def { code, .. } = &mut entry {
+                let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
+                *code = Some(crate::code::Code::linker(linker));
+            }
+            st.insert(name.clone(), entry);
+        }
+
+        let symbol_tables = dashmap::DashMap::new();
+        symbol_tables.insert(module.clone(), st);
+
+        // The RE-impl: provides `size` only; `weight` reverts to the default.
+        let program = vec![TopLevel::TraitImpl(TraitImpl {
+            trait_name: TraitRef::new(None, TraitName::from("Sizeable")),
+            head_con_var: None,
+            target: TypeExpr::Named(TypeRef::new(None, TypeName::from("Box"))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("size"),
+                docstring: None,
+                variants: vec![trivial_variant()],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        })];
+
+        let names = derive_codegen_batch(&module, &program, &symbol_tables);
+        assert!(
+            names.contains(&provided),
+            "the explicitly-provided method must be enrolled; got {names:?}"
+        );
+        assert!(
+            names.contains(&omitted),
+            "a method the re-impl OMITS (reverting to the trait default) must \
+             ALSO be enrolled — otherwise the stale override's carried-over code \
+             keeps dispatching (spec §7.1.5 + §5.4.5, FIXME 0791); got {names:?}"
+        );
+    }
+
+    // The forced-enrollment instrument's discriminating control (METHOD §2.2 —
+    // an assertion ships with its detection proof). `forced_enrollment_resolves`
+    // is the predicate behind `derive_codegen_batch`'s `debug_assert!`; this pins
+    // that it actually discriminates rather than always answering `true`.
+    // spec: design/int/impl-redefinition-hot-reload.md §2 (the dead-lookup class)
+    #[test]
+    fn forced_enrollment_predicate_discriminates() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let slot = st.allocate_got_slot().expect("fresh table has free slots");
+        let live = Symbol::from("Sizeable.size$user/Box");
+        st.insert(
+            live.clone(),
+            mk_def_with_got(
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
+                },
+                Some(trivial_variant()),
+                Some(slot),
+            ),
+        );
+
+        assert!(
+            crate::worker::forced_enrollment_resolves(Some(&st), &live),
+            "a live mangled method Def must satisfy the forced-enrollment predicate"
+        );
+        // The exact shape the pre-S115 TraitImpl arm pushed: the UNMANGLED method
+        // name. No `Def` is ever registered under it — a dead lookup.
+        assert!(
+            !crate::worker::forced_enrollment_resolves(Some(&st), &Symbol::from("size")),
+            "the unmangled method name resolves to nothing and MUST be rejected — \
+             this is the dead lookup that shipped undetected because `try_push`'s \
+             `bool` is discarded at every call site"
+        );
+        assert!(
+            !crate::worker::forced_enrollment_resolves(Some(&st), &Symbol::from("fabricated")),
+            "a fabricated enrollment name must be rejected"
+        );
+        // A module with no table yet is a legitimate no-table case, not a dead
+        // lookup — the instrument must stay silent there.
+        assert!(
+            crate::worker::forced_enrollment_resolves(None, &Symbol::from("anything")),
+            "an absent table must not be reported as a dead lookup"
+        );
+    }
+
     // `cross_module_pre_registration_reads_code_from_symbol_table` — DELETED
     // S76 W-Collapse. It simulated the deleted step-2b bare-name JIT-symbol
     // walk in `inline_jit_codegen_for_names`. Cross-module references now
