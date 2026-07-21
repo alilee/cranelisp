@@ -6,8 +6,10 @@
 //! Per the Wave 6 batch 1 audit (tests/plan/wave-6-batch-1-audit.md),
 //! the 15 row-tests in `legacy/examples.rs` were strictly subsumed by
 //! `legacy/examples_run.rs`'s 27-row subprocess umbrella; the new shape
-//! adopts that umbrella + on-disk parity guard + signal-aware exit
-//! normalisation as a single table-driven test.
+//! adopts that umbrella + on-disk parity guard + a signal-vs-exit
+//! *distinction* (see `Outcome`; S115 replaced the old `128 + signal`
+//! normalisation, which could let a SIGSEGV pose as a legitimate
+//! mod-256 exit code) as a single table-driven test.
 //!
 //! Per `examples/README.md` rule (cited inline in the legacy file):
 //! a non-zero `main` Int return is the program's exit code, and the
@@ -115,7 +117,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("04-functions.cl", &[135]),
         ("05-recursion.cl", &[111]),
         ("06-enums.cl", &[104]),
-        ("07-polymorphism.cl", &[119]),
+        // 07: polymorphism. S115 6b added `test-many-instantiations` (one `id`
+        // at Bool/String/Int plus `first-of` at two type pairs, in one body),
+        // contributing 1: 42 + 10 + 10 + 20 + 7 + 30 + 1 = 120 (was 119).
+        ("07-polymorphism.cl", &[120]),
         ("08-floats.cl", &[10]),
         ("09-strings.cl", &[55]),
         ("10-adts.cl", &[9]),
@@ -142,7 +147,20 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // + stdin nulled in `run_example`, the run is a clean 20. The old
         // 133/141 (SIGTRAP/SIGPIPE) were artifacts of the symlink-era harness.
         ("24-io-echo.cl", &[20]),
-        ("25-curry.cl", &[118]),
+        // 25: curry. S115 6b added two sub-tests — currying a local closure
+        // VALUE (`((g 1) 2)` = 13) and a trait-operator partial (`(+ 5)` then
+        // applied = 8) — and the example now consumes `examples/lib/operators.cl`
+        // instead of declaring a fourth inline `Num`. Sum of pass counts
+        // 42 + 42 + 42 + 10 + 35 + 203 + 13 + 8 = 395; the exit code is the LOW
+        // BYTE, 395 mod 256 = 139 (was 374 → 118).
+        //
+        // 139 is also what `128 + SIGSEGV(11)` would render as, so this row and
+        // 33's are the two places the table could accidentally accept a crash.
+        // It cannot: a signal-killed child is reported by
+        // `every_example_runs_with_documented_exit` as `signal N` and never
+        // matches an allowed *exit* code (see the `Outcome` split below).
+        // Verified 2026-07-21 as a NORMAL exit(139) via `ExitStatus::code()`.
+        ("25-curry.cl", &[139]),
         ("26-functor.cl", &[91]),
         ("27-lazy-seq.cl", &[183]),
         ("28-parallel.cl", &[67]),
@@ -162,11 +180,15 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // counts = 6 → exit 6.
         ("32-concurrency-combinators.cl", &[6]),
         // 33: redefinition (batch-observable rebind semantics; S101 6b).
-        // Sum of sub-test pass counts = 136 — a normal exit(136), NOT a
-        // 128+signal encoding: `ExitStatus::code()` returns Some(136) for a
-        // normal exit, so the harness observes 136 directly (verified
-        // round-tripping through run_example at authoring, 2026-07-03).
-        ("33-redefinition.cl", &[136]),
+        // S115 6b added three pass=1 sub-tests for IMPL redefinition (a later
+        // `impl` replaces the earlier one; a dispatch site written before it
+        // rebinds; the rebind cascades a second layer): 6 + 18 + 112 + 1 + 1 + 1
+        // = 139 (was 136). No mod-256 wrap — the sum is already the exit code.
+        // A normal exit(139), NOT a 128+signal encoding: `ExitStatus::code()`
+        // returns Some(139) for a normal exit and `None` for a signal death, and
+        // the umbrella keeps the two in separate `Outcome` variants so a
+        // SIGSEGV can never satisfy this row (re-verified 2026-07-21).
+        ("33-redefinition.cl", &[139]),
         // 34: async-io platform-leaf demo (poll-shape reactor via the
         // `async-demo` DLL, built suite-wide by build-link-prereqs.sh; the
         // harness sets CRANELISP_PLATFORM_PATH=target/debug). main returns the
@@ -227,21 +249,13 @@ fn every_example_runs_with_documented_exit() {
          If a file was added or renamed, update expected_exits() in this test."
     );
 
-    let mut failures: Vec<(String, i32, &'static [i32], String)> = Vec::new();
+    let mut failures: Vec<(String, Outcome, &'static [i32], String)> = Vec::new();
     for (path, (name, allowed)) in files.iter().zip(expected.iter()) {
         let out = run_example(path);
-        // Normalise signal-killed status to 128 + signal so the table can
-        // list SIGTRAP/SIGPIPE etc. as integer values.
-        let code = match out.status.code() {
-            Some(c) => c,
-            None => match out.status.signal() {
-                Some(sig) => 128 + sig,
-                None => -1,
-            },
-        };
-        if !allowed.contains(&code) {
+        let outcome = Outcome::of(&out.status);
+        if !outcome.matches(allowed) {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            failures.push(((*name).to_string(), code, *allowed, stderr));
+            failures.push(((*name).to_string(), outcome, *allowed, stderr));
         }
     }
 
@@ -252,13 +266,58 @@ fn every_example_runs_with_documented_exit() {
         files.len(),
         failures
             .iter()
-            .map(|(name, code, allowed, err)| format!(
-                "  {name}: exit={code} (allowed {allowed:?}): {}",
+            .map(|(name, outcome, allowed, err)| format!(
+                "  {name}: {outcome} (allowed {allowed:?}): {}",
                 err.lines().next().unwrap_or("")
             ))
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// How a child process finished — **a normal exit and a signal death are
+/// distinct outcomes**, never collapsed onto one integer.
+///
+/// The exit code an example produces is `main`'s sum-of-pass-counts taken
+/// mod 256 (`spec/10-io.md §10`), so legitimate values reach into the
+/// `128..=255` band that a `128 + signal` normalisation also occupies —
+/// `25-curry` and `33-redefinition` both legitimately exit **139**, which is
+/// exactly what SIGSEGV would render as. Folding both into one `i32` (the
+/// pre-S115 shape) would have let a real segfault silently satisfy the table.
+/// `ExitStatus::code()` is `Some` only for a normal exit, so the distinction is
+/// available for free — this type just refuses to throw it away.
+#[derive(Debug, Clone, Copy)]
+enum Outcome {
+    Exit(i32),
+    Signal(i32),
+    Unknown,
+}
+
+impl Outcome {
+    fn of(status: &std::process::ExitStatus) -> Self {
+        match status.code() {
+            Some(c) => Outcome::Exit(c),
+            None => match status.signal() {
+                Some(sig) => Outcome::Signal(sig),
+                None => Outcome::Unknown,
+            },
+        }
+    }
+
+    /// Only a NORMAL exit can satisfy the table. A signal death never does.
+    fn matches(&self, allowed: &[i32]) -> bool {
+        matches!(self, Outcome::Exit(c) if allowed.contains(c))
+    }
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Exit(c) => write!(f, "exit={c}"),
+            Outcome::Signal(s) => write!(f, "killed by signal {s} (NOT an exit code)"),
+            Outcome::Unknown => write!(f, "terminated with neither an exit code nor a signal"),
+        }
+    }
 }
 
 // =============================================================================

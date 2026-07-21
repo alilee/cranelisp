@@ -207,7 +207,8 @@ fn option_none_exists() {
 }
 
 // =============================================================================
-// i. Macros: do, when
+// i. Macros: do, bind!
+// (the `when` cases live in section s — "Prelude macros: when")
 // =============================================================================
 
 // spec: spec/10-io.md §10.4 — do macro sequences IO actions, returns last
@@ -250,15 +251,6 @@ fn macro_bind_bang_sequential_reference() {
         "(import [primitives [Pure add-i64]]) \
          (bind! [x (Pure 5) y (Pure (add-i64 x x))] (Pure y))",
         ":primitives/Int 10",
-    );
-}
-
-// spec: spec/09-macros.md §9.5 — when macro with true condition (returns Some)
-#[test]
-fn macro_when_true() {
-    assert_repl_eval_contains(
-        "(match (when true (Some 42)) [(Some x) (= x 42) None false])",
-        ":primitives/Bool true",
     );
 }
 
@@ -458,20 +450,49 @@ fn macro_do_multi() {
 // s. Prelude macros: when
 // =============================================================================
 
-// spec: spec/09-macros.md §9.5 — when true returns body wrapped in Some
+// `when`/`unless` are prelude macros supplied by `stdlib/control.cl`; their
+// contract is the docstring "Conditional returning (Some body) when test
+// holds, else None" — the body is wrapped UNCONDITIONALLY, so the two `if`
+// branches unify at `(Option a)` for ANY body type `a`. Prior to S115 the
+// expansion was `(if ~test ~body None)` (no wrap), which only typechecked when
+// the body was ALREADY an Option; `(when true 5)` failed outright. The three
+// tests below pin the post-fix contract: a non-Option body (the regression
+// shape), the None branch, and an Option body (the wrap is not special-cased —
+// an already-`Some` body nests).
+//
+// Spec note: `when`/`unless` have no §9.10 entry of their own (§9.4.3's `when`
+// is a pedagogical `(if ~cond ~body 0)` example, NOT this macro), so these
+// tests cite §9.10 "Example Prelude Macros" as the nearest normative home.
+// FIXME 0841 (/qa) tracks the resulting traceability gap.
+
+// spec: spec/09-macros.md §9.10 — `when` with a true test wraps a non-Option
+// body in `Some` (the S115 regression shape).
 #[test]
-fn macro_when_true_some() {
+fn macro_when_true() {
     assert_repl_eval_contains(
-        "(match (when true (Some 42)) [(Some x) (= x 42) None false])",
+        "(match (when true 42) [(Some x) (= x 42) None false])",
         ":primitives/Bool true",
     );
 }
 
-// spec: spec/09-macros.md §9.5 — when false returns None
+// spec: spec/09-macros.md §9.10 — `when` with a false test yields `None`.
 #[test]
 fn macro_when_false_none() {
     assert_repl_eval_contains(
-        "(match (when false (Some 42)) [(Some _) false None true])",
+        "(match (when false 42) [(Some _) false None true])",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/09-macros.md §9.10 — the `Some` wrap is unconditional: a body that
+// is already an `Option` nests, giving `(Some (Some 42))`. (This is precisely
+// what the pre-S115 duplicate pair asserted the WRONG way round — it read the
+// outer `Some` as the body's own and expected `x : Int`.)
+#[test]
+fn macro_when_option_body_nests_the_wrap() {
+    assert_repl_eval_contains(
+        "(match (when true (Some 42)) \
+           [(Some inner) (match inner [(Some x) (= x 42) None false]) None false])",
         ":primitives/Bool true",
     );
 }
