@@ -80,3 +80,34 @@ Found during `/review` of `d3f0a223` (S115 W5b, cranelisp-frontend). All of the
 unfenced positions above were probed live at HEAD and behave correctly, so this
 blocks nothing — it is a guard gap against a future re-widening, exactly the
 mistake the design wrote a constraint to prevent.
+
+## /testing — the reference-column cells are COMMITTED (S115 W7)
+
+All four proposed cells landed in `tests/dotted_binder_reject_0702.rs`
+(new section at the foot of the file), GREEN at HEAD `99bd23a8`. This FIXME
+stays open because the disposition — whether the S115 matrix
+(`tests/plan/s115-test-plan.md` §4) records them, and whether the unit tier is
+the agreed home for the degenerate case — is `/qa`'s.
+
+| 0787 item | cell | shape |
+|---|---|---|
+| 1 (`core.io/pure`), `--run` | `dotted_module_half_in_qualified_reference_stays_legal_run_green` | `(mod util)` + `main.util/helper` call, `main.util/MkWid` ctor, AND `:main.util/Wid` in a param annotation — the position 0787 measured as e2e-unfenced |
+| 1 (`core.io/pure`), REPL | `dotted_module_half_in_qualified_reference_stays_legal_repl_green` | same reference in the REPL; additionally asserts the RENDERED type keeps the whole dotted home (`:user.util/Wid`), so a truncating splitter fails on display as well as on resolution |
+| 2 (`export`) | `dotted_module_path_in_export_stays_legal_green` | `(export [main.util [helper]])` — the twin of the already-fenced import direction |
+| 3 (alias form) | `dotted_module_alias_form_in_import_stays_legal_green` | `(import [(main.util u) [helper]])` |
+| 4 (degenerate) | `degenerate_dot_spellings_are_located_reader_errors_neg` | `a.` / `.b` / bare `.` are located READER errors ("parse error"), pinned e2e rather than left unit-only |
+
+**Discrimination.** These are structural over-reach controls: a
+`split_qualified_name` widened to split at `.` turns `main.util/helper` into
+module `main` / name `util/helper`, which resolves to nothing, so cells 1–2 fail
+on resolution AND (REPL) on the rendered home; cells 2–3 fail on the module-path
+half. No mutation proof was run — that requires editing
+`crates/cranelisp-frontend/`, outside `/testing`'s boundary. `/dev`(frontend) can
+confirm in one line at the next touch of that seam.
+
+**Not covered, and deliberately so.** `(import [(main.util u) [*]])` followed by
+an ALIAS-QUALIFIED reference `(u/helper)` fails at HEAD with
+`module 'u' referenced by 'u/...' not found`. That is an alias-resolution
+question, not a dotted-splitter question, and it is outside this FIXME's ask —
+recorded here so it is not mistaken for a gap in the cells above. `/qa` to route
+if it is a defect.

@@ -566,3 +566,145 @@ fn dotted_module_path_in_import_stays_legal_green() {
         .output()
         .assert_exit(99);
 }
+
+// =============================================================================
+// FIXME 0787 — the REFERENCE-column over-reach controls (`/qa`, S115 W7).
+//
+// `/review` found the S115 W5b over-reach fence set thinner than it read: 10 of
+// the 13 GREEN "controls" contain no `.` at all, so a coarse `name.contains('.')`
+// over-reach would have left every one of them green. Only 3 were genuine dotted-
+// REFERENCE fences, and NONE covered the hazard `design/frontend/binder-head-reject.md`
+// §2.2 constraint 1 names by name as the reason `split_qualified_name` must stay
+// `/`-only:
+//
+//     "Widening *it* to `.` would corrupt legitimate dotted references
+//      (`Maybe.Some`, `core.io/pure`)."
+//
+// `Maybe.Some` was fenced. `core.io/pure` — a qualified reference whose MODULE
+// HALF is dotted — was not, in either tier: nothing in the suite would have gone
+// RED if `split_qualified_name` were widened to split at `.`, turning
+// `platform.stdio/print` into module `platform` / name `stdio/print`.
+//
+// The cells below are that column. All were probe-verified correct at HEAD
+// `99bd23a8` — this is a standing guard against a future re-widening, not a live
+// defect. Stdlib-free: the dotted module half is a `(mod util)` submodule, so the
+// shape is `main.util/helper`, structurally identical to `core.io/pure`.
+// =============================================================================
+
+// The named hazard, `--run`: a qualified reference whose MODULE half is dotted
+// must keep the module half INTACT — in call position, in ctor position, and in a
+// type ANNOTATION (the position 0787 measured as e2e-unfenced, unit-pinned only).
+// A `.`-widened `split_qualified_name` splits `main.util/helper` at the dot and
+// looks for `helper` — or `util/helper` — in module `main`, and every one of
+// these three fails.
+// spec: spec/08-modules.md §8.5 — a qualified reference names module + symbol; the
+// module half may be a dotted path.
+#[test]
+fn dotted_module_half_in_qualified_reference_stays_legal_run_green() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(mod util)\n\
+             (defn width [:main.util/Wid w] 7)\n\
+             (defn main [] (Pure (add-i64 (main.util/helper) (width (main.util/MkWid 1)))))",
+        )
+        .file(
+            "main/util.cl",
+            "(deftype Wid (MkWid [:Int n]))\n(defn helper [] 92)",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// The named hazard, REPL — the mode twin. Beyond resolving, the rendered TYPE must
+// still carry the whole dotted module half (`:user.util/Wid`): a splitter widened
+// to `.` would render (or resolve) a truncated `user/…` home, which is the exact
+// corruption the design constraint forbids.
+// spec: spec/08-modules.md §8.5 — a qualified reference names module + symbol; the
+// module half may be a dotted path.
+#[test]
+fn dotted_module_half_in_qualified_reference_stays_legal_repl_green() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "user/util.cl",
+            "(deftype Wid (MkWid [:Int n]))\n(defn helper [] 99)",
+        )
+        .stdin("(mod util)\n(user.util/helper)\n(user.util/MkWid 3)\n")
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        c.contains(":primitives/Int 99"),
+        "a qualified reference with a DOTTED MODULE HALF (`user.util/helper`) MUST \
+         resolve in the REPL; got:\n{c}"
+    );
+    assert!(
+        c.contains(":user.util/Wid"),
+        "the rendered type MUST keep the whole dotted module half \
+         (`:user.util/Wid`) — a truncated home is the `split_qualified_name`-\
+         widened-to-`.` corruption the design constraint forbids; got:\n{c}"
+    );
+}
+
+// The `export` twin of the fenced `import` cell (0787 item 2): a dotted module
+// path is a legal reference in `export` too. The import direction was fenced and
+// the export direction was not — a per-direction guard is how one direction grows
+// its own path.
+// spec: spec/08-modules.md §8.4 — export re-exports names from a named module; the
+// module path may be dotted.
+#[test]
+fn dotted_module_path_in_export_stays_legal_green() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(mod util)\n(export [main.util [helper]])\n\
+             (defn main [] (Pure (helper)))",
+        )
+        .file("main/util.cl", "(defn helper [] 99)")
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// The `(dotted.module alias)` positive alias form (0787 item 3): the dotted path
+// sits inside the alias pair, a shape neither the plain-import fence nor the
+// reject twin (`io.x`) covers.
+// spec: spec/08-modules.md §8.3 — import supports a `(module alias)` pair; the
+// module half may be a dotted path.
+#[test]
+fn dotted_module_alias_form_in_import_stays_legal_green() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(mod util)\n(import [(main.util u) [helper]])\n\
+             (defn main [] (Pure (helper)))",
+        )
+        .file("main/util.cl", "(defn helper [] 99)")
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// 0787 item 4 — the DEGENERATE `.` spellings (`a.`, `.b`, bare `.`), the
+// Principle-16 twin of a bare `/`. These are not qualified references at all and
+// are rejected by the READER, before any binder or splitter sees them. Pinned e2e
+// here (0787 recorded the coverage as unit-only) so the tier that would notice a
+// splitter change noticing them FIRST is the tier that says so.
+// spec: spec/02-syntax.md §2.2 — symbols; a trailing/leading/bare `.` is not a
+// well-formed symbol.
+#[test]
+fn degenerate_dot_spellings_are_located_reader_errors_neg() {
+    for src in ["(defn a. [x] x)\n", "(defn .b [x] x)\n", "(defn . [x] x)\n"] {
+        let out = repl_prims(src);
+        let c = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            c.contains("parse error"),
+            "the degenerate spelling `{src}` MUST be a located READER error — it is \
+             not a qualified reference and must never reach the binder/splitter \
+             line; got:\n{c}"
+        );
+    }
+}
