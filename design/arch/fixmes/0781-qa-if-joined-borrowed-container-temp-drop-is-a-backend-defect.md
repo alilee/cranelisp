@@ -102,6 +102,32 @@ For `/qa`:
    i.e. route it through the existing `is_fresh_construction` family rather than
    adding a second `matches!` list (which is the duplication that produced this).
 
+## Status — the BACKEND half is DONE (S115 W4c, `/dev`); this FIXME now carries only the `/qa` half
+
+The fix landed: all five ownership gates in the two seams now read ONE derived
+answer, `fn_compiler::value_provenance` (lattice `Fresh ⊑ OwnedTemporary ⊑
+NotOwnedHere`), at two thresholds — `is_fresh_construction` = `== Fresh`,
+`yields_owned_temporary` = `!= NotOwnedHere`. `is_fresh_construction` is now
+literally the `== Fresh` face of the same exhaustive classification, so the
+resolution is item 3 of the proposal exactly: routed onto the existing family,
+no second `matches!` list. Both `let`-mediated cells are GREEN; Q3/Q1 and the
+three `match_codegen` faces verified clean by direct `--link` probe; suite
+5306/5282/24/1 (26 − 2, exact).
+
+**What `/qa` still owes** (nothing blocks on it; the defect is closed by
+behaviour):
+
+1. the `defect:` re-attribution on the two `let`-mediated cells (item 1) — now
+   also stale in the *other* direction: the cells are GREEN, so their notation
+   should become the resolution record rather than a locus pointer;
+2. the Q3 / Q1 cells + their Q2 / Q4 negative controls (item 2) — still worth
+   landing as the one-line COW-free faces, now as GREEN regression guards
+   rather than triggers;
+3. matrix placement for the three `match_codegen` faces the fix also closed
+   (`(match (if b v v) [xs (vec-get xs 0)])`, its `let`-yielding twin, and the
+   ADT-pattern twin) — measured 134 before, 9 after; unit-pinned in-crate at
+   `compiler/match_codegen/scrutinee_ownership_tests.rs`, no e2e cell yet.
+
 ## Context
 
 - FIXME 0772 (`target: /dev`, resolved S115 W4b) — the `join_origin` arm-order

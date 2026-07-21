@@ -166,12 +166,19 @@ where
         // Record type for RC management.
         self.variable_types.insert(name.clone(), scrutinee.ty().to_type());
 
-        // P7 fix: Only register the alias in scope_stack for RC cleanup
-        // when the scrutinee is NOT an existing variable. When the scrutinee
-        // IS a variable, the original variable's owning scope will dec it.
-        // Registering the alias would cause a double-dec: once for the
-        // alias's scope exit, and once for the original variable's scope exit.
-        let is_alias = matches!(scrutinee, MonoExpr::Var { .. });
+        // P7 fix: Only register the alias in scope_stack for RC cleanup when
+        // this frame OWNS the scrutinee's value. When the scrutinee is a scope
+        // binding — or a join / `let` that merely YIELDS one — its owning scope
+        // decs it, and registering the alias would double-dec: once for the
+        // alias's scope exit, once for the owner's.
+        //
+        // FIXME 0781: this was `matches!(scrutinee, MonoExpr::Var { .. })` — the
+        // same syntactic shape test as the vec seams, with the same consequence.
+        // `(defn f [v b] (match (if b v v) [xs (vec-get xs 0)]))` aborted 134
+        // under `--link`. Kept an EXACT complement of `dec_temporary_scrutinee`'s
+        // test (registering for cleanup and dec'ing as a temporary are the same
+        // reference released twice).
+        let is_alias = !crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
         if !is_alias {
             self.scope_stack
                 .last_mut()
@@ -202,14 +209,21 @@ where
 
     /// Emit rc_dec for the scrutinee if it is a heap-typed temporary.
     ///
-    /// Variable references are dec'd by their owning scope -- only
-    /// temporaries (non-Var expressions) need dec here.
+    /// A value with an owner elsewhere — a scope binding, or a join / `let`
+    /// that merely YIELDS one — is dec'd by that owner; only a value THIS frame
+    /// owns is released here (`fn_compiler::yields_owned_temporary`, the exact
+    /// complement of `compile_var_pattern_arm`'s `is_alias`).
+    ///
+    /// FIXME 0781: this was `!matches!(scrutinee, MonoExpr::Var { .. })` — the
+    /// node kind standing in for the derived answer, so an `If`/`Match`/`Let`
+    /// yielding a borrowed param was released here as well as by its owner
+    /// (`--link` exit 134).
     ///
     /// ADT field cleanup is done inside the dealloc path (RC=0) via
     /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
     /// This prevents double-free when fields are borrowed by pattern bindings.
     fn dec_temporary_scrutinee(&mut self, scrutinee: &MonoExpr, scrut_val: Value) {
-        let is_temp = !matches!(scrutinee, MonoExpr::Var { .. });
+        let is_temp = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
         if is_temp {
                 let scrut_ty = scrutinee.ty().to_type();
                 let category = HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables));
@@ -721,6 +735,11 @@ where
         Ok(())
     }
 }
+
+/// S115 W4c / FIXME 0781 — the scrutinee-ownership gate (provenance, not node
+/// kind) and its discriminating control.
+#[cfg(test)]
+mod scrutinee_ownership_tests;
 
 #[cfg(test)]
 mod tests {

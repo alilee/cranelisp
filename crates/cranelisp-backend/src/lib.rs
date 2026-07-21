@@ -1683,3 +1683,9 @@ mod module_assembly_tests;
 // (S111 R4 §1.2).
 #[cfg(test)]
 mod got_slab_tests;
+
+// Standing structural fence for the "syntactic node-kind test standing in for
+// the derived answer" class (S115 W4c, FIXME 0781). Cross-module by nature —
+// it scans the RC-decision file set — so it lives at the crate root.
+#[cfg(test)]
+mod rc_ownership_fence_tests;

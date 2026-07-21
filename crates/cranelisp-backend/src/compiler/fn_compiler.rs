@@ -1915,60 +1915,150 @@ pub(crate) fn is_fresh_construction(
     body: &MonoExpr,
     is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
 ) -> bool {
-    match body {
-        // The box-MINTING node kinds: each unconditionally allocates a brand-new
-        // box in its own lowering, so none can alias a scope binding.
+    value_provenance(body, is_ctor) == ValueProvenance::Fresh
+}
+
+/// Who owns the reference the value of a `MonoExpr` node carries — the ONE
+/// derived answer behind every "is this expression's value mine to release?"
+/// RC gate (S115 W4c; FIXME 0781).
+///
+/// A three-point lattice, ordered `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere`
+/// (weaker = later). [`ValueProvenance::join`] is the max, so a control-flow
+/// join is exactly as strong as its weakest arm.
+///
+/// Two consumers read it at two different THRESHOLDS, which is why the answer
+/// is one function and the predicates are two:
+///
+/// | Consumer | Threshold | Why that threshold |
+/// |---|---|---|
+/// | [`is_fresh_construction`] (return-protect elision) | `== Fresh` | eliding the protect needs the STRONG claim "cannot alias any scope binding"; a call result may hand back its own argument (`(id x)`) |
+/// | [`yields_owned_temporary`] (temporary-release gates) | `!= NotOwnedHere` | releasing needs only "this frame holds a reference nothing else will release"; a call result IS such a reference by the Decision-24 owned-return ABI |
+///
+/// The class this closes: **a syntactic node-kind test standing in for the
+/// derived answer.** `emit_vec_drop_if_temporary` asked
+/// `matches!(e, MonoExpr::Var { .. })` and released everything else, so an
+/// `If`/`Match`/`Let` that merely YIELDS a borrowed param or a scope binding
+/// took the release path and dec'd a box the enclosing scope still owns —
+/// `(defn f [v b] (vec-get (if b v v) 0))` aborted 134 under `--link`. The
+/// node kind is not the question; the value's provenance is, and it FORWARDS
+/// through binding indirection and control-flow joins exactly as freshness
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ValueProvenance {
+    /// A brand-new box minted by this node's own lowering. Cannot alias any
+    /// scope binding, so it is both owned here AND safe to elide a protect on.
+    Fresh,
+    /// A reference this frame owns but cannot prove unaliased — a call result
+    /// (the callee hands back an owned reference: it either minted the box or
+    /// materialised its returned projection with a protect inc, per
+    /// [`return_is_fresh_by_summary`]'s consumer contract). Release it as a
+    /// temporary; do NOT elide a protect on it.
+    OwnedTemporary,
+    /// Not this frame's reference to release: a scope binding (whose own scope
+    /// cleanup decs it), a non-heap scalar (no reference at all), or a join
+    /// with any such arm. The conservative ⊤ — both consumers take their
+    /// SAFE action here (protect kept; no release ⇒ leak-safe, never UAF).
+    NotOwnedHere,
+}
+
+impl ValueProvenance {
+    /// Lattice join — the weaker (later) of two points. A control-flow join
+    /// yields a value that is only as strongly owned as its weakest arm.
+    fn join(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+/// Classify the provenance of the value `expr` yields — the single source of
+/// truth for both RC ownership thresholds (see [`ValueProvenance`]).
+///
+/// `is_ctor` is the constructor probe; it is the ONLY context-dependent part,
+/// and it refines `Fresh` vs `OwnedTemporary` ONLY — never the
+/// owned/not-owned threshold (pinned by
+/// `provenance_owned_threshold_is_probe_independent`).
+///
+/// The match is **EXHAUSTIVE, deliberately (no `_ =>`)** — the standing
+/// instrument for this family. A new `MonoExpr` variant swept into a catch-all
+/// silently acquires one of the two wrong answers: a minting kind classified
+/// `NotOwnedHere` leaks (the 0749 shape), and a borrowing kind classified
+/// `OwnedTemporary` is a use-after-free (the 0781 shape). It must be
+/// classified here on purpose.
+pub(crate) fn value_provenance(
+    expr: &MonoExpr,
+    is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
+) -> ValueProvenance {
+    use ValueProvenance::{Fresh, NotOwnedHere, OwnedTemporary};
+    match expr {
+        // The box-MINTING node kinds: each unconditionally allocates a
+        // brand-new box in its own lowering, so none can alias a scope binding.
         MonoExpr::ConstrADT { .. }
         | MonoExpr::Lambda { .. }
         | MonoExpr::StringLit { .. }
-        | MonoExpr::VecLit { .. } => true,
-        // An `Apply` is fresh iff its RESOLUTION CARRIER says it mints a box:
+        | MonoExpr::VecLit { .. } => Fresh,
+        // An `Apply` is FRESH iff its RESOLUTION CARRIER says it mints a box:
         // a constructor call, or an auto-curry (whose lowering
         // `compile_auto_curry` allocates a fresh curry env on every arm). Any
-        // other call may RETURN an aliased argument (`(id x)`), so it is not
+        // other call may RETURN an aliased argument (`(id x)`) so it is not
         // fresh — the identity comes from the carrier, never the callee's
-        // spelling or shape (Principle 24).
+        // spelling or shape (Principle 24). It is still OWNED: the
+        // Decision-24 ABI hands the caller an owned reference on every return
+        // path, which is exactly what the temporary-release gates consume.
         MonoExpr::Apply { callee, resolved_call, .. } => {
             if matches!(
                 resolved_call.as_deref(),
                 Some(cranelisp_types::ResolvedCall::AutoCurry { .. })
             ) {
-                return true;
+                return Fresh;
             }
             match callee.as_ref() {
-                MonoExpr::Var { resolution: VarRef::Global(fq), .. } => is_ctor(fq),
-                _ => false,
+                MonoExpr::Var { resolution: VarRef::Global(fq), .. } if is_ctor(fq) => Fresh,
+                _ => OwnedTemporary,
             }
         }
-        MonoExpr::Let { body, .. } => is_fresh_construction(body, is_ctor),
-        MonoExpr::If { then_branch, else_branch, .. } => {
-            is_fresh_construction(then_branch, is_ctor)
-                && is_fresh_construction(else_branch, is_ctor)
+        // Binding indirection and control-flow joins FORWARD provenance, so
+        // both thresholds are SCALE-INVARIANT in `let` depth and correct on
+        // mixed arms (a join is its weakest arm — one borrowing arm makes the
+        // whole join borrowing, which is what cures 0781).
+        MonoExpr::Let { body, .. } => value_provenance(body, is_ctor),
+        MonoExpr::If { then_branch, else_branch, .. } => value_provenance(then_branch, is_ctor)
+            .join(value_provenance(else_branch, is_ctor)),
+        // An arm-less `Match` yields no value on any path; ⊤ is the only safe
+        // reading (an empty `all()` would read as `Fresh`).
+        MonoExpr::Match { arms, .. } if arms.is_empty() => NotOwnedHere,
+        MonoExpr::Match { arms, .. } => arms
+            .iter()
+            .map(|arm| value_provenance(&arm.body, is_ctor))
+            .fold(Fresh, ValueProvenance::join),
+        // `Trace` forwards its inner value; `ParBind`/`LaunchContinue` yield a
+        // joined/continued value. All three FORWARD the borrowing direction
+        // (so `(vec-get (trace v) 0)` no longer releases a binding) but are
+        // CAPPED at `OwnedTemporary` — the fresh claim is not this frame's to
+        // make through a spark join or a trace wrapper, and capping keeps
+        // `is_fresh_construction` byte-identical to its pre-0781 answers on
+        // these kinds.
+        MonoExpr::Trace { body, .. } => value_provenance(body, is_ctor).join(OwnedTemporary),
+        MonoExpr::ParBind { body, .. } => value_provenance(body, is_ctor).join(OwnedTemporary),
+        MonoExpr::LaunchContinue { continuation, .. } => {
+            value_provenance(continuation, is_ctor).join(OwnedTemporary)
         }
-        MonoExpr::Match { arms, .. } => {
-            !arms.is_empty() && arms.iter().all(|arm| is_fresh_construction(&arm.body, is_ctor))
-        }
-        // EXHAUSTIVE, deliberately (no `_ =>`) — the standing instrument for
-        // this predicate. The 0749 leak was a node kind that MINTS a box being
-        // silently swept into a catch-all "not fresh", which emits a protect
-        // inc no dec can balance. A new `MonoExpr` variant must now be
-        // classified here explicitly rather than defaulting to a leak.
-        //
-        // Not fresh, each for its own reason:
-        //  - `Var` IS a scope binding (the exact thing the protect exists for);
-        //  - scalar literals are never heap, so the protect is a no-op anyway;
-        //  - `Trace` forwards its inner expression's value — it may be a
-        //    binding;
-        //  - `ParBind` / `LaunchContinue` yield a joined/continued value whose
-        //    provenance is not this frame's to claim.
+        // `Var` IS a scope binding — the exact thing both gates must not
+        // claim. Scalar literals carry no reference at all.
         MonoExpr::Var { .. }
         | MonoExpr::IntLit { .. }
         | MonoExpr::FloatLit { .. }
-        | MonoExpr::BoolLit { .. }
-        | MonoExpr::Trace { .. }
-        | MonoExpr::ParBind { .. }
-        | MonoExpr::LaunchContinue { .. } => false,
+        | MonoExpr::BoolLit { .. } => NotOwnedHere,
     }
+}
+
+/// Does `expr` yield a reference THIS frame owns and nothing else will
+/// release — the temporary-release threshold (see [`ValueProvenance`])?
+///
+/// Probe-INDEPENDENT: the constructor probe only separates `Fresh` from
+/// `OwnedTemporary`, and both are owned, so this threshold needs no
+/// symbol-table access. Pinned by
+/// `provenance_owned_threshold_is_probe_independent`.
+pub(crate) fn yields_owned_temporary(expr: &MonoExpr) -> bool {
+    value_provenance(expr, &|_| false) != ValueProvenance::NotOwnedHere
 }
 
 /// The authoritative per-position parameter types of `defn`, read from the
@@ -3184,7 +3274,10 @@ mod rc_release_sweep_tests {
     //!    `Borrowed` heap params the frame must own across a TCO back-edge, the
     //!    toggle-ON half of FIXME 0720.
 
-    use super::{is_fresh_construction, self_call_supersedes_param, tail_arg_supersedes_param};
+    use super::{
+        is_fresh_construction, self_call_supersedes_param, tail_arg_supersedes_param,
+        value_provenance, yields_owned_temporary, ValueProvenance,
+    };
     use cranelisp_types::{
         ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
         VarRef,
@@ -3475,6 +3568,141 @@ mod rc_release_sweep_tests {
             &match_of(var("g"), vec![lambda(), var("v")]),
             &is_ctor
         ));
+    }
+
+    // ---- 1c. the provenance lattice + the release threshold (FIXME 0781) ---
+    //
+    // The class: a syntactic node-kind test standing in for the derived answer.
+    // `emit_vec_drop_if_temporary` / `is_vec_last_use` /
+    // `cow_source_has_separate_owner` each asked
+    // `matches!(e, MonoExpr::Var { .. })` and treated everything else as this
+    // frame's to release/transfer, so an `If`/`Match`/`Let` merely YIELDING a
+    // borrowed param or a scope binding took the owned path and dec'd (or
+    // mutated in place) a vector the enclosing scope still owned —
+    // `(defn f [v b] (vec-get (if b v v) 0))` aborted 134 under `--link`.
+    // Both thresholds now read ONE derived answer, `value_provenance`.
+
+    fn trace_of(body: MonoExpr) -> MonoExpr {
+        MonoExpr::Trace {
+            modules: vec![],
+            body: Box::new(body),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    // spec: design/arch/ownership-inference.md §2.1 (monotone soundness) /
+    // FIXME 0781 — the release threshold is the value's PROVENANCE, not the
+    // node kind. A `Var` is a scope binding (its own cleanup decs it); an
+    // owned temporary is this frame's to release.
+    #[test]
+    fn owned_temporary_threshold_separates_bindings_from_temporaries() {
+        // Not ours: a binding, and a scalar carrying no reference at all.
+        assert!(!yields_owned_temporary(&var("v")));
+        assert!(!yields_owned_temporary(&MonoExpr::IntLit {
+            value: 1,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        }));
+        // Ours: every minting kind, and a call result (owned-return ABI).
+        assert!(yields_owned_temporary(&vec_lit()));
+        assert!(yields_owned_temporary(&lambda()));
+        assert!(yields_owned_temporary(&string_lit()));
+        assert!(yields_owned_temporary(&ctor_adt()));
+        assert!(yields_owned_temporary(&apply(global_var("user", "mk"), vec![])));
+    }
+
+    // spec: FIXME 0781 (the DEFECT cell, NEGATIVE) — the join that aborted. An
+    // `If`/`Match` with any borrowing arm, and a `Let` yielding a binding, are
+    // NOT this frame's to release. Reverting `emit_vec_drop_if_temporary` to
+    // the `matches!(.., MonoExpr::Var { .. })` shape test flips this RED.
+    #[test]
+    fn a_join_or_let_yielding_a_binding_is_not_ours_to_release_neg() {
+        let if_borrowed = MonoExpr::If {
+            cond: Box::new(var("c")),
+            then_branch: Box::new(var("v")),
+            else_branch: Box::new(var("v")),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(!yields_owned_temporary(&if_borrowed));
+        // Q1's shape: a FRESH vector bound by `let`, joined by its own name.
+        let if_binding = MonoExpr::If {
+            cond: Box::new(var("c")),
+            then_branch: Box::new(var("w")),
+            else_branch: Box::new(var("w")),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(!yields_owned_temporary(&let_of(if_binding)));
+        assert!(!yields_owned_temporary(&let_of(var("w"))));
+        assert!(!yields_owned_temporary(&match_of(var("g"), vec![var("v")])));
+        // MIXED arms take the weakest point — one borrowing arm poisons the
+        // join, exactly as for freshness. This is the UAF direction.
+        assert!(!yields_owned_temporary(&match_of(var("g"), vec![vec_lit(), var("v")])));
+        assert!(!yields_owned_temporary(&match_of(var("g"), vec![var("v"), vec_lit()])));
+        // An arm-less match yields nothing to release.
+        assert!(!yields_owned_temporary(&match_of(var("g"), vec![])));
+    }
+
+    // spec: FIXME 0781 — the two thresholds read ONE lattice at two heights. A
+    // general `Apply` is the DISCRIMINATING cell: owned (release it) but not
+    // fresh (keep its protect). Were they one threshold, either every call
+    // result would leak or every call result would lose its protect.
+    #[test]
+    fn the_two_thresholds_differ_exactly_at_a_general_apply() {
+        let call = apply(global_var("user", "id"), vec![var("x")]);
+        assert_eq!(value_provenance(&call, &is_ctor), ValueProvenance::OwnedTemporary);
+        assert!(yields_owned_temporary(&call));
+        assert!(!is_fresh_construction(&call, &is_ctor));
+        // ...and they agree at both ends of the lattice.
+        assert_eq!(value_provenance(&ctor_adt(), &is_ctor), ValueProvenance::Fresh);
+        assert_eq!(value_provenance(&var("v"), &is_ctor), ValueProvenance::NotOwnedHere);
+    }
+
+    // spec: FIXME 0781 — `Trace`/`ParBind`/`LaunchContinue` FORWARD the
+    // borrowing direction (so a wrapped binding is not released) but are CAPPED
+    // at `OwnedTemporary`, which keeps `is_fresh_construction` byte-identical
+    // to its pre-0781 answers on these kinds.
+    #[test]
+    fn wrapper_kinds_forward_borrowing_but_never_claim_freshness() {
+        assert!(!yields_owned_temporary(&trace_of(var("v"))));
+        assert!(yields_owned_temporary(&trace_of(vec_lit())));
+        assert!(!is_fresh_construction(&trace_of(ctor_adt()), &is_ctor));
+        let par = MonoExpr::ParBind {
+            bindings: vec![(Symbol::from("a"), var("t"))],
+            body: Box::new(var("v")),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(!yields_owned_temporary(&par));
+        assert!(!is_fresh_construction(&par, &is_ctor));
+    }
+
+    // spec: FIXME 0781 — the ctor probe refines `Fresh` vs `OwnedTemporary`
+    // ONLY; it can never move a node across the owned/not-owned threshold. That
+    // is what licenses `yields_owned_temporary` to answer without symbol-table
+    // access, so the three vec seams need no `&self`.
+    #[test]
+    fn provenance_owned_threshold_is_probe_independent() {
+        let nodes = [
+            var("v"),
+            vec_lit(),
+            ctor_adt(),
+            apply(global_var("user", "Gr"), vec![var("c")]),
+            apply(global_var("user", "id"), vec![var("x")]),
+            let_of(var("w")),
+            match_of(var("g"), vec![vec_lit(), var("v")]),
+            trace_of(var("v")),
+        ];
+        for node in &nodes {
+            let hits_all = value_provenance(node, &|_| true) != ValueProvenance::NotOwnedHere;
+            let hits_none = value_provenance(node, &|_| false) != ValueProvenance::NotOwnedHere;
+            assert_eq!(
+                hits_all, hits_none,
+                "the ctor probe must not move a node across the owned threshold: {node:?}"
+            );
+        }
     }
 
     // ---- 2. TCO borrowed-param promotion trigger ---------------------------

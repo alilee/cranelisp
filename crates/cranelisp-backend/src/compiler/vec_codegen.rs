@@ -171,21 +171,33 @@ pub(crate) fn is_cow_vec_op(name: &str) -> bool {
     matches!(name, "vec-set" | "vec-push")
 }
 
-/// Is this COW source a value with a **separate owner** — i.e. a `Var` (a scope
-/// binding that will be scope-dec'd independently, unlike a fresh producing
-/// temporary whose sole reference transfers) that is NOT the function's
-/// return-COW-source (whose copy branch releases it itself)?
+/// Is this COW source a value with a **separate owner** — one that will be
+/// released independently of this site (a scope binding, or a join yielding
+/// one), unlike an owned temporary whose sole reference transfers here — and
+/// that is NOT the function's return-COW-source (whose copy branch releases it
+/// itself)?
 ///
 /// The ONE shape test behind both toggle faces (FIXME 0752): analysis-ON it is
 /// the `Borrowed` classification ([`cow_source_is_borrowed`]); analysis-OFF it
 /// is the R14 force-count condition
 /// (`FnCompiler::cow_source_needs_toggle_off_count`). Same concept, inverted
 /// toggle — one body.
+///
+/// **FIXME 0781** replaced the `matches!(source, MonoExpr::Var { .. })` shape
+/// test with the derived provenance answer
+/// (`fn_compiler::yields_owned_temporary`). The two agree on every `Var` and
+/// every directly-minting/calling node; they differ exactly where the class of
+/// defect lived — an `If`/`Match`/`Let` that YIELDS a binding, which the shape
+/// test classified `Owned` so the COW copy branch released a vector the
+/// enclosing scope still owned.
 pub(crate) fn cow_source_has_separate_owner(
     source: &MonoExpr,
     return_cow_source: Option<&Symbol>,
 ) -> bool {
-    matches!(source, MonoExpr::Var { name, .. } if return_cow_source != Some(name))
+    if matches!(source, MonoExpr::Var { name, .. } if return_cow_source == Some(name)) {
+        return false;
+    }
+    !crate::compiler::fn_compiler::yields_owned_temporary(source)
 }
 
 /// Is this COW source classified `Borrowed` (as opposed to `Owned`)? The
@@ -651,12 +663,19 @@ where
     }
 
     /// Check if a Vec expression is at its last use (for COW eligibility).
+    ///
+    /// A non-`Var` expression is treated as unique ONLY when its value is this
+    /// frame's to transfer (`fn_compiler::yields_owned_temporary`). The node
+    /// kind is not the question: an `If`/`Match`/`Let` YIELDING a scope binding
+    /// is not a `Var`, and the old unconditional `true` claimed uniqueness for
+    /// a vector the enclosing scope still owns (FIXME 0781, the sibling of the
+    /// `emit_vec_drop_if_temporary` shape test —
+    /// `(let [w (vec-set (if b v v) 0 7)] (vec-get w 0))`, `--link` 134).
     fn is_vec_last_use(&self, vec_expr: &MonoExpr) -> bool {
         if let MonoExpr::Var { name, span, .. } = vec_expr {
             self.is_last_use(name, *span)
         } else {
-            // Temporary expression: ownership transfers, treat as unique.
-            true
+            crate::compiler::fn_compiler::yields_owned_temporary(vec_expr)
         }
     }
 
@@ -681,8 +700,13 @@ where
         vec_val: Value,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Named variables are handled by scope cleanup — skip.
-        if matches!(vec_expr, MonoExpr::Var { .. }) {
+        // Release ONLY what this frame owns. The question is the value's
+        // PROVENANCE (`fn_compiler::yields_owned_temporary`), never the node
+        // kind: an `If`/`Match`/`Let` that merely YIELDS a scope binding is not
+        // a `Var`, and the old `matches!(vec_expr, MonoExpr::Var { .. })` shape
+        // test therefore dec'd a box the enclosing scope still owns
+        // (FIXME 0781 — `(defn f [v b] (vec-get (if b v v) 0))`, `--link` 134).
+        if !crate::compiler::fn_compiler::yields_owned_temporary(vec_expr) {
             return Ok(());
         }
 
