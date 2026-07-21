@@ -16,6 +16,89 @@ use crate::heap::{self, HeapCategory, RcAtomicity};
 
 use super::{CtorMeta, FnCompiler};
 
+/// Release a CLOSURE box through its **embedded** `DROP_GLUE_PTR` — the
+/// borrowed-builder body of [`FnCompiler::emit_closure_dec_inline`].
+///
+/// A closure box OWNS its captures, and the only thing that knows how to
+/// release them is the glue pointer the allocating site stored in the box: a
+/// bare `heap::emit_rc_dec(.., None)` frees the box and STRANDS everything
+/// under it. Emission: `atomic dec` → on rc→0 `fence`, load
+/// `DROP_GLUE_PTR`, `call_indirect` it when non-zero, then `dealloc`.
+///
+/// Free-fn form because the two capture drop-glue mirrors build their bodies in
+/// a SEPARATE Cranelift context, not `self.builder` (the `emit_capture_inc_into`
+/// precedent). One body, two callers (Principle 7).
+pub(crate) fn emit_closure_dec_into<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    closure_val: Value,
+    dealloc_id: FuncId,
+) {
+    use crate::heap::HeapClosure;
+    use cranelift_codegen::ir::AtomicRmwOp;
+    use cranelisp_types::HeapHeader;
+
+    let cont_block = builder.create_block();
+
+    // Decrement RC.
+    let rc_addr = builder
+        .ins()
+        .iadd_imm(closure_val, i64::from(HeapHeader::RC_OFFSET));
+    let one = builder.ins().iconst(types::I64, 1);
+    let old_rc = builder.ins().atomic_rmw(
+        types::I64,
+        MemFlags::trusted(),
+        AtomicRmwOp::Sub,
+        rc_addr,
+        one,
+    );
+
+    // Branch: if old_rc == 1, free the closure.
+    let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);
+    let free_block = builder.create_block();
+    builder.ins().brif(cmp, free_block, &[], cont_block, &[]);
+
+    // Free path.
+    builder.switch_to_block(free_block);
+    builder.seal_block(free_block);
+    builder.ins().fence();
+
+    // Load drop_glue_ptr from the closure.
+    let drop_glue_ptr = heap::heap_load(builder, closure_val, HeapClosure::DROP_GLUE_PTR_OFFSET);
+
+    // If drop_glue_ptr != 0, call it.
+    let zero = builder.ins().iconst(types::I64, 0);
+    let has_glue = builder.ins().icmp(IntCC::NotEqual, drop_glue_ptr, zero);
+    let glue_block = builder.create_block();
+    let dealloc_block = builder.create_block();
+    builder
+        .ins()
+        .brif(has_glue, glue_block, &[], dealloc_block, &[]);
+
+    // Call drop glue: (closure_ptr: i64) -> ()
+    builder.switch_to_block(glue_block);
+    builder.seal_block(glue_block);
+
+    let mut glue_sig = module.make_signature();
+    glue_sig.params.push(AbiParam::new(types::I64));
+    let glue_sig_ref = builder.import_signature(glue_sig);
+    builder
+        .ins()
+        .call_indirect(glue_sig_ref, drop_glue_ptr, &[closure_val]);
+    builder.ins().jump(dealloc_block, &[]);
+
+    // Dealloc the closure.
+    builder.switch_to_block(dealloc_block);
+    builder.seal_block(dealloc_block);
+    let dealloc_ref = module.declare_func_in_func(dealloc_id, builder.func);
+    builder.ins().call(dealloc_ref, &[closure_val]);
+    builder.ins().jump(cont_block, &[]);
+
+    // Continue.
+    builder.switch_to_block(cont_block);
+    builder.seal_block(cont_block);
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -203,65 +286,74 @@ where
             let resolved_ty = substitute_type_inline(&field.ty, subst);
             let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
-                HeapCategory::AlwaysHeap => {
+                HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
                     let field_val = heap::heap_load(
                         &mut self.builder,
                         adt_val,
                         HeapAdt::field_offset(i),
                     );
-                    // Vec-typed fields must route through vec_drop, not
-                    // dealloc — otherwise elements and the data buffer leak.
-                    if let Some(elem_ty) =
-                        crate::compiler::vec_codegen::vec_element_type(&resolved_ty)
-                    {
-                        let elem_ty = elem_ty.clone();
-                        // span not readily available here; use a synthetic span.
-                        let span = cranelisp_types::Span::new(0, 0);
-                        // Failing here is a backend-setup invariant breach
-                        // (vec_drop must be declared whenever Vec types are
-                        // in play). Swallow the Result rather than propagate
-                        // — emit_field_decs is infallible by signature.
-                        let _ = self.emit_vec_aware_rc_dec(field_val, &elem_ty, span, RcAtomicity::Atomic);
-                    } else if matches!(resolved_ty, Type::ADT(_, _)) {
-                        // For ADT-typed fields, recursively handle nested field cleanup.
-                        self.emit_rc_dec_with_inline_drop_glue(
-                            field_val, &resolved_ty, dealloc, false,
-                        );
-                    } else if matches!(resolved_ty, Type::Fn(_, _)) {
-                        self.emit_closure_dec_inline(field_val, dealloc);
-                    } else {
-                        heap::emit_rc_dec(
-                            &mut self.builder,
-                            self.module,
-                            field_val,
-                            dealloc,
-                            None,
-                        );
-                    }
-                }
-                HeapCategory::Mixed => {
-                    let field_val = heap::heap_load(
-                        &mut self.builder,
-                        adt_val,
-                        HeapAdt::field_offset(i),
+                    self.emit_typed_rc_dec(
+                        field_val,
+                        &resolved_ty,
+                        dealloc,
+                        matches!(category, HeapCategory::Mixed),
                     );
-                    // Mixed fields may be ADTs with nested heap fields.
-                    if matches!(resolved_ty, Type::ADT(_, _)) {
-                        self.emit_rc_dec_with_inline_drop_glue(
-                            field_val, &resolved_ty, dealloc, true,
-                        );
-                    } else {
-                        heap::emit_rc_dec_guarded(
-                            &mut self.builder,
-                            self.module,
-                            field_val,
-                            dealloc,
-                            None,
-                            true,
-                        );
-                    }
                 }
                 HeapCategory::NeverHeap | HeapCategory::Value => {}
+            }
+        }
+    }
+
+    /// **The ONE type-directed release**: dec `val` and, when its RC reaches
+    /// zero, tear it down by whatever its TYPE owns.
+    ///
+    /// A bare `heap::emit_rc_dec(.., None)` frees the box and STRANDS
+    /// everything under it — that is the recurring leak shape, not a special
+    /// case of any one seam. The four arms:
+    ///
+    /// | type | teardown | what a bare dec would strand |
+    /// |---|---|---|
+    /// | `(Vec t)` | `emit_vec_aware_rc_dec` (`vec_drop` + per-element dec) | elements + the data buffer |
+    /// | ADT | `emit_rc_dec_with_inline_drop_glue` (recursive field decs) | every heap field |
+    /// | `Fn` | `emit_closure_dec_inline` (the box's EMBEDDED glue ptr) | every capture |
+    /// | anything else (String, …) | plain dec (guarded per `needs_guard`) | nothing — no sub-references |
+    ///
+    /// Callers: the ADT drop-glue field walk ([`Self::emit_field_decs`], whose
+    /// open-coded copy this was) and the moded-arg post-call dec
+    /// ([`FnCompiler::emit_post_call_decs`], which used the bare dec and so
+    /// leaked one object per `Borrowed`-param call with an ADT/Vec/closure
+    /// TEMPORARY argument — FIXME 0753).
+    pub(crate) fn emit_typed_rc_dec(
+        &mut self,
+        val: Value,
+        ty: &Type,
+        dealloc: FuncId,
+        needs_guard: bool,
+    ) {
+        // Exhaustive over the classification (no `_ =>`): a new owning-shape
+        // kind is a compile error here, never a silent fall-through to the
+        // stranding plain dec.
+        match typed_release_kind(ty) {
+            TypedRelease::Vec => {
+                let elem_ty = crate::compiler::vec_codegen::vec_element_type(ty)
+                    .cloned()
+                    .unwrap_or(Type::Int);
+                // Span not readily available at every caller; the teardown
+                // emission consults it only to report a backend-setup invariant
+                // breach (`vec_drop` must be declared whenever Vec types are in
+                // play), which this infallible-by-signature seam swallows.
+                let span = cranelisp_types::Span::new(0, 0);
+                let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span, RcAtomicity::Atomic);
+            }
+            TypedRelease::Adt => {
+                self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, needs_guard);
+            }
+            TypedRelease::Closure => self.emit_closure_dec_inline(val, dealloc),
+            TypedRelease::Plain if needs_guard => {
+                heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
+            }
+            TypedRelease::Plain => {
+                heap::emit_rc_dec(&mut self.builder, self.module, val, dealloc, None);
             }
         }
     }
@@ -281,11 +373,6 @@ where
         if skip_var.is_some() {
             return; // The skip_var mechanism already protects the return value.
         }
-        // Fresh allocations (Lambda, StringLit) cannot be the same as any
-        // scope binding, so scope cleanup cannot affect them. Skip protect.
-        if matches!(body, MonoExpr::Lambda { .. } | MonoExpr::StringLit { .. }) {
-            return;
-        }
         // Item-26 — a FRESH-CONSTRUCTION return needs no protect, in ANY function
         // (S115 W3 change-set 2; supersedes the S114 F-R1 `main`-keyed special case
         // and resolves FIXME 0696 against its design ruling `direction (b)`,
@@ -293,21 +380,24 @@ where
         //
         // The protect exists for ONE reason: scope cleanup decs the scope's heap
         // bindings, and the returned value may BE one of them. A freshly
-        // constructed box (`ConstrADT`, or an `Apply` whose callee resolves to a
-        // constructor — `body_is_fresh_construction`) is brand new: it cannot
-        // alias any scope binding, so cleanup cannot touch it and the inc is a
-        // pure over-retention the caller's single consuming dec can never balance.
-        // This is the SAME reasoning that already skips `Lambda`/`StringLit` above
-        // — freshness, one step further; the license is freshness, never the fn
+        // MINTED box is brand new: it cannot alias any scope binding, so cleanup
+        // cannot touch it and the inc is a pure over-retention the caller's single
+        // consuming dec can never balance. The license is freshness, never the fn
         // name (0696: name-as-identity is the 0632 / Principle-19 class, and the
         // F-R1 comment's "entry-`main` trampoline contract" was never the real
         // license — `body_is_fresh_construction` was doing the work).
         //
-        // The §2.1 fence is HONORED, not weakened: `body_is_fresh_construction`
-        // admits ONLY `ConstrADT` / ctor-`Apply` / `Let`-forwarded-fresh. A general
-        // `Apply` return (a user/trait call that MAY return an aliased argument,
-        // e.g. `(id x)`) is NOT fresh and keeps its protect verbatim — the G2 class
-        // the fence protects is untouched.
+        // `body_is_fresh_construction` is the SINGLE source of that truth
+        // (Principle 7). This site used to carry its own `matches!(body,
+        // Lambda | StringLit)` skip ALONGSIDE it — two lists of "what is fresh",
+        // and the local one did not forward through `let`. FIXME 0749 folded it
+        // in; the predicate now covers every box-minting kind and forwards it
+        // through binding indirection and control-flow joins.
+        //
+        // The §2.1 fence is HONORED, not weakened: a general `Apply` return (a
+        // user/trait call that MAY return an aliased argument, e.g. `(id x)`) is
+        // NOT fresh and keeps its protect verbatim — the G2 class the fence
+        // protects is untouched.
         //
         // Measured (S115 W3): this is the toggle-OFF half of FIXME 0720. In
         // `(defn set0 [g m] (match g [(Gr cells) (Gr (vec-set cells 0 m))]))` the
@@ -367,81 +457,7 @@ where
     /// - Temporary closure expressions used as callees
     /// - Any closure variable where the static drop glue is not available
     pub(crate) fn emit_closure_dec_inline(&mut self, closure_val: Value, dealloc_id: FuncId) {
-        use crate::heap::HeapClosure;
-        use cranelisp_types::HeapHeader;
-        use cranelift_codegen::ir::AtomicRmwOp;
-
-        let cont_block = self.builder.create_block();
-
-        // Decrement RC.
-        let rc_addr = self
-            .builder
-            .ins()
-            .iadd_imm(closure_val, i64::from(HeapHeader::RC_OFFSET));
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let old_rc = self.builder.ins().atomic_rmw(
-            types::I64,
-            MemFlags::trusted(),
-            AtomicRmwOp::Sub,
-            rc_addr,
-            one,
-        );
-
-        // Branch: if old_rc == 1, free the closure.
-        let cmp = self.builder.ins().icmp(IntCC::Equal, old_rc, one);
-        let free_block = self.builder.create_block();
-        self.builder
-            .ins()
-            .brif(cmp, free_block, &[], cont_block, &[]);
-
-        // Free path.
-        self.builder.switch_to_block(free_block);
-        self.builder.seal_block(free_block);
-        self.builder.ins().fence();
-
-        // Load drop_glue_ptr from the closure.
-        let drop_glue_ptr = heap::heap_load(
-            &mut self.builder,
-            closure_val,
-            HeapClosure::DROP_GLUE_PTR_OFFSET,
-        );
-
-        // If drop_glue_ptr != 0, call it.
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let has_glue = self
-            .builder
-            .ins()
-            .icmp(IntCC::NotEqual, drop_glue_ptr, zero);
-        let glue_block = self.builder.create_block();
-        let dealloc_block = self.builder.create_block();
-        self.builder
-            .ins()
-            .brif(has_glue, glue_block, &[], dealloc_block, &[]);
-
-        // Call drop glue: (closure_ptr: i64) -> ()
-        self.builder.switch_to_block(glue_block);
-        self.builder.seal_block(glue_block);
-
-        let mut glue_sig = self.module.make_signature();
-        glue_sig.params.push(AbiParam::new(types::I64));
-        let glue_sig_ref = self.builder.import_signature(glue_sig);
-        self.builder
-            .ins()
-            .call_indirect(glue_sig_ref, drop_glue_ptr, &[closure_val]);
-        self.builder.ins().jump(dealloc_block, &[]);
-
-        // Dealloc the closure.
-        self.builder.switch_to_block(dealloc_block);
-        self.builder.seal_block(dealloc_block);
-        let dealloc_ref = self
-            .module
-            .declare_func_in_func(dealloc_id, self.builder.func);
-        self.builder.ins().call(dealloc_ref, &[closure_val]);
-        self.builder.ins().jump(cont_block, &[]);
-
-        // Continue.
-        self.builder.switch_to_block(cont_block);
-        self.builder.seal_block(cont_block);
+        emit_closure_dec_into(&mut self.builder, self.module, closure_val, dealloc_id);
     }
 
     /// Emit RC dec for an ADT value with inline drop glue in the dealloc path.
@@ -556,6 +572,39 @@ where
 
         // Restore depth counter.
         self.drop_glue_depth -= 1;
+    }
+}
+
+/// What a value of a given type OWNS, and therefore how it must be torn down
+/// when its RC reaches zero — the pure classification behind
+/// [`FnCompiler::emit_typed_rc_dec`] (FIXME 0753). Pure so the whole rule is
+/// unit-testable without a live `FnCompiler` (the `is_fresh_construction`
+/// precedent).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TypedRelease {
+    /// `(Vec t)` — owns its elements and its data buffer: `vec_drop` + per-element dec.
+    Vec,
+    /// An ADT — owns its heap fields: the recursive inline drop glue.
+    Adt,
+    /// A closure — owns its captures, reachable ONLY through the box's embedded
+    /// `DROP_GLUE_PTR`.
+    Closure,
+    /// Owns no further references (`String`, scalars, …) — a plain dec suffices.
+    Plain,
+}
+
+/// Classify a type's teardown. `Vec` is checked BEFORE `Adt` because a Vec IS
+/// spelled `Type::ADT(Vec, [t])` but its elements live behind `DATA_PTR`, not in
+/// ADT field slots.
+pub(crate) fn typed_release_kind(ty: &Type) -> TypedRelease {
+    if crate::compiler::vec_codegen::vec_element_type(ty).is_some() {
+        TypedRelease::Vec
+    } else if matches!(ty, Type::ADT(_, _)) {
+        TypedRelease::Adt
+    } else if matches!(ty, Type::Fn(_, _)) {
+        TypedRelease::Closure
+    } else {
+        TypedRelease::Plain
     }
 }
 
@@ -835,5 +884,65 @@ mod find_var_type_tests {
         };
         // A name not present anywhere resolves to None (no spurious type).
         assert_eq!(find_var_type_in_expr(&node, &Symbol::from("nope")), None);
+    }
+}
+
+#[cfg(test)]
+mod typed_release_tests {
+    //! FIXME 0753 — the ONE type-directed release classification
+    //! ([`typed_release_kind`], consumed by [`FnCompiler::emit_typed_rc_dec`]).
+    //!
+    //! The defect this pins: the moded-arg post-call dec released a `Borrowed`
+    //! param's TEMPORARY argument with a bare `emit_rc_dec(.., None)` — a dec +
+    //! `dealloc` that frees the box and strands everything it owns. Measured on
+    //! `(deftype G2 (Gr [cells])) (defn peek [g] 7) (defn main [] (Pure (peek
+    //! (Gr [5 5]))))`: analysis-ON allocs=3 deallocs=2 (the `cells` vec never
+    //! released), analysis-OFF 3/3 — toggle-OFF has no `Borrowed` mode, so the
+    //! callee consumed the argument and its scope cleanup ran the drop glue.
+    //! That asymmetry is what left the FIXME-0720 face with a constant residual
+    //! of exactly 1 under one toggle only, at every N.
+
+    use super::{typed_release_kind, TypedRelease};
+    use cranelisp_types::{FQTypeName, ModuleFullPath, Type, TypeName};
+
+    fn adt(module: &str, name: &str, args: Vec<Type>) -> Type {
+        Type::ADT(
+            FQTypeName::new(ModuleFullPath::from(module), TypeName::from(name)),
+            args,
+        )
+    }
+
+    // spec: design/backend/s115-carrier-and-rc-sweep.md §2 / FIXME 0753 — a type
+    // that OWNS further references is torn down through the mechanism that
+    // reaches them, never a bare dec.
+    #[test]
+    fn owning_types_get_their_own_teardown() {
+        assert_eq!(typed_release_kind(&adt("primitives", "Vec", vec![Type::Int])), TypedRelease::Vec);
+        assert_eq!(typed_release_kind(&adt("user", "G2", vec![])), TypedRelease::Adt);
+        assert_eq!(
+            typed_release_kind(&Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+            TypedRelease::Closure
+        );
+    }
+
+    // spec: §2 — ORDER is load-bearing: a Vec IS spelled `Type::ADT(Vec, [t])`,
+    // but its elements live behind `DATA_PTR`, not in ADT field slots, so the
+    // ADT field walk would find nothing and the elements + data buffer would
+    // leak. Vec must be classified before ADT.
+    #[test]
+    fn a_vec_is_not_classified_as_a_plain_adt() {
+        let vec_of_string = adt("primitives", "Vec", vec![Type::String]);
+        assert_eq!(typed_release_kind(&vec_of_string), TypedRelease::Vec);
+        assert_ne!(typed_release_kind(&vec_of_string), TypedRelease::Adt);
+    }
+
+    // spec: §2 (NEGATIVE / byte-identical fence) — a type that owns nothing
+    // further keeps the plain dec, so every non-owning release site is
+    // emission-identical to before the consolidation.
+    #[test]
+    fn non_owning_types_keep_the_plain_dec_neg() {
+        for ty in [Type::Int, Type::Float, Type::Bool, Type::String] {
+            assert_eq!(typed_release_kind(&ty), TypedRelease::Plain, "{ty:?}");
+        }
     }
 }

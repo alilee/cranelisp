@@ -17,7 +17,7 @@ use cranelisp_types::{
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
-use super::{emit_capture_inc_into, FnCompiler};
+use super::{emit_capture_inc_into, CaptureRelease, FnCompiler};
 
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
@@ -838,8 +838,10 @@ where
         )?;
 
         // 2. Build drop glue for heap-typed captures.
+        let arg_types: Vec<&ConcreteType> = args.iter().map(MonoExpr::ty).collect();
         let drop_glue_id = self.build_auto_curry_drop_glue(
             &arg_categories,
+            &arg_types,
             target_closure.is_some().then_some(applied_count),
             span,
         )?;
@@ -1058,6 +1060,10 @@ where
     fn build_auto_curry_drop_glue(
         &mut self,
         arg_categories: &[HeapCategory],
+        // The applied args' concrete types, positionally paired with
+        // `arg_categories` — a `Fn`-typed applied arg is a closure box that owns
+        // its own captures (FIXME 0749).
+        arg_types: &[&ConcreteType],
         // FIXME 0705: `Some(slot)` when a closure-VALUE target rides capture
         // `slot`; it is heap by construction (a closure is always a heap box) and
         // the curry env owns one reference to it, so the glue must release it or
@@ -1066,16 +1072,19 @@ where
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         // Collect indices of heap-typed captures — the capture layout specific.
-        let mut heap_indices: Vec<(usize, HeapCategory)> = arg_categories
+        let mut heap_indices: Vec<(usize, CaptureRelease)> = arg_categories
             .iter()
             .enumerate()
-            .filter_map(|(i, cat)| match cat {
-                HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, *cat)),
-                HeapCategory::NeverHeap | HeapCategory::Value => None,
+            .filter_map(|(i, cat)| {
+                let is_fn = matches!(arg_types.get(i), Some(ConcreteType::Fn(..)));
+                CaptureRelease::classify(*cat, is_fn).map(|release| (i, release))
             })
             .collect();
         if let Some(slot) = target_closure_slot {
-            heap_indices.push((slot, HeapCategory::AlwaysHeap));
+            // A closure BY CONSTRUCTION — released through its embedded drop
+            // glue, or its own captures are stranded when the curry env is the
+            // last owner (FIXME 0749 mechanism (b); measured 301/201 before).
+            heap_indices.push((slot, CaptureRelease::ClosureBox));
         }
 
         // Naming identity (ledger item 25): fold `inner_fn_discriminator()` +

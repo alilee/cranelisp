@@ -10,10 +10,10 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Type};
 
-use crate::heap::{self, HeapCategory, HeapClosure};
+use crate::heap::{self, HeapClosure};
 
 use crate::compiler::signature_heap_category;
-use super::{find_free_vars, FnCompiler};
+use super::{emit_capture_dec_into, find_free_vars, CaptureRelease, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -202,19 +202,20 @@ where
             return Ok(None);
         }
 
-        // Collect (capture_index, heap_category) for heap-typed captures — the
-        // capture layout specific this builder supplies. (The capture type is
-        // read only for the filter; the dec loop needs only index + category.)
-        let heap_captures: Vec<(usize, HeapCategory)> = captures
+        // Collect (capture_index, release mechanism) for heap-typed captures —
+        // the capture layout specific this builder supplies. The capture's TYPE
+        // decides both membership and mechanism (`CaptureRelease::classify`):
+        // a `Fn`-typed capture is a closure box that owns its own captures and
+        // must be released through its embedded drop glue (FIXME 0749).
+        let heap_captures: Vec<(usize, CaptureRelease)> = captures
             .iter()
             .enumerate()
             .filter_map(|(i, cap_name)| {
                 let ty = self.variable_types.get(cap_name)?;
                 let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-                match category {
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
-                    HeapCategory::NeverHeap | HeapCategory::Value => None,
-                }
+                let release =
+                    CaptureRelease::classify(category, matches!(ty, cranelisp_types::Type::Fn(..)))?;
+                Some((i, release))
             })
             .collect();
 
@@ -250,7 +251,7 @@ where
         &mut self,
         glue_name: &str,
         span: Span,
-        heap_captures: &[(usize, HeapCategory)],
+        heap_captures: &[(usize, CaptureRelease)],
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         if heap_captures.is_empty() {
             return Ok(None);
@@ -293,29 +294,16 @@ where
 
         let closure_ptr = builder.block_params(entry)[0];
 
-        // For each heap-typed capture, load from its offset and dec.
-        for (cap_idx, category) in heap_captures {
+        // For each heap-typed capture, load from its offset and release it by
+        // its classified mechanism (FIXME 0749 — a closure-box capture goes
+        // through its EMBEDDED drop glue, never a bare dec).
+        for (cap_idx, release) in heap_captures {
             let cap_val = heap::heap_load(
                 &mut builder,
                 closure_ptr,
                 HeapClosure::capture_offset(*cap_idx),
             );
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_dec(&mut builder, self.module, cap_val, dealloc_id, None);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_dec_guarded(
-                        &mut builder,
-                        self.module,
-                        cap_val,
-                        dealloc_id,
-                        None,
-                        true,
-                    );
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {} // unreachable, filtered above
-            }
+            emit_capture_dec_into(&mut builder, self.module, *release, cap_val, dealloc_id);
         }
 
         builder.ins().return_(&[]);

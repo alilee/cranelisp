@@ -488,6 +488,14 @@ fn make_primitive_with_sibling_slot(slot: usize) -> ModuleEntry {
 /// A Def whose ownership summary declares `MayAliasOf(index)` over a signature
 /// of `arity` parameters.
 fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
+    make_def_with_result_mode(cranelisp_types::ResultMode::MayAliasOf(index), arity)
+}
+
+/// A `Def` carrying an arbitrary `ResultMode` at a given arity — the per-variant
+/// matrix driver (FIXME 0750: the census must cover EVERY index-carrying
+/// variant, not just the one that happens to be read through a checked
+/// accessor).
+fn make_def_with_result_mode(result: cranelisp_types::ResultMode, arity: usize) -> ModuleEntry {
     let mut entry = make_def("m");
     if let ModuleEntry::Def { kind, scheme, param_names, .. } = &mut entry {
         scheme.ty = Type::Fn(vec![Type::Int; arity], Box::new(Type::Int));
@@ -496,7 +504,7 @@ fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
             fn_state: UserFnState::Concrete {
                 got_slot: 1,
                 mode_summary: Some(cranelisp_types::ModeSummary {
-                    result: cranelisp_types::ResultMode::MayAliasOf(index),
+                    result,
                     ..Default::default()
                 }),
             },
@@ -581,6 +589,52 @@ fn cache_load_rejects_out_of_range_summary_param_index_as_stale() {
         roundtrip(dir.path(), "nullary", make_def_with_may_alias(0, 0)),
         Err(CacheStale::SummaryParamIndexOutOfRange { .. })
     ));
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 / FIXME 0750 — the census must
+// cover EVERY index-carrying `ResultMode` variant, not one of the three.
+// `ProjectionOf` is the sharp one: the consume seam reads `arg_origins` through
+// a CHECKED `.get(k)` for all three, but then does a RAW `args[k]` index for the
+// projection arm (`cranelisp-typecheck/src/ownership/transfer.rs`) — so the one
+// genuine panic-on-disk-content path in the family was the unvalidated variant.
+// Per-variant matrix, boundary-exact, so a future fourth variant cannot escape.
+#[test]
+fn cache_load_rejects_out_of_range_index_for_every_result_mode_variant() {
+    use cranelisp_types::ResultMode;
+    let dir = tempfile::tempdir().unwrap();
+    for make in [
+        ResultMode::ProjectionOf as fn(usize) -> ResultMode,
+        ResultMode::AliasOf,
+        ResultMode::MayAliasOf,
+    ] {
+        roundtrip(dir.path(), "ok", make_def_with_result_mode(make(1), 2))
+            .unwrap_or_else(|e| panic!("{:?} at arity-1 must load, got {e:?}", make(1)));
+        match roundtrip(dir.path(), "bad", make_def_with_result_mode(make(2), 2)) {
+            Err(CacheStale::SummaryParamIndexOutOfRange { index, arity, .. }) => {
+                assert_eq!((index, arity), (2, 2));
+            }
+            other => panic!("expected SummaryParamIndexOutOfRange for {:?}, got {other:?}", make(2)),
+        }
+        assert!(
+            matches!(
+                roundtrip(dir.path(), "nullary", make_def_with_result_mode(make(0), 0)),
+                Err(CacheStale::SummaryParamIndexOutOfRange { .. })
+            ),
+            "a nullary callable carrying {:?} is out of range by construction",
+            make(0)
+        );
+    }
+}
+
+// spec: §4 R6 (NEGATIVE / false-fire fence) — `ResultMode::Fresh` carries NO
+// index, so it must load at every arity including nullary.
+#[test]
+fn index_free_result_mode_is_never_rejected_neg() {
+    let dir = tempfile::tempdir().unwrap();
+    for arity in [0usize, 1, 3] {
+        roundtrip(dir.path(), "fresh", make_def_with_result_mode(cranelisp_types::ResultMode::Fresh, arity))
+            .expect("Fresh carries no index and must always load");
+    }
 }
 
 // spec: design/arch/safety-invariants.md §4 R6 — a `callees` FQ with an empty

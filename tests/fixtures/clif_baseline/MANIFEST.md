@@ -85,6 +85,36 @@ RED until B0-be lands the capture; the full-corpus diff runs via
 
 ## Re-baselines (scoped, attributed — MANIFEST §"Extension ≠ re-baseline")
 
+- **02_closures_fn_as_value, 07_trait_dispatch, f4_sudoku** — re-captured S115
+  Wave 3b (FIXME 0753 / 0749). **Codegen change; ADDITIVE release work only, no
+  RC op removed anywhere.** The moded-arg post-call dec
+  (`apply.rs::emit_post_call_decs` — the release of a TEMPORARY argument passed
+  into a `Borrowed` parameter) was a bare `heap::emit_rc_dec(.., None)`: an
+  atomic dec plus a plain `dealloc`, which freed the temporary's own box and
+  STRANDED everything the box owned. It now routes through the ONE type-directed
+  release (`rc_emission::emit_typed_rc_dec`), so each drifted frame gains
+  exactly the teardown its temporary's TYPE requires, inside the existing
+  `rc == 0` branch:
+  - **02_closures_fn_as_value** `user::main` — a CLOSURE-typed temporary: the
+    free path now loads the box's embedded `DROP_GLUE_PTR` (+24), `call_indirect`s
+    it when non-zero, then deallocs (three added blocks). Without it a curried /
+    returned closure's own captures were never released.
+  - **07_trait_dispatch** `user::main` — an ADT temporary: the free path now
+    loads field 0 (+24), decs it, runs its teardown on `rc == 0`, then deallocs
+    the box (two added blocks). This is the exact FIXME-0753 measurement —
+    `(deftype G2 (Gr [cells])) (defn peek [g] 7) (defn main [] (Pure (peek (Gr
+    [5 5]))))` was allocs=3 deallocs=2 analysis-ON and 3/3 analysis-OFF.
+  - **f4_sudoku** `eliminate-from-peers` — a Vec temporary: `call dealloc(v)`
+    becomes `call vec_drop(v, elem_dec_fn)`, which frees the elements and the
+    data buffer, not just the Vec struct. `solve-range` — the nested case (an
+    ADT temporary whose field is a Vec of ADTs): field dec → `vec_drop` with the
+    element-dec fn pointer → dealloc.
+  Everything else in the three diffs is mechanical `vN`/`blockN`/`sigN`/`fnN`
+  renumbering behind the inserted blocks. The other 10 entries are
+  byte-identical (`clif_golden.sh diff` clean across all 13 post-capture).
+  Certified line-by-line: every hunk ADDS a release in the `rc == 0` path;
+  none removes a dec, an inc, or a fence.
+
 - **f4_sudoku** — re-captured S102 (fixture-driven, NON-codegen). Wave-A
   `c09c0a2` edited `tests/fixtures/s99/f4_sudoku.cl` to redefine→re-export the
   bootstrap-seeded `primitives/Option` instead of a local `deftype Option`, so

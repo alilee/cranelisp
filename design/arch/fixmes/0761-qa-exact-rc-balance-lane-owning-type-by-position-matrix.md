@@ -1,0 +1,83 @@
+---
+number: 0761
+target: /qa
+filed_by: /dev (cranelisp-backend, S115 W3b)
+filed_at: 2026-07-21
+sprint_filed: 115
+refers_to: tests/helpers/e2e.rs::SafetyMatrix (the `check_rc_balance` face); design/backend/s115-carrier-and-rc-sweep.md §2.3
+status: open
+---
+
+# The standing RC instrument is DIFFERENTIAL, and every leak W3b found is toggle-independent — it passed on both sides
+
+## Severity
+
+Important — an instrument that is blind to a whole defect class is worse than
+no instrument, because its green is read as coverage. Four separate
+per-iteration leaks shipped under it in one wave.
+
+## Issue (METHOD §2.2 — the instrumentation question, answer (b))
+
+`SafetyMatrix`'s RC face (`tests/helpers/e2e.rs`, `check_rc_balance`) asserts:
+
+```rust
+assert_eq!(imbalance(&rc_on), imbalance(&rc_off), "...")
+```
+
+— the ownership-ON alloc imbalance EQUALS the ownership-OFF one. That is the
+right instrument for *elision* defects (the analysis removed an op the
+conservative lowering keeps). It is **structurally blind** to a leak both
+lowerings share.
+
+Every defect isolated in S115 W3b is exactly that:
+
+| shape | ON | OFF | differential verdict |
+|---|---|---|---|
+| curried local closure escaping its frame (0749) | 201/1 | 201/1 | **PASS** (equal) |
+| plain lambda returned through two `let`s (0749) | 301/101 | 301/101 | **PASS** |
+| `VecLit` returned through one `let` (0749) | 201/101 | 201/101 | **PASS** |
+| closure capturing a Vec-of-Strings (0760) | 401/201 | 401/201 | **PASS** |
+
+Only FIXME 0753's residual was toggle-ASYMMETRIC (403/402 ON vs 403/403 OFF),
+and that one was caught — by a human reading `/dev`'s reported numbers, not by
+the lane.
+
+`design/backend/s115-carrier-and-rc-sweep.md` §2.3 already states the correct
+bar in prose — *"`allocs == deallocs` EXACTLY at each face (never leak →
+under-count)"* — but nothing standing asserts it. It is applied by hand, per
+shape someone thought to write, at review time.
+
+## Proposed resolution
+
+`/qa`: add an **exact-balance lane** — `allocs == deallocs` asserted
+absolutely, not differentially — over a matrix that crosses the two axes this
+wave proved independent:
+
+- **owning type**: Vec-of-scalars / Vec-of-heap / ADT-with-heap-field / closure
+  -with-capture / closure-capturing-a-closure / nested (ADT whose field is a
+  Vec of ADTs — the `f4_sudoku::solve-range` shape);
+- **position**: a `let`-bound local; a `Borrowed` argument temporary; a value
+  RETURNED from its defining frame (the 0749 axis — the one the W3 change-set
+  measured only in the non-escaping shape and declared balanced); returned
+  through N `let`s (N ∈ {0,1,2} — the depth axis that separated D from F);
+  a TCO loop-carried param; a closure-env capture.
+
+Both toggles, and `--link` as well as `--run` (W3b verified all four faces
+agree by hand: C 201/201, C2 301/301, F 301/301 in both modes).
+
+Keep the differential face — it answers a different question. Add the exact
+one beside it, and make the exact one the `s115-carrier-and-rc-sweep.md` §2.3
+acceptance instrument it already claims to be.
+
+Suggested seed shapes (all measured at W3b HEAD, all EXACT there, so they
+land GREEN and are regression guards, not defect repros) are in the FIXME 0749
+and 0760 bodies and in the `/dev` W3b report.
+
+## Context
+
+Filed by `/dev`(backend) at S115 W3b under the METHOD §2.2 instrumentation
+clause: answer (b) — the instrument exists but is blind, and the correction is
+cross-crate (it lives in `tests/`, `/qa`'s and `/testing`'s territory), so it is
+named and routed rather than landed with the fix. The in-crate half DID land:
+`typed_release_kind` is now the ONE type-directed release classification with an
+exhaustive dispatch, and `is_fresh_construction` is exhaustive over `MonoExpr`.

@@ -44,9 +44,22 @@
 //! |---|---|---|---|
 //! | `callable_got_slot()` | OOB slot → `store_slot`/`load_slot` `assert!` panics on disk content | `< GOT_TABLE_SIZE` | [`CacheStale::GotSlotOutOfRange`] |
 //! | `PrimitiveBody::Extern.borrowed_sibling_slot` (R5 carrier) | OOB → the same GOT panic when its first consumer reads it | `< GOT_TABLE_SIZE` when present | [`CacheStale::SiblingSlotOutOfRange`] |
-//! | summary param index — `ResultMode::MayAliasOf(k)` | `k ≥ arity` → `arg_origins[k]` OOB read at the consume seam | `k < arity` (signature arity, `param_names` fallback) | [`CacheStale::SummaryParamIndexOutOfRange`] |
+//! | summary param index — `ResultMode::{ProjectionOf,AliasOf,MayAliasOf}(k)` | `k ≥ arity` → a raw `args[k]` index PANIC at the consume seam (see below) | `k < arity` (signature arity, `param_names` fallback), all three variants | [`CacheStale::SummaryParamIndexOutOfRange`] |
 //! | `Def.callees` FQs (feeds the reverse who-calls-whom index) | empty module/symbol component → resolve / reverse-index corruption | non-empty module AND symbol | [`CacheStale::MalformedCalleeFq`] |
 //! | `codegen_view` span | `start > end` → out-of-source slice / keyed-read miss at the diagnostic seam | `start ≤ end` | [`CacheStale::MalformedSpanKey`] |
+//!
+//! **Where the summary index actually panics (FIXME 0750 — the row above used
+//! to name the wrong site and cover only one of the three variants).** At the
+//! consume seam (`cranelisp-typecheck/src/ownership/transfer.rs`) the
+//! `arg_origins` reads are CHECKED for all three variants
+//! (`.get(k)…unwrap_or(Origin::Fresh)`), so no OOB is possible there. The
+//! `ProjectionOf` arm then additionally does a **raw `args[k]` index** to
+//! recover the container span — that is the one genuine panic-on-disk-content
+//! path in the family, and it belonged to the variant the census originally
+//! omitted. Validating here closes it at the trust boundary; the raw index
+//! itself is a typecheck-side concern (validation at one boundary is not a
+//! licence for an unchecked read at the consumer, Principle 25) and is routed
+//! there separately — the backend cannot fix a cross-crate site.
 //!
 //! **Scope note (kept honest).** The typecheck-side span-keyed sidecars
 //! (`MethodResolutions::{resolved_calls, var_refs, apply_refs, pattern_ctors}`)
@@ -137,10 +150,12 @@ pub enum CacheStale {
         path: std::path::PathBuf,
         slot: usize,
     },
-    /// A restored ownership summary carried `ResultMode::MayAliasOf(k)` with
-    /// `k >= arity` (S115 W3 change-set 4; R6 census row 3). The consume seam
-    /// indexes `arg_origins[k]` off this value, so an out-of-range `k` from disk
-    /// is an OOB read — the exact hazard the R6 register row names.
+    /// A restored ownership summary carried an index-carrying `ResultMode`
+    /// (`ProjectionOf`/`AliasOf`/`MayAliasOf`) with `k >= arity` (S115 W3
+    /// change-set 4; R6 census row 3, widened to all three variants by FIXME
+    /// 0750). The consume seam reads `arg_origins` through a checked `.get(k)`
+    /// but the `ProjectionOf` arm then indexes `args[k]` raw — an out-of-range
+    /// `k` from disk panics there, which is the hazard this row exists for.
     SummaryParamIndexOutOfRange {
         path: std::path::PathBuf,
         index: usize,
@@ -242,7 +257,7 @@ impl std::fmt::Display for CacheStale {
             CacheStale::SummaryParamIndexOutOfRange { path, index, arity } => write!(
                 f,
                 "cache ownership summary param index out of range at {}: \
-                 MayAliasOf({index}) with arity {arity}",
+                 result mode index {index} with arity {arity}",
                 path.display()
             ),
             CacheStale::MalformedCalleeFq { path, symbol } => write!(
@@ -258,6 +273,21 @@ impl std::fmt::Display for CacheStale {
                 path.display()
             ),
         }
+    }
+}
+
+/// The persisted param index a [`ResultMode`](cranelisp_types::ResultMode)
+/// carries, or `None` for the index-free point — the R6 census's
+/// compile-enforced completeness instrument (FIXME 0750).
+///
+/// Exhaustive on purpose: adding a variant to `ResultMode` breaks THIS build
+/// until its index-carrying-ness is decided, which is what a census must be
+/// (the prose table above documents; this match enforces).
+pub(crate) fn result_mode_param_index(result: cranelisp_types::ResultMode) -> Option<usize> {
+    use cranelisp_types::ResultMode;
+    match result {
+        ResultMode::Fresh => None,
+        ResultMode::ProjectionOf(k) | ResultMode::AliasOf(k) | ResultMode::MayAliasOf(k) => Some(k),
     }
 }
 
@@ -431,8 +461,18 @@ pub(crate) fn deserialise_meta_with_build_id(
                 slot: *slot,
             });
         }
+        // EVERY index-carrying `ResultMode` variant (FIXME 0750). All three are
+        // persisted through the same `ModeSummary.result` field and read
+        // positionally against the same arg vector — a per-variant arm was the
+        // coverage-by-definition-variants miss, and it happened to validate the
+        // one variant whose consumer reads are all checked.
+        //
+        // `result_mode_param_index` is an EXHAUSTIVE match (no `_ =>`) — the
+        // standing instrument: a NEW `ResultMode` variant is a compile error
+        // here until someone decides whether it carries a param index, rather
+        // than silently escaping the census the prose table describes.
         if let Some(summary) = entry.mode_summary()
-            && let cranelisp_types::ResultMode::MayAliasOf(k) = summary.result
+            && let Some(k) = result_mode_param_index(summary.result)
         {
             // Arity from the persisted signature — the same positional vector
             // the consume seam's `arg_origins` is built over. The `param_names`

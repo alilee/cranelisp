@@ -1519,12 +1519,12 @@ where
     /// 2. the value actually returned is the producer's OWN recorded decision
     ///    (`cow_retain_decisions`, span-keyed) whenever it is available.
     ///
-    /// **The disagreement fence** is the `debug_assert_eq!`: if the recorded
-    /// decision and the shared-predicate derivation ever disagree, the producer
-    /// ran a different gate than this seam believes, which is exactly the
-    /// spurious-dec (UAF) channel 0693 named. Release builds take the RECORDED
-    /// verdict, so a disagreement degrades to the producer's truth rather than
-    /// to a guess.
+    /// **The disagreement fence** is the `debug_assert_eq!` inside
+    /// [`reconcile_cow_retain_verdict`]: if the recorded decision and the
+    /// shared-predicate derivation ever disagree, the producer ran a different
+    /// gate than this seam believes, which is exactly the spurious-dec (UAF)
+    /// channel 0693 named. Release builds take the LEAK-SAFE verdict — see that
+    /// function for why "trust the record" is the wrong polarity (FIXME 0751).
     pub(crate) fn scrutinee_cow_retains_reused(&self, node: &MonoExpr) -> bool {
         let Some(derived) = crate::compiler::vec_codegen::cow_site_retain_verdict(
             node,
@@ -1537,27 +1537,61 @@ where
         let MonoExpr::Apply { span, .. } = node else {
             return false;
         };
-        match self.cow_retain_decisions.get(span).copied() {
-            Some(Some(recorded)) => {
-                debug_assert_eq!(
-                    recorded, derived,
-                    "FIXME 0693 disagreement fence: the COW producer \
-                     (vec_codegen::cow_source_ownership) recorded retain_reused={recorded} at \
-                     span {span:?}, but the R3 match-consume seam's shared-predicate derivation \
-                     says {derived}. The two sides of the §13.7 escape gate MUST agree — a \
-                     consumer-side `true` without a producer inc is a spurious dec (UAF)."
-                );
-                recorded
-            }
-            // Ambiguous span (two COW sites under one synthetic span): take the
-            // leak-safe verdict — suppress the dec, never emit a spurious one.
-            Some(None) => false,
-            // The producer did not run in THIS compiler frame (e.g. the site was
-            // lowered by an inner compiler). Fall back to the shared predicate —
-            // the same answer the consolidated gate gives, never a re-derivation
-            // from the callee spelling.
-            None => derived,
+        reconcile_cow_retain_verdict(self.cow_retain_decisions.get(span).copied(), derived, *span)
+    }
+}
+
+/// Reconcile the producer's RECORDED retain decision at a COW site's span
+/// against the R3 seam's own shared-predicate DERIVATION (FIXME 0693 / 0751).
+///
+/// `recorded`: `Some(Some(v))` = one consistent verdict recorded at that span;
+/// `Some(None)` = AMBIGUOUS (two distinct COW sites collapsed onto one span,
+/// reachable only for `Span::SYNTHETIC` bodies); `None` = the producer never ran
+/// in THIS compiler frame (the site was lowered by an inner compiler), so the
+/// shared predicate is the answer.
+///
+/// **Every uncertain case takes the leak-safe verdict `false`** — suppress the
+/// dec. A `true` the producer did not actually back with an inc is a spurious
+/// dec, i.e. the UAF direction; a suppressed dec is at worst a leak.
+///
+/// The DISAGREEMENT arm (`Some(Some(recorded))` with `recorded != derived`) is
+/// the one FIXME 0751 corrected. Its rustdoc used to claim a release build
+/// "degrades to the producer's truth rather than to a guess" — but a
+/// disagreement is precisely the state in which the seam does NOT know that the
+/// record belongs to THIS site. The reachable shape: two COW sites share a
+/// synthetic span; site A ran the producer and recorded `Some(true)`; site B —
+/// the node being asked about — never recorded (its lowering took the
+/// non-last-use copy path, which never calls `cow_source_ownership`, so no
+/// collapse to the ambiguous marker happened); `derived(B) = false`. Returning
+/// the record then fires B's dec with no inc behind it. The record is a
+/// DIFFERENT SITE's truth, so it gets the same polarity the ambiguous arm
+/// already had.
+pub(crate) fn reconcile_cow_retain_verdict(
+    recorded: Option<Option<bool>>,
+    derived: bool,
+    span: Span,
+) -> bool {
+    match recorded {
+        // Agreement: the producer emitted exactly what this seam derived.
+        Some(Some(recorded)) if recorded == derived => recorded,
+        // Disagreement: loud in development, leak-safe in release.
+        Some(Some(recorded)) => {
+            debug_assert!(
+                false,
+                "FIXME 0693 disagreement fence: the COW producer \
+                 (vec_codegen::cow_source_ownership) recorded retain_reused={recorded} at \
+                 span {span:?}, but the R3 match-consume seam's shared-predicate derivation \
+                 says {derived}. The two sides of the §13.7 escape gate MUST agree — a \
+                 consumer-side `true` without a producer inc is a spurious dec (UAF)."
+            );
+            false
         }
+        // Ambiguous span (two COW sites under one synthetic span).
+        Some(None) => false,
+        // The producer did not run in THIS compiler frame. Fall back to the
+        // shared predicate — the same answer the consolidated gate gives, never
+        // a re-derivation from the callee spelling.
+        None => derived,
     }
 }
 
@@ -1610,17 +1644,16 @@ pub(crate) fn param_flush_exempts_inplace_cow(
 /// source is the bare `Var` `name`? Such an op can return `name`'s OWN box when it
 /// reuses in place, so the MS-P8 param-flush must not dec that param (the box is
 /// carried forward). Free fn (no liveness) — a pure AST-shape predicate.
+///
+/// The COW-site identity comes from [`cow_site_source`] — the RESOLUTION
+/// CARRIER, shared with the §13.7 gate (FIXME 0752 / Principle 24). A user fn
+/// that merely SPELLS `vec-set` is not an in-place COW, and exempting its param
+/// from the flush would suppress a dec that is owed.
 pub(crate) fn arg_is_inplace_cow_on(arg: &MonoExpr, name: &Symbol) -> bool {
-    let MonoExpr::Apply { callee, args, .. } = arg else {
+    let Some((source, _)) = crate::compiler::vec_codegen::cow_site_source(arg) else {
         return false;
     };
-    let MonoExpr::Var { name: c, .. } = callee.as_ref() else {
-        return false;
-    };
-    if !matches!(c.as_ref(), "vec-set" | "vec-push") {
-        return false;
-    }
-    matches!(args.first(), Some(MonoExpr::Var { name: s, .. }) if s == name)
+    matches!(source, MonoExpr::Var { name: s, .. } if s == name)
 }
 
 /// Structural: does `body` forward the binding `name` out as its value? True for
@@ -1836,11 +1869,31 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// alias any scope binding? (The item-26 return-protect predicate; the license
 /// for suppressing `protect_return_value`, S115 W3 change-set 2 / FIXME 0696.)
 ///
-/// True for a `ConstrADT` node and for an `Apply` whose callee resolves to a
-/// constructor (`is_ctor` hits its carrier) — both mint a fresh box. A general
-/// `Apply` (a user/trait call) may RETURN an aliased argument (e.g. `(id x)`),
-/// so it is NOT fresh and still needs the return-protect — the §2.1 fence's
-/// G2/item-26 class, deliberately untouched.
+/// True for every **box-minting** node kind — the node's own lowering
+/// unconditionally allocates: `ConstrADT`, `Lambda` (`compile_lambda`),
+/// `StringLit`, `VecLit` (`compile_vec_lit`), an `Apply` whose callee resolves
+/// to a constructor (`is_ctor` hits its carrier), and an `Apply` carrying the
+/// `ResolvedCall::AutoCurry` resolution (`compile_auto_curry` `emit_alloc`s a
+/// fresh curry env on every arm). A general `Apply` (a user/trait call) may
+/// RETURN an aliased argument (e.g. `(id x)`), so it is NOT fresh and still
+/// needs the return-protect — the §2.1 fence's G2/item-26 class, deliberately
+/// untouched.
+///
+/// **FIXME 0749** widened the kind set from the two constructor shapes. Before
+/// it, `Lambda`/`StringLit` were recognised by an ad-hoc `matches!` at the ONE
+/// `protect_return_value` call site — fresh at depth 0, NOT fresh through a
+/// `let` — and `VecLit`/auto-curry were not recognised anywhere. Every one of
+/// those gaps was a live per-iteration leak the moment the minted box was
+/// returned through binding indirection and consumed as a temporary by the
+/// caller: the protect inc has no balancing dec, because the value is not a
+/// scope binding for cleanup to dec and the caller's consuming dec is single.
+/// Measured (100 iterations, `PrimitivesOnly`, `--run`):
+/// `(defn mk [] (let [g (fn [a b] …)] (g 1)))` + `((mk) 2)` → allocs=201
+/// deallocs=1 (the curry env AND its captured target stranded);
+/// a lambda returned through two `let`s → allocs=301 deallocs=101;
+/// a `VecLit` returned through one `let` → allocs=201 deallocs=101.
+/// The kind set is the single source of freshness truth (Principle 7) —
+/// `protect_return_value` no longer carries its own list.
 ///
 /// Binding-indirection and control-flow joins FORWARD freshness:
 /// - `Let` — a fresh construction returned through nested `let`s is still
@@ -1863,11 +1916,30 @@ pub(crate) fn is_fresh_construction(
     is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
 ) -> bool {
     match body {
-        MonoExpr::ConstrADT { .. } => true,
-        MonoExpr::Apply { callee, .. } => match callee.as_ref() {
-            MonoExpr::Var { resolution: VarRef::Global(fq), .. } => is_ctor(fq),
-            _ => false,
-        },
+        // The box-MINTING node kinds: each unconditionally allocates a brand-new
+        // box in its own lowering, so none can alias a scope binding.
+        MonoExpr::ConstrADT { .. }
+        | MonoExpr::Lambda { .. }
+        | MonoExpr::StringLit { .. }
+        | MonoExpr::VecLit { .. } => true,
+        // An `Apply` is fresh iff its RESOLUTION CARRIER says it mints a box:
+        // a constructor call, or an auto-curry (whose lowering
+        // `compile_auto_curry` allocates a fresh curry env on every arm). Any
+        // other call may RETURN an aliased argument (`(id x)`), so it is not
+        // fresh — the identity comes from the carrier, never the callee's
+        // spelling or shape (Principle 24).
+        MonoExpr::Apply { callee, resolved_call, .. } => {
+            if matches!(
+                resolved_call.as_deref(),
+                Some(cranelisp_types::ResolvedCall::AutoCurry { .. })
+            ) {
+                return true;
+            }
+            match callee.as_ref() {
+                MonoExpr::Var { resolution: VarRef::Global(fq), .. } => is_ctor(fq),
+                _ => false,
+            }
+        }
         MonoExpr::Let { body, .. } => is_fresh_construction(body, is_ctor),
         MonoExpr::If { then_branch, else_branch, .. } => {
             is_fresh_construction(then_branch, is_ctor)
@@ -1876,7 +1948,26 @@ pub(crate) fn is_fresh_construction(
         MonoExpr::Match { arms, .. } => {
             !arms.is_empty() && arms.iter().all(|arm| is_fresh_construction(&arm.body, is_ctor))
         }
-        _ => false,
+        // EXHAUSTIVE, deliberately (no `_ =>`) — the standing instrument for
+        // this predicate. The 0749 leak was a node kind that MINTS a box being
+        // silently swept into a catch-all "not fresh", which emits a protect
+        // inc no dec can balance. A new `MonoExpr` variant must now be
+        // classified here explicitly rather than defaulting to a leak.
+        //
+        // Not fresh, each for its own reason:
+        //  - `Var` IS a scope binding (the exact thing the protect exists for);
+        //  - scalar literals are never heap, so the protect is a no-op anyway;
+        //  - `Trace` forwards its inner expression's value — it may be a
+        //    binding;
+        //  - `ParBind` / `LaunchContinue` yield a joined/continued value whose
+        //    provenance is not this frame's to claim.
+        MonoExpr::Var { .. }
+        | MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::Trace { .. }
+        | MonoExpr::ParBind { .. }
+        | MonoExpr::LaunchContinue { .. } => false,
     }
 }
 
@@ -2448,8 +2539,17 @@ pub(crate) fn return_is_fresh_by_summary(
 /// COW arm fires) and suppressing its scope-exit dec cannot strand a live
 /// reference. A more complex body (`v` used elsewhere, a COW inside an `if`/`let`,
 /// the element argument aliasing `v`) does NOT match — conservative,
-/// byte-identical to pre-fix. Reads the `Apply` callee `Var` name directly: the
-/// vec-query primitive names are canonical and never aliased at a value site.
+/// byte-identical to pre-fix.
+///
+/// **The COW-site identity comes from [`cow_site_source`]** — the RESOLUTION
+/// CARRIER, shared with the §13.7 gate (FIXME 0752 / Principle 24). It used to
+/// read the callee `Var`'s written name, defended by "the vec-query primitive
+/// names are canonical and never aliased at a value site" — the claim FIXME
+/// 0693 falsified for the sibling seam. This site is the sharper one of the
+/// pair: its product [`FnCompiler::return_cow_source`] is an INPUT to
+/// `cow_source_is_borrowed`, so a user fn spelled `vec-set` perturbed the
+/// CONSOLIDATED gate from one level upstream.
+///
 /// Free function (not an associated fn) so the ownership DECISION is unit-testable
 /// without constructing a generic `FnCompiler` — the `return_is_fresh_by_summary`
 /// precedent.
@@ -2457,16 +2557,8 @@ pub(crate) fn return_cow_source_in_scope(
     body: &MonoExpr,
     scope_frame: Option<&Vec<Symbol>>,
 ) -> Option<Symbol> {
-    let MonoExpr::Apply { callee, args, .. } = body else {
-        return None;
-    };
-    let MonoExpr::Var { name: callee_name, .. } = callee.as_ref() else {
-        return None;
-    };
-    if !matches!(callee_name.as_ref(), "vec-set" | "vec-push") {
-        return None;
-    }
-    let Some(MonoExpr::Var { name: src, .. }) = args.first() else {
+    let (source, _) = crate::compiler::vec_codegen::cow_site_source(body)?;
+    let MonoExpr::Var { name: src, .. } = source else {
         return None;
     };
     let frame = scope_frame?;
@@ -2500,13 +2592,21 @@ mod return_cow_source_tests {
         }
     }
 
+    /// A COW site as typecheck RESOLVES it — carrier present (FIXME 0752 / P24).
     fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
+        cow_call_carrier(prim, src, Some(prim))
+    }
+
+    /// `carrier: None` = a user-defined fn that merely SPELLS `prim`.
+    fn cow_call_carrier(prim: &str, src: MonoExpr, carrier: Option<&str>) -> MonoExpr {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(var(prim)),
             args: vec![src, var("i"), var("x")],
             span: Span::new(0, 9),
-            resolved_call: None,
+            resolved_call: carrier.map(|n| {
+                Box::new(cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from(n) })
+            }),
             ty: ConcreteType::ADT(
                 cranelisp_types::FQTypeName::new(
                     cranelisp_types::ModuleFullPath::from("primitives"),
@@ -2570,6 +2670,30 @@ mod return_cow_source_tests {
         let f = frame(&["v", "i"]);
         assert_eq!(
             return_cow_source_in_scope(&cow_call("vec-get", var("v")), Some(&f)),
+            None
+        );
+    }
+
+    // spec: FIXME 0752 (NEGATIVE, the SHARP cell) — this producer FEEDS the
+    // consolidated R3 gate (`return_cow_source` is an input to
+    // `cow_source_is_borrowed`), so a spelling read here re-opens the exact
+    // channel 0693 closed, one level upstream. A user fn named `vec-set` must
+    // not make its argument the function's return-COW-source: that would
+    // suppress a scope-exit dec nothing else discharges AND flip a real COW
+    // site's copy branch to `Owned`.
+    #[test]
+    fn a_user_fn_spelled_vec_set_is_not_the_return_cow_source_neg() {
+        let f = frame(&["v", "i", "x"]);
+        assert_eq!(
+            return_cow_source_in_scope(&cow_call_carrier("vec-set", var("v"), None), Some(&f)),
+            None
+        );
+        // ...and the carrier's NAME is what is read, not the callee Var's.
+        assert_eq!(
+            return_cow_source_in_scope(
+                &cow_call_carrier("vec-set", var("v"), Some("vec-get")),
+                Some(&f)
+            ),
             None
         );
     }
@@ -2855,13 +2979,26 @@ mod binding_indirection_classifier_tests {
         }
     }
 
+    /// A COW site as typecheck RESOLVES it — carrier present
+    /// (`ResolvedCall::BuiltinFn`), which is what identifies a COW builtin
+    /// (FIXME 0752 / P24).
     fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
+        cow_call_carrier(prim, src, Some(prim))
+    }
+
+    /// A call that merely SPELLS `prim` but resolved elsewhere. `carrier: None`
+    /// is the user-defined fn named `vec-set` (legal under
+    /// `PreludeVariant::None`) — the latent channel FIXME 0693 closed at the R3
+    /// seam and 0752 closed here.
+    fn cow_call_carrier(prim: &str, src: MonoExpr, carrier: Option<&str>) -> MonoExpr {
         MonoExpr::Apply {
             dispatch: cranelisp_types::ApplyRef::ViaCallee,
             callee: Box::new(var(prim)),
             args: vec![src, var("i"), var("x")],
             span: Span::new(0, 1),
-            resolved_call: None,
+            resolved_call: carrier.map(|n| {
+                Box::new(cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from(n) })
+            }),
             ty: ConcreteType::Int,
             escapes: None,
             confined: None,
@@ -2887,6 +3024,26 @@ mod binding_indirection_classifier_tests {
         assert!(!arg_is_inplace_cow_on(&cow_call("conj", var("v")), &p));
         // A non-COW primitive is not skipped.
         assert!(!arg_is_inplace_cow_on(&cow_call("vec-get", var("v")), &p));
+    }
+
+    // spec: FIXME 0752 (NEGATIVE, the load-bearing cell) — COW-site identity at
+    // the MS-P8 param-flush seam comes from the RESOLUTION CARRIER, never the
+    // callee's written spelling. A user fn literally named `vec-set` (legal
+    // under `PreludeVariant::None`) is NOT an in-place COW: exempting its param
+    // from the tail-jump flush suppresses a dec that IS owed (a leak), and the
+    // "the vec primitive names are canonical" rationale is the claim 0693
+    // falsified for the sibling seam.
+    #[test]
+    fn a_user_fn_spelled_vec_set_is_not_an_inplace_cow_neg() {
+        use super::{arg_is_inplace_cow_on, param_flush_exempts_inplace_cow};
+        let p = Symbol::from("v");
+        let spelled = cow_call_carrier("vec-set", var("v"), None);
+        assert!(!arg_is_inplace_cow_on(&spelled, &p));
+        assert!(!param_flush_exempts_inplace_cow(&[spelled], &p, false));
+        // ...and a COW SPELLING that resolved to a different builtin is likewise
+        // not a COW site (the carrier's NAME is read, not the callee Var's).
+        let mislabelled = cow_call_carrier("vec-set", var("v"), Some("vec-get"));
+        assert!(!arg_is_inplace_cow_on(&mislabelled, &p));
     }
 
     // MS-P8 exemption matrix (FIXMEs 0691, 0695) — the param-flush in-place-COW
@@ -3210,6 +3367,116 @@ mod rc_release_sweep_tests {
         assert!(!is_fresh_construction(&match_of(var("g"), vec![]), &is_ctor));
     }
 
+    // ---- 1b. the box-MINTING node kinds (FIXME 0749) -----------------------
+
+    /// An `Apply` carrying the `AutoCurry` resolution — `compile_auto_curry`
+    /// unconditionally `emit_alloc`s a fresh curry env for every arm.
+    fn auto_curry_apply(callee: MonoExpr) -> MonoExpr {
+        let MonoExpr::Apply { callee, args, span, dispatch, ty, .. } = apply(callee, vec![])
+        else {
+            unreachable!()
+        };
+        MonoExpr::Apply {
+            callee,
+            args,
+            span,
+            resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::AutoCurry {
+                target_name: Symbol::from("g"),
+                applied_count: 1,
+                total_count: 2,
+                trait_resolution: None,
+            })),
+            dispatch,
+            ty,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
+        }
+    }
+
+    fn lambda() -> MonoExpr {
+        MonoExpr::Lambda {
+            params: vec![],
+            body: Box::new(var("x")),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+        }
+    }
+
+    fn string_lit() -> MonoExpr {
+        MonoExpr::StringLit {
+            value: "hi".to_string(),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+        }
+    }
+
+    fn vec_lit() -> MonoExpr {
+        MonoExpr::VecLit {
+            elements: vec![],
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+        }
+    }
+
+    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.1 / FIXME 0749 — the
+    // freshness predicate covers EVERY box-minting node kind, not just the two
+    // constructor shapes. `Lambda`/`StringLit` were recognised only by an
+    // ad-hoc `matches!` at the ONE call site, so they were fresh at depth 0 and
+    // NOT fresh through a `let`; `VecLit` and the auto-curry `Apply` were not
+    // recognised at all. Each mints a brand-new box that cannot alias a scope
+    // binding, so each needs no return-protect.
+    #[test]
+    fn every_box_minting_node_kind_is_fresh() {
+        assert!(is_fresh_construction(&lambda(), &is_ctor));
+        assert!(is_fresh_construction(&string_lit(), &is_ctor));
+        assert!(is_fresh_construction(&vec_lit(), &is_ctor));
+        assert!(is_fresh_construction(&auto_curry_apply(var("g")), &is_ctor));
+    }
+
+    // spec: §2.1 / FIXME 0749 — the SCALE-INVARIANCE half: a minted box returned
+    // through binding indirection is still fresh. This is the measured leak —
+    // `(defn mk [] (let [g (fn [a b] …)] (g 1)))` returned a curry env carrying
+    // an unbalanceable protect inc, so neither it nor its captured target was
+    // ever freed (allocs=201 deallocs=1 over 100 iterations); the plain-lambda
+    // twin leaked identically at TWO `let`s of depth.
+    #[test]
+    fn minted_boxes_forward_freshness_through_binding_indirection() {
+        assert!(is_fresh_construction(&let_of(auto_curry_apply(var("g"))), &is_ctor));
+        assert!(is_fresh_construction(&let_of(let_of(lambda())), &is_ctor));
+        assert!(is_fresh_construction(&let_of(let_of(string_lit())), &is_ctor));
+        assert!(is_fresh_construction(&let_of(vec_lit()), &is_ctor));
+        assert!(is_fresh_construction(
+            &match_of(var("g"), vec![lambda(), auto_curry_apply(var("h"))]),
+            &is_ctor
+        ));
+    }
+
+    // spec: §2.1 fence (NEGATIVE) — the widening keys on the RESOLUTION CARRIER
+    // (`ResolvedCall::AutoCurry`), never on the callee's shape or spelling. A
+    // full application through the same local-closure callee mints nothing of
+    // its own and may return an aliased argument, so it keeps its protect.
+    #[test]
+    fn a_non_curry_apply_through_the_same_callee_is_not_fresh_neg() {
+        assert!(!is_fresh_construction(&apply(var("g"), vec![var("x")]), &is_ctor));
+        assert!(!is_fresh_construction(&let_of(apply(var("g"), vec![])), &is_ctor));
+        // ...and one non-minting arm still poisons the join.
+        assert!(!is_fresh_construction(
+            &match_of(var("g"), vec![lambda(), var("v")]),
+            &is_ctor
+        ));
+    }
+
     // ---- 2. TCO borrowed-param promotion trigger ---------------------------
 
     // spec: design/backend/s115-carrier-and-rc-sweep.md §2.2 (FIXME 0720) — a bare
@@ -3275,5 +3542,72 @@ mod rc_release_sweep_tests {
         // ...and the SECOND position of that same call IS superseded (the walk
         // reaches nested calls, so the detection is not accidentally position-blind).
         assert!(self_call_supersedes_param(&carry_only, &go, &module, 1, &Symbol::from("n")));
+    }
+}
+
+#[cfg(test)]
+mod cow_retain_reconciliation_tests {
+    //! FIXME 0693 / 0751 — the record-vs-derivation reconciliation at the R3
+    //! COW dec-side seam ([`reconcile_cow_retain_verdict`]).
+    //!
+    //! Sibling of `vec_codegen/cow_gate_tests.rs`, which pins the two PURE
+    //! predicates the producer and consumer share; this module pins what the
+    //! consumer does with the producer's span-keyed RECORD on top of them.
+    //!
+    //! The load-bearing cell is the DISAGREEMENT arm. It resolved to the
+    //! recorded verdict (rustdoc: "degrades to the producer's truth"), which is
+    //! only true when the record belongs to the same site — and disagreement is
+    //! exactly the state in which the seam cannot know that. A recorded `true`
+    //! with a derived `false` then fired a dec with no producer inc behind it —
+    //! the spurious-dec/UAF channel 0693 was opened to close, and the polarity
+    //! the sibling ambiguity arm already had right.
+
+    use super::reconcile_cow_retain_verdict;
+    use cranelisp_types::Span;
+
+    // spec: design/backend/ownership-codegen.md §13.7 — agreement is a pass-through
+    // in BOTH polarities (the byte-identical fence: the overwhelmingly common
+    // case must be untouched by the 0751 correction).
+    #[test]
+    fn agreement_passes_the_verdict_through() {
+        assert!(reconcile_cow_retain_verdict(Some(Some(true)), true, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(Some(Some(false)), false, Span::SYNTHETIC));
+    }
+
+    // spec: §13.7 — an ambiguous span (two COW sites collapsed under one
+    // synthetic span) takes the leak-safe verdict.
+    #[test]
+    fn ambiguous_record_is_leak_safe() {
+        assert!(!reconcile_cow_retain_verdict(Some(None), true, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(Some(None), false, Span::SYNTHETIC));
+    }
+
+    // spec: §13.7 — an ABSENT record means the producer ran in another compiler
+    // frame; the shared predicate is then the answer, in both polarities.
+    #[test]
+    fn absent_record_falls_back_to_the_shared_predicate() {
+        assert!(reconcile_cow_retain_verdict(None, true, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(None, false, Span::SYNTHETIC));
+    }
+
+    // spec: §13.7 / FIXME 0751 — DEBUG builds keep the loud fence: a
+    // producer/consumer disagreement is a compiler-invariant breach and must be
+    // impossible to miss in development.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "disagreement fence")]
+    fn disagreement_trips_the_debug_fence() {
+        let _ = reconcile_cow_retain_verdict(Some(Some(true)), false, Span::SYNTHETIC);
+    }
+
+    // spec: §13.7 / FIXME 0751 — RELEASE builds take the LEAK-SAFE verdict, not
+    // the record. The record belongs to a DIFFERENT site (that is what
+    // disagreement means), so trusting it emits a dec with no inc behind it.
+    // Both directions of the disagreement resolve to `false`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn disagreement_takes_the_leak_safe_verdict_in_release_neg() {
+        assert!(!reconcile_cow_retain_verdict(Some(Some(true)), false, Span::SYNTHETIC));
+        assert!(!reconcile_cow_retain_verdict(Some(Some(false)), true, Span::SYNTHETIC));
     }
 }

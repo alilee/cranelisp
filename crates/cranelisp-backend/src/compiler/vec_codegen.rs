@@ -171,6 +171,23 @@ pub(crate) fn is_cow_vec_op(name: &str) -> bool {
     matches!(name, "vec-set" | "vec-push")
 }
 
+/// Is this COW source a value with a **separate owner** — i.e. a `Var` (a scope
+/// binding that will be scope-dec'd independently, unlike a fresh producing
+/// temporary whose sole reference transfers) that is NOT the function's
+/// return-COW-source (whose copy branch releases it itself)?
+///
+/// The ONE shape test behind both toggle faces (FIXME 0752): analysis-ON it is
+/// the `Borrowed` classification ([`cow_source_is_borrowed`]); analysis-OFF it
+/// is the R14 force-count condition
+/// (`FnCompiler::cow_source_needs_toggle_off_count`). Same concept, inverted
+/// toggle — one body.
+pub(crate) fn cow_source_has_separate_owner(
+    source: &MonoExpr,
+    return_cow_source: Option<&Symbol>,
+) -> bool {
+    matches!(source, MonoExpr::Var { name, .. } if return_cow_source != Some(name))
+}
+
 /// Is this COW source classified `Borrowed` (as opposed to `Owned`)? The
 /// producer's classification, extracted verbatim: analysis-ON, a `Var` source
 /// (a fresh producing temporary transfers its sole reference ⇒ `Owned`), and
@@ -180,15 +197,9 @@ pub(crate) fn cow_source_is_borrowed(
     return_cow_source: Option<&Symbol>,
     analysis_off: bool,
 ) -> bool {
-    if analysis_off {
-        // R14: toggle-off is the conservative all-`Owned` lowering; `Borrowed`
-        // is unreachable, so no retention inc exists to balance.
-        return false;
-    }
-    let MonoExpr::Var { name, .. } = source else {
-        return false;
-    };
-    return_cow_source != Some(name)
+    // R14: toggle-off is the conservative all-`Owned` lowering; `Borrowed`
+    // is unreachable, so no retention inc exists to balance.
+    !analysis_off && cow_source_has_separate_owner(source, return_cow_source)
 }
 
 /// Does this COW site emit the §13.7 mutate/grow-branch retention inc on the
@@ -217,6 +228,30 @@ pub(crate) fn cow_site_retain_verdict(
     return_cow_source: Option<&Symbol>,
     analysis_off: bool,
 ) -> Option<bool> {
+    let (source, escapes) = cow_site_source(node)?;
+    Some(cow_retains_reused_gate(source, escapes, return_cow_source, analysis_off))
+}
+
+/// **The ONE "is this node a COW-builtin site, and what is its source?"
+/// question** — `Some((source, escape fact))` iff `node` is an `Apply` that
+/// TYPECHECK RESOLVED to a COW vec builtin (`ResolvedCall::BuiltinFn` naming
+/// `vec-set`/`vec-push`), exactly as the producer's own dispatch keys
+/// (`compile_resolved_call`'s `BuiltinFn` arm → `is_vec_primitive` →
+/// `compile_vec_op`).
+///
+/// `None` ⇒ not a COW-builtin site: a non-`Apply`, a **user-defined fn that
+/// merely SPELLS `vec-set`** (legal under `PreludeVariant::None`), a non-COW
+/// builtin, or a trait/sig/curry dispatch.
+///
+/// **FIXME 0752.** 0693 routed the R3 dec-side seam onto the carrier but left
+/// two consumers of this same identity question reading the callee's written
+/// spelling: `fn_compiler::arg_is_inplace_cow_on` (behind the MS-P8 param-flush
+/// exemption) and `fn_compiler::return_cow_source_in_scope` — the sharper of
+/// the two, because its product `return_cow_source` is an INPUT to
+/// [`cow_source_is_borrowed`], so the spelling channel persisted one level
+/// upstream of the consolidated gate. Both now call this. Principle 24: the
+/// name is a trigger, the CARRIER is the identity.
+pub(crate) fn cow_site_source(node: &MonoExpr) -> Option<(&MonoExpr, Option<bool>)> {
     let MonoExpr::Apply { resolved_call, args, escapes, .. } = node else {
         return None;
     };
@@ -226,8 +261,7 @@ pub(crate) fn cow_site_retain_verdict(
     if !is_cow_vec_op(name.as_ref()) {
         return None;
     }
-    let source = args.first()?;
-    Some(cow_retains_reused_gate(source, *escapes, return_cow_source, analysis_off))
+    Some((args.first()?, *escapes))
 }
 
 /// Read the increment-II `unique_static` write-path proof off a **fresh-
@@ -804,11 +838,10 @@ where
     /// temps (no separate owner — they transfer). Off ⇒ never (analysis-ON uses
     /// the escape-gated mutate inc instead).
     fn cow_source_needs_toggle_off_count(&self, vec_expr: &MonoExpr) -> bool {
+        // The toggle-INVERTED face of `cow_source_is_borrowed` — same shape
+        // test, shared body (FIXME 0752).
         cranelisp_types::ownership_analysis_off()
-            && matches!(
-                vec_expr,
-                MonoExpr::Var { name, .. } if self.return_cow_source.as_ref() != Some(name)
-            )
+            && cow_source_has_separate_owner(vec_expr, self.return_cow_source.as_ref())
     }
 
     fn resolve_elem_dec_fn_ptr(

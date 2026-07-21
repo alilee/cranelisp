@@ -895,11 +895,11 @@ function %eliminate-from-peers(i64, i64, i64) -> i64 system_v {
     gv1 = symbol userextname0
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64, i64, i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
+    sig2 = (i64, i64) system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64, i64) system_v
     sig5 = (i64) -> i64 system_v
-    fn0 = u0:1 sig2
+    fn0 = u0:14 sig2
     fn1 = colocated u0:81 sig3
     fn2 = u0:14 sig4
     fn3 = u0:1 sig5
@@ -921,15 +921,16 @@ block1(v3: i64, v4: i64, v5: i64):
     v15 = iadd_imm v14, 200
     v16 = load.i64 notrap aligned v15
     v17 = call_indirect sig1, v16(v3, v12, v5, v13)  ; v13 = 0
-    v18 = iadd_imm v12, 8
-    v19 = iconst.i64 1
-    v20 = atomic_rmw.i64 sub v18, v19  ; v19 = 1
-    v21 = icmp eq v20, v19  ; v19 = 1
-    brif v21, block3, block2
+    v18 = iconst.i64 0
+    v19 = iadd_imm v12, 8
+    v20 = iconst.i64 1
+    v21 = atomic_rmw.i64 sub v19, v20  ; v20 = 1
+    v22 = icmp eq v21, v20  ; v20 = 1
+    brif v22, block3, block2
 
 block3:
     fence 
-    v22 = call fn0(v12)
+    call fn0(v12, v18)  ; v18 = 0
     jump block2
 
 block2:
@@ -4668,6 +4669,9 @@ function %solve-range(i64, i64, i64, i64, i64) -> i64 system_v {
     sig24 = (i64, i64, i64, i64, i64) -> i64 system_v
     sig25 = (i64, i64) -> i64 system_v
     sig26 = (i64) -> i64 system_v
+    sig27 = (i64, i64) system_v
+    sig28 = (i64) -> i64 system_v
+    sig29 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
     fn1 = u0:0 sig1
     fn2 = u0:21 sig4
@@ -4686,7 +4690,10 @@ function %solve-range(i64, i64, i64, i64, i64) -> i64 system_v {
     fn15 = u0:19 sig17
     fn16 = u0:20 sig18
     fn17 = u0:1 sig20
-    fn18 = u0:1 sig26
+    fn18 = colocated u0:81 sig26
+    fn19 = u0:14 sig27
+    fn20 = u0:1 sig28
+    fn21 = u0:1 sig29
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):
     jump block1(v0, v1, v2, v3, v4)
@@ -4865,7 +4872,34 @@ block18:
 
 block19:
     fence 
-    v120 = call fn18(v101)
+    v120 = load.i64 notrap aligned v101+24
+    v121 = iadd_imm v120, 8
+    v122 = iconst.i64 1
+    v123 = atomic_rmw.i64 sub v121, v122  ; v122 = 1
+    v124 = icmp eq v123, v122  ; v122 = 1
+    brif v124, block21, block20
+
+block21:
+    fence 
+    v125 = load.i64 notrap aligned v120+24
+    v126 = func_addr.i64 fn18
+    v127 = iadd_imm v125, 8
+    v128 = iconst.i64 1
+    v129 = atomic_rmw.i64 sub v127, v128  ; v128 = 1
+    v130 = icmp eq v129, v128  ; v128 = 1
+    brif v130, block23, block22
+
+block23:
+    fence 
+    call fn19(v125, v126)
+    jump block22
+
+block22:
+    v131 = call fn20(v120)
+    jump block20
+
+block20:
+    v132 = call fn21(v101)
     jump block17
 
 block17:

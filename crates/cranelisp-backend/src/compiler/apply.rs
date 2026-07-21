@@ -60,7 +60,13 @@ pub(crate) fn tail_transfer_skip(args: &[MonoExpr]) -> std::collections::HashSet
 /// A compiled argument value paired with the [`HeapCategory`] to release it by
 /// — the element of a §3.1 post-call dec list (a temporary passed to a
 /// `Borrowed` param that the callee/adapter will not dec).
-type PostCallDec = (Value, HeapCategory);
+/// A `Borrowed`-param temporary awaiting its post-call release: the value, its
+/// heap category, and its TYPE — the type is what decides the teardown
+/// ([`FnCompiler::emit_typed_rc_dec`]); without it the release was a bare
+/// dec+dealloc that stranded the temporary's fields / elements / captures
+/// (FIXME 0753). `None` where no authoritative type is in hand (a forced spark
+/// result), which keeps the plain dec.
+type PostCallDec = (Value, HeapCategory, Option<cranelisp_types::Type>);
 
 /// Result of [`FnCompiler::compile_consuming_arg_list_moded`]: the compiled arg
 /// values and the post-call decs owed after the call returns.
@@ -1251,7 +1257,7 @@ where
                 if mode == cranelisp_types::Mode::Borrowed {
                     // The forced value is a heap IVar result (rc=1); guarded dec
                     // is layout-safe whether AlwaysHeap or Mixed.
-                    post_call_decs.push((forced, HeapCategory::Mixed));
+                    post_call_decs.push((forced, HeapCategory::Mixed, None));
                 }
                 vals.push(forced);
                 continue;
@@ -1323,8 +1329,12 @@ where
                         &mut self.builder, self.module, val, atomicity,
                     )
                 }
-                ModedArgRc::PostDec => post_call_decs.push((val, HeapCategory::AlwaysHeap)),
-                ModedArgRc::PostDecGuarded => post_call_decs.push((val, HeapCategory::Mixed)),
+                ModedArgRc::PostDec => {
+                    post_call_decs.push((val, HeapCategory::AlwaysHeap, Some(arg.ty().to_type())))
+                }
+                ModedArgRc::PostDecGuarded => {
+                    post_call_decs.push((val, HeapCategory::Mixed, Some(arg.ty().to_type())))
+                }
             }
 
             vals.push(val);
@@ -1339,22 +1349,27 @@ where
     /// dec per the recorded [`HeapCategory`].
     fn emit_post_call_decs(&mut self, decs: &[PostCallDec]) {
         let dealloc_id = self.ctx.dealloc_func_id;
-        for (val, category) in decs {
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_dec(&mut self.builder, self.module, *val, dealloc_id, None);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_dec_guarded(
-                        &mut self.builder,
-                        self.module,
-                        *val,
-                        dealloc_id,
-                        None,
-                        true,
-                    );
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
+        for (val, category, ty) in decs {
+            let guarded = match category {
+                HeapCategory::AlwaysHeap => false,
+                HeapCategory::Mixed => true,
+                HeapCategory::NeverHeap | HeapCategory::Value => continue,
+            };
+            // FIXME 0753: release by TYPE. This was a bare `emit_rc_dec(.., None)`
+            // — it freed the temporary's own box and stranded whatever the box
+            // owned. Measured on `(deftype G2 (Gr [cells])) (defn peek [g] 7)
+            // (defn main [] (Pure (peek (Gr [5 5]))))`: analysis-ON allocs=3
+            // deallocs=2 (the `cells` vec never released), analysis-OFF 3/3 —
+            // because toggle-OFF has no `Borrowed` mode, so the callee consumes
+            // the arg and its scope cleanup runs the ADT drop glue. That toggle
+            // asymmetry is exactly what made the 0720 face carry a constant
+            // residual of 1 under one toggle only.
+            match ty {
+                Some(ty) => self.emit_typed_rc_dec(*val, ty, dealloc_id, guarded),
+                None if guarded => heap::emit_rc_dec_guarded(
+                    &mut self.builder, self.module, *val, dealloc_id, None, true,
+                ),
+                None => heap::emit_rc_dec(&mut self.builder, self.module, *val, dealloc_id, None),
             }
         }
     }

@@ -174,16 +174,23 @@ is what the unit tier pins (constructing a live `FnCompiler` is not needed).
 
 | Predicate | Home | Consumers | Why it is shared |
 |---|---|---|---|
-| `vec_codegen::cow_source_is_borrowed` / `cow_retains_reused_gate` / `cow_site_retain_verdict` | `vec_codegen.rs` | the COW producer `cow_source_ownership` (emits the §13.7 escape-inc) + the R3 dec-side seam `fn_compiler::scrutinee_cow_retains_reused` (emits the balancing dec) | the two sides of ONE gate. The consumer used to re-derive the site's identity from the **syntactic callee spelling** (`matches!(callee_name, "vec-set"\|"vec-push")`) — the resolver-mirror class, with a latent UAF: a user fn literally named `vec-set` made the name test true though the COW gate never ran. Identity now comes from the RESOLUTION CARRIER (`ResolvedCall::BuiltinFn`), P24. |
-| `fn_compiler::is_fresh_construction` | `fn_compiler.rs` | `protect_return_value` (fn-return AND match-arm protect sites) | the return-protect's only license is that the returned box cannot alias a scope binding. Keying it on the fn NAME (`== "main"`) was the 0632/P19 class; freshness is the real license, and it forwards through `let` and through control-flow joins (fresh iff EVERY arm is fresh). |
+| `vec_codegen::cow_site_source` (+ `cow_source_has_separate_owner` / `cow_source_is_borrowed` / `cow_retains_reused_gate` / `cow_site_retain_verdict`) | `vec_codegen.rs` | **all four** consumers of "is this a COW site": the producer `cow_source_ownership`, the R3 dec-side seam `fn_compiler::scrutinee_cow_retains_reused`, the MS-P8 flush exemption `fn_compiler::arg_is_inplace_cow_on`, and the return-source producer `fn_compiler::return_cow_source_in_scope` | ONE identity question. Every one of them used to re-derive it from the **syntactic callee spelling** (`matches!(callee_name, "vec-set"\|"vec-push")`) — the resolver-mirror class, with a latent UAF: a user fn literally named `vec-set` made the name test true though the COW gate never ran. S115 W3 converted the R3 seam (0693); **W3b converted the last two (0752)** — `return_cow_source_in_scope` was the sharp one, because its product FEEDS `cow_source_is_borrowed`, so the spelling channel persisted one level upstream of the "consolidated" gate. Identity comes from the RESOLUTION CARRIER (`ResolvedCall::BuiltinFn`), P24. `cow_source_needs_toggle_off_count` is the toggle-inverted face of `cow_source_is_borrowed` and shares its body. |
+| `fn_compiler::is_fresh_construction` | `fn_compiler.rs` | `protect_return_value` (fn-return AND match-arm protect sites) | the return-protect's only license is that the returned box cannot alias a scope binding. Keying it on the fn NAME (`== "main"`) was the 0632/P19 class; freshness is the real license, and it forwards through `let` and through control-flow joins (fresh iff EVERY arm is fresh). **W3b (0749)**: the predicate now covers EVERY box-minting kind (`ConstrADT`, ctor-`Apply`, **`Lambda`, `StringLit`, `VecLit`, auto-curry `Apply`**) and `protect_return_value` no longer carries its own `matches!` list — two lists of "what is fresh", of which the local one did not forward through `let`. The match is **exhaustive (no `_ =>`)**: that is the standing instrument, since a minting kind swept into a catch-all emits a protect inc nothing can balance. |
 | `apply::classify_auto_curry_target` | `apply.rs` | `compile_auto_curry_call` | the auto-curry seam's totality over the CLOSED carrier sums. The enum IS the totality claim — a new carrier state is a non-exhaustive-match compile error, never a `_ =>` fallthrough. |
+| `rc_emission::typed_release_kind` → `FnCompiler::emit_typed_rc_dec` | `rc_emission.rs` | the ADT drop-glue field walk (`emit_field_decs`) + the moded-arg post-call dec (`apply::emit_post_call_decs`) | **releasing a heap value is a function of its TYPE, not of the site** (W3b, 0753). Vec → `vec_drop` + per-element dec; ADT → recursive inline glue; `Fn` → the box's EMBEDDED `DROP_GLUE_PTR`; anything else → plain dec. A bare `heap::emit_rc_dec(.., None)` frees the box and STRANDS what it owns — that is the recurring leak shape, and `emit_post_call_decs` was doing exactly that for `Borrowed`-param temporaries. Vec is classified BEFORE ADT (a Vec is spelled `Type::ADT(Vec, [t])` but its elements live behind `DATA_PTR`). |
+| `control_flow::capture_rc::CaptureRelease` | `capture_rc.rs` | both capture drop-glue mirrors via `emit_capture_dec_glue` | the same "release by what it owns" rule for closure-env capture slots, which build in a SEPARATE Cranelift context and so cannot call the `&mut self` helpers above. Covers the closure-box case (0749 mechanism (b)); the nested-heap cases (a Vec-of-heap / ADT-with-heap-field capture) are still stranded — **FIXME 0760**. |
 
 **The R3 gate additionally DERIVES rather than re-derives**: `cow_source_ownership`
 records its emitted retain decision span-keyed into `FnCompiler::cow_retain_decisions`,
-and the match seam READS it; the shared predicate is then a `debug_assert_eq!`
-disagreement fence (a producer/consumer mismatch is the spurious-dec/UAF channel).
-A span collision collapses to the leak-safe verdict; an absent record (the
-producer ran in another compiler frame) falls back to the shared predicate.
+and the match seam READS it via `fn_compiler::reconcile_cow_retain_verdict`. The
+shared predicate is a `debug_assert!` disagreement fence (a producer/consumer
+mismatch is the spurious-dec/UAF channel). **Every uncertain case takes the
+leak-safe verdict `false`**: an ambiguous span collision, AND — since W3b /
+FIXME 0751 — a release-build disagreement. The old rustdoc claimed a
+disagreement "degrades to the producer's truth"; it degrades to a DIFFERENT
+SITE's truth, which is the UAF direction, so it now gets the polarity the
+ambiguity arm always had. An absent record (the producer ran in another
+compiler frame) falls back to the shared predicate.
 
 ## `got_data_symbol_name` is a FORWARD — never a second body
 
@@ -205,7 +212,14 @@ FIXME 0748 → `/arch`.
 Every persisted index deserialised from `.meta.json` is validated in the single
 per-entry loop in `cache/serialize.rs::deserialise_meta_with_build_id`, one arm +
 one distinct `CacheStale` class per family, and the census table lives in that
-module's `//!` rustdoc. Cache bytes are EXTERNAL data: every arm **diagnoses and
-recompiles**, never `assert!`s (contrast the in-process `store_slot`/`load_slot`
+module's `//!` rustdoc. **A census in prose is not an instrument** (W3b / FIXME
+0750: the summary-index row validated `MayAliasOf` — the one variant whose
+consumers all read through checked `.get(k)` — and missed `ProjectionOf`, whose
+consumer does a raw `args[k]`, i.e. the family's only genuine
+panic-on-disk-content path). Where a family is a closed sum, its arm goes
+through an EXHAUSTIVE match (`result_mode_param_index`) so a new variant is a
+compile error, not a silent escape. Cache bytes are EXTERNAL data: every arm
+**diagnoses and recompiles**, never `assert!`s (contrast the in-process
+`store_slot`/`load_slot`
 asserts). A new persisted index adds its row AND its arm in the change-set that
 introduces it — never a parallel walk.
