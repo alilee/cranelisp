@@ -401,17 +401,24 @@ fn safety_lane_if_joined_cow_arm_first_order_symmetry_twin_green() {
 
 // 0772 B1 — the `let`-mediated `If` join, COW binding in the SECOND arm.
 // `(let [w (vec-set v 0 1)] (vec-get (if b v w) 0))` on `[9 9 9]` with `b` =
-// false MUST return 1, abort-free, in every mode. Unlike the bare-`If` pair this
-// face aborts in BOTH arm orders (`--link` 134 "free(): chunks in smallbin
-// corrupted", 2/2 this VM at `bd5628a8`), so the row-4 union does not reach it
-// even when it survives the join: the may-alias link travels through the LET
-// BINDING env, and the join is over {param `v`, binding `w`}. A 0772 fix that
-// only stops `join_origin` discarding the union will flip the bare-`If` cell and
-// leave this one RED — that is the point of carrying both faces.
+// false MUST return 1, abort-free, in every mode. FIXED (S115 W4c) — GREEN
+// regression guard; the `_red` in the fn name is historical.
+//
+// RE-ATTRIBUTED (S115 W5a, FIXME 0781 item 1). This face was carried as a
+// `join_origin` row-2/row-4 composition gap ("the may-alias link travels through
+// the LET BINDING env"). It was not. The 0772 `join_origin` fix landed and left
+// this cell RED, and reduction showed neither `let` nor COW was necessary —
+// `(defn f [v b] (vec-get (if b v v) 0))` aborted identically. The real cause
+// was BACKEND: the RC-emission gates decided "is this container an owned
+// temporary?" from the container EXPRESSION's node kind, so any `If`/`Let`
+// yielding a borrowed value took the release path. Closed by routing all five
+// gates through `fn_compiler::value_provenance`. The lesson worth keeping: an
+// ownership-walk attribution asserted from the shape of the source, without a
+// reduction that removes the suspected mechanism, named the wrong crate.
 // spec: spec/12-runtime.md §12.1 — a `let`-bound COW `vec-set` result joined by
 // an `If` and read in the same frame returns the set value and is memory-safe in
 // all modes.
-// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::join_origin — let-bound may-alias link joined through an If is never projection-out forced (row 2 / row 4 composition through the binding env); aborts in BOTH arm orders; --run tolerated in-process / --link aborted; §3.7 MayAliasOf family face 3 found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_drop_if_temporary found=S115 owner=/dev
 #[test]
 fn safety_lane_let_bound_if_joined_cow_arm_second_returns_set_value_abort_free_red() {
     // --run: returns the correct set value 1.
@@ -440,16 +447,19 @@ fn safety_lane_let_bound_if_joined_cow_arm_second_returns_set_value_abort_free_r
         .assert_stdout_contains(":primitives/Int 1");
 }
 
-// 0772 B2 — the ARM-SWAPPED twin of B1, and the cell that proves the
+// 0772 B2 — the ARM-SWAPPED twin of B1, and the cell that proved the
 // `let`-mediated face is NOT an order artifact: `(if b w v)` with `b` = true
-// takes the same runtime branch and aborts with the SAME signature (`--link`
+// took the same runtime branch and aborted with the SAME signature (`--link`
 // 134 "free(): chunks in smallbin corrupted", 2/2 this VM at `bd5628a8`). Both
-// orders RED here, both orders MUST end GREEN — the pair pins order-independence
-// on this face the way A1/A2 pins it on the bare-`If` face.
+// orders were RED, both are now GREEN — the pair pins order-independence on this
+// face the way A1/A2 pins it on the bare-`If` face. Order-independence was in
+// fact the first clue that the join was not the mechanism (see B1's
+// re-attribution note above). FIXED S115 W4c; the `_red` in the fn name is
+// historical.
 // spec: spec/12-runtime.md §12.1 — a `let`-bound COW `vec-set` result joined by
 // an `If` and read in the same frame returns the set value and is memory-safe in
 // all modes, independently of arm order.
-// defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::join_origin — let-bound may-alias link joined through an If, arm-swapped twin of B1; aborts in BOTH arm orders; --run tolerated in-process / --link aborted; §3.7 MayAliasOf family face 3 found=S115 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_drop_if_temporary found=S115 owner=/dev
 #[test]
 fn safety_lane_let_bound_if_joined_cow_arm_first_returns_set_value_abort_free_red() {
     // --run: returns the correct set value 1.

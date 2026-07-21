@@ -833,11 +833,15 @@ fn deftrait_bare_arg_convar_never_applied_rejected_neg() {
 // trait`s and the use is a clean `undefined variable` — all CHECK-side. The old
 // `:a 7` unresolved-var display and the backend `undefined function` leak are
 // BOTH absent (0628's three symptoms all closed by the single declaration reject).
+// Fixture repaired S115 W5a (FIXME 0785): the method's return position was
+// written `:a` — parameter-annotation syntax where §7.1.1 requires a bare
+// `type_expr` (a required `method_sig` has no body). Now `Int`, matching the
+// decl-only sibling above; the never-applied head is still the reject reason.
 // defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl found=S110 owner=/dev
 #[test]
 fn bare_convar_full_0628_repro_no_leak_and_no_unresolved_var_display_neg() {
     let out = repl_prims(
-        "(deftrait (Container a) (unwrap [:a x] :a))\n\
+        "(deftrait (Container a) (unwrap [:a x] Int))\n\
          (impl (Container a) (Container Int) (defn unwrap [x] x))\n\
          (unwrap 7)\n",
     );
@@ -1646,10 +1650,14 @@ fn default_method_body_resolves_in_trait_defining_module() {
         // The trait's defining module: `add-i64` is bare-in-scope here.
         .file(
             "trait_mod.cl",
+            // §7.1.1: a required method's trailing element IS the return
+            // `type_expr` — bare, no leading `:` (the `:` is parameter-annotation
+            // syntax; a `defn`'s trailing `:Int <body>` is the confusable but
+            // legal sibling, ascribing the BODY). Repaired S115 W5a, FIXME 0785.
             "(import [primitives [*]])\n\
              (deftrait Foo\n\
-            \x20 (req [a] :Int self)\n\
-            \x20 (bar [a b] :Int (add-i64 a b)))",
+            \x20 (req [a] Int)\n\
+            \x20 (bar [a b] Int (add-i64 a b)))",
         )
         // The impl module: does NOT have `add-i64` in scope. Omits `bar`, so the
         // default body is synthesized and checked here.
@@ -1719,20 +1727,29 @@ fn eq_string_neq_evaluates_repl() {
 //
 // ring2a behavior-pin (NOT a bug — pin expected behaviour). A `deftrait` method
 // signature parameter is written `:Type name` (spec §7.1.4: "To give a parameter
-// a different type, use a `:Type name` annotation"). So `(size [:a x] :Int)`
-// binds parameter `x` with type-var `a` (ACCEPTED), whereas `(size [:a] :Int)`
+// a different type, use a `:Type name` annotation"). So `(size [x :a n] Int)`
+// binds parameter `n` with type-var `a` (ACCEPTED), whereas `(size [:a] Int)`
 // is an annotation `:a` with NO parameter name following it — REJECTED at parse
 // time with the clear message `annotation missing parameter name`. The compiler
 // behaviour is CORRECT (the error is clear, not a panic); these pin it so the
 // /repl demo fix (use the named form) stays anchored. Owner is /frontend ONLY if
 // the error becomes unclear — today it is a clean parse error, so this is a
 // passing guard pair (positive + negative).
+//
+// SYNTAX NOTE (§7.1.1, S115 — FIXME 0785). A required `method_sig` has NO body,
+// so its trailing element IS the return `type_expr` and carries NO leading `:`
+// (`(size [x] Int)`, never `(size [x] :Int)`). The `:` is parameter-annotation
+// syntax only. The confusable sibling is `defn`, which DOES have a body — there
+// the trailing `:Int <body>` is a value-position ascription of that body, which
+// is legal. Do not re-introduce the `:` form here.
+// Both cells also carry the §7.1.1 occurrence rule: the bare parameter `x` is
+// the implementing type, so `Sized` has something to dispatch on.
 
 // spec: spec/07-traits.md §7.1.4 — `:Type name` annotated param ACCEPTED in a
 // deftrait method signature (named param after the annotation).
 #[test]
 fn deftrait_method_annotated_named_param_accepted() {
-    repl_prims("(deftrait Sized (size [:a x] :Int))\n")
+    repl_prims("(deftrait Sized (size [x :a n] Int))\n")
         .assert_stdout_contains_all(&["user/Sized", "deftrait"])
         .assert_stderr_empty();
 }
@@ -1741,7 +1758,7 @@ fn deftrait_method_annotated_named_param_accepted() {
 // no parameter name) is REJECTED with a clear parse error, NOT a panic.
 #[test]
 fn deftrait_method_nameless_annotation_param_rejected_neg() {
-    let out = repl_prims("(deftrait Sized (size [:a] :Int))\n");
+    let out = repl_prims("(deftrait Sized (size [:a] Int))\n");
     // Clear, actionable parse error — the pin: nameless annotation is an error
     // with a message naming the cause, not a panic and not silent acceptance.
     out.assert_stdout_contains("annotation missing parameter name")
@@ -1795,19 +1812,30 @@ fn deftrait_method_nameless_annotation_param_rejected_neg() {
 
 // spec: spec/07-traits.md §7.3.1 — CONTROL (green today): a BARE impl target
 // `(impl Num2 Int …)` registers `impl user/Num2 for primitives/Int`, and
-// `(add2 3 4)` dispatches to the Int impl → `:a 7`. Pins the contrast for the
-// qualified case.
+// `(add2 3 4)` dispatches to the Int impl → `:primitives/Int 7`. Pins the
+// contrast for the qualified case.
+//
+// FIXTURE REPAIR (S115 W5a — FIXMEs 0785 + 0770, user ruling (b)). This cell
+// was written `(deftrait Num2 (add2 [:a x :a y] :a))`, which is doubly invalid:
+// the trailing `:a` is parameter-annotation syntax in RETURN position (a
+// required `method_sig` has no body, so its last element is a bare `type_expr`
+// — §7.1.1), and the method mentions the implementing type NOWHERE, so §7.1.1's
+// occurrence rule rejects it at any arity. It therefore also pinned `:a 7` — an
+// UNRESOLVED type variable certified as expected output. Repaired to the legal
+// conventional-trait form: bare parameters carry the implementing type and the
+// return is `self`, so `(add2 3 4)` is arg-directed and yields a RESOLVED
+// `:primitives/Int 7`.
 #[test]
 fn impl_bare_type_target_dispatches_control() {
     repl_prims(
-        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+        "(deftrait Num2 (add2 [x y] self))\n\
          (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
          (add2 3 4)\n",
     )
     // spec: repl/spec.md §1.3 — the impl echo names the TYPE's canonical home
     // `primitives/Int`, resolved once, not the asking module's `user/…`
     // re-spelling (0671 canonical-home fix, S114).
-    .assert_stdout_contains_all(&["impl user/Num2 for primitives/Int", ":a 7"]);
+    .assert_stdout_contains_all(&["impl user/Num2 for primitives/Int", ":primitives/Int 7"]);
 }
 
 // spec: spec/07-traits.md §7.3.1 + spec/08-modules.md §8.5 — a QUALIFIED impl
@@ -1815,10 +1843,12 @@ fn impl_bare_type_target_dispatches_control() {
 // `Int` (identically to the bare `Int` control above), so `(add2 3 4)` → `:a 7`.
 // D-qual-impl-target: today it re-roots to `user/primitives/Int` and errors
 // `no impl of trait Num2 for type Int`. FIXME(/frontend).
+// Fixture repaired S115 W5a (FIXMEs 0785 + 0770) — see the control cell above
+// for the rationale; the pinned result is now the RESOLVED `:primitives/Int 7`.
 #[test]
 fn impl_qualified_primitive_type_target_resolves_to_canonical() {
     repl_prims(
-        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+        "(deftrait Num2 (add2 [x y] self))\n\
          (impl Num2 primitives/Int (defn add2 [x y] (add-i64 x y)))\n\
          (add2 3 4)\n",
     )
@@ -1826,7 +1856,7 @@ fn impl_qualified_primitive_type_target_resolves_to_canonical() {
     // target does; the call dispatches and yields 7. Today this FAILS — the
     // impl registers for the phantom `user/primitives/Int` and `(add2 3 4)`
     // errors `no impl of trait Num2 for type Int`.
-    .assert_stdout_contains(":a 7")
+    .assert_stdout_contains(":primitives/Int 7")
     // Negative: the phantom re-rooted target MUST NOT appear in the impl line.
     .assert_stdout_does_not_contain("user/primitives/Int");
 }
@@ -1842,7 +1872,7 @@ fn impl_qualified_primitive_type_target_resolves_to_canonical() {
 fn impl_qualified_user_type_target_resolves_to_canonical() {
     repl_prims(
         "(deftype Widget Gadget)\n\
-         (deftrait Tagger (tagit [x] :Int))\n\
+         (deftrait Tagger (tagit [x] Int))\n\
          (impl Tagger user/Widget (defn tagit [w] 99))\n\
          (tagit Gadget)\n",
     )
@@ -2006,7 +2036,7 @@ fn return_type_dispatch_unresolved_bare_call_clean_ambiguity_neg() {
 fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
     // Form A — the bare poly-applied target `(Option a)`.
     let a = repl_prims(
-        "(deftrait Disp (dp [x] :Int))\n\
+        "(deftrait Disp (dp [x] Int))\n\
          (impl Disp (Option a) (defn dp [x] 7))\n\
          (dp (Some 3))\n",
     );
@@ -2026,7 +2056,7 @@ fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
 
     // Form B — the canonical §7.3.3 constrained form `(Option :Disp a)`.
     let b = repl_prims(
-        "(deftrait Disp (dp [x] :Int))\n\
+        "(deftrait Disp (dp [x] Int))\n\
          (impl Disp (Option :Disp a) (defn dp [x] 7))\n\
          (dp (Some 3))\n",
     );
@@ -2055,7 +2085,7 @@ fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
 fn constrained_applied_user_ctor_impl_target_accepts_and_dispatches() {
     let out = repl_prims(
         "(deftype (Box a) (MkBox [:a v]))\n\
-         (deftrait Disp (dp [x] :Int))\n\
+         (deftrait Disp (dp [x] Int))\n\
          (impl Disp (Box :Disp a) (defn dp [x] 7))\n\
          (dp (MkBox 3))\n",
     );
@@ -2090,7 +2120,7 @@ fn constrained_applied_user_ctor_impl_target_accepts_and_dispatches() {
 fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
     let out = repl_prims(
         "(deftype (Box a) (MkBox [:a v]))\n\
-         (deftrait Disp (dp [x] :Int))\n\
+         (deftrait Disp (dp [x] Int))\n\
          (impl Disp (Box :NoSuchTrait a) (defn dp [x] 7))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -2124,7 +2154,7 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
     // Bare control: a deftrait method return-type reference `:Int`.
     repl_prims(
         "(deftype W Wv)\n\
-         (deftrait Qb (qb [x] :Int))\n\
+         (deftrait Qb (qb [x] Int))\n\
          (impl Qb W (defn qb [w] 5))\n\
          (qb Wv)\n",
     )
@@ -2134,7 +2164,7 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
     // resolve to the canonical Int — dispatch yields 5, no phantom re-root.
     repl_prims(
         "(deftype W Wv)\n\
-         (deftrait Qq (qq [x] :primitives/Int))\n\
+         (deftrait Qq (qq [x] primitives/Int))\n\
          (impl Qq W (defn qq [w] 5))\n\
          (qq Wv)\n",
     )
@@ -2148,14 +2178,23 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
 // ARG-directed dispatch whose result span carries a residual type var but sits
 // in an ordinary value position. `(add2 3 4)` resolves its impl by ARGUMENT type
 // (Int) — the dispatch outcome is determined — even though the trait method's
-// recorded span type is the residual `:a`. The S109-revert class was a gate that
+// DECLARED result type is not concrete (`self`, resolved only at impl time).
+// The S109-revert class was a gate that
 // drifted back to surface-type concreteness (`!is_concrete()`) and false-flagged
 // exactly this cell; RD-3 pins that it stays computable and unflagged.
 // Plan: tests/plan/PLAN.md §S110 D / RD-3.
+//
+// FIXTURE REPAIR (S115 W5a — FIXMEs 0785 + 0770). The trait was written
+// `(add2 [:a x :a y] :a)`: a `:`-prefixed RETURN position (parameter-annotation
+// syntax where a bare `type_expr` belongs, §7.1.1) on a method that mentions the
+// implementing type NOWHERE — illegal at any arity under the S115 occurrence
+// ruling. The non-concrete-result PREMISE survives the repair via `self`
+// (non-concrete until the impl target substitutes it), but the observed result
+// is now the RESOLVED `:primitives/Int 7` rather than the unresolved `:a 7`.
 // =============================================================================
 
 // spec: spec/03-types.md §3.3.3 — MUST (e) false-positive fence: an
-// arg-directed trait dispatch whose recorded result-span type is a residual var
+// arg-directed trait dispatch whose declared result type is not concrete
 // but which is fully resolved by its ARGUMENTS is NOT the §3.11 ambiguity — it
 // evaluates. `(let [r (add2 3 4)] r)` binds the Int-impl result to `r` and
 // yields 7. The outcome-grounded scan MUST NOT flag it (no "ambiguous", no
@@ -2163,13 +2202,13 @@ fn deftype_deftrait_reference_qualified_and_bare_equiv() {
 #[test]
 fn arg_directed_dispatch_result_in_value_position_not_flagged() {
     let out = repl_prims(
-        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+        "(deftrait Num2 (add2 [x y] self))\n\
          (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
          (let [r (add2 3 4)] r)\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        c.contains(":a 7") || c.contains("7"),
+        c.contains(":primitives/Int 7"),
         "`(let [r (add2 3 4)] r)` is an arg-directed dispatch in an ordinary \
          value position — it MUST evaluate to 7, NOT be flagged (§3.3.3 MUST (e) \
          false-positive fence, RD-3); got:\n{c}"
@@ -2299,14 +2338,17 @@ fn annotation_unknown_uppercase_named_still_errors_fence() {
 // reference resolved through a module path is unaffected by the annotation mint
 // path. A trait method dispatched by argument type (`add2` over Int) still
 // resolves and yields 7. GREEN today; MUST STAY green through the W-TC wave.
+// Fixture repaired S115 W5a (FIXMEs 0785 + 0770): the trait is written in the
+// legal conventional form (bare params = implementing type, `self` return), so
+// the pinned result is the RESOLVED `:primitives/Int 7`, not `:a 7`.
 #[test]
 fn trait_path_resolution_unaffected_by_mint_fence() {
     repl_prims(
-        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+        "(deftrait Num2 (add2 [x y] self))\n\
          (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
          (add2 3 4)\n",
     )
-    .assert_stdout_contains(":a 7");
+    .assert_stdout_contains(":primitives/Int 7");
 }
 
 // =============================================================================

@@ -2,7 +2,7 @@
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
-**Declaration heads are binders. [S113]** Every definition form in this section binds a **new** name into the **current** module. A declaration head — the name a definition form introduces — is a **binder, not a reference**, and MUST be a **bare (unqualified) symbol**. This is the settled general principle (user ruling 2026-07-18, generalized to all binder heads; the veto window closed at S112 Phase 7): it holds for **every** binder head, not only the two forms the original ruling named. A **qualified** spelling in declaration-head position — `(defn fmt/foo [x] …)`, `(deftrait (fmt/Foo f) …)`, `(deftype fmt/Foo …)` — is a **compile-time error**: there is no mechanism for declaring a name into another module; a definition always binds into the module that contains it. This is the dual of the reference rules (§8.5): a **binder** introduces a name where it is written, so it carries no module qualifier; only a **reference** reaches across modules. (`impl` is not an exception — its slot 1 echoes a trait *reference*, not a fresh binder, [§7.3](07-traits.md#73-trait-implementation).)
+**Declaration heads are binders. [S113]** Every definition form in this section binds a **new** name into the **current** module. A declaration head — the name a definition form introduces — is a **binder, not a reference**, and MUST be a **bare (unqualified) symbol**. This is the settled general principle (user ruling 2026-07-18, generalized to all binder heads; the veto window closed at S112 Phase 7): it holds for **every** binder head, not only the two forms the original ruling named. A **qualified** spelling in declaration-head position — `(defn fmt/foo [x] …)`, `(deftrait (fmt/Foo f) …)`, `(deftype fmt/Foo …)` — is a **compile-time error**, and so is a **dotted** one (`(defn a.foo [x] …)`, `(deftype A.B …)` — user ruling 2026-07-21, *Binder positions* below) [S115]: there is no mechanism for declaring a name into another module; a definition always binds into the module that contains it. This is the dual of the reference rules (§8.5): a **binder** introduces a name where it is written, so it carries no module qualifier; only a **reference** reaches across modules. (`impl` is not an exception — its slot 1 echoes a trait *reference*, not a fresh binder, [§7.3](07-traits.md#73-trait-implementation).)
 
 The **native binder special forms** are `defn`/`defn-`, `deftype`/`deftype-`, `deftrait`/`deftrait-`, and `defmacro`/`defmacro-`, together with the **method definitions inside an `impl` body**, the **method-signature names inside a `deftrait`** (a `deftrait` introduces its method names into the current module, §5.3.3 — a method-signature name such as `show` in `(deftrait Foo (show [x] Int))` is a binder, so a qualified spelling `(deftrait Foo (fmt/show [x] Int))` is a compile-time error on this same principle), and the **variant-constructor names and field names introduced by `deftype`** (each variant constructor mints a module-level callable, §5.2.2; each field name mints a module-level accessor `Type.field`, §5.2.6 — both are binders, user ruling 2026-07-19). Each of these heads is a binder subject to the bare-symbol rule above. [S113]
 
@@ -10,31 +10,37 @@ The **native binder special forms** are `defn`/`defn-`, `deftype`/`deftype-`, `d
 
 | Position | Form / § | Kind | Rule |
 |---|---|---|---|
-| `defn`/`defn-` head | §5.1 | binder | bare symbol; qualified rejects |
-| `deftype`/`deftype-` head | §5.2 | binder | bare symbol; qualified rejects |
-| `deftype` variant-constructor name | §5.2.2 | binder | bare **uppercase** symbol; qualified/lowercase rejects |
-| `deftype` field name (mints `Type.field` accessor) | §5.2.6 | binder | bare symbol; qualified rejects |
-| `deftype` type parameters | §5.2, §2.2.2 | binder (type var) | bare **lowercase** symbol; qualified/dotted rejects |
-| `deftrait`/`deftrait-` head | §5.3, §7.1 | binder | bare uppercase symbol; qualified rejects |
-| `deftrait` method-signature name | §5.3.3 | binder | bare symbol; qualified rejects |
-| `deftrait` constructor variables (`con_var`) | §7.2 | binder (type var) | bare lowercase symbol; qualified/dotted rejects |
-| `defmacro`/`defmacro-` head | §5.5 | binder | bare symbol; qualified rejects |
-| `impl`-body method-defn head | §5.4, §7.3 | binder | bare symbol; qualified rejects |
-| `const`/`const-`, `def`/`def-` head (stdlib macros) | §5.6, §5.7 | binder (post-expansion) | bare symbol; qualified rejects, **span at the written head** |
+| `defn`/`defn-` head | §5.1 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `deftype`/`deftype-` head | §5.2 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `deftype` variant-constructor name | §5.2.2 | binder | bare **uppercase** symbol; qualified/dotted/lowercase rejects [S115] |
+| `deftype` field name (mints `Type.field` accessor) | §5.2.6 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `deftype` type parameters | §5.2, §2.2.2 | binder (type var) | bare **lowercase** symbol; qualified/dotted rejects [S115] |
+| `deftrait`/`deftrait-` head | §5.3, §7.1 | binder | bare uppercase symbol; qualified/dotted rejects [S115] |
+| `deftrait` method-signature name | §5.3.3 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `deftrait` constructor variables (`con_var`) | §7.2 | binder (type var) | bare lowercase symbol; qualified/dotted rejects [S115] |
+| `defmacro`/`defmacro-` head | §5.5 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `impl`-body method-defn head | §5.4, §7.3 | binder | bare symbol; qualified/dotted rejects [S115] |
+| `const`/`const-`, `def`/`def-` head (stdlib macros) | §5.6, §5.7 | binder (post-expansion) | bare symbol; qualified/dotted rejects, **span at the written head** [S115] |
 | `mod`/`mod-` name | §5.8 | binder (module) | simple symbol — not qualified, not dotted |
 | `platform` name | §5.10 | binder (composes module path) | simple symbol — not qualified, not dotted |
-| `defn`/`defmacro` parameters | §5.1, §5.5 | local binder | bare symbol; qualified rejects |
-| `fn` (lambda) parameters | §4.5 | local binder | bare symbol; qualified rejects |
-| `let` binding names | §4.3 | local binder | bare symbol; qualified rejects |
-| `match` variable pattern | §6.2.4 | local binder | bare symbol; qualified rejects |
-| `import`/`export` rename local-name, module alias, mount alias | §8.3.4, §8.4.4 | local binder (alias) | bare symbol; qualified rejects |
+| `defn`/`defmacro` parameters | §5.1, §5.5 | local binder | bare symbol; qualified/dotted rejects [S115] |
+| `fn` (lambda) parameters | §4.5 | local binder | bare symbol; qualified/dotted rejects [S115] |
+| `let` binding names | §4.3 | local binder | bare symbol; qualified/dotted rejects [S115] |
+| `match` variable pattern | §6.2.4 | local binder | bare symbol; qualified/dotted rejects [S115] |
+| `import`/`export` rename local-name, module alias, mount alias | §8.3.4, §8.4.4 | local binder (alias) | bare symbol; qualified/dotted rejects [S115] |
 | **Reference (contrast):** `impl` slot-1 trait + slot-2 target | §7.3, §7.3.5 | reference | qualifier **permitted** — resolved by identity |
 | **Reference (contrast):** `match` constructor-pattern head | §6.2.1 | reference | dotted canonical form **permitted** (`Maybe.Some`) |
 | **Reference (contrast):** variable / call-head / type references | §2.3.2, §8.5 | reference | qualifier/dotted **permitted** |
 
 All binder rows reject decisively — the principle admits no exceptions and no position carries open semantics (a binder that named another module would be defining into it, which the language does not do). The reject is a **binder-position constraint**, enforced at each binder site: a `/`-bearing (qualified, §1.4.3) or `.`-bearing (dotted, §1.4.4) token is not a legal binder, and naming one is a compile-time error with the diagnostic span on the offending name. The reader does **not** reject the token structurally — it produces a single plain symbol (`a/b`), and the qualified-vs-bare classification is applied afterward, at the binder site — so the constraint is stated and checked per-position; it is normative, not incidental to tokenization. (For the value-level local binders — `defn`/`fn` parameters, `let` names, `match` var-patterns — the check runs at the frontend build layer above the int expansion pass, per the S114 ruling on FIXME 0670.)
 
-The surface forms **`def`/`def-` and `const`/`const-` are stdlib macros** ([§5.7](#57-named-values-def--def-), [§5.6](#56-constants-const--const-), [§9.10](09-macros.md#910-example-prelude-macros); `stdlib/defs.cl`) — **there is no native `def` special form.** They **expand** to the native binder forms (`defn`/`defmacro`), so the binder rule reaches them **after expansion**: a qualified head such as `(def fmt/x 1)` or `(const fmt/PI 3.14)` is rejected on the same principle. Because the rejection fires on the expanded `defn`/`defmacro`, the diagnostic span MUST point at the **user's written form** — the `def`/`const` head as typed — not the synthesized expansion. [S113]
+**Dotted binders reject exactly as qualified ones do — `.` is reserved for type/trait qualification. [S115]** The user ruled (2026-07-21) that a **dotted (`.`) spelling in ANY binder position is a compile-time error**, on the same footing as a `/`-qualified spelling: a **located** error with the diagnostic span on the offending binder name, never a silent bind. `(defn a.b [x] x)`, `(deftype A.B …)`, `(deftype P [:Int a.b])`, `(let [a.b 5] …)`, `(defn g [a.b] 1)` and `(match 1 [a.b a.b])` are all rejected. The ruling is a consequence of the binder principle above, not an addition to it: the language has no notion of defining a name into a nested path, so a dotted binder has no meaning to give. `.` in this language is **type/trait qualification syntax** (§1.4.4) — a *reference* device — and it is never a name-introducing device.
+
+- **Reference positions are untouched.** `.` remains legal wherever a name is *referenced*: the dotted constructor-pattern head `(Maybe.Some x)` (§6.2.1), dotted field accessors `Type.field` (§5.2.6), dotted type/trait references (§8.5), and dotted module paths in `import`/`export` (§8.3, §8.4). Nothing here bans `.` generally — it bans `.` in the binder column only. The binder/reference line is exactly where the rule is drawn.
+- **Rider — the qualified type-parameter cell is a clean reject too. [S115]** `(deftype (Pair prim/a b) …)` is a **located binder-reject with the span on the type parameter**, on the same diagnostic footing as every other row. It MUST NOT surface as an incidental downstream failure (e.g. a "module not found" resolution error at a degenerate zero-width span).
+- **Scribe's note on the table above.** Before this ruling the table's per-row Rule column named only `/` on most rows while the prose two paragraphs up was already categorical over `/` **and** `.`. That divergence was a *mirror inside the spec* — the same defect class as the §7.1.4 duplicated-rule divergence: one requirement written twice, drifting on the copy nobody re-read. The table rows are now restated from the prose rather than maintained beside it; a future rule change edits the prose and the table together, or the table not at all.
+
+The surface forms **`def`/`def-` and `const`/`const-` are stdlib macros** ([§5.7](#57-named-values-def--def-), [§5.6](#56-constants-const--const-), [§9.10](09-macros.md#910-example-prelude-macros); `stdlib/defs.cl`) — **there is no native `def` special form.** They **expand** to the native binder forms (`defn`/`defmacro`), so the binder rule reaches them **after expansion**: a qualified **or dotted** head such as `(def fmt/x 1)`, `(const fmt/PI 3.14)` or `(def a.x 1)` is rejected on the same principle. [S115] Because the rejection fires on the expanded `defn`/`defmacro`, the diagnostic span MUST point at the **user's written form** — the `def`/`const` head as typed — not the synthesized expansion. [S113]
 
 ## 5.1 Function Definition (`defn` / `defn-`) [Tested]
 
@@ -64,7 +70,7 @@ A function definition binds a name to a function value. The parameter list uses 
 
 **Semantics:**
 
-- The name MUST be a valid **bare (unqualified)** symbol — a declaration head is a **binder**, not a reference (§5, *Declaration heads are binders*); a qualified spelling (`fmt/square`) is a compile-time error. [S113]
+- The name MUST be a valid **bare (unqualified)** symbol — a declaration head is a **binder**, not a reference (§5, *Declaration heads are binders*); a qualified **or dotted** spelling (`fmt/square`, `a.square`) is a compile-time error (§5, *Binder positions*). [S113] [S115]
 - Parameters MUST be listed in square brackets.
 - The body MUST be a single expression. Use `do` (a prelude macro) for sequencing multiple expressions.
 - An optional docstring (string literal) MAY appear between the name and the parameter list.
@@ -196,7 +202,7 @@ constructor    = name                          (* nullary *)
 
 A type definition introduces an algebraic data type (ADT) into scope. Three shapes are supported: product types, sum types, and enums.
 
-The `type_head` name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified head (`(deftype fmt/Point …)`, `(deftype (fmt/Pair a b) …)`) is a compile-time error. [S113]
+The `type_head` name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(deftype fmt/Point …)`, `(deftype (fmt/Pair a b) …)`, `(deftype A.B …)`) is a compile-time error (§5, *Binder positions*). The type parameters are binders on the same rule — `(deftype (Pair prim/a b) …)` is a **located** reject with the span on the parameter, not an incidental resolution failure. [S113] [S115]
 
 ### 5.2.1 Product Type (Single Constructor) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_product_type_with_fields]
 
@@ -231,8 +237,8 @@ When the type body contains one or more constructor forms, each introduces a dis
 - Each constructor MAY have an optional docstring after its name.
 - Nullary constructors are values: `None :: (Option a)`.
 - Data constructors are functions: `Some :: (Fn [a] (Option a))`.
-- A constructor name is a **binder** (§5, *Declaration heads are binders*; user ruling 2026-07-19) — it mints a module-level callable, so it MUST be a **bare uppercase** symbol. A qualified spelling (`(deftype Shape (fmt/Circle …))`) is a compile-time error, with the diagnostic span on the constructor name: you can define a constructor only into the module that contains the `deftype`, never into another module. This holds in both constructor arms — the nullary bare-name arm and the parenthesized data-constructor arm. (Lowercase constructor names are separately rejected as ill-formed — a lowercase ctor would be callable but unmatchable, since a lowercase pattern symbol binds a variable, §6.2.4.) [S113]
-- A **field name** is likewise a binder — it mints a module-level accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol; a qualified field name (`(deftype T [:Int fmt/r])`) is a compile-time error, span at the field name. [S113]
+- A constructor name is a **binder** (§5, *Declaration heads are binders*; user ruling 2026-07-19) — it mints a module-level callable, so it MUST be a **bare uppercase** symbol. A qualified **or dotted** spelling (`(deftype Shape (fmt/Circle …))`, `(deftype Shape (Shape.Circle …))`) is a compile-time error, with the diagnostic span on the constructor name: you can define a constructor only into the module that contains the `deftype`, never into another module. This holds in both constructor arms — the nullary bare-name arm and the parenthesized data-constructor arm. (Lowercase constructor names are separately rejected as ill-formed — a lowercase ctor would be callable but unmatchable, since a lowercase pattern symbol binds a variable, §6.2.4.) [S113]
+- A **field name** is likewise a binder — it mints a module-level accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol; a qualified **or dotted** field name (`(deftype T [:Int fmt/r])`, `(deftype T [:Int a.r])`) is a compile-time error, span at the field name. [S113] [S115]
 
 ### 5.2.3 Enum (All Nullary) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_enum_type, tests/repl_introspection.rs::deftype_display_enum, tests/spec_05_definitions.rs::deftype_enum_construct_and_match, tests/examples.rs::every_example_runs_with_documented_exit]
 
@@ -329,7 +335,7 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 
 - **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type.
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
-- Constructor names MUST be capitalized — a **bare uppercase** symbol; a lowercase constructor name is rejected as ill-formed, and a qualified spelling is a compile-time error (§5.2.2).
+- Constructor names MUST be capitalized — a **bare uppercase** symbol; a lowercase constructor name is rejected as ill-formed, and a qualified **or dotted** spelling is a compile-time error (§5.2.2). [S115]
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 
 ## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
@@ -349,7 +355,7 @@ type_expr      = 'self'                       (* implementing type *)
                | '(' name type_expr+ ')'       (* applied type *)
 ```
 
-A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression. The trait head (`name` in the grammar above) is a **binder** — a **bare (unqualified) uppercase symbol** (§5, *Declaration heads are binders*, and [§7.1](07-traits.md#71-trait-declaration)); a qualified head is a compile-time error. [S113]
+A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression. The trait head (`name` in the grammar above) is a **binder** — a **bare (unqualified) uppercase symbol** (§5, *Declaration heads are binders*, and [§7.1](07-traits.md#71-trait-declaration)); a qualified **or dotted** head is a compile-time error (§5, *Binder positions*). [S113] [S115]
 
 ### 5.3.1 Simple Traits [Tested tests/spec_07_traits::user_trait_simple, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
@@ -383,7 +389,7 @@ When the trait head includes type parameters, the trait operates on type constru
 
 ### 5.3.3 Trait Semantics [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch, tests/spec_07_traits::trait_method_no_impl_then_recovery]
 
-- A trait declaration introduces method names into scope. These names cannot be used until at least one implementation is provided. Each method-signature name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified method name (`(deftrait Foo (fmt/show [x] Int))`) is a compile-time error. [S113]
+- A trait declaration introduces method names into scope. These names cannot be used until at least one implementation is provided. Each method-signature name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** method name (`(deftrait Foo (fmt/show [x] Int))`, `(deftrait Foo (Foo.show [x] Int))`) is a compile-time error (§5, *Binder positions*). [S113] [S115]
 - Method signatures declare the type contract. Implementations MUST conform to the declared signature.
 - Traits are the mechanism for operator overloading: `+`, `-`, `*`, `/` are methods of the `Num` trait; `=` is a method of `Eq`; `<`, `>`, `<=`, `>=` are methods of `Ord`.
 
@@ -502,7 +508,7 @@ A macro definition introduces a compile-time transformation. The macro body is a
 
 **Semantics:**
 
-- The macro name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified head (`(defmacro fmt/when …)`) is a compile-time error. [S113]
+- The macro name is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(defmacro fmt/when …)`, `(defmacro a.when …)`) is a compile-time error (§5, *Binder positions*). [S113] [S115]
 - The macro body MUST have return type `Sexp`. A macro that returns a different type (e.g., `Int`) is a compile-time error.
 - `&` before the last parameter captures remaining arguments as an `(SList Sexp)` value (variadic).
 - Macro bodies are compiled with Cranelift and executed via JIT during expansion. They have access to the full language, including all functions and macros defined before them.
@@ -550,7 +556,7 @@ A constant definition creates an inline substitution. Every reference to the con
 **Semantics:**
 
 - `const` is a prelude macro, not a built-in special form. It expands to a zero-argument `defmacro` that returns the quoted value.
-- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified head (`(const fmt/PI 3.14)`) is a compile-time error. Because `const` expands to a `defmacro`, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `const` head, not the synthesized form (§5, macro-surface note). [S113]
+- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(const fmt/PI 3.14)`, `(const a.PI 3.14)`) is a compile-time error (§5, *Binder positions*). [S115] Because `const` expands to a `defmacro`, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `const` head, not the synthesized form (§5, macro-surface note). [S113]
 - The value expression MUST be a literal or a form that can be quoted as `Sexp`. It is not evaluated -- it is substituted syntactically.
 - `const-` creates a module-private constant.
 
@@ -572,7 +578,7 @@ A named value definition evaluates its expression once and binds the result to a
 **Semantics:**
 
 - `def` is a prelude macro, not a built-in special form. It expands to a `begin` containing a zero-argument function definition and a zero-argument macro that calls it.
-- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified head (`(def fmt/x 1)`) is a compile-time error. Because `def` expands to a `defn`/`defmacro` pair, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `def` head, not the synthesized form (§5, macro-surface note). [S113]
+- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(def fmt/x 1)`, `(def a.x 1)`) is a compile-time error (§5, *Binder positions*). [S115] Because `def` expands to a `defn`/`defmacro` pair, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `def` head, not the synthesized form (§5, macro-surface note). [S113]
 - The expression is evaluated once (as the body of a zero-argument function). References to the name expand to calls to that function.
 - Unlike `const`, the value expression IS evaluated. This means `def` can bind computed values, not just literals.
 - `def-` creates a module-private named value.

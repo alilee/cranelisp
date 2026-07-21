@@ -1226,7 +1226,7 @@ fn impl_regen_written_to_user_cl() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(
             "(deftype W Wv)\n\
-             (deftrait Disp (dp [x] :Int))\n\
+             (deftrait Disp (dp [x] Int))\n\
              (impl Disp W (defn dp [w] 42))\n\
              (defn g [x] (add-i64 x 1))\n\
              /quit\n",
@@ -1265,7 +1265,7 @@ fn impl_dispatches_after_restart_without_cache() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(
             "(deftype W Wv)\n\
-             (deftrait Disp (dp [x] :Int))\n\
+             (deftrait Disp (dp [x] Int))\n\
              (impl Disp W (defn dp [w] 42))\n\
              (dp Wv)\n\
              /quit\n",

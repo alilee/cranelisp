@@ -29,7 +29,8 @@ The macro system operates on S-expression values. Two algebraic data types are p
   (SexpStr [:String sval])
   (SexpSym [:String sname])
   (SexpList [:(SList Sexp) sitems])
-  (SexpBracket [:(SList Sexp) sitems]))
+  (SexpBracket [:(SList Sexp) sitems])
+  (SexpAnnotated [:Sexp stype :Sexp sform]))
 ```
 
 Each variant represents one kind of S-expression:
@@ -43,8 +44,11 @@ Each variant represents one kind of S-expression:
 | `SexpSym` | Symbol (identifiers, operators, keywords) | `foo`, `+`, `defn` |
 | `SexpList` | Parenthesized list `(...)` | `(+ 1 2)` |
 | `SexpBracket` | Bracketed list `[...]` | `[x y z]` |
+| `SexpAnnotated` | Annotated form — the read-time `:Type <form>` fold (§1.4.5) | `:Int 5` [S115] |
 
 Field names are prefixed with `s` (e.g., `sval`, `sname`, `sitems`) to avoid collision with user-defined field names.
+
+**`SexpAnnotated` — what the annotation halves hold. [S115]** `stype` is the annotation half **with the colon stripped**: `:Int 5` marshals to `(SexpAnnotated (SexpSym "Int") (SexpInt 5))`, and `:(Fn [a] a) f` to `(SexpAnnotated (SexpList …) (SexpSym "f"))`. The half is an ordinary `Sexp`, not a distinguished type value — macros quote, unquote, and destructure it like any other form; that it must denote a type expression (§2.4) is checked when the annotated form is built into an expression, not when it is read or marshalled. `sform` is the annotated subject. Stacked annotations nest (`:A :B x` → `SexpAnnotated` whose `sform` is another `SexpAnnotated`).
 
 ### 9.1.3 Module Availability
 
@@ -94,6 +98,15 @@ The `defmacro` form defines a named compile-time macro. The `defmacro-` variant 
 Each parameter receives a value of type `Sexp`. When the macro is invoked as `(name arg1 arg2 arg3)`, each argument S-expression is passed as a separate `Sexp` value to the corresponding parameter.
 
 The `& rest` syntax captures all remaining arguments as a single value of type `(SList Sexp)`. The `&` MUST appear before exactly one parameter name in the parameter list, and that parameter MUST be the last.
+
+**Annotated arguments are ONE argument. [S115]** Because `:Type <form>` folds at read time (§1.4.5), an annotation in a macro-call argument list is **not** a separate argument: the annotation and the form it binds arrive as a **single** `SexpAnnotated` value. Argument counts therefore match what the user wrote — `(def x :Int 5)` is a **two**-argument call to `def` (`x`, and the annotated `5`), and it MUST NOT be reported as a three-argument arity failure. Two obligations follow for macro authors:
+
+- **A macro that only transports an argument is annotation-correct for free.** A clause that binds an argument and splices it into a template (`~value`) carries the `SexpAnnotated` node through unexamined, so the annotation survives into the expansion. `def` and `const` (§11.7) need no special handling.
+- **A macro that structurally matches its arguments' constructors owns its arms.** Handing such a macro an annotated argument produces an ordinary match failure at the macro — a located macro-level error, not a compiler artifact. To accept annotated arguments, the macro adds a `(macros/SexpAnnotated t f)` arm (to inspect, re-attach, or discard the annotation).
+
+```clojure
+(def x :Int 5)          ; two macro arguments: x, and (SexpAnnotated (SexpSym "Int") (SexpInt 5))
+```
 
 ```clojure
 ;; Fixed arity: two Sexp parameters
@@ -305,6 +318,9 @@ Within a quasiquoted form:
 - **Brackets** `[a b c]` become `(SexpBracket (SCons <a> (SCons <b> (SCons <c> SNil))))`.
 - **Unquote** `~expr` evaluates `expr` in the current scope. The result MUST be of type `Sexp` and is spliced into the template at that position.
 - **Unquote-splicing** `~@expr` evaluates `expr` in the current scope. The result MUST be of type `(SList Sexp)`. Each element of the list is spliced into the surrounding list. Unquote-splicing MUST only appear inside a list or bracket form.
+- **Annotated forms** `:T f` become `(SexpAnnotated <T> <f>)`, where `<T>` and `<f>` are the recursively quasiquoted halves. [S115] Because the annotation fold is a **read-time** rule (§1.4.5), it applies inside quote and quasiquote templates exactly as it does in expression position: `'(:Int 5)` is a quotation of the annotated form, not of two separate elements.
+  - **Unquote is permitted in either half**: `` `(f : ~t x) `` yields an annotated form whose annotation half is the evaluated `t`, and `` `(:Int ~v) `` one whose subject is the evaluated `v`.
+  - **Unquote-splicing MUST NOT be either half.** `~@` produces zero or more forms into a surrounding list, whereas each half of an annotated form is exactly one form; `` `(: ~@ts x) `` is a **located error** naming the annotation slot.
 
 
 ### 9.4.3 Examples

@@ -783,6 +783,8 @@ Multiple annotations can be stacked on a single parameter:
 (defn foo [:Num :Display x] ...)  ; x must implement both Num and Display
 ```
 
+Stacking is **nesting**, not a flat run: each `:` binds the immediately-following form at read time (§1.4.5), so `:Num :Display x` is `Num` applied to (`Display` applied to `x`). A chain of length greater than one denotes the conjunction of its constraints on the innermost subject; a chain of length one is the ordinary single annotation of §3.9.1/§3.9.2. [S115]
+
 ### 3.9.3 Annotation Resolution
 
 When the annotation name is ambiguous (could be either a type or a trait), the typechecker first attempts to resolve it as a concrete type. If no type with that name exists, it is resolved as a trait constraint. If neither exists, a type error is produced.

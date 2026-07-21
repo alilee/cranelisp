@@ -133,7 +133,7 @@ fn repl_prims_with_mlib(lines: &str) -> helpers::e2e::CrOutput {
 #[test]
 fn fix_b_shadowed_constrained_in_mono_body_local_wins() {
     repl_prims(
-        "(deftrait Disp (dp [x] :Int))\n\
+        "(deftrait Disp (dp [x] Int))\n\
          (impl Disp Int (defn dp [x] 9))\n\
          (defn con [:Disp x] (dp x))\n\
          (defn g [:a y] (let [con (fn [z] 77)] (con y)))\n\
@@ -171,7 +171,7 @@ fn fix_b_shadowed_parametric_in_concrete_caller_local_wins() {
 #[test]
 fn fix_b_unshadowed_constrained_still_dispatches_control() {
     repl_prims(
-        "(deftrait Disp (dp [x] :Int))\n\
+        "(deftrait Disp (dp [x] Int))\n\
          (impl Disp Int (defn dp [x] 9))\n\
          (defn con [:Disp x] (dp x))\n\
          (con 5)\n",

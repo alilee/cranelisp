@@ -82,14 +82,27 @@ fn deftype_field_qualified_type_ref_equals_bare() {
 }
 
 // spec: spec/08-modules.md §8.5 — deftrait method type-ref: a `deftrait` method
-// signature using a qualified `primitives/Int` is equivalent to the bare `Int`.
-// The impl over `Int` dispatches and `(scale 4)` → 8.
+// signature using a qualified `primitives/Int` is equivalent to the bare `Int`,
+// in BOTH the parameter-annotation position (`:primitives/Int n`) and the return
+// position (a bare `type_expr` — no leading `:`, §7.1.1). The impl over `Int`
+// dispatches and `(scale 4 4)` → 8.
+//
+// FIXTURE REPAIR (S115 W5a — FIXMEs 0785 + 0770). Was
+// `(scale [:primitives/Int x] :primitives/Int)`: the return carried the
+// parameter-annotation `:` (a required `method_sig` has no body, so its trailing
+// element IS the return `type_expr`; the confusable sibling is `defn`, whose
+// trailing `:Int <body>` legitimately ascribes the BODY), and the method
+// mentioned the implementing type nowhere — illegal at any arity under §7.1.1's
+// occurrence rule. Repaired by adding the bare parameter `x` (the implementing
+// type, and what `(scale …)` dispatches on) while KEEPING the qualified
+// annotation on `n` and the qualified return type — both of which are what this
+// cell exists to pin.
 #[test]
 fn deftrait_method_qualified_type_ref_equals_bare() {
     repl_prims(
-        "(deftrait Scaler (scale [:primitives/Int x] :primitives/Int))\n\
-         (impl Scaler Int (defn scale [x] (add-i64 x x)))\n\
-         (scale 4)\n",
+        "(deftrait Scaler (scale [x :primitives/Int n] primitives/Int))\n\
+         (impl Scaler Int (defn scale [x n] (add-i64 x n)))\n\
+         (scale 4 4)\n",
     )
     .assert_stdout_contains(":primitives/Int 8")
     .assert_stdout_does_not_contain("user/primitives/Int");

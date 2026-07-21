@@ -219,9 +219,31 @@ Colon-prefixed symbols are used for type annotations. A bare colon `:` (not imme
 :                 ; bare colon — annotation introducer for a parenthesised or whitespace-separated type form
 ```
 
-> **Normative note (annotation introducer).** A `colon_prefix` token (`:Int`) is an **annotation introducer**, not a variable reference. It is valid only as the head of an `annotate_expr` (§2.3.8), where it **binds the immediately-following form**. A `colon_prefix` is never a standalone atom or variable reference, and a `colon_prefix` with **no following form** is a parse error (`annotation missing expression`). This holds in every expression position, including as the leading element of a parenthesized list — there the `colon_prefix` annotates only the single following element, and the list is the application of that one annotated element.
+> **Normative note (annotation introducer).** A `colon_prefix` token (`:Int`) is an **annotation introducer**, not a variable reference. It is valid only as the head of an `annotate_expr` (§2.3.8), where it **binds the immediately-following form**. A `colon_prefix` is never a standalone atom or variable reference, and a `colon_prefix` with **no following form** is a parse error (`annotation missing expression`). This holds in every expression position, including as the leading element of a parenthesized list — there the `colon_prefix` annotates only the single following element, and the list is the application of that one annotated element. (Since the 2026-07-21 ruling below, "never a standalone atom" holds in **every** position, not only expression positions, and is structural: see the read-time-fold note.)
 
 > **Normative note (`:` is a `^`-style reader macro; user ruling 2026-07-20). [S114]** The annotation `:` is a **reader macro in the manner of Clojure's `^` type hint**: it **binds the immediately-following form**, and — like `^`, whose reader recursively reads the next form — **whitespace between `:` and that form is permitted**. `: Int` ≡ `:Int`, and `: (Fn [a] a)` ≡ `:(Fn [a] a)`. The bound form **MUST be a type expression** (§2.4); `:` is **not** a keyword constructor (it does not mint a Clojure-style keyword value) and **not** a typed-racket-style `:` declaration form. A **dangling qualifier** in the bound form — `:foo/`, `:a.b/` (a module path with an empty local half, §8.5.1) — is a **located compile-time error** at the offending token; it does **not** silently degrade to `:foo` / `:a.b`. [S114]
+
+> **Normative note (the fold happens at READ time; user ruling 2026-07-21). [S115]** `:Type <form>` is folded by the **reader**, not by a later pass: reading `:` and its two halves produces **one structural annotated node** in the read tree —
+>
+> ```ebnf
+> annotated_form = (colon_prefix | colon_bare) type_form form
+> ```
+>
+> — whose first child is the type form (the annotation half, with the colon itself **not** part of that child: `:Int` yields the plain symbol `Int`, `:(Fn [a] a)` yields the plain list) and whose second child is the annotated subject. Because the fold is a reader rule over the recursive read of a form, it applies in **every** position that reads forms, with no per-position exception:
+>
+> - expression positions (top level, list interiors, bracket interiors — `[:Int x :Int y]` reads as **two** annotated elements);
+> - **macro-argument position** — a macro call's argument list is read like any other list, so `(def x :Int 5)` presents the macro **two** arguments (`x`, and the annotated `5`) and its arity matches what the user wrote (§9.1);
+> - **quoted and quasiquoted data** — the fold precedes quote handling, so `'(:Int 5)` is a quotation of the annotated node, and a `~`-unquote may occupy either half.
+>
+> Consequences pinned by this ruling:
+>
+> - **"Never a standalone atom" now holds unconditionally.** There is no position — expression, quoted, or macro-argument — in which the annotation introducer survives as a bare atom. The invariant is structural, not a rule to be re-checked per position.
+> - **Nesting is chaining.** `:A :B x` reads as the annotation `A` over the annotation `B` over `x` (stacked bounds, §3.9.3) — a nested chain, not a flat run.
+> - **A trailing introducer is a located READER error** — an introducer with nothing to bind (at end of input, before a closing `)`/`]`, or as the sole remainder of a REPL line) is reported with the message **`annotation missing expression`** (wording unchanged from the parse-error formulation above; only the reporting site moves earlier).
+> - **`~@` is not a legal half.** Unquote-splicing produces zero or more forms into a list context, while each half of the node is exactly one form; `~@` written directly as either half is a **located error**.
+> - **The type-expression requirement is unchanged and is still checked after reading.** The reader folds structurally whatever follows the introducer; that the annotation half must be a type expression (§2.4) — so `:5 x` is rejected — remains a located error at the type-expression seam, not a reader error.
+>
+> The annotation is never carried as out-of-band metadata: an annotation **asserts** a type (§2.3.8), so it must be visible in the tree that macros and the type checker both see; a side-channel that could be silently dropped was explicitly rejected. Implementation contract: `design/arch/annotated-sexp-node.md`.
 
 ### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_gensym_shorthand]
 
@@ -312,12 +334,18 @@ A **form** is the basic unit of Cranelisp syntax:
 
 ```ebnf
 form    = ws (quote | quasiquote | unquote_splicing | unquote
+            | annotated_form
             | anon_fn | list | bracket | atom) ws
 
 list    = '(' ws form* ws ')'
 bracket = '[' ws form* ws ']'
+
+(* the read-time annotation fold, §1.4.5 — the introducer and its two
+   halves become ONE form; it is not an atom *)
+annotated_form = (colon_prefix | colon_bare) ws form ws form
+
 atom    = float | integer | boolean | string
-        | colon_prefix | colon_bare | ampersand
+        | ampersand
         | qualified_symbol | dotted_symbol
         | gensym_symbol | percent_param
         | operator_symbol | symbol
@@ -325,4 +353,4 @@ atom    = float | integer | boolean | string
 program = ws form* ws
 ```
 
-A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, or a reader macro expansion. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]
+A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, an annotated form, or a reader macro expansion. **`colon_prefix`/`colon_bare` are no longer `atom` alternatives [S115]** — a colon introducer only ever occurs as the head of an `annotated_form` (§1.4.5, the 2026-07-21 read-time-fold ruling), so "an annotation introducer is never a standalone atom" is a property of this grammar rather than a rule checked afterwards. In `annotated_form` the first `form` is the annotation half (required to be a type expression, §2.4, checked after reading) and the second is the annotated subject. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]

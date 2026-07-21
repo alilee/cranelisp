@@ -233,3 +233,45 @@ stripped), with the `macros/Sexp` ADT gaining `(SexpAnnotated [:Sexp stype
 `CACHE_SCHEMA_VERSION` window, and the S116 wave staging are all pinned there.
 This FIXME retires with the S116 implementation (the W3 flip wave); the S115
 W1-rider RED pin (`(def x :Int 5)` succeeds) is the flip trigger.
+
+---
+
+## /spec status — SPEC SCRIBED AT S115; IMPLEMENTATION S116 (2026-07-21)
+
+**Do not delete this FIXME yet.** The normative half of Reading A-structural is
+now in the spec; the mechanism half is the S116 flip, and this file is the
+tracker until then. Rows scribed to `design/arch/annotated-sexp-node.md` §8:
+
+- **§1.4.5** (`spec/01-lexical.md`) — new normative note: the fold is READ-time
+  and yields one structural annotated node; universality (expression, bracket
+  interior, **macro-argument**, quoted/quasiquoted data); "never a standalone
+  atom" now holds unconditionally and structurally; nesting = chaining;
+  trailing introducer = **located reader error**, message text
+  `annotation missing expression` preserved; `~@`-as-half = located error; the
+  type-expression requirement still checked after reading; the metadata
+  side-channel explicitly rejected (annotations ASSERT).
+- **§1.8 form grammar** (`spec/01-lexical.md`) — `annotated_form` added as a
+  `form` alternative; `colon_prefix`/`colon_bare` **removed from `atom`**, so
+  the standalone-atom invariant is a grammar property.
+- **§2.3.8** (`spec/02-grammar.md`) — `annotate_expr` is built FROM the
+  read-time node; position-independence is structural and the position
+  enumeration is illustrative; the one-child parenthesized-annotation rule
+  re-grounded on the read-time fold; stacked-annotation chaining stated.
+- **§9.1.2 / §9.2.2 / §9.4.2** (`spec/09-macros.md`) — `macros/Sexp` gains
+  `(SexpAnnotated [:Sexp stype :Sexp sform])` with the colon-stripped
+  annotation half; annotated macro arguments are ONE argument (the
+  `(def x :Int 5)` normative example); splice-transparent macros are correct
+  for free, ctor-matching macros own their arms; quasiquote of annotated
+  forms, unquote in either half, `~@`-as-half rejected.
+- **§7.1.1** (`spec/07-traits.md`) — see the prerequisite below.
+
+**Prerequisite for S116 — corpus repair (FIXME 0785) must land first.** A
+`:Type` in the **return position** of a required trait `method_sig` is invalid
+(§7.1.1). Under this ruling that spelling — `(zed [] :self)`, `(show [x]
+:String)` — is a `:` introducer with nothing to bind before the closing `)`,
+i.e. exactly the **trailing-introducer located reader error**. The S116
+implementation therefore rejects it *mechanically*, and any source still
+carrying the colonised spelling stops **reading**, not merely typechecking.
+0785's corpus repair is consequently a hard prerequisite of the S116 flip
+wave, not a parallel tidy-up. (Scribed as a note under §7.1.1's
+"Return position takes a bare `type_expr`" rule.)

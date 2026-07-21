@@ -1591,7 +1591,7 @@ fn type_member_accessor_typed_fn_of_type() {
 fn impl_method_colliding_with_field_accessor_rejected_neg() {
     let out = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
-         (deftrait HasV (v [x] :primitives/Int))\n\
+         (deftrait HasV (v [x] primitives/Int))\n\
          (impl HasV Box (defn v [x] 99))\n\
          (Box.v (Box 5))\n",
     );

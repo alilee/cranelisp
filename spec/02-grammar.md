@@ -596,6 +596,8 @@ annotate_expr = annotation expr
 
 The annotation `:` **binds the immediately-following form**, producing an `annotate_expr`. It is a **`^`-style reader macro** — in the manner of Clojure's `^` type-hint reader macro, it reads the next form and attaches a type-unifying annotation to it — and is **never a standalone atom or variable reference**. There is no expression whose meaning is a bare `:Type`; the introducer always consumes a following form. Because `:` reads the following form the way `^` does, **whitespace between `:` and that form is permitted**: `: Int` ≡ `:Int` and `: (Fn [Int] Int)` ≡ `:(Fn [Int] Int)` (user ruling 2026-07-20). The bound form **MUST be a type expression** (§2.4) — `:` is **not** a keyword constructor and **not** a typed-racket-style declaration form; a bound form that is not a type expression is a compile-time error. A **dangling qualifier** in the bound form — `:foo/`, `:a.b/` (§8.5.1) — is a **located error** at the offending token, never a silent degradation to `:foo` / `:a.b`. [S114]
 
+**`annotate_expr` is built from the read-time annotated node. [S115]** Per the 2026-07-21 user ruling (§1.4.5), the pairing of `:` with the following form is performed by the **reader**, which emits one structural annotated node; `annotate_expr` is that node recognised as an expression. Position-independence is therefore **structural** — the node already exists in the read tree wherever a form was read — and the enumeration below is illustrative rather than the mechanism that grants each position. Because the fold precedes every later pass, it also reaches positions that are not expressions at the moment they are inspected: **macro-call arguments** (§9.1) and **quoted/quasiquoted data** (§1.4.5).
+
 Because `annotate_expr` is itself a first-class `expr` (it appears in the `expr` production of §2.3), an annotation MAY appear in **every** expression position. This includes:
 
 - a standalone / top-level form,
@@ -608,7 +610,9 @@ Because `annotate_expr` is itself a first-class `expr` (it appears in the `expr`
 
 The inner form's inferred type MUST unify with the annotation. This unification is performed **during typechecking**, when the `annotate_expr` node is inferred — *before* any application or evaluation semantics of an enclosing form take effect. Consequently, when an enclosing form is otherwise ill-formed (e.g. applying a non-function), the annotation's unification check is reported first.
 
-A leading `:Type` inside a parenthesized list **annotates the single following element** — it is NOT the application callee and NOT an annotation of the whole list. The reader binds `:Type` to the next form, yielding a one-element list whose sole element is that `annotate_expr`; the list is then the ordinary application of that one annotated element. `(:Type form)` is therefore **not a special form**.
+A leading `:Type` inside a parenthesized list **annotates the single following element** — it is NOT the application callee and NOT an annotation of the whole list. The reader binds `:Type` to the next form, yielding a **one-child list** whose sole child is the annotated node; the list is then the ordinary application of that one annotated element. `(:Type form)` is therefore **not a special form**. (The one-child list is the ground of this rule: the fold happens as the list's children are read, so the list never has two children to choose between. [S115])
+
+Stacked annotations chain: `:A :B x` reads as `A` over (`B` over `x`) — the subject of the outer node is itself an annotated node (§3.9.3 stacked bounds). [S115]
 
 See Section 2.4 for the `annotation` grammar.
 
@@ -928,7 +932,7 @@ annotation   = COLON_PREFIX               (* :Int, :a, :Num *)
 
 Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., `:Int`, `:a`), and `type_expr_list` is a parenthesized type expression (e.g., `(Option Int)`, `(Fn [Int] Bool)`).
 
-The colon serves as the annotation introducer — a `^`-style reader macro binding the following type form (§2.3.8), so **whitespace between the colon and that form is permitted** (`: Int` ≡ `:Int`). A colon followed (with or without intervening whitespace) by an uppercase-led name is a named type annotation; by a lowercase-led name, a type variable or trait constraint; by a parenthesized form, a compound type annotation. The bound form MUST be a type expression (§2.4). [S114]
+The colon serves as the annotation introducer — a `^`-style reader macro binding the following type form (§2.3.8), so **whitespace between the colon and that form is permitted** (`: Int` ≡ `:Int`). A colon followed (with or without intervening whitespace) by an uppercase-led name is a named type annotation; by a lowercase-led name, a type variable or trait constraint; by a parenthesized form, a compound type annotation. The bound form MUST be a type expression (§2.4). [S114] The introducer and its two halves are read as **one** form (`annotated_form`, §1.8) — the fold is a reader rule, so the `annotation` non-terminal above never stands alone in a read tree. [S115]
 
 ## 2.9 Reserved Words [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_reject_trace_defn_name]
 
