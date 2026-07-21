@@ -96,8 +96,14 @@ interior-alias double-free),
 `expansion-qualification-scope.md` (S114, FIXME 0670 — `qualify_expanded_sexp`
 becomes scope-aware, skipping value-level binder slots; wave-1 of the F8 chain,
 paired with frontend `binder-head-reject.md` re-landing),
-`prelude-table-write-isolation.md` (S114, FIXME 0604 — the foreground public-write
-chokepoint contract; companion to `index-worker-isolation.md`'s background half),
+`prelude-table-write-isolation.md` (S114/S115, FIXME 0604 — the foreground
+public-write chokepoint contract; companion to `index-worker-isolation.md`'s
+background half; S115 corrects the predicate to declared-export closure + routes
+`commit_staging_to_live`),
+`impl-redefinition-hot-reload.md` (S115, FIXME 0714 / spec §5.4.5 — a same-type
+re-impl hot-reloads via the existing `commit_staging_to_live`→`commit_slotted_def`
+GOT-patch path; the silent-ignore locus is the `derive_codegen_batch` TraitImpl
+arm; no impl-specific parallel path, P11),
 `multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
 read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
 `bare-primitive-value-path.md`.

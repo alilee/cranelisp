@@ -89,6 +89,36 @@ R14 ruling's producer-side REJECT does not reach. The two never overlap: the COW
 producer decides whether ITS OWN result carries a count (escape); this contract
 decides whether a value FORWARDED THROUGH a binding carries one (structure).
 
+**The whole-match approximation (recorded S115, FIXME 0697).** The §2 table's
+`match scrut` row keys forwarding on the **selected** arm — a runtime notion. The
+as-built implementation is a STATIC whole-match predicate:
+`fn_compiler.rs::match_forwards_scrutinee:298` returns true if ANY var-pattern arm
+forwards its binder, and R3 emits the scrutinee-dec suppression ONCE in the merge
+block (`match_codegen.rs:180-183`). The same any-arm approximation feeds
+`operand_live_binding_root`'s Match row (R1/R2 consumers). For a **mixed
+constructor+var match** whose var-default arm forwards the scrutinee — a legal,
+idiomatic shape, `(match (norm o) [(None) (mk-default)] [x x])` — the suppression
+applies on ALL paths, so a run that selects the CTOR arm never decs the genuinely
+consumed temp scrutinee: **leak**.
+
+- **Polarity argument (leak-safe — the right direction).** The error is always a
+  MISSING dec, never an added one: on the non-forwarding (ctor) path a temp is
+  retained, not freed. So the approximation is leak-direction (an at-most-O(depth)
+  residue), never an under-count / UAF. Pre-W4 the same mixed shape was
+  UAF-direction on the var-arm path (a dec fired on a forwarded value), so the
+  whole-match approximation is a STRICT improvement — this record is about fencing
+  and bounding it, not reverting it.
+- **Mechanism-complete alternative (NAMED, PARKED — "document movable boundaries
+  decisively, then park").** Per-arm dec placement: move the temp scrutinee-dec
+  OUT of the merge block and INTO the non-forwarding arms before their merge jump,
+  so a forwarding arm suppresses and a consuming arm decs — exact per-path
+  accounting. It is deferred until a real mixed-arm-leak shape forces it (the
+  boundary is movable; today no probed shape exceeds the O(depth) residue bound).
+- **Tripwire (coordinated with /qa).** The parked boundary needs a fence: a /qa
+  matrix row over the mixed-arm × {ctor-path, var-path} × {toggle-on, toggle-off}
+  cells, so a future shape that turns the leak observable trips the both-polarity
+  fence. Filed as FIXME `target: /qa` (S115, 0726).
+
 ---
 
 ## 3. The three coordinated sub-rules (one contract, mapped to the cells)

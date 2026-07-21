@@ -135,6 +135,84 @@ Scheme { vars: [42], constraints: { 42: ["Num"] }, ty: Fn([Var(42), Var(42)], Va
 
 `+` is polymorphic over one variable, constrained to types implementing `Num`.
 
+### Occurrence-rule enforcement (§7.1.1, S115 — FIXME 0709)
+
+**Status:** DESIGN (S115 Phase 3, `/design`(typecheck)). Closes the F-D2
+`silent-accept`/`check-gate-leak` corner: `(deftrait Zeroable (zed [] Int))` —
+empty params, CONCRETE `Int` return, no `self` — is today accepted silently, and
+the downstream `(zed)` call leaks past the typecheck gate to a raw
+`codegen error … undefined function: zed`
+(`tests/nondispatchable_trait_method_0709.rs`, retargeted `/testing`).
+
+**The rule (spec/07-traits.md §7.1, line 79 — spec-settled, no user question).**
+Each required method signature of a CONVENTIONAL (bare-head, kind-`*`) trait MUST
+contain **at least one occurrence of the implementing type** — in parameter OR
+return position — **except higher-kinded trait methods (§7.2)**. An occurrence is:
+
+- a **bare parameter** (`[x …]` — an unannotated param defaults to the
+  implementing type, §7.1 "Parameters"),
+- a **`:self`-annotated parameter**, or
+- **`self` in the return type** (a bare `type_expr` return of `self`; `(zed [] self)`).
+
+A method mentioning the implementing type **nowhere** "has nothing to dispatch on
+and MUST be rejected **for 'no occurrence of the implementing type to dispatch
+on.'**" The diagnostic MUST carry that reason substring
+(`"no occurrence of the implementing type"` — the test's assertion). It is a
+**declaration-time** reject — the occurrence rule is a structural property of the
+method signature, decidable when the trait is declared (Principle 18 — enforce
+invariants structurally, at the seam where the malformed form is representable).
+
+**Boundary — the reject must NOT over-reach (the GREEN control).**
+`(zed [] self)` (empty params, `self` in return) SATISFIES the rule → accepted at
+declaration; its resolution is at USE (§3.3.3 ascription `:Int (zed)` selects the
+impl, or the §3.11 ambiguity error for an unresolved use). This is the settled
+**declaration-vs-use** split: a WELL-FORMED method (with an occurrence) is
+silently accepted at declaration and its dispatch/no-impl enforcement is at USE
+(§7.11.2, §3.11); only the MALFORMED no-occurrence form is a declaration reject.
+`(size [x] Int)` (bare param `x` = implementing type) SATISFIES — a concrete
+return is fine when a parameter carries the occurrence. Do NOT reject on "concrete
+return" alone; reject only on the *conjunction* no-param-occurrence ∧
+no-self-return.
+
+**Distinct from the §7.2.3 HK kind-check.** Rejecting a primitive as an HK impl
+target is *"not a type constructor"* (`traits/impl_check.rs:225`, the only
+§7.1.1-adjacent text today); a no-occurrence method is *"nothing to dispatch on."*
+The diagnostic MUST name the correct reason — a no-occurrence method MUST NOT be
+reported as an "HKT-on-primitive" error (§7.1 line 79). The parenthesized-head
+never-applied-var case (`(deftrait (Sizeable a) (size [:a x] Int))`, §7.1 line 29)
+is a SEPARATE malformed-head reject already covered at declaration (§7.2.1); the
+occurrence rule here is for the conventional bare-head form.
+
+**Seam and placement.** The `check_form_register` `TraitDecl` arm
+(`program/register.rs:38–59`) already routes name-freedom through
+`reject_def_over_binding` and then calls `register_trait_decl`
+(`traits/registry.rs:79`). The occurrence check fires in the **conventional**
+registration path of `register_trait_decl` (where the method signatures are in
+hand and the conventional-vs-HKT discrimination already lives — HKT routes to
+`register_hkt_trait`, exempt), BEFORE the trait entry is written, per method.
+`build_method_type` already maps a `TypeExpr::SelfType` return and a bare param to
+the implementing-type var, so the occurrence predicate reads the same parsed
+signal (bare param / `:self` param / `self` return) off `decl.methods` — no new
+parsing. Placement at the arm (mirroring the name-freedom loop's "ONE visible
+place") is the alternative; the registry is preferred because it holds the
+signature data and the HKT discrimination. `/dev` settles the exact call site; the
+requirement is: conventional-only, per-method, declaration-time, correct reason.
+
+**The negative twin flips as a consequence.** Once (i) rejects `(deftrait Zeroable
+(zed [] Int))` at declaration, `(zed)` never reaches codegen, so the (ii)
+`undefined function` codegen leak is closed with no separate use-site work — the
+F-D2 check-gate-leak symptom in this degenerate corner is subsumed by the
+declaration reject. Located error uses existing error machinery
+(`CranelispError::TypeError` + `ErrorLocation` from the decl span) — no
+`cranelisp-types` edit (arch §7).
+
+**Unit tier (`/dev`, METHOD §2.2).** At the registration seam, an accept/reject
+pair: `(deftrait Zero (z [] self))` accepted (occurrence via self-return);
+`(deftrait Zeroable (zed [] Int))` rejected with the reason substring; a bare-param
+method (`(size [x] Int)`) accepted (occurrence via bare param). The GREEN control
+`(zed [] self)` (§7.1.1's own example) staying accepted is the fix's boundary
+guard (test plan §1.3).
+
 ## 3. Trait Implementation (`impl`)
 
 ### Surface syntax

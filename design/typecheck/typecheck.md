@@ -42,71 +42,61 @@ The BC is the contract. Restated as crate responsibilities:
 
 ## 2. Public surface
 
-The facade `design/arch/facades/typecheck.md` is normative. Pinned by reference, not restated in detail. The shape (per facade §"Public surface (as-designed)"):
+The canonical surface is **source rustdoc + `crates/cranelisp-typecheck/public-api.txt` + BC §2** (all nine `design/arch/facades/` docs retired S69–S81; the directory holds only S69/S70 audit records — `design/arch/CLAUDE.md` facades row). This section restates the *as-built* surface (verified against `public-api.txt` + `lib.rs` re-exports, S115); the crate-root `//!` in `lib.rs` is the per-item authority.
 
-- Free function `check_form(node, &SymbolTable, &SymbolTables) -> Result<CheckResult, CheckError>` — the per-form check; the only entry point `int` uses in production.
-- Free function `register_builtins(&mut SymbolTable<Code, ()>)` — called once per fresh `SymbolTable`.
-- `CheckState`, `TypeCheckEnv`, `CheckPass`, `FormCheckResult`, `ModuleCheckAccumulator` — finer-grained scaffolding exposed for tests and advanced callers.
-- Trace hook re-exports from `trace.rs` (`install_symbol_table_ensure_hook`, …) — observability surface for `/int`'s scheduler tracing per `design/int/heisenbug-race-closure.md §3d''`.
-- Re-exports from `cranelisp-types` per facade — `CheckResult, CheckError, ResolutionGap, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ReplSnapshot, ResolvedCall, TypeDefInfo, Scheme, Subst, Type, TypeId`.
+The entry surface is **one free function per cluster** (Decision 44, third amendment 2026-05-13 — the two-pass `check_form_signatures`/`check_form_body` facade split collapsed into one `check_forms`):
 
-The nine bounded-context invariants (facade §"Bounded-context invariants") are the contract that holds across sprints. The crate is designed to keep them; §6 pins how.
+- `check_forms<C, L>(parsed: Vec<ParsedEntry>, ctx: &mut SymbolTableAccess<'_, C, L>, symbol_tables: &SymbolTables<C, L>, module_aliases, prelude_fallback) -> Result<CheckResult, CheckError>` (`form.rs:96`) — the cluster-atomic check `int` uses in production. Internal two-pass discipline (register / body) + finalize are internal to this call frame.
+- `check_type_expr<C, L>(...) -> Result<Type, CheckError>` (`form.rs:356`) — the standalone `TypeExpr → Type` resolution entry (source-annotation / platform-sig contexts).
+- `signature_matches_exact` / `signature_matches_partial` (`signature_match.rs`) — the Pillar-3 importable-symbol search predicates (`signature-match.md`).
+- Scaffolding exposed for tests + advanced callers: `CheckState`, `TypeCheckEnv`, `PreludeFallback`, `advance_next_id_past_table` (`checker.rs`); `SymbolTableAccess`, `SymbolTableRead`, `SymbolTableMut` (`cluster.rs` — the Decision-44 staging accessor).
+- Result/error types, crate-owned (NOT re-exported from `cranelisp-types`): `CheckResult`, `CheckError` (`#[non_exhaustive]`, variants `Gap(ResolutionGap)` + `TypeError { message, location }`), `DispatchGap`, `UnresolvedDispatchSite` (`result.rs`).
+- Trace-hook re-exports (`trace.rs`) — observability surface for `/int`'s scheduler tracing (`design/int/` heisenbug-race closure).
 
-### 2.1 Drift between facade and current source — explicit register
+The BC §2 cross-context invariants 1–10 (`bounded-contexts.md`) are the sprint-spanning contract; the crate is designed to keep them (§6/§7). Baseline discipline: any `public-api.txt` diff rides its source change per `design/arch/CLAUDE.md` §"Baseline-diff discipline" (`/dev` regenerates, `/design` updates this record + `lib.rs` rustdoc, `/review` confirms both in one diff).
 
-The facade is **target-stating**; current source has not finished migrating to it. This register names the deltas the design intent commits to closing. None are silent debts; each is tracked.
+### 2.1 Migration status — the S63-era drift closed
 
-| Facade item | Current source | Tracking |
-|---|---|---|
-| `check_form(node, &SymbolTable, &SymbolTables)` free function | Method `TypeCheckEnv::check_form(_module, form, pass, &mut state, &mut accumulator)` returning `FormCheckResult` | FIXME 0008 (mutability discipline + free-function shape) |
-| `register_builtins(&mut SymbolTable<Code, ()>)` taking one table | `register_builtins<C, L>(&DashMap<ModuleFullPath, SymbolTable<C, L>>, &AtomicU32)` taking the whole map plus the type-var allocator | FIXME 0008 (same pivot — once `check_form` is a free function, builtins follow); see also FIXME 0098 Phase 3 for the boundary-type prerequisites |
-| `CheckError`, `ResolutionGap` re-exported from `cranelisp-types` | Neither type exists in `cranelisp-types`; the crate returns `CranelispError` | **FIXME 0098 Phase 3** — typecheck migration to `check_form`/`CheckError`/`ResolutionGap` typed returns (Phase 1 lands the boundary types in `cranelisp-types` first) |
-| `CheckResult` returned by `check_form` | `FormCheckResult` per call; `CheckResult` only at `check()` level after finalize | Rolls up under FIXME 0008's free-function migration |
-| `TypeCheckEnv<'a>` (no generics in facade) | `TypeCheckEnv<'a, C = (), L = ()>` (defaults work in practice) | Generic-defaults convention; minor doc-clarity item, called out in §11 |
-| Public surface in `lib.rs` re-exports the full type set per facade | `lib.rs` re-exports a small subset (`CheckResult, CranelispError, ReplSnapshot, TopLevel`) | Per Principle 15 (S64) — implementation-crate facades do NOT re-export `cranelisp-types` items; the existing `pub use` block is removed by FIXME 0100 Phase 1 (which also relocates `CheckResult`/`CheckError`/`ResolutionGap`/`ReplSnapshot` from `cranelisp-types` into `cranelisp-typecheck`) |
-
-The drift items above are NOT design problems with the contract — they are implementation-not-yet-caught-up. Working through them is the next several waves of `/dev` work, sequenced behind the audit's six prioritised remediations (§5.1).
-
-The two contract problems that DO need `/arch` arbitration are flagged in §11.
+The `check_form`-free-function migration (former FIXME 0008) and the boundary-type migration (former FIXME 0098) that this section's earlier drift register tracked **have landed**: `check_forms` is the free function (not a `TypeCheckEnv` method returning `FormCheckResult`); it takes `&mut SymbolTableAccess` (the Decision-44 staging choke point) + `&SymbolTables`, never `&mut SymbolTable`; and `CheckError`/`CheckResult`/`DispatchGap` are crate-owned types in `result.rs` (the crate no longer returns `CranelispError` at its boundary). Neither FIXME 0008 nor 0098 exists in `design/arch/fixmes/` (0008 migrated to the legacy Decision register, commit `d2849a5a`). The mutation contract §6 describes the landed shape, not a target.
 
 ---
 
 ## 3. Internal architecture
 
-### 3.1 Module layout (as-built)
+### 3.1 Module layout (as-built, S115 — verified `find | wc -l`)
 
-| File | LOC | Role | Health |
+The crate is decomposed into purpose-named submodule directories (the S87 `traits/` cut, the S109 `program/` cut per `program-decomposition.md`, the S100–S102 `ownership/` staging). LOC includes co-located tests where a file has no sibling `tests.rs`; production-only figures cited for the watch-items.
+
+| Unit | Prod LOC (approx) | Role | Health |
 |---|---:|---|---|
-| `program.rs` | 6,985 | Per-form pipeline (`check`, `check_form`, `finalize_check_result`) + deprecated `check_program` / `check_repl_input` paths + multiple expression walkers | **Highest-debt file** (audit Findings 1, 2) |
-| `infer.rs` | 3,054 | Algorithm-W per-`Expr`-variant inference + deferred trait-call resolver | One-method-per-variant largely clean (audit) |
-| `traits.rs` | 2,919 | Trait decls, impl recording, method resolution; non-HKT and HKT impl-method paths | Duplicated impl-finalization tail (audit Finding 3) |
-| `checker.rs` | 2,798 | `TypeCheckEnv` + `CheckState` + cross-module lookup helpers | Lookups scan all modules — many ad-hoc views (audit Finding 5) |
-| `builtins.rs` | 2,433 | Builtin / primitive registration | 132× manual `ModuleEntry::Def { … }` literals concentrate here (audit Finding 4) |
-| `adt.rs` | 923 | ADT registration, exhaustiveness | Clean |
-| `resolve.rs` | 356 | Method / overload resolution helpers | Clean |
-| `unify.rs` | 339 | Algorithm-W unification + occurs check | Clean |
-| `scope.rs` | 191 | Scope stack | Clean |
-| `scheme.rs` | 172 | `Scheme` operations (generalise / instantiate) | Clean |
-| `trace.rs` | 161 | Cross-crate trace hook installer | Clean |
+| `program/` (`mod`, `register` 1,357, `finalize` 1,517, `mono_collect` 834, `body` 738, `support` 607, `callees` 328, `test_driver`) | ~5.7k | The cluster pipeline: register (Pass 1), body (Pass 2), finalize (post-passes + mono windows), callee harvest, mono collection | `finalize.rs` is the growth magnet (§4.2) |
+| `traits/` (`monomorphise` 1,298, `impl_check` 1,165, `dispatch` 531, `registry` 412, `type_resolve` 229, `mod`) | ~3.6k | Trait decls, impl recording, method resolution/dispatch, mono spine, HKT | Clean post-S87 decomposition |
+| `ownership/` (`transfer` 1,137, `fixpoint` 644, `uniqueness` 362, `confinement` 254, `classify` 175, `sites` 106, `publish`, `trace`, `mod`) | ~2.8k | The S100+ interprocedural ownership-inference pass (`ownership-inference.md`) | Staged; largest 1,137 |
+| `checker.rs` | 3,180 | `TypeCheckEnv` + `CheckState` + cross-module lookup helpers + scope-resolve seam | **Largest production file; growth watch-item** (audit s114 §2.1) |
+| `builtins.rs` | 2,472 | Builtin / primitive registration (the no-`cranelisp-primitives` fixture world) | Deliberate — the isolation price |
+| `infer.rs` (+ `infer/tests.rs`) | 1,808 | Algorithm-W per-`Expr`-variant inference + `infer_var` resolution chokepoint | One-method-per-variant, clean |
+| `adt.rs` | 1,066 | ADT registration, exhaustiveness, accessor synthesis | Clean |
+| `form.rs` | 537 | `check_forms` / `check_type_expr` entry surface | Clean |
+| `resolve.rs` | 384 | `TypeExprCtx` + the ONE `resolve_type_expr` (S110 four-mirror convergence, `5ed07d60`) + overload helpers | Clean (0590 converged) |
+| `signature_match.rs` | 315 | Pillar-3 exact/partial signature-match predicates | Clean |
+| `unify.rs` | 286 | Algorithm-W unification + occurs check + FQ error renderer | Clean |
+| `cluster.rs` | 241 | `SymbolTableAccess` staging (Decision 44) | Clean |
+| `result.rs` | 166 | `CheckResult` / `CheckError` / `DispatchGap` (crate-owned boundary types) | Clean |
+| `scope.rs` 135 · `trace.rs` 91 · `scheme.rs` 63 | — | Scope stack; trace-hook installer; `Scheme` generalise/instantiate | Clean |
 
-Total production: ~20.4 KLOC (incl. co-located tests).
+Total ~51k across production + co-located tests; ~20.7k production LOC (audit s114 §2.3).
 
-### 3.2 Target shape (post FIXME 0008 + FIXME 0098 Phase 3 + the audit's six remediations)
+### 3.2 Growth watch-items (from the rolling audit cycle)
 
-The audit's target-state diagram (`audits/typecheck-20260423-target-state.{mmd,svg}`) pictures one `check()` / `check_form()` pipeline reading the symbol-table store via a centralised lookup facade (`Index`), shared `Expr` walker helpers, and a shared impl-method finalizer for the HKT / non-HKT trait paths. That diagram is **directionally correct** but predates Decisions 38/39 and FIXME 0008 / FIXME 0098 Phase 3. The refinements layered on top:
+There is no separate "target-state diagram" roadmap — the 2026-04-23 audit's target-state (`audits/typecheck-20260423-target-state.{mmd,svg}`) and its six remediations are **retired**: the duplicate-pipelines / duplicate-walkers / duplicate-impl-tails findings they headed are **resolved** (the `check_program*`/`check_repl_input*` shadow pipelines are gone — the names survive only as test-driver methods, `checker/test_support.rs`; the `check_forms` single path is as-built). Forward-looking maintainability is now driven by the rolling per-crate audit cycle (`audits/cranelisp-typecheck-s114.md`, `/audit`), whose live watch-items are:
 
-1. **`check_form` consumes `&SymbolTable` not `&mut SymbolTable`** (FIXME 0008 / Decision 38). The audit's diagram does not name the mutability discipline; this design pins it.
-2. **Errors carry `ErrorLocation`, not bare `Span`** (Decision 39). Producer policy in §7.
-3. **`check_form` returns `Result<CheckResult, CheckError>` where `CheckError::Gap(ResolutionGap)` is one variant.** The current `FormCheckResult` is an internal stage product; what crosses the facade is the rolled-up `CheckResult`. FIXME 0098 Phase 3 names the typecheck-side migration; Phase 1 lands the boundary types.
-4. **`TypeCheckEnv` becomes a thin internal struct** — once `check_form` is a free function over `(&SymbolTable, &SymbolTables)`, `TypeCheckEnv`'s job is to wrap those two refs plus the per-call `CheckState`. The facade keeps it `#[non_exhaustive]` for callers that want finer-grained control, but it stops being the public API.
+- **`finalize.rs` 1,517 LOC** — +85% over its own S109 design estimate (~820) and over the ~1,200 ceiling, because the settlement machinery keeps landing there (the three harvest windows, `monomorphisation.md` §11.8.10). The window structure is the natural cut line; the re-budget is FIXME 0722 (audit R-3, this sprint's `/dev` item).
+- **`checker.rs` 3,180 LOC** — the largest production file post-split; a watch-item, not yet over any stated budget.
+- **`program/tests.rs` 10,576 LOC monolith** — the designed per-submodule test split (`program-decomposition.md` §3) shipped its production cut without the test cut; FIXME 0722 executes it this sprint.
 
-The audit's six prioritised remediations are the maintenance roadmap. They land in the order the audit names — pipeline consolidation first, impl-method finalization second, shared `Expr` walker third, `ModuleEntry::Def` builders fourth, lookup facade fifth, test split sixth. The triad sequences these across waves; this design doc does not bind ordering tighter than the audit does.
+### 3.3 Cross-module lookups (`checker.rs`)
 
-### 3.3 The `Index` lookup facade
-
-The audit's Finding 5 names "many lookups scan every loaded module" as a maintainability risk and proposes a `TypecheckIndexView`. The design intent: one place owns the scan-all-modules logic; specialised lookups read through it. The motivation is **maintainability, not performance** (Principle 6 — premature performance work is forbidden; centralisation is bookkeeping). When indexing/caching becomes worth doing later, it lives behind this facade and call sites do not change.
-
-The current `checker.rs` exposes ~30 lookup helpers (`lookup_type_def`, `lookup_constructor_type`, `all_type_defs`, `lookup_trait_decl`, `method_to_trait`, `has_impl`, `get_implementing_types`, `known_type_names`, `find_hkt_param_index_in_registry`, …). The audit-recommended consolidation gathers these onto an `Index` view; per-call complexity stays the same, but the dispatch surface localises.
+`checker.rs` holds the cross-module lookup helpers (`lookup_type_def`, `lookup_constructor_type`, `all_type_defs`, `lookup_trait_decl`, `has_impl`, `get_implementing_types`, …). Short-name resolution is current-module-only with per-symbol chain-follow on `Import`/`Reexport` entries — **no universe scan** (`crates/cranelisp-typecheck/CLAUDE.md` §"Module-locality"; Principle 17); `resolve_terminal_entry_and_home` / `chain_follow_to_home` are the navigation primitives, staging-aware via `probe_module_entry_owned`. A centralised `Index` view was proposed by the 2026-04-23 audit purely as a maintainability bookkeeping step (never a perf optimisation, Principle 6); it is **not landed and not currently prioritised** — the per-symbol chain-follow is the operative model and the S108 Wave-G convergence (`scope_resolve` / `ResolutionScope`) is where the shared resolution logic already single-sources.
 
 ---
 
@@ -114,28 +104,20 @@ The current `checker.rs` exposes ~30 lookup helpers (`lookup_type_def`, `lookup_
 
 ### 4.1 Simplicity (Principle 6 — complexity has a budget)
 
-The crate's *core* is simple: per-`Expr`-variant inference, Algorithm-W unification, generalise/instantiate. The *control flow around it* is not — three issues, each named by the audit:
-
-- **HIGH — duplicate pipelines** (audit Finding 1). `check_program*` / `check_repl_input*` shadow `check` / `check_form`. Carry real logic — registration, body checking, monomorphisation, AST annotation. Every change has to ask "one path or three?" Cleanup is the audit's #1 priority and this design doc's #1 simplification target.
-- **HIGH — duplicate `Expr` walkers** (audit Finding 2). `apply_subst_to_expr`, `annotate_expr_from_maps`, `collect_constrained_calls`, `resolve_deferred_trait_calls`. New `Expr` variants risk silent coverage drift across multiple files. Target: one `walk_expr_children` shared helper; specialisation stays local, traversal centralises. Principle 12 (design for the full spec surface) says new variants must not require multi-file coordinated edits.
-- **HIGH — duplicate impl-method tails** (audit Finding 3). `check_impl_method_with_sig` and `check_hkt_impl_method` share ~half their bodies (snapshot side maps → check body → resolve auto-curry → mangle → annotate → write `ModuleEntry::Def`). Factor the shared tail; keep type-resolution front halves separate.
-
-Resolving these three reduces effective complexity meaningfully without changing what the crate does. They are direct enabling work for the FIXME 0008 free-function migration — once the duplicate paths are gone, the surviving path collapses naturally onto the facade-shaped `check_form`.
+The crate's *core* is simple: per-`Expr`-variant inference, Algorithm-W unification, generalise/instantiate. The three "HIGH" simplicity findings of the 2026-04-23 audit — **duplicate pipelines** (`check_program*`/`check_repl_input*` shadowing the real path), **duplicate `Expr` walkers**, **duplicate impl-method tails** — are **resolved**: the shadow pipelines are gone (only test-driver shims remain, `checker/test_support.rs`); `check_forms` is the single cluster path. The live simplicity concern is not duplication but **file growth at the settlement machinery** (`finalize.rs` §3.2), tracked by the rolling audit cycle, not a standing remediation list.
 
 ### 4.2 Maintainability
 
-The four maintainability risks the audit names map directly onto this design doc's planned cleanups:
+Forward-looking maintainability is driven by the rolling per-crate audit (`audits/cranelisp-typecheck-s114.md`), not the retired 2026-04-23 remediation roadmap. The live risks and their dispositions:
 
-| Audit risk | Design response | Reference |
+| Live risk (audit s114) | Disposition | Reference |
 |---|---|---|
-| Parallel/legacy code-paths in `program.rs` | Consolidate to `check` / `check_form`; deprecated paths become test shims | §4.1 + audit remediation #1 |
-| Expression walking duplicated | Shared `walk_expr_children` helper | §4.1 + audit remediation #3 |
-| `ModuleEntry::Def { … }` constructed 132× manually | Narrow constructors / builders (primitive def, user def placeholder, concrete checked def, overloaded placeholder, trait method def) | §4.1 + audit remediation #4 |
-| Many lookups scan every loaded module | `TypecheckIndexView` — one place owns the scan-all-modules logic | §3.3 + audit remediation #5 |
+| `finalize.rs` over budget (settlement machinery accretes) | Re-budget at the harvest-window seams | FIXME 0722 (this sprint), §3.2 |
+| `program/tests.rs` monolith (designed split not executed) | Per-submodule sibling test files | FIXME 0722, `program-decomposition.md` §3 |
+| `checker.rs` largest post-split file | Watch-item, no budget breach yet | §3.2 |
+| `.meta.json` carrier meaning changes (`callees`, `resolved_targets`) | Ride the `CACHE_SCHEMA_VERSION` bump in the SAME change-set | `crates/cranelisp-typecheck/CLAUDE.md` §"`Def.callees` completeness" |
 
-The `ModuleEntry::Def` invariant drift (Finding 4) is the most insidious. 132 occurrences of fields like `got_slot`, `ast`, `code`, `trait_origin` set manually means any future field addition ages each call site independently. The 42 Decisions accumulating around `ModuleEntry::Def` (especially 25, 31, 38, 41) raise the per-field correctness stakes; the builders are a forcing function for keeping invariants in one place.
-
-The drift register in §2.1 is also a maintainability surface — keeping it accurate as the crate evolves toward the facade is part of every triad cycle's `/design` work.
+`ModuleEntry::Def` field discipline (a former audit finding — the many manual struct literals) is now mediated by the builder API (`ModuleEntry::def(..).build()` and the mono/ctor registration seams) and the concrete-`codegen_view` population contract (`CLAUDE.md` §"Concrete-boundary `codegen_view`"); a field addition rides the builder, not N hand-edited literals.
 
 ### 4.3 Observability
 
@@ -145,62 +127,39 @@ When typecheck errors surface, `ErrorLocation` (§7) carries enough metadata for
 
 ### 4.4 Concurrency-safety
 
-Covered in §6. The headline: typecheck holds no shared state across calls; concurrency is handled by the SymbolTable mutation discipline (Decision 38 / FIXME 0008).
+Covered in §6. The headline: typecheck holds no shared state across calls; concurrency is handled by the SymbolTable mutation discipline (Decision 38 — landed; §6).
 
 ### 4.5 Performance
 
-The crate's perf posture today is "scan all loaded modules for any global question" (audit Finding 5). For Ring-2-scale workloads this is fine. The audit's proposed `TypecheckIndexView` is a **centralisation step, not an optimisation** — it makes future indexing/caching changes one-place edits instead of N-place. Premature indexing is rejected per Principle 6 / `feedback_no_premature_perf.md`.
-
-The cross-module FQ-resolution path (`check_form` → `&SymbolTables` → `.get(&other_module)`) is shard-shared-locked once FIXME 0008 lands. Per-entry contention with concurrent insert from another worker is microsecond-scale and acceptable per FIXME 0008's analysis.
-
-Algorithm-W's substitution-composition cost is well-understood. No spec acceptance criteria pin typecheck wall-time; if one emerges (e.g., multi-thousand-defn module), the index facade is where memoisation lands.
+Cross-module resolution is per-symbol chain-follow (current-module probe + `Import`-chain follow), not a universe scan (§3.3). For current workloads this is fine; the `Index`-view centralisation is a bookkeeping step, not landed, not currently prioritised (Principle 6 — premature performance work forbidden). The cross-module read path (`check_forms` → `&SymbolTables` → shard-shared `.get(&other)`) contends per-entry with a concurrent insert from another worker only at microsecond scale (Decision 38 analysis). Algorithm-W's substitution-composition cost is well-understood; no spec criterion pins typecheck wall-time.
 
 ### 4.6 Testability (Principle 5 — testability is structural)
 
-The crate is structurally testable today — `check_form`-equivalent driver paths take `(form, &SymbolTable-equivalent, &SymbolTables-equivalent)` plus per-call state. The test surface is large (~12 KLOC co-located) which is actively useful for invariant pinning. The audit's Finding 6 (file ergonomics) is the only testability concern: the largest production files (`program.rs` 2,815 prod / 4,170 test, `infer.rs` 849 prod / 2,205 test, `checker.rs` 812 prod / 1,986 test) are hard to navigate with tests interleaved. Split heavyweight tests into sibling `*_tests.rs` modules — but only after the pipeline cleanup, per the audit's sequencing.
-
-The advisory scaffolding (`CheckState`, `TypeCheckEnv`, `CheckPass`, `FormCheckResult`, `ModuleCheckAccumulator`) is exposed precisely for testing — finer-grained drivers than `check_form`. `int` uses only `check_form` in production; the others are test affordances and should not become production paths.
-
-A coverage gap that surfaced in §11: there is no narrow unit test asserting `check_form` raises `CheckError::Gap(ResolutionGap::SymbolTypechecked(fq))` for an unresolved FQ value reference (vs `TypeError`). FIXME `target: /qa` proposed in §11.
+The crate is structurally testable: `check_forms` takes `(parsed, &mut SymbolTableAccess, &SymbolTables, …)`; unit tests drive it via `TestFixture` (`checker/test_support.rs`), which seeds the full synthetic world on `cranelisp-types` alone (no `cranelisp-primitives` dep — the isolation that makes `builtins.rs` a fixture world). The scaffolding (`CheckState`, `TypeCheckEnv`, `SymbolTableAccess`) is exposed precisely for this; `int` uses only `check_forms` in production. The live testability concern is file ergonomics — `program/tests.rs` at 10,576 lines is hard to navigate; the designed per-submodule split (FIXME 0722, `program-decomposition.md` §3) is this sprint's `/dev` item.
 
 ---
 
 ## 5. Pipeline structure inside the crate
 
-The audit confirms the per-form pipeline shape is "directionally correct" (§"What is working well" #3). The pipeline:
+`check_forms` is the cluster-atomic entry (Decision 44); internally it runs three stages over the cluster's `ParsedEntry` list, then finalises:
 
-1. **Pass 1 — Register.** `check_form_register` walks the form variant (`TypeDef | TraitDecl | TraitImpl | Defn | Expr`) and populates the symbol table with type defs, trait decls, trait impls, and signature schemes. No body checking. Default-method defns generated by `register_trait_impl` are queued for Pass-1 registration in a follow-up loop (currently in `check_inner` after the main Pass-1 loop).
+1. **Pass 1 — Register** (`program/register.rs::check_form_register`). Walks each form (`TypeDef | TraitDecl | TraitImpl | Defn | Expr`), routes the definition name(s) through the §8.6.4 name-freedom seam (`reject_def_over_binding`), and populates the staging table with type defs, trait decls (+ methods), trait impls, and signature schemes. No body checking.
 
-2. **Pass 2 — Body check.** `check_form_body` runs Algorithm-W per body, populates `FormCheckResult.expr_types`, `method_resolutions`, `mono_defns`, `multi_sig_defns`, `default_method_defns`, and `call_graph_edges`. Defaults-defn body check follows in the same loop pattern.
+2. **Pass 2 — Body check** (`program/body.rs`). Algorithm-W per body; populates `FormCheckResult` (`expr_types`, `method_resolutions`, the `var_refs`/`apply_refs` typed carriers, `mono_defns`, `multi_sig_defns`, `default_method_defns`, `call_graph_edges`). Callee edges harvest through the ONE `harvest_callee_edges` helper (`CLAUDE.md` §"`Def.callees` completeness").
 
-3. **Finalize.** `finalize_check_result` runs the post-passes (generalisation, overload resolution, monomorphisation, AST annotation) and produces the rolled-up `CheckResult`.
+3. **Finalize** (`program/finalize.rs::finalize_check_result_inner`). The post-passes: generalisation (the FIXME-0349 `regeneralize_defn_schemes` chain), overload resolution + the multi-sig back-flow drain (§5.1.2), monomorphisation (the three `pass4_monomorphise` harvest windows, `monomorphisation.md` §11.8.10), the ownership post-pass (`ownership/`, `ownership-inference.md`), and AST annotation — producing the rolled-up `CheckResult`.
 
-The current `check()` method on `TypeCheckEnv` orchestrates all three passes for a slice of `TopLevel` forms. The facade's `check_form` is the per-form variant of the same machinery, called by `int::process_form` in the form-by-form scheduler loop (per Decision 30 / facade §"Returns").
-
-### 5.1 The audit's six remediations — execution plan as enabling work
-
-The audit's prioritised remediations and how they relate to the facade migration (FIXME 0008, FIXME 0098 Phase 3):
-
-| # | Remediation | Effect on facade migration |
-|---|---|---|
-| 1 | Remove duplicate checking entry points from `program.rs` | **Prerequisite.** Until `check`/`check_form` are the only paths, the free-function migration cannot be done cleanly. |
-| 2 | Extract shared impl-method finalization in `traits.rs` | Independent; reduces complexity in the largest area touched by FIXME 0008. |
-| 3 | Introduce shared `Expr` traversal helpers | Independent; protects new variants from drift during the facade migration. |
-| 4 | Add constructors/builders for `ModuleEntry::Def` | Independent; reduces blast radius of any `ModuleEntry::Def` field changes (Decision 39's `defn_order` field, Decision 41's any future additions). |
-| 5 | Centralise "scan all modules" lookups behind `TypecheckIndexView` | Independent; centralises cross-module read patterns that FIXME 0008's `&SymbolTables` access will touch. |
-| 6 | Split heavyweight tests out of giant implementation files | Sequenced last, per the audit. |
-
-Sequencing #1 first is load-bearing for the FIXME 0008 / FIXME 0098 Phase 3 migration; the others are independent quality improvements that can interleave with the facade work.
+All writes flow through `SymbolTableAccess` (`current_symbol_table_mut`), staging-aware and cluster-atomic (Decision 44); the cluster commits atomically. `int` invokes `check_forms` per cluster in the form-by-form scheduler loop.
 
 ---
 
-## 6. Mutation discipline — the post-FIXME-0008 contract
+## 6. Mutation discipline (Decision 38 — landed)
 
-This is the load-bearing simplification of S63. Earlier subordinate docs (`check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md`) assume `&mut SymbolTable`; the design intent commits to the post-FIXME-0008 shape per Decision 38.
+The load-bearing simplification of S63, now as-built. The HISTORICAL subordinate docs (`check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md`) assume `&mut SymbolTable` and are superseded by this contract (Decision 38).
 
 ### 6.1 The contract
 
-`check_form(ast, &SymbolTable, &SymbolTables) -> Result<CheckResult, CheckError>` — `&SymbolTable`, NOT `&mut SymbolTable`.
+`check_forms(parsed, &mut SymbolTableAccess, &SymbolTables, …) -> Result<CheckResult, CheckError>` — writes flow through `SymbolTableAccess` (Decision-44 staging), never a raw `&mut SymbolTable`.
 
 The only `&mut SymbolTable` operations in the entire system are:
 
@@ -211,7 +170,7 @@ Both operations live on the initiator thread. Workers never see `&mut SymbolTabl
 
 ### 6.2 How writes happen during typecheck
 
-`check_form` annotates `node` in place (the AST is owned by the caller, so this is local mutation, not symbol-table mutation). It does NOT call `insert_or_update` — committing the new `ModuleEntry::Def` is `int::insert_symbol`'s job (per facade invariant 2).
+`check_form` annotates `node` in place (the AST is owned by the caller, so this is local mutation, not symbol-table mutation). It does NOT call `insert_or_update` — committing the new `ModuleEntry::Def` is `int::insert_symbol`'s job (BC §2 invariant 2).
 
 When typecheck logically needs to publish something to the symbol table (e.g., a synthesised mono-defn entry, or a Pass-1 signature), it does so via `SymbolTable::insert_or_update(&self, sym, entry)` — `&self`, writing through the inner `DashMap<Symbol, ModuleEntry<C>>`'s per-entry write lock per the per-symbol mutability discipline.
 
@@ -224,9 +183,7 @@ Two correctness payoffs (FIXME 0008 §"Operational implication"):
 
 ### 6.4 What the current source still does
 
-The current `TypeCheckEnv` borrows the *whole* `DashMap<ModuleFullPath, SymbolTable<C, L>>` and acquires per-module guards (`current_symbol_table`, `current_symbol_table_mut`) ad hoc. Some of these guards are `RefMut` (write) holds across non-trivial work — exactly what FIXME 0008 targets to eliminate. The free-function `check_form(ast, &SymbolTable, &SymbolTables)` shape removes the ambiguity at the boundary; internal code paths then collapse onto shared-shard reads + per-entry inner-DashMap writes.
-
-This is in-flight migration, not silent debt. The audit's remediation #1 (consolidate pipelines) is the prerequisite; FIXME 0008 is the contract change; the source migration is the sprint work that remains.
+`TypeCheckEnv` reads/writes through `SymbolTableAccess` (Decision 44), which selects staging-vs-live per module (`SymbolTableRead::Cluster` when the module is the cluster's own staging target, else `Live`). The `check_forms(…, &mut SymbolTableAccess, &SymbolTables, …)` free-function shape is as-built — no `&mut SymbolTable` crosses the boundary. This migration **landed** (former FIXME 0008); it is not sprint work that remains.
 
 ### 6.5 What this supersedes
 
@@ -249,7 +206,7 @@ This is in-flight migration, not silent debt. The audit's remediation #1 (consol
 - `&mut CheckState` (per-call transient — owned by the worker).
 - A mutable `Ast` (caller-owned; in-place annotation).
 
-The crate does NOT read `Sess`, does NOT read `SharedState.scheduler`, does NOT call `wait_for_typecheck_*`. Per facade invariant 9 / Principle 3 (dependency flows toward stability), dependencies surface as `CheckError::Gap` values.
+The crate does NOT read `Sess`, does NOT read `SharedState.scheduler`, does NOT call `wait_for_typecheck_*`. Per BC §2 invariant (dependency-gap return) / Principle 3 (dependency flows toward stability), dependencies surface as `CheckError::Gap` values.
 
 ### 7.2 Reframing of Decision 30
 
@@ -257,7 +214,7 @@ Decision 30 ("form-by-form scheduler; mutual imports deadlock") historically cla
 
 ### 7.3 Gap-return contract
 
-Per the gap-return pattern (`facades/int.md` `process_form`):
+Per the gap-return pattern (the `int` orchestrator's per-form retry loop, `design/int/` + BC §6):
 
 | Gap | When typecheck raises it | Caller response |
 |---|---|---|
@@ -269,7 +226,7 @@ Typecheck asks for `SymbolTypechecked` (not `SymbolInMemory`) for value referenc
 
 The `MacroInMem` variant in the unified `ResolutionGap` enum is raised by frontend, not typecheck. This is an **intentional contract**: `ResolutionGap` is the unified gap-return type spanning frontend + typecheck producers, and each producer raises only its applicable subset (Principle 7 — single source of truth: the gap enum is one shared vocabulary, even though each call site uses only part of it). §11 raises this as a doc-clarity FIXME asking `/arch` whether the rustdoc should pin which producer raises which variant.
 
-**Source status:** `CheckError` and `ResolutionGap` do not yet exist in `cranelisp-types`. FIXME 0098 Phase 1 lands the boundary types in `cranelisp-types`; Phase 3 migrates typecheck to the typed returns. Until those land, the current source returns `CranelispError` and the Gap mechanism is implemented at the `int`-orchestration layer through ad-hoc dependency detection.
+**Source status (landed):** `CheckError` is a **crate-owned** type in `result.rs` (`#[non_exhaustive]`, variants `Gap(ResolutionGap)` + `TypeError { message, location }`); `ResolutionGap` lives in `cranelisp-types`. `check_forms` returns `Result<CheckResult, CheckError>` at the boundary — the crate no longer returns `CranelispError`. The dependency-gap mechanism (`ResolutionGap` values surfaced as `CheckError::Gap`, orchestrated by `int`) is as-built.
 
 ### 7.4 Snapshot / restore
 
@@ -305,7 +262,7 @@ pub struct ErrorLocation {
 
 Production batch (no introspection) shows `file:line:col: type error: …` — the `Span` gives the offset, the file-mtime path gives `file:line:col` resolution. REPL / trace mode (`shared.introspection` present) uses `fq` to resolve the per-defn source snippet for inline display. Both modes get the same error structure; only the formatter changes.
 
-The `Warning` shape mirrors `ErrorLocation` (per `facades/types.md`). Typecheck warnings (e.g., shadowing, unused imports — none yet implemented) follow the same producer policy.
+The `Warning` shape mirrors `ErrorLocation` (`cranelisp-types` rustdoc). Typecheck warnings (e.g., shadowing, unused imports — none yet implemented) follow the same producer policy.
 
 ### 8.3 Type-name rendering inside error messages — FQ-qualification (S87 Stage A)
 
@@ -381,7 +338,7 @@ Typecheck always emits `ResolvedCall::TraitMethod` for trait-dispatched calls (o
 
 **Monomorphisation from roots (structural slot-gate first) — `monomorphisation.md`.** The detailed design for the S84 Cluster A guarantee that **no `Type::Var` reaches codegen under any reachable instantiation** lives in the subordinate doc `monomorphisation.md`, **re-grounded mid-Phase-5 on the structural-slot-gate-first model** (user ruling 2026-06-16; resolved FIXME 0376). The **primary mechanism is the corrected GOT-slot-allocation gate**: a def's `fn_state` carries a slot ⟺ its finalised type is **fully concrete** (`Type::is_concrete()`, NOT `constraints.is_empty()` — the as-built leak; "concrete" ≠ "unconstrained"), per Principle 20 (S84 generalisation) + BC §7 "Callability is structural". A determined-but-non-concrete *unconstrained* generic def gets a new slot-less `UserFnState::Polymorphic` arm (sibling to `Constrained`; an additive `cranelisp-types` variant owned by /arch + a `CACHE_SCHEMA_VERSION` 5→6 bump owned by /backend — see `monomorphisation.md` §6 + FIXME 0377). The slot-less-ness makes a non-concrete def unconstructable as a codegen value (the SIGSEGV root). The doc pins: (1) the corrected gate (`constraints.is_empty()`→`is_concrete()` at `program.rs:947`/`:1143` + the demotion leg `:1312`; the scheme-writeback legs `:919`/`:1129` stay `constraints.is_empty()`, governing 0344 generalisation, not slot allocation); (2) the systematic reachable-instance worklist/fixpoint EXTENDING the landed Tier-1/1.5 `pass4_monomorphise` → `monomorphise_call` → `monomorphise_inner_parametric_hops` spine (no second entry point — /arch ruling, Principle 7), **Wave-0-narrowed to the `(Box a)`-field-carrying-`Type::Var`-through-HOF gap** (bare-`Int` HOF shapes already mono cleanly — GREEN-stay guards), cluster-level dedup keyed on the existing mangled name; (3) the §3.11.1 **ambiguity check** (0373 part ii) **demoted to a SECONDARY backstop** — fired at the post-generalisation finalisation boundary before Pass 4 (`finalize_check_result_inner`, after the first `regeneralize_defn_schemes`), raising `CranelispError::TypeError` today / `CheckError::AmbiguousType` post-FIXME-0098 (both typecheck-internal). **Wave 2 (FIXME 0379/0380) makes this check POSITION-COMPLETE and predicate-shared**: it fires the per-node verdict on the resolved type at *every* codegen-reaching value position `for_each_child_expr` visits (match scrutinee, fn-call arg, vec element, ctor field, if-branch, `ParBind` binding, nested `let`, returns — not just `let` bindings), and the verdict comes from the shared `Type::is_representation_undetermined()` predicate (the local `is_ambiguous_codegen_reaching_type` heuristic is retired) — the SAME predicate the WIDENED backend 0375 RC-site backstop uses, so the typecheck error and the backend panic agree by construction (belt-and-braces, BC §3 invariant 9). The 0344/0349 fold-accumulator over-monomorphisation is the pinned risk. Termination is bounded by monomorphic-recursion enforcement (rank-1 HM). This master doc commits to the shape `monomorphisation.md` elaborates; that doc wins on detail.
 
-FIXME 0033 (`monodefn-redundant-side-maps`) — **Step A done; Step B is the field-drop.** `MonoDefn` (`cranelisp-types::check`) carries two Span-keyed side maps, `resolutions: MethodResolutions` and `expr_types: HashMap<Span, Type>`, that were redundant once monomorphisation annotated the AST directly. Step A landed: `traits.rs::monomorphise_call` now annotates `mono_defn.defn` in place (via `annotate_defn_from_maps` + `apply_subst_to_defn`) and **constructs `MonoDefn` with `MethodResolutions::default()` + an empty `HashMap`** — the fields are no longer populated in production. The only surviving reads are `#[cfg(test)]` scaffolding in `cranelisp-backend` (`test_compile_program_and_run`, which merges `mono.resolutions` and falls back on `mono.expr_types`). Step B is the structural removal: drop both fields, making `MonoDefn` a `Defn` newtype (or a single-field wrapper); update the one backend test to read annotations off `mono.defn` directly. **Baseline impact:** removes three `cranelisp_types::MonoDefn::{expr_types, resolutions}` lines from `crates/cranelisp-types/public-api.txt` (regenerate per the baseline-diff discipline). The field-drop and the types-crate baseline regen are `/dev`-on-`cranelisp-types` work (the struct lives in the interface crate, `/arch`-adjacent); the backend test edit is `/dev`-on-`cranelisp-backend`. Coordinate as a small two-crate change.
+`MonoDefn` redundant side-maps (no live FIXME file — doc-tracked here; the former 0033 anchor is absent from `design/arch/fixmes/`) — **Step A done; Step B is the field-drop.** `MonoDefn` (`cranelisp-types::check`) carries two Span-keyed side maps, `resolutions: MethodResolutions` and `expr_types: HashMap<Span, Type>`, that were redundant once monomorphisation annotated the AST directly. Step A landed: `traits.rs::monomorphise_call` now annotates `mono_defn.defn` in place (via `annotate_defn_from_maps` + `apply_subst_to_defn`) and **constructs `MonoDefn` with `MethodResolutions::default()` + an empty `HashMap`** — the fields are no longer populated in production. The only surviving reads are `#[cfg(test)]` scaffolding in `cranelisp-backend` (`test_compile_program_and_run`, which merges `mono.resolutions` and falls back on `mono.expr_types`). Step B is the structural removal: drop both fields, making `MonoDefn` a `Defn` newtype (or a single-field wrapper); update the one backend test to read annotations off `mono.defn` directly. **Baseline impact:** removes three `cranelisp_types::MonoDefn::{expr_types, resolutions}` lines from `crates/cranelisp-types/public-api.txt` (regenerate per the baseline-diff discipline). The field-drop and the types-crate baseline regen are `/dev`-on-`cranelisp-types` work (the struct lives in the interface crate, `/arch`-adjacent); the backend test edit is `/dev`-on-`cranelisp-backend`. Coordinate as a small two-crate change.
 
 ### 9.4 ADT typing
 
@@ -397,7 +354,7 @@ Constructor variables (e.g., `:Functor f`, where `f` is a type-constructor varia
 
 `DefnMulti` defns produce one `ModuleEntry::Def` per signature variant (mangled `name$Type1+Type2`). Dispatch happens post-inference when concrete arg types match a variant. Auto-curry (calling with fewer args than declared) interacts with multi-sig — this is the most subtle interaction in the crate. Documented in `auto-curry.md`. **S112 (leg a, FIXME 0642):** the settled §5.1.2 makes a multi-sig `defn` inference-equivalent to its clauses as separate mutually-recursive functions — sibling self-calls back-flow and pin clause params (the former "clause independence / no-back-flow" barrier is removed), and the once-"not supported" **multi-sig × constrained-poly** interaction is IMPLEMENTED (each constrained clause rides the standalone constrained-template / `pass4_monomorphise` path). Designed in `monomorphisation.md` §11 (supersedes §9's drifted posture).
 
-FIXME 0043 (`typecheck-resolved-call-autocurry-total-count`) is open — `ResolvedCall::AutoCurry` is missing `total_count` per the sketch; either extend the type or look up at codegen time. `/typecheck` and `/backend` coordinate the resolution.
+`ResolvedCall::AutoCurry` total-count (no live FIXME file — doc-tracked here; the former 0043 anchor is absent from `design/arch/fixmes/`) — `AutoCurry` is missing `total_count` per the sketch; either extend the type or look up at codegen time. A `/design`(typecheck) ↔ `/design`(backend) coordination item; not currently scheduled.
 
 ### 9.7 Principle 26 carrier → pass → settlement-window classification (S113 SEED; full sweep needs its own slot)
 
@@ -495,7 +452,7 @@ classified.
 | **Type-signature match predicates (Pillar 3 importable-symbol search) — exact (alpha-equivalence) OR partial (structural-contains)** | **`signature-match.md`** | **Current** (S90 design; **S91 SHIPS** — Pillar 3 implementation, the 0432 gate cleared S90; S91-confirmation box at the doc head: algorithm HOLDS, the two predicates are the sole baseline movement, nothing stale, the §2.3 `TyConApp`-head canonicalisation note pulled forward for `/dev`). **Re-pinned S90 Phase 3 (commit `c699045`): MVP match is now exact OR partial** (superseding exact-only). Pins TWO pure free-function predicates the `int` indexer calls, **both exported from `cranelisp-typecheck`** (`/arch` Option A, §11.4/§11.8 — two additive `public-api.txt` lines at impl time): (1) `signature_matches_exact(&Type, &Type) -> bool` — alpha-equivalence up to consistent bijective var renaming (whole-tree); (2) `signature_matches_partial(query: &Type, candidate: &Type) -> bool` — **structural-CONTAINS**: query appears as a sub-tree of the candidate up to alpha-renaming (`_exact ⟹ _partial`), a containment walk reusing the `_exact` alpha-equivalence machinery, **NO unifier**. Both canonicalise-then-`==` via reused `collect_var_ids_ordered` (Principle 7); FQ-ADT discipline. Structural-contains needs NO wildcard token → `/spec` query-syntax consult NOT triggered. Hoogle subsumption (hole-instantiation + ranking) recorded as an explicit deferred `/typecheck` follow-up (NOT this sprint). Cites `repl-embedded-agent.md §11.2/§11.4/§11.8` (R3/R6/R8). |
 | **Field-accessor `Type.field` (canonical) + impl-time collision rule (FIXME 0365) — INVERTED model** | **`fixme-0365-field-accessor-dotted.md`** | **Current** (Sprint 91, Thread C; **canonical/alias direction INVERTED S91 Phase-5, user ruling 2026-06-26, design-only pending user confirmation**). **`Type.field` (`Box.v`) is the CANONICAL field accessor — uniformly real + Public + listed (qualified-display convention); bare `field` is a convenience `Import` alias → canonical, ambiguous when two types share the field name.** Synthesis registers the real `Def` under the canonical key + the alias under the bare key (as-built reversed); the poison re-mint helper + per-case visibility flip are **deleted** (net code reduction). **Item 1 — typing**: reads the canonical `Def.scheme` (return arm = `FieldType`); bare alias chain-follows to it — one scheme, one compiled function (duplicate-codegen fix preserved); cross-module strictly better (canonical uniformly Public → `m/Box.v` resolves in every case, no cliff). **Item 2 — impl-time collision**: pre-flight validation in `register_trait_impl` (`impl_check.rs:18/79`) rejects a trait `impl` whose method name equals a canonical field-accessor name of the target type, before the impl registers (Principle 18); enumerates via `committed_accessor_kind` (`adt.rs:677`), union-view cross-cluster — the contested-field case simplifies (no `accessor_owning_types` consult; canonical entry is unconditional). §1.5 visibility-by-arm rule **SUPERSEDED** (banner-kept for audit). **Zero `public-api.txt` movement, no `cranelisp-types` change** (internal key relabeling). FIXMEs: 0439 (`/spec` reframe §5.2.6/§8.5.2), 0438 (`/repl`, updated for inverted listing). Cites §8.5.2/§5.2.6/§7.3.1; Principles 6/7/16/18. |
 | **Ownership inference — the interprocedural lifetime/flow pass (S100 parts 6–11)** | **`ownership-inference.md`** | **DESIGN** (S100 Phase 3 stage 2; pre-implementation — no source/`cranelisp-types` edit in S100). Governed by the master spine `design/arch/ownership-inference.md` (where they disagree, the spine wins). Designs the post-monomorphisation per-cluster fixpoint (a `pass5_ownership` post-pass after `pass4_monomorphise` + the callee write-back, riding `Def.callees` + `resolved_call` — one graph, two consumers with R3), the internal `OwnershipSummary` (param modes + result mode + flow/spark-ops facts; FIXME 0467 proposes the boundary-carried subset), borrow-through-projection with provenance roots (escape ⇒ materialize-at-edge; last-use root-extension seam left backend-local), the op-wise per-cell confinement join with potential-fork over-approximation (`Transferred` carried internally, collapsed to `Crossing` in increment I — promotion measurement-gated), mangled-name-keyed instantiation-summary dedup + session memo, the increment-II write-path rulings (dynamic rc==1 default; static uniqueness scoped to the single-syntactic-use fresh-chain subset, success metric = proof chaining; mode-in-key measurement-gated), the moded-body + Decision-24-value-wrapper answer to the R2 HOF question (join-to-Owned rejected), and the declared-primitive fact-table consumption (leaves seed the fixpoint; `ring2-rc.md` §3.3 audit is the seed). **S102 Phase 3: §13 added — the increment-I change-set staging (Sprint 102 Block B2)**: CS-A dependency pin (the exact `/arch` `cranelisp-types` v11→v12 needs list, incl. conservative-read accessors, `abi_eq`, the shared-slot primitive-fact carrier, and the toggle-relocation ask), ordered change-sets CS-1–CS-4 over a new `src/ownership/` submodule cluster, the 0470/0472 graph-feed verification (template-grain feed demoted to seeding-order hint; fixpoint re-entry rides walk-harvested `DepSet` edges), the fact-table coverage verdict (one gap → FIXME 0504; `PrimitiveExtern` scope cut named), the toggle-set ⇒ **emit-no-summaries** pin, §13.6 refinements (internal summary type superseded by `ModeSummary`; post-convergence fact walk; multi-path `ResultMode` join; symbol-keyed provenance + shadow rule), and the Principle-23 scenario matrices carrying the 0497 rider. |
-| **TypeExpr resolver convergence — the four-mirror single-source refactor (FIXME 0590)** | **`type-expr-resolver-convergence.md`** | **DESIGN** (S110 Phase 3; own Phase-5 `/dev` wave, independent of the 0583 backend seam). Principle-24 type-var-axis instance: the FOUR parallel `TypeExpr` resolvers (`resolve::resolve_type_expr` + `traits/type_resolve.rs` ×3 + `form.rs::check_type_expr`), each hand-rolling its own mint-on-miss + structural recursion, collapse onto the ONE `resolve::resolve_type_expr` behind a head-resolution `TypeExprCtx` (`self_type: Option<Type>` + a `ConVars` enum for HKT con-var interception). Pins: the mechanical `form.rs` collapse (drop `collect_type_var_ids`); the never-error `Named` fabrication arms DELETED (route through `resolve_terminal`, a behaviour-tightening test target); the fifth-mirror-prevention invariant (one `TypeExpr→Type` walk, `/review` grep-criterion); the rustdoc correction. **No `cranelisp-types` edit / no cache bump / typecheck-internal `public-api.txt`** (the `/arch` escalation path stays open but untriggered). Cites Principles 24/7/18/6/20. **S114 disposition (W7): DEFERRED — S115 candidate.** Sequenced LAST among the S114 typecheck deployments (Phase-2 scope adjustment); the carrier flip + settlement drain + the W7 MS-P7/trait-shadow/F-D2-11 fixes consumed the sprint, so 0590 defers per the "defer only with a note" rule (SPRINT Phase-2 §Rulings; `typed-resolution-carrier.md` §10.3(5)). The deferral is SAFE against the carrier: 0590 is a **type-position** resolver family (`TypeExpr → Type`), structurally DISJOINT from the carrier's **value/dispatch-position** verdicts (`Var`/`Apply` spans) — it neither blocks nor is blocked by the flip, sharing no write-sites. **Carried latent-defect note:** 0590's never-error `Named` fabrication arms — specifically the `_hkt` con-var arms in `traits/type_resolve.rs` — are a **latent-defect suspicion left open** (an unresolved head silently fabricated as a `Named` type rather than raising); today masked by the `form.rs` pre-walk (W1 finding: born-green fence, the mask is unit-tier for the 0590 deployment). Do NOT design the fix here; the S115 0590 deployment resolves it as a behaviour-tightening test target when the mirrors converge. |
+| **TypeExpr resolver convergence — the four-mirror single-source refactor (FIXME 0590)** | **`type-expr-resolver-convergence.md`** | **LANDED S110** (commit `5ed07d60`, in HEAD; recorded DELIVERED in `sprints/archive/sprint-110.md`). The four parallel `TypeExpr` resolvers (`resolve::resolve_type_expr` + `traits/type_resolve.rs` ×3 + `form.rs::check_type_expr`'s `collect_type_var_ids` pre-walk) converged onto the ONE `resolve::resolve_type_expr` behind a `TypeExprCtx` (`resolve.rs:33/69`, verified S115); the mirror functions are DELETED (collapse comment `traits/type_resolve.rs:154–157`); the never-error `Named` fabrication arms are GONE — `resolve_named` ERRORS on an unknown name; `form.rs::check_type_expr` uses mint-on-miss (`form.rs:413`). **FIXME 0590 was a ZOMBIE record** — resolved S110, falsely re-dispositioned S113/S114 ("convergence has not happened") over correct code, driving phantom S114/S115 work (audit `cranelisp-typecheck-s114.md` §2.2a, R-1). **DELETED at S115 Phase 1** (audit-disposal exception; residual rustdoc sub-item verified cured, `resolve.rs`/`checker.rs`). There is **no `_hkt` never-error latent-defect suspicion** — that was the phantom's framing. No S115 "0590 deployment" slot exists. `type-expr-resolver-convergence.md` is the LANDED design record. |
 | **Typed resolution carrier — the `VarRef`/`ApplyRef` producer side (S114 Track A, FIXME 0653 prong 3)** | **`typed-resolution-carrier.md`** | **DESIGN** (S114 Phase 3; the producer half of the ONE coordinated multi-crate carrier flip, governed by `design/arch/typed-resolution-carrier.md` + Principle 24 §Corollary). Retires the `Option<FQSymbol>` local/unresolved conflation by TYPE: `infer_var` records a TOTAL typed verdict for every reference (`VarRef::Local{binder,binding_span}` / `VarRef::Global`), the Apply chokepoints record `ApplyRef::Dispatch`/`ViaCallee`, the `MethodResolutions` sidecar splits into total `var_refs`/`apply_refs`, and `from_expr` widens to `ViewBuildError{NotConcrete, Unresolved}` — a dropped carrier is a LOCATED typecheck error at view-build, never a codegen leak. Pins: binder-provenance via a per-frame `ScopeStack.frame_spans` (6 `push_scope` seams); the strict-first/lenient-fallback reshape (NotConcrete falls back, Unresolved propagates); the synthetic all-local lenient population → FIXME 0685 (/arch); **F-D2-10 rides the flip** as a dispatch-completeness re-attempt from settled state (the located "no impl of trait X" naming, P26); the B-2 escape-fact cache-coherence half in the ONE 21→22 window (F4/F7). Orthogonal drains (MC-X4/X4b, MC-X5, PS-SH1) + the MS-P7 evidence-brief (no fix) + 0590-last sequencing recorded. Cites Principles 24/26/18/8/6. |
 | **Return-type-poly ambiguity — the unresolved-dispatch signal (R16/R17)** | **`return-poly-dispatch-signal.md`** | **DESIGN** (S110 Phase 3; coordinated typecheck+int change-set). The row-16/17 error-quality defect (bare `(zed)` leaks `__expr`-no-GOT-slot instead of the clean §3.11 message). Signal = a return-poly dispatch UNRESOLVED after final subst, grounded in the dispatch OUTCOME (no impl selected), NOT surface-type concreteness (which false-positived on `(add2 3 4)` in the S109 revert). typecheck rejects ordinary body positions directly; the entry/eval RESULT position (`main`/`__expr`) it cannot reject (Principle 19 — no entry designation), so the signal crosses to int via a transient `CheckResult` field (carrier escalated to `/arch`, FIXME 0611). Cites Principles 24/19/7/18. |
 | HKT (`Type::TyConApp`, `check_hkt_impl_method`) | `hkt.md` | **Current** (**S112 leg b, FIXMEs 0628+0639**: §5.1/§5.4 reconciled to the settled trait/impl model — kind derived ONCE at `deftrait` registration [parenthesized head + never-applied con_var ⇒ REJECTED at declaration, §7.2.1]; consumers read `TraitDeclInfo.type_params`, never scan usage [Principle 24]; the `register_trait_decl` guard fix roots the `:a 7` display defect; the settled echo-the-head impl form + the ONE §7.3.5 Case-3 kind-check seam consuming `TraitImpl.head_con_var`). |
@@ -504,9 +461,9 @@ classified.
 | AST annotation (Steps 1a/1b) — types and resolved calls co-located on AST | `ast-annotation.md` | Current |
 | IO ADT typing | `io-types.md` | Current |
 | Sprint-50 fixes (RC4 builtin leak, RC5 macro body type) | `sprint50-fixes.md` | Historical (lessons folded) |
-| Step-4 macro deps assessment (Decision 21 alignment) | `step4-macro-deps.md` | Current |
+| Step-4 macro deps assessment (Decision 21 alignment) | `step4-macro-deps.md` | Historical (per the `design/typecheck/CLAUDE.md` 0578 index of record) |
 | **`check_form` per-form API** | **`check-form-api.md`** | **Stale on `&mut SymbolTable` signature — superseded by §6 / FIXME 0008. Algorithm shape (Pass-1/Pass-2, accumulator) survives.** |
-| **Wave 3a-β cluster-atomic two-pass entry surface** | **`wave-3a-check-form.md`** | **Current** (Sprint 66 Phase 5 Stage 2). Binds the post-Decision-44/FIXME-0167 shape: `check_form_signatures` + `check_form_body` free functions; `&mut ClusterContext` staging accessor; orchestrator-driven cluster atomicity. Supersedes `check-form-api.md` for the entry shape. |
+| **Wave 3a-β cluster-atomic two-pass entry surface** | **`wave-3a-check-form.md`** | **Historical** (per the `design/typecheck/CLAUDE.md` 0578 index). Records the Sprint-66 post-Decision-44/FIXME-0167 shape; the third amendment (2026-05-13) collapsed the `check_form_signatures`+`check_form_body` split into the single `check_forms` free function (§2/§5), so this doc's two-function entry surface is superseded — the `SymbolTableAccess` staging accessor + cluster atomicity it describes survive. |
 | **DashMap migration of TypeChecker.modules** | **`dashmap-migration.md`** | **Largely stale — built around `&mut SymbolTable` access; the migration succeeded; superseded by §6.** |
 | **Stateless TypeChecker (Sprint-51 extraction)** | **`stateless-tc-impl.md`** | **Stale on `&mut SymbolTable` patterns — the goal landed (`TypeChecker` struct dissolved; state in `CheckState` + caller-supplied table); §6 supersedes.** |
 | **S76 — resolve_* re-pointing, macro-entanglement cleanup, ctor got-slot, platform-sig entry** | **`s76-resolution-and-enablement.md`** | **Current** (Sprint 76 Phase 3). Plans: (1) `resolve_*` family re-pointed at `cranelisp_types::resolve`/`resolve_macro_head` (chain-walk consolidates onto the types primitive — Principles 7+15; the `From<ResolveError> for CheckError` projection + view-selection stay typecheck-side); (2) `check_forms` confirmed post-expansion (no `MacroExpander` param) + the locked three-pass model's removal of the Wave-3a-β macro-clause double-typecheck entanglement; (3) 0249-a constructor GOT-slotting; (4) 0231 `check_type_expr` platform-sig entry. Resolves FIXME 0245 (recognition left typecheck's surface — no interior algorithm to author). Grounded in `design/arch/macro-availability-model.md` §0/§0.9 + BC §2 invariants 10+11. |
@@ -515,49 +472,14 @@ The three flagged docs are not edited by this design pass (per the constraint). 
 
 ---
 
-## 11. Open questions / proposed FIXMEs
+## 11. Open questions / standing design items
 
-These surfaced during this design pass. Two are filed as new FIXME files (numbered, in `design/arch/fixmes/`); the rest are noted here for the user to lift if intent.
+The S63-era migration questions this section once tracked (FIXME 0008 free-function shape; FIXME 0098 boundary-type placement) **landed** — `check_forms` is the free function, `CheckError`/`CheckResult`/`DispatchGap` are crate-owned (§2.1). Neither FIXME exists in `design/arch/fixmes/`. The `MacroInMem`/`Gap`-post-state/`TypeCheckEnv`-generics/`Code`-default questions this section proposed were all framed against the retired facade doc and are **withdrawn** — the boundary they questioned is now the source rustdoc + `public-api.txt`, and the as-built shape (`check_forms` over `SymbolTableAccess`, crate-owned `CheckError`) answers them: `ResolutionGap` producer-attribution is a `cranelisp-types` rustdoc concern (`/arch`), not a typecheck open question; the generic-defaults and `Code` questions dissolve because typecheck works against `SymbolTable<C, L>` generically and never names a downstream `Code`.
 
-### Tracked — multi-crate migration
+Standing design items (not FIXMEs — this doc's own forward pointers):
 
-**FIXME 0098** — multi-crate migration covering `CheckError`/`ResolutionGap`/`ExpansionError` placement and `check_form` free-function shape. Phase 1 lands the boundary types in `cranelisp-types`; Phase 3 (typecheck) migrates `check_form` to the typed-return shape. See `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md`.
-
-### Proposed — `target: /arch`
-
-**Title:** `MacroInMem` gap appears in `ResolutionGap` enum but `check_form` cannot raise it.
-
-**Issue.** `ResolutionGap::MacroInMem(FQSymbol)` per the facade is raised by `frontend::expand`, not by `check_form` (`facades/typecheck.md` §"Returns" comment confirms). Yet the gap variant is in the typecheck-re-exported `ResolutionGap` enum, which forces typecheck consumers to handle a variant typecheck never produces. Consider either (a) splitting `ResolutionGap` into `FrontendGap` + `TypecheckGap` enums, or (b) keeping the unified shape but documenting in `ResolutionGap`'s rustdoc which producer raises which variant. (a) is cleaner but adds a boundary type; (b) keeps the boundary smaller. Principle 2 (narrow interfaces) leans toward (b).
-
-### Proposed — `target: /arch`
-
-**Title:** `CheckError::Gap` post-Gap state contract is unspecified.
-
-**Issue.** The facade documents the orchestrator's response per gap variant but does not pin a contract that `check_form` returns Gap **before** committing partial state. Today's implementation appears to leave `CheckState` partial-write on Gap (the caller restores via `ReplSnapshot`). Consider whether `check_form`'s Gap-return path should be specified as "no observable side effects beyond the unrestored CheckState" — i.e., does `check_form` write to `&SymbolTable` (via `insert_or_update`) before raising Gap? If yes, the Gap-then-retry pattern can leave the table with half-formed entries. If no, the contract should say so. Likely a clarification of the Gap-return contract in `facades/typecheck.md`.
-
-### Proposed — `target: /arch`
-
-**Title:** `TypeCheckEnv` generic parameters in facade.
-
-**Issue.** The facade types `TypeCheckEnv<'a>` with no `<C, L>` parameters, but the as-built `TypeCheckEnv<'a, C = (), L = ()>` is generic. Recommend the facade pin `TypeCheckEnv<'a>` to mean `TypeCheckEnv<'a, (), ()>` explicitly (default-types convention) or expose the generics if integration layer code constructs a `TypeCheckEnv<'a, Code, ()>`. Today `int` does not appear to construct `TypeCheckEnv` directly (it calls `check_form`), so the default works — but spelling it in the facade prevents future surprise. Doc-clarity item; not blocking.
-
-### Proposed — `target: /arch`
-
-**Title:** `Code` as the default `C` for typecheck facade's `SymbolTable` parameter.
-
-**Issue.** The facade names `&mut SymbolTable<Code, ()>` for `register_builtins` and `&SymbolTable<Code, ()>` for `check_form`. `Code` is `int`-owned per Decision 35 (`src/code.rs`) and now moving to `cranelisp-backend` per Decision 41 — neither location is in scope for `cranelisp-typecheck`'s direct deps. The facade's pin to `Code` is therefore a documentation contract, not a literal type binding — typecheck the crate works against `SymbolTable<C, L>` generic. Recommend the facade clarify whether `Code` here is "the integration layer's concrete `C`" (typecheck takes whatever the caller hands it) or "must be `Code` literally" (couples typecheck to a downstream crate, which it should not be). Doc-clarity question, not an implementation gap.
-
-### Proposed — `target: /qa`
-
-**Title:** Test coverage for the gap-return contract from typecheck's side.
-
-**Issue.** The integration test surface exercises gap-then-retry through `int`'s orchestrator. There is no narrow unit test asserting that `check_form` raises `Gap(SymbolTypechecked(fq))` for an unresolved FQ value reference (vs `TypeError`) — this is the most likely place a future refactor could regress, because the gap path looks like an error path locally. Adding three or four narrow `check_form` unit tests (one per `ResolutionGap` variant typecheck can raise; one negative — confirm bare `Symbol` resolution does NOT raise Gap) would harden the contract once FIXME 0098 Phase 1+3 lands the types and the typed return.
-
-### Proposed — `target: /design` (self — for next cycle)
-
-**Title:** Fold `check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md` after pipeline cleanup.
-
-**Issue.** Per §10 — once the audit's #1 cleanup (consolidate `check` / `check_form` as the only paths) lands, the surviving algorithmic content from these three docs (Pass-1/Pass-2 shape, accumulator, lookup style) folds into `inference.md` / `traits.md`, and the three docs archive. Sequencing: do this *after* the consolidation, not before, so the surviving content is identifiable.
+- **Fold the three HISTORICAL entry-surface docs** (`check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md`) — their surviving algorithmic content (Pass-1/Pass-2 shape) into `inference.md`/`traits.md`, then archive. The consolidation they were gated behind has landed; the fold is a hygiene item for a future `/design` cycle.
+- **`finalize.rs` re-budget + `program/tests.rs` split** — FIXME 0722 (this sprint's `/dev` item), `program-decomposition.md` §3.
 
 ---
 
@@ -586,7 +508,7 @@ Per `design/arch/CLAUDE.md`'s active-vs-legacy split: active Decisions carry for
 | 21 (legacy — embodied) | TC-sourced call graph on `ModuleEntry` | `CheckResult.callees` per-symbol; `int` writes onto `Def.callees` |
 | 22 (legacy — embodied) | `defined_symbols()` predicate | typecheck writes entries that satisfy/fail this predicate; no parallel store |
 | 33 (legacy — embodied) | Structural decls on `SymbolTable` fields | typecheck reads `imports`/`exports`/`platforms`/`submodules` from the symbol table itself; no `ModuleStructure` parallel store |
-| 38 (legacy — embodied) | `SharedState` formal definition; per-symbol mutability | `check_form` takes `&SymbolTable`; mutation flows through inner DashMap per-entry locks; `write_structural_decls` is the only `&mut` method |
+| 38 (legacy — embodied) | `SharedState` formal definition; per-symbol mutability | `check_forms` takes `&mut SymbolTableAccess` (staging) + `&SymbolTables`; mutation flows through inner DashMap per-entry locks; `write_structural_decls` is the only `&mut SymbolTable` method |
 | 39 (legacy — embodied) | Per-defn source on `Introspection.source`; `defn_order: Vec<Symbol>` on `SymbolTable`; errors carry `ErrorLocation` | typecheck adds `defn_order` field, populates `ErrorLocation { fq, span, … }`, leaves `context` to formatter |
 
 ### Retracted — invariants preserved
@@ -601,23 +523,17 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 ## 13. Cross-references
 
 - `design/arch/CLAUDE.md` Decisions 38, 39 (legacy — embodied; NEW MODEL framing); 1, 2, 6, 8, 14, 19, 21, 22, 30 (READ THROUGH 38/39 lens), 33 (structural decls on SymbolTable), 41 (active — peripheral). Decisions 15 and 17 retracted; their constraints embodied per §12 "Retracted — invariants preserved"
-- `design/arch/facades/typecheck.md` — public surface (normative)
-- `design/arch/facades/types.md` §"Symbol table — the single store" — `SymbolTable` shape consumed
-- `design/arch/facades/int.md` §"process_form" — caller of `check_form`; defines the gap-orchestration retry loop
-- `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — peer crate's public-surface contract (post-S70 B3-C facade retirement; `SymbolTables` alias canonical home is `cranelisp-types`)
-- `design/arch/bounded-contexts.md` §2 — Typecheck (the BC)
+- **Public surface (canonical):** `crates/cranelisp-typecheck/public-api.txt` (checked baseline) + `crates/cranelisp-typecheck/src/lib.rs` crate-root `//!` (per-item contracts) + `design/arch/bounded-contexts.md` §2 (Typecheck — the BC, cross-context invariants 1–10). **All nine `design/arch/facades/` docs are RETIRED** (S69–S81; the directory holds only S69/S70 audit records) — do NOT cite `facades/typecheck.md` / `facades/types.md` / `facades/int.md` as normative.
+- `crates/cranelisp-types/src/module.rs` rustdoc — `SymbolTable` shape consumed (Decision 33 structural decls; the `Warning`/`ErrorLocation` shapes for §8)
+- `design/int/` design docs + `src/` rustdoc — the `int` caller of `check_forms` + the gap-orchestration retry loop (the retired `facades/int.md` narrative → BC §6 + `design/int/`)
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — peer crate's public-surface contract (`SymbolTables` alias canonical home is `cranelisp-types`)
 - `design/arch/principles/` — architectural principles cited above
-- `audits/typecheck-20260423.md` — current-state audit; HIGH/MEDIUM findings drive §4
-- `audits/typecheck-20260423-{current,target}-state.{mmd,svg}` — diagrams
-- `design/arch/fixmes/0008-typecheck-symboltable-per-symbol-mutability.md` — the operative target shape
-- `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md` — multi-crate migration covering boundary types (Phase 1) and typecheck's typed-return shape (Phase 3)
-- `design/arch/fixmes/0033-monodefn-redundant-side-maps.md` — open MonoDefn shape question
-- `design/arch/fixmes/0043-typecheck-resolved-call-autocurry-total-count.md` — open AutoCurry shape question
-- `crates/cranelisp-typecheck/src/lib.rs` — current public exports (subset of facade)
-- `design/typecheck/{inference,traits,adt,hkt,auto-curry,ast-annotation,io-types,step4-macro-deps}.md` — current subordinate docs
-- `design/typecheck/wave-3a-check-form.md` — Wave 3a-β cluster-atomic two-pass entry surface design (Sprint 66 Phase 5 Stage 2)
-- `design/typecheck/monomorphisation.md` — Tier-2 full monomorphisation-from-roots + the unconstrained-var ambiguity check (Sprint 84 Cluster A; FIXMEs 0374 + 0373 ii)
-- `design/typecheck/ownership-inference.md` — the interprocedural ownership-inference pass (S100 parts 6–11; governed by `design/arch/ownership-inference.md`; FIXME 0467 filed for the persisted-summary shape)
-- `design/arch/fixmes/0374-typecheck-tier2-full-monomorphisation-from-roots.md` — Tier-2 spine (primary S84 deliverable)
-- `design/arch/fixmes/0373-spec-rank1-hm-defaulting-and-section-12-1-representation-relaxation.md` — rank-1 HM + ambiguity rule (part ii realised as the typecheck check) + §12.1 relaxation
-- `design/typecheck/{check-form-api,dashmap-migration,stateless-tc-impl,sprint50-fixes}.md` — historical / superseded subordinate docs (see §10)
+- `audits/cranelisp-typecheck-s114.md` — the live rolling audit (`/audit`); its recommendations drive §3.2/§4.2 (R-2 is the origin of this doc's S115 rewrite; R-3 = FIXME 0722)
+- `audits/typecheck-20260423.md` (+ `-{current,target}-state.{mmd,svg}`) — HISTORICAL prior audit; its six remediations are retired (their duplicate-pipeline/walker/tail findings resolved, §3.2/§4.1)
+- `crates/cranelisp-typecheck/src/lib.rs` — the as-built public exports (§2)
+- `design/typecheck/{inference,traits,adt,hkt,auto-curry,ast-annotation,io-types}.md` — current subordinate docs; `step4-macro-deps.md`, `wave-3a-check-form.md` — HISTORICAL (per the `design/typecheck/CLAUDE.md` index of record)
+- `design/typecheck/monomorphisation.md` — full monomorphisation-from-roots + the ambiguity check + the multi-sig back-flow / harvest-window contract (§11.8)
+- `design/typecheck/ownership-inference.md` — the interprocedural ownership-inference pass (S100+; governed by `design/arch/ownership-inference.md`); §17 the S115 MS-P7 chained-face design
+- `design/typecheck/typed-resolution-carrier.md` — the `VarRef`/`ApplyRef` producer carrier (S114; governed by `design/arch/typed-resolution-carrier.md`)
+- `design/typecheck/program-decomposition.md` — the `program/` module cut + the FIXME-0722 test-split design (§3)
+- `design/typecheck/{check-form-api,dashmap-migration,stateless-tc-impl,sprint50-fixes}.md` — HISTORICAL / superseded subordinate docs (see §10; the entry-surface shape they describe is superseded by `check_forms`)

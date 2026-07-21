@@ -129,6 +129,21 @@ sprints because it was shell-only; folding it into nextest
   cheap) and per-program for the modes where scope differs — the combinator
   owns this so authors cannot get it wrong.
 
+> **As-built record (S115 instrumentation matrix, /qa 2026-07-20).** The
+> combinator + lane landed S113 W1 and ARE the enforced nextest gate
+> (`tests/helpers/e2e.rs::SafetyMatrix`/`assert_safety_matrix`;
+> `tests/safety_oracle_lane.rs`). Three deviations from this section's letter
+> are ACCEPTED as the settled shape: (1) there is no
+> `tests/fixtures/safety_corpus/` directory sweep — lane programs are named
+> per-cell tests calling the combinator, which names failures better and
+> enforces identically; growth = add a cell, not a file-drop. (2) The
+> `CRANELISP_SAFETY_FULL` split is unbuilt — moot until the lane approaches
+> its wall budget; revisit when the §2 harness lands. (3) The batching caveat
+> is handled per-cell, not combinator-owned. Standing rule from the same
+> matrix: new `RC_DEC_CHECK` positives ride the lane/combinator (face 4),
+> never scattered per-file `.env` sites; the `env_remove` sites are polarity
+> hygiene, not assertion sites.
+
 ### 1.4 Cost envelope
 
 Wrapping multiplies subprocess runs ×~6 (3 modes × 2 toggle states) for

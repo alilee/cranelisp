@@ -2031,6 +2031,90 @@ harvest-window analogue of the P26 "record from settled state" boundary: the
 windows are a finite, enumerated set, and growing the set is an architectural
 event, not an implementation convenience.
 
+#### 11.8.11 The 0719 wrapper-indirection consume-at-distance — window-3 re-derivation, not a fourth window (S115)
+
+**Status:** DESIGN (S115 Phase 3, `/design`(typecheck)). Realizes the §5.1.2
+EQUIVALENCE-TWIN bar for the `carrier-loss` consume-at-distance variant
+(`tests/mc_x4_consume_at_distance_0719.rs`; FIXME 0719, retargeted `/testing`,
+deletes in the pin commit). Extends the window-3 SingleSig re-harvest
+(§11.8.10 window 3, `finalize.rs:1191`), NOT a fourth window (§11.8.10 standing
+rule).
+
+**The reduced axis (from the test's complete reduction).** Neither the seed
+(`[0]` ≡ `[]`), the stdlib verbs, nor an ADT wrapper is load-bearing — every
+single/double-axis synthetic is GREEN (born-green controls 1–3). The SOLE
+discriminator is the **wrapper indirection**: a multi-sig `peers` whose bare
+`(Vec a)` return is consumed inside a WRAPPER single-sig defn
+(`(defn run-elim [idx] (vec-len (peers idx)))`), whose result then flows through
+that wrapper's monomorphisation into a separately-monomorphised poly consumer
+(`vec-len`). Called directly in `main` — `(vec-len (peers 3))` — the SAME
+multi-sig `peers` is GREEN (window 3 already covers the top-level SingleSig
+consumer of a multi-sig return, §11.8.10 window-3 row). The failing shape is
+exactly the exemplar's `peers`/`eliminate-from-peers` axis: `peers` consumed
+inside a wrapper, never at a concrete site. Today the wrapper case leaks
+`ambiguous type … monomorphised in \`user/peers$Var$Int\`` — the element `Var`
+reaches codegen. The two-function twin
+(`(defn peers [idx] (peers-helper idx []))`) compiles and returns 3, so by the
+§5.1.2 acid test the multi-sig RED is a `wrong-reject`, not a genuine ambiguity.
+
+**The seam and the gap.** Window 3 re-derives a SingleSig consumer's arg concrete
+via `resolve_expr_types` over `state.subst` post-drain/post-Phase-A — the window at
+which the multi-sig `peers`' element back-flow (§11.3.1: the 1-arg clause's `[]`
+seed unifies with the 2-arg clause's `vec-push acc idx` element = `Int`) has
+settled. For the DIRECT `(vec-len (peers 3))` the consumer arg is a top-level
+expression whose return var is in `state.subst` and re-derives concrete. For the
+WRAPPER case, `(peers idx)` sits inside `run-elim`'s body, and `idx` is
+`run-elim`'s BOUND PARAMETER — the "free-var-through-bound-parameter distance"
+axis (s114 §11 item 5 / §12): the element `Var` of `peers`' return is a free var
+that flows through the wrapper's parameter to the downstream `vec-len`. The mono
+instance of `peers` minted from within `run-elim`'s harvested body derives its
+type args from the call site's fresh instantiation of `peers`' scheme; if
+`run-elim`'s body harvest does not re-run `resolve_expr_types` at the SETTLED
+window (so the fresh element var re-unifies against `peers`' back-flow-pinned
+concrete return), the instance mints as `peers$Var$Int` — the element `Var`
+un-settled, reaching codegen.
+
+**The fix — derive the wrapper-indirected instance from SETTLED state (P26).**
+The consumer-harvest keying for the wrapper case must re-derive the inner
+`(peers idx)` instance's element type at the **post-drain/post-Phase-A settlement
+window** (window 3), where `peers`' element back-flow is pinned — never from
+`run-elim`'s pre-settlement view. This is the §11.3.2 B1 precedent
+(*"the self-call `SigDispatch` MUST be derived post-drain"* — a carrier derived
+from settled state, never a provisional record patched later) and the §11.8.9
+single-sourcing discipline, generalized one indirection level: window 3's
+`resolve_expr_types` re-derivation must reach INTO a single-sig wrapper defn body
+whose monomorphisation consumes a multi-sig return through a bound parameter, so
+the inner multi-sig instance re-mints against the settled element concrete. The
+monotone-subst stability obligation (§11.8.10 obligation 2) makes this safe: the
+element var only moves toward ground between window 1 and window 3 (a residual
+`Var` at window 1 becomes `Int`, never a different concrete), so the re-derivation
+re-admits the SAME concrete instance the twin infers.
+
+**Placement discipline — NOT a fourth window.** The fix EXTENDS the existing
+window-3 SingleSig re-harvest's reach (the wrapper defn is a SingleSig consumer
+whose body harbours the distance-consumed multi-sig call), it does not add a new
+`pass4_monomorphise` invocation. If `/dev` finds window 3 STRUCTURALLY cannot
+reach the wrapper-inner `peers` element from settled state — e.g. the wrapper's
+mono-view subst is isolated from `peers`' cluster settlement and a genuinely-new
+settlement point is required — that is the §11.8.10 standing-rule trigger: STOP
+and file `target: /arch` for the harvest-window class ruling rather than adding a
+fourth window. The expectation recorded here is that the reach is a re-derivation
+extension within window 3 (the same `resolve_expr_types`-over-settled-subst
+mechanism window 3 already runs), not a new window.
+
+**Acceptance (§5.1.2 EQUIVALENCE-TWIN bar — binding).** The X4b "monomorphise OR
+reject cleanly" bar is too weak (it lets a §5.1.2 wrong-reject read green). The bar
+is: `multi_sig_return_through_wrapper_indirection_infers` AND its twin
+`two_function_equivalent_through_wrapper_indirection_green` BOTH compile AND agree
+on output (exit 3 = `(vec-len [3 2 1])`), `--run` + `--link`. Must-hold GREEN: the
+four born-green controls (param-distance recursive-consumer × {seed [], seed [0]},
+untyped-ADT-field distance, cross-module untyped-field distance) — the fix must not
+regress them. **Unit tier (`/dev`, METHOD §2.2):** at the window-3 re-derivation
+seam, the wrapper-indirected multi-sig instance re-mints with the element concrete
+(not `$Var`) from settled subst; a pre-settlement mint would disagree. **Exemplar
+rider on flip:** `/port`'s `make-grid`/`peers` collapse trigger re-words per s114
+§12 item 5 (owner `/port`, next touch).
+
 ### 11.7 Cross-references
 
 - `spec/05-definitions.md` §5.1.2 (settled back-flow) + §5.1.1 (dispatch coherence)

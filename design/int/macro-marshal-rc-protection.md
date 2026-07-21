@@ -6,11 +6,12 @@
 > macro-alias double-free ×5 — MUST ship") and the `/arch` Phase-2 F-nothing
 > constraint (root-cause design, not symptom patch).
 >
-> **Status: DESIGN, pre-implementation.** The mechanism below is settled to the
-> CLASS (a marshal-boundary RC-protection defect) with high confidence; §4 names
-> the ONE discriminating step `/dev` runs FIRST to confirm the fix is *sufficient*
-> (not merely masking a downstream RC-codegen bug) before landing. Five pins in
-> `tests/macro_expansion_interior_alias_double_free.rs` are the trigger + record.
+> **Status: LANDED (S114).** The deep-protection mechanism below is in source —
+> `src/marshal.rs::protect_marshalled_cell` (`:186`) applied per marshalled cell
+> (`:202`/`:219`/`:232`; module rustdoc `:7`), curing the interior-alias
+> double-free at the marshal boundary. §4's discriminating step was run before
+> landing. Five pins in `tests/macro_expansion_interior_alias_double_free.rs` are
+> the trigger + regression record. (Banner refreshed S115, FIXME 0699 item 4.)
 
 ## 0. The actors and the function between them (Principle 21)
 

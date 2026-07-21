@@ -249,6 +249,8 @@ method_def   = '(' 'defn' method_name '[' param* ']' body ')'
 
 **Declaration requires the trait in scope. [S113]** Slot 1 is a trait *reference*, so the trait it names MUST be in scope at the impl site (resolved per §8.5, §7.3.5 step 1); importing only a *method* of the trait is **not** sufficient to declare an impl of it. This is the declaration side of the method-import ruling: **declaration reaches the trait; dispatch reaches the method** (a method reference alone suffices to *call* a trait method — see [§7.11.2](#7112-method-import-dispatch--a-method-reference-suffices) — but not to *declare* an impl).
 
+**Redefinition (hot-reload). [S115]** Re-entering an `impl` for a (trait, type) pair that already has an implementation **replaces** the previous one; subsequent dispatch (§7.4) uses the **new** method bodies, under the same-type constraint that governs `defn` redefinition. Silently ignoring a re-`impl` — confirming the form yet still dispatching to the first implementation — is a defect. The user-facing normative statement and its cross-links to the redefinition runtime machinery (`repl/spec.md` §18) are in [§5.4.5](05-definitions.md#545-implementation-semantics).
+
 There are three forms of trait implementation, presented below.
 
 ### 7.3.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, crates/cranelisp-typecheck/src/traits/tests.rs::test_register_trait_impl, tests/spec_05_definitions::deftrait_impl_and_dispatch]

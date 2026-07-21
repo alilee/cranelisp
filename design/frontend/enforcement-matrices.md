@@ -196,9 +196,30 @@ axis:**
    operator — RA-N4 fence). This is the ONE genuinely-new lexical reject; the
    others un-swallow existing paths.
 
-3. **`read_local_name`'s existing `Err` (`:788`) is retained** as the value-path
-   dangling-local reject (RA-N3 value position). No change needed there; edit 1
-   brings the annotation path to parity with it.
+3. **`read_local_name`'s existing `Err` (`:788`, `"expected local name after
+   '/'"`) is retained** as the value-path dangling-local reject (RA-N3 value
+   position). Edit 1 brings the annotation path to parity with it (same message,
+   both positions).
+
+   **S115 message-parity rider (0710, /dev(frontend), Minor).** The empty-LOCAL
+   half message (`read_local_name`, `reader.rs:824` at HEAD — the `:788` reference
+   above is pre-drift; verify at fix time) is terse and remedy-less
+   (`"expected local name after '/'"`) compared to its **rich empty-MODULE-half
+   sibling** at `read_operator` (`reader.rs:564` — "`/` here has no module name
+   before it — a qualified name needs a non-empty module (`mod/name`); a bare `/`
+   division must be separated (`(/ a b)`)"). Both are correctly located + rejected
+   (spec §8.5.1); the finding (`/docs`, FIXME 0710) is purely that a newcomer who
+   typed `map/` gets less help than one who typed `/bar`. **Fix: raise the
+   `read_local_name` message to the empty-module sibling's shape** — name the
+   dangling-qualifier shape and the remedy ("a qualified name needs a non-empty
+   local (`mod/name`); drop the trailing `/`"). **Message text only, no semantic
+   change**, no path change — the same `Err` at the same seam, richer wording.
+   Coordinate the two phrasings with /spec §8.5.1 if they should share one
+   template (0710 suggests it). This is the value/annotation-position dangling-
+   local twin of the `/bar` empty-module reject; it is NOT the §5 binder-reject
+   message (that is `binder-head-reject.md` §2.1/0711 — a different seam). Both
+   ride the same S115 /dev(frontend) frontend-message wave (with the 0702 dotted
+   widening) but are independent one-line edits.
 
 **Why the reader, not ast_builder:** `/bar` and `foo/` never form a single
 `module/name` string that reaches the ast_builder splitters (`type_ref_from_name`

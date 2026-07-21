@@ -88,6 +88,14 @@ Distribution (by the `// spec:` banners surveyed in the current `program/tests.r
 
 > **Alternative considered — keep `program/tests.rs` as one file** (as s87 kept `traits/tests.rs`). Rejected: `traits/tests.rs` is ~950 LOC; `program/tests.rs` is 7,505 (334 KB) — an order of magnitude larger, and the R-4 criterion explicitly says "splits alongside." The per-submodule split is the attributability win the size warrants.
 
+**S115 currency note for the `/dev`(0722) executor (`/design`, verified against source — do NOT redesign).** The §3 design is SOUND and re-executable; three currency corrections apply to its anchors, not its logic:
+
+1. **The header count and line ranges are STALE.** `program/tests.rs` is now **10,576 lines / 213 tests** (7,505 / 141 at design time — +40%, audit `cranelisp-typecheck-s114.md` §2.2c). The distribution table's parenthetical line-range anchors (`:227–475`, `:304–878`, etc.) no longer map. `/dev` **re-surveys the current file's `// spec:` banners** (the distribution *logic* — a test's home = the production submodule it exercises — is unchanged; only the line anchors rot).
+2. **A `program/support/tests.rs` home is not in the table.** The current tree carries `program/support.rs` (607 LOC) and `program/mod.rs` in addition to the five distribution rows (register/body/finalize/mono_collect/callees). `/dev` assesses whether the +72 new tests introduced a `support`-exercising category (and whether `mod.rs` warrants one); add the row if the banner survey finds support-homed tests. The five-row table is the floor, not necessarily complete for the grown file.
+3. **`finalize.rs` re-budget rides the same FIXME (0722, audit R-3).** `finalize.rs` is 1,517 LOC (§3.2 of `typecheck.md`); the §11.8.10 three-window seams are the function-level cut. Cut per-submodule so no `program/` submodule exceeds ~1,200.
+
+The citation-update list (CLAUDE.md `cross_module_imported_constrained_fn_monomorphises_in_defining_scope` → `mono_collect::tests::`; `callees_*` → `callees::tests::`; `tests/plan/s101-coverage-postmortem.md §2.1`) is **still current** (verified against source S115) — those remain the only external references to the `program::tests::` paths.
+
 ---
 
 ## 4. Migration order + hazard list for `/dev`

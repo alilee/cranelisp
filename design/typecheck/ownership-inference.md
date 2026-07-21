@@ -2294,3 +2294,219 @@ then this tiers-1–2 fix wave verified under lane + modes.
   by the all-`Owned` reference semantics, and every rule above is sound iff equivalent to it
   (the tier-4 oracle IS that equivalence check). No spec case changes; correctness is the
   oracle, not a new observable.
+
+## §17. MS-P7 chained-face family — the may-alias LINK protect (S115)
+
+**Status:** DESIGN (S115 Phase 3, `/design`(typecheck)). Realizes the /arch
+Phase-2 §2 ruling (SPRINT.md S115): the chained `MayAliasOf` faces close as
+**§16.2 rule-table corrections at the FAMILY grain**, NEVER a 5th
+per-consumer/per-context arm. The W7 `ProjectionOf`/`MayAliasOf` escape-force
+(`transfer.rs:703–735`, S114 `68cd7a96`) was the **4th** arm of an instance-patch
+progression; this section replaces its syntactic reach with a provenance-carried
+obligation so the SINGLE existing projection-out consumer discharges the whole
+chain. Governed by the §16 monotone-provenance frame (the spine
+`design/arch/ownership-inference.md`; where they disagree, the spine governs).
+
+### 17.1 The two open faces, restated at the walk seam
+
+Both RED cells (`tests/safety_oracle_lane.rs`, S114 0706) are a COW `vec-set`
+result — an `Origin::Conditional` may-alias reference — flowing through **≥2
+links in one frame** before a **projection-out** (`vec-get`) consumes it. `--run`
+tolerates the double-dec in-process (returns the correct value); `--link`'s glibc
+allocator aborts (134). The W7 fix protected the OUTER (immediate) container only:
+
+- **Nested-projection** — `(vec-get (vec-set (vec-set v 0 1) 1 2) 0)`. In
+  `walk_apply`'s `ProjectionOf` arm (`:690`), `args[0]` IS the outer
+  `(vec-set … 1 2)` `Apply`, so the `if let MonoExpr::Apply { span, .. } = &args[k]`
+  guard (`:729`) forces the OUTER container's escape fact `true`. The **INNER**
+  `(vec-set v 0 1)` — an arg-temp the outer set's inline lowering releases — keeps
+  `escapes = Some(false)` (its own `:754` insert, `Arg{Borrowed}` ctx). The inner
+  link double-decs (arg-temp drop + `v`'s scope-dec on the in-place arm).
+- **Let-chained** — `(let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0))`. The
+  outer `(vec-set w 1 2)` gets the W7 force (`args[k]` is an `Apply`), but `w`'s
+  RHS `(vec-set v 0 1)` — the INNER link — is a `MonoExpr::Var` when reached, so the
+  W7 guard never sees its allocation span. The `w` RHS keeps `escapes = Some(false)`.
+
+The shared root: **the W7 mechanism reaches the allocation to protect only via the
+consumer's immediate syntactic `args[k]` when it happens to be a direct `Apply`.**
+A chain of length ≥2 (nested `Apply`, or `let`-mediated `Var`) hides the inner
+allocation(s) from that syntactic reach. Adding a `Var`-arg arm, then a
+nested-`Apply` arm, then an `If`/`Match`-container arm (face 3) is exactly the 5th,
+6th, 7th instance-patch the family-grain ruling forbids.
+
+### 17.2 The family-grain rule — the may-alias value carries its protect obligation
+
+**Invariant (binding, folds the W7-review Minor; SPRINT.md §2 / test plan §1.1.1):**
+*every may-alias LINK whose accounting includes a consumer-emitted release needs
+its protect.* A "link" is any COW `MayAliasOf` allocation on the provenance chain
+feeding a release-emitting consumer. The obligation belongs to the **value**
+(P25 "Narrowing carries its check"; the R1/R14 producer-truth obligation
+applied per-link), not to the consumer's syntactic view — so the analysis moves
+the protect FROM the syntactic reach INTO the `Origin` the may-alias value
+already carries.
+
+**Mechanism — the internal `Origin::Conditional` records its may-alias allocation
+site(s).** The `Conditional` variant (`transfer.rs:138`, the ex-`MayParam` point)
+gains a set of **cow-alloc spans** — the `Apply` spans where a `MayAliasOf`-result
+minted this may-alias reference. This is an **internal `transfer.rs::Origin`
+change only** — `Origin` is walk-internal, NOT the persisted `ResultMode`
+(§16.3's "internal-only, no `cranelisp-types` edit, no `CACHE_SCHEMA_VERSION`
+bump" verdict extends verbatim; the exact shape — a `Vec<Span>` field, a
+`SmallVec`, or a side-map keyed by the binding — is `/dev`'s to settle, per §16.3
+"the exact enum is `/dev`'s to settle; the requirement is the structural
+reservation"). The rule-table rows change as follows (all §16.2 grain):
+
+| §16.2 row | Correction | Class |
+|---|---|---|
+| **8 — Apply, `MayAliasOf(k)`** (`transfer.rs:747`) | the produced `Conditional` UNIONs the arg's carried cow-alloc spans with **this Apply's own span** (this call minted a fresh may-alias link). `join(Fresh, arg_k)` is unchanged for the `rep`/reach axis (§16 already correct); the span-set is the added carrier | precision-preserving (widening on reach; the span-set only grows) |
+| **2 — Let / ParBind binding** (`:362`) | a `let w = e` alias carries `e`'s cow-alloc span-set unchanged into the new scope (the `w` binding for the let-chained face) | precision-preserving |
+| **4 — If / Match join** (`:298`) | `join_origin` UNIONs the arms' cow-alloc span-sets when the join is `Conditional` (face-3 groundwork; probe-first per §17.4) | widening |
+| **6 — Projection-out** (`:690`, the W7 arm) | when the projected container is `Conditional`, force `facts.escapes.insert(span, true)` for **EVERY carried cow-alloc span**, not the single `args[k]` syntactic span. The W7 `if let MonoExpr::Apply = &args[k]` reach is DELETED — replaced by iterating the container Origin's carried spans | narrowing→**widening** (the escape-force now covers the whole chain; monotone — it only ADDS incs, never removes a dec, per the test comment "the escape-force only ADDS incs; the failure is in the too-many-decs direction") |
+
+**Why this is not over-widening (the negative control holds).** The force fires
+ONLY at a **projection-out** consumer of a `Conditional` container (row 6). The
+whole-value negative control `(defn f [v] (vec-set (vec-set v 0 1) 1 2))` returned
+WHOLE and projected by the CALLER
+(`safety_lane_whole_value_nested_transfer_clean_green`) has NO in-frame
+projection-out — the chain flows to a **return** (row 9 publishes `MayAliasOf(0)`;
+the return-protect already covers it). The cow-alloc spans accumulate on the
+`Conditional` as it flows but are never force-triggered absent a projection-out
+consumer, so the clean nested-transfer shape is unchanged. This is the family
+boundary the control fences: **chained-may-alias × projection-IN-THE-SAME-FRAME**,
+not nested COW per se.
+
+**Why the terminal projection reaches every inner link.** The cow-alloc span-set
+composes down the chain (row 8 union + row 2 carry + row 4 join), so by the time
+the terminal `(vec-get …)` consumes the outermost `Conditional`, that Origin
+carries EVERY may-alias allocation on the chain — inner set, outer set, and any
+`let`-mediated intermediate. Row 6 then forces escape `true` at all of them in one
+place. The backend's escape-gated COW retain (`cow_source_ownership` →
+`retain_reused`) incs each in-place result, balancing each consumer-emitted release
+— one net dec per link. Worked through both faces:
+
+- **Nested:** inner `(vec-set v 0 1)` → `Conditional{rep=v, cow=[inner]}`; outer
+  `(vec-set INNER 1 2)` → `Conditional{rep=v, cow=[inner, outer]}` (row 8 union);
+  `(vec-get OUTER 0)` forces escape at BOTH `inner` and `outer` (row 6). ✓
+- **Let-chained:** `w = (vec-set v 0 1)` → binding `Conditional{rep=v, cow=[rhs]}`
+  (row 2); `(vec-set w 1 2)` → `Conditional{rep=v, cow=[rhs, outer]}` (row 8);
+  `(vec-get … 0)` forces escape at BOTH `rhs` and `outer`. ✓
+
+### 17.3 Why no 5th consumer arm (the explicit argument the ruling demands)
+
+The W7 arm and any per-shape successor patch the **consumer** to recognise one
+more syntactic shape of its argument (direct `Apply`; then `Var`; then nested
+`Apply`; then `If`/`Match`). Each is a new arm keyed on the consumer's local view —
+the instance-patch anti-pattern (SPRINT.md §2 constraint 1; test plan §0 risk-2).
+The family-grain fix inverts the direction: the may-alias VALUE carries its own
+allocation provenance on its `Origin`, so the **count of consumer arms does not
+grow** — the single pre-existing projection-out arm (row 6) discharges every link
+of every chain shape, because the chain's whole allocation history is already in
+the value it consumes. New chain shapes (longer nests, more `let` hops, the
+face-3 `If`/`Match` container once probed) are covered by the composition rules
+(rows 8/2/4) that already run on every walk — no new arm is authored for any of
+them. This is the enumerated-table discipline (§16.2): the soundness argument is
+the *table*, and the table's row count is fixed.
+
+### 17.4 Face-3 (Conditional-container) — probe-first, no pre-committed arm
+
+The `If`/`Match`-shaped container feeding the projection (test plan §1.1 item 3)
+is **not** pinned pre-demonstration. Row 4's join-UNION of cow-alloc span-sets is
+the groundwork that WOULD cover it (an `If`-produced `Conditional` container
+carries the union of both arms' may-alias links; row 6 forces all). `/testing`
+probes the shape first (§3.8 precedent); a green probe pins as a born-green fence
+with the probe recorded, a RED probe pins as a `class=uaf` cell that this same
+composition should flip. No design change beyond rows 4/6 is anticipated.
+
+### 17.5 The 0693 disagreement-fence placement — BEFORE/WITH this fix
+
+FIXME 0693 (`target: /dev`, backend) is the R3-gate MIRROR: the backend
+`scrutinee_cow_retains_reused` (`fn_compiler.rs:1427`) re-derives the COW escape
+gate from the **syntactic callee name** (`matches!(callee_name, "vec-set" |
+"vec-push")`) instead of sharing the producer's carrier discriminator — a P7/P24
+mirror, one level up from the R14 escape-fact re-derivation /arch already REJECTED
+(`design/backend/ownership-codegen.md` §13.7). It is **currently masked** because
+typecheck records `escapes = Some(false)` on the relevant scrutinee, so the mirror
+declines a balancing dec anyway.
+
+**Placement (binding on S115 sequencing):** the 0693 consolidation + its unit
+disagreement fence MUST land **before or with** the §17.2 escape-fact correction,
+because that correction is precisely the event that **lifts the mask** — §17.2
+flips `escapes` to `true` at more may-alias sites, so the mirror's name-based
+re-derivation can now diverge from the producer's carrier-driven decision (emit a
+balancing dec for a producer inc that never happened → spurious dec of a forwarded
+alias, the UAF direction 0693 names). Landing §17.2 without the fence is a plan
+violation to report (test plan §1.1 item 2). The fence is:
+
+1. **The consolidation** (backend `/dev`, out of this crate's scope — flagged as a
+   cross-wave sequencing constraint): make the pair structurally ONE gate —
+   either ONE shared predicate both `scrutinee_cow_retains_reused` and
+   `cow_source_ownership::retain_reused` call (parameterized by operand + escape
+   fact), OR have the producer record its retain decision (keyed by the Apply
+   span, beside `pending_cow_escapes`) and have the match seam read THAT
+   (Principle 24 — name is a trigger, carrier is identity).
+2. **The unit disagreement fence** (backend `/dev`): over the §13.5-style matrix
+   (builtin/user-named × live/non-live source × escapes true/false/absent ×
+   return-source × both toggles), assert `mirror == producer-emitted-inc?`. This is
+   the durable guard that any future escape-fact family change (§17.2 is the
+   trigger) cannot re-open a producer/consumer disagreement silently.
+
+`/design`(typecheck) records the placement and the causal reason (the mask-lift);
+the consolidation code and the unit fence are `/dev`(backend)'s (0693's own
+`target: /dev`, `refers_to` the two backend seams). `/testing` supplies the e2e
+twin verification that the committed family shapes hold through the consolidation
+(test plan §5 rider). **0693 is NOT deleted by this design pass** — it is the
+backend `/dev`'s to resolve and delete once the consolidation + fence land.
+
+### 17.6 The carrier-enrichment contingency trigger (precise)
+
+/arch pre-authorized (SPRINT.md §2 constraint 2 / §7) ONE contingency: if the
+family rule requires a **new `ResultMode` shape or advisory fact in
+`cranelisp-types/src/ownership.rs`**, that is a `cranelisp-types` edit → FIXME
+`target: /arch` + approval + ONE `CACHE_SCHEMA_VERSION` window (22→23), surfaced
+AT Phase 3, never mid-wave.
+
+**This design does NOT trigger it.** The §17.2 mechanism lives entirely in the
+internal `transfer.rs::Origin` enum (the cow-alloc span-set) and the per-span
+`WalkFacts.escapes` map — both walk-internal, exactly as §16.3's `Origin` reshape
+was. For the two open faces the may-alias allocations are `MayAliasOf`-declared
+**primitive leaves** (`vec-set`/`vec-push`; the `MayAliasOf(0)` is a §9 declared
+fact) whose `Apply` node lives in THIS cluster's walk — the per-span escape-force
+is fully reachable. No persisted-summary field is needed; the S115 plan assumes NO
+schema bump.
+
+**The precise trigger — surface at Phase 3/4 if `/dev` hits it, never absorb
+mid-wave:** the contingency fires **iff** the may-alias protect obligation must
+cross a **summary boundary** the internal `Origin` span-set cannot span — i.e. a
+may-alias link is allocated **inside an imported/summarised USER-fn COW helper**
+whose internal allocation span is NOT in the consuming cluster's walk, AND the
+caller's per-`Apply`-span escape-force at the helper-call site proves insufficient
+to drive the backend's retain for that inner link (the retain must be gated on a
+fact the persisted `ResultMode`/summary carries, not on a caller-frame span). Then
+the may-alias-protect obligation must ride the summary as a new advisory fact (e.g.
+a `may_alias_protect_sites` marker, or promoting the internal cow-provenance to a
+persisted per-site fact) → STOP, FIXME `target: /arch`, schema 22→23. A second
+invalidation event, or any schema bump outside this named contingency, is reported
+to `/sprint` as a plan violation (test plan §7 item 3). The two S115 faces stay
+below this line (primitive-leaf COW, same-cluster spans).
+
+### 17.7 Acceptance and riders
+
+- **Flip:** both RED cells
+  (`safety_lane_chained_nested_cow_projection_returns_set_value_abort_free_red`,
+  `safety_lane_chained_let_bound_cow_projection_returns_set_value_abort_free_red`)
+  GREEN under the tier-4 differential lane BOTH toggles × 3 modes (test plan
+  §1.1 items 4–5).
+- **Must-hold GREEN fences:** the whole-value nested-transfer negative control
+  (§17.2); the immediate-face W7 flip
+  (`safety_lane_..._cow_set_read_returns_set_value...`); the lane clean/green cells
+  both toggles.
+- **/review structural check (part of flip acceptance):** the fix is §16.2
+  rule-table rows/corrections (rows 8/2/4/6) with NO new consumer arm — grep the
+  `walk_apply`/`join_origin`/`walk` arm count; a 5th `MayAliasOf`/`ProjectionOf`
+  per-shape arm is a REJECT (test plan §0 risk-1).
+- **Unit tier (`/dev`, METHOD §2.2):** each corrected §16.2 row exercised —
+  the chained-link cow-alloc span carried through the emitted accounting; the
+  projection-out force covers ≥2 spans (test plan §6.5 §1.1).
+- **0623 behavioral matrix rider (`/qa`/`/testing`):** the §16.5 container-store ×
+  projection-out × capture axes extend with the chain-length axis (≥2 links ×
+  {nested, let} × {in-place, shared} × {REPL, `--link`}).

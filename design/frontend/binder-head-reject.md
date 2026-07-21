@@ -78,29 +78,143 @@ and stays bare.
 > `ast_builder/tests.rs::reject_qualified_binder_head_rejects_slash_and_names_bare_fix`
 > + `deftrait_slash_operator_method_name_accepts`.
 
-> **`.` (dotted-member) note.** The predicate keys on `/` only. A dotted name
-> (`Point.x`) is a member/accessor form, not a module qualifier, and never
-> appears in a raw declaration-head slot (the generated `Type.field` accessor is
-> synthesized, not user-written as a `defn` head). Widening the predicate to `.`
-> is out of scope (Principle 6 — no speculative widening); if a future dotted
-> head cell appears it is a `/qa` matrix row, not a helper change.
-
 ### 2.1 Diagnostic shape (self-documenting REPL principle)
 
 Consistent with the S112 deftrait/impl-head reject diagnostics
 (`trait-impl-head-parse.md` §4 — `parse_err` with the **span of the offending
-head**, `Sexp::format_flat()` never `{:?}`, each names the fix). The message:
+head**, `Sexp::format_flat()` never `{:?}`, each names the fix). The message is
+shown in §2.2 (both the `/` and `.` arms). `{bare}` is the after-last-separator
+segment (`split_qualified_name`'s `bare` for `/`, `split_dotted_name`'s `member`
+for `.`) — the name the user most likely meant to bind. This is fix-naming
+(§5-binder principle) and matches the located-reject shape the RED pins assert
+(`assert_err_span_at` / span-points-at-head, BD-M1 + the 0702 M3 dotted twins).
 
-```
-'{name}' is a qualified name, but a definition head is a binder and must be a
-bare (unqualified) name — write '{bare}' (a definition binds into the current
-module; use an import/qualified reference to reach another module)
-```
+**0711 — the message is position-neutral (message-accuracy fix, /dev(frontend)).**
+The single helper string is shared across **all** binder positions — the §5
+declaration heads **and** the value-level locals (`let`/`match`/param). The S114
+wording *"a definition **head** is a binder"* is inaccurate at a `let`/`match`/
+param position: a newcomer who wrote `(let [user/x 1] …)` was told about a
+"definition head" that does not match what they typed (0710/0711, `/docs`). The
+§2.2 wording therefore drops "definition head" entirely — *"a binder must be a
+bare (unqualified) name"* — which reads correctly at **every** position with **no
+per-site context param threaded** (threading a position noun would touch all ~15
+call sites for a Minor wording gain — rejected; the neutral noun is the P6-cheap
+close). The catalogue (`user/errors/trait-impl-diagnostics.md`) can then quote
+the emitted message verbatim for heads and locals alike. This is a pure wording
+change riding the same widening change-set; no semantic effect, no new site.
 
-where `{bare} = name.rsplit('/').next()` (the after-last-slash segment — the
-name the user most likely meant to bind). This is fix-naming (§5-binder
-principle) and matches the located-reject shape the RED pins assert
-(`assert_err_span_at` / span-points-at-head, BD-M1).
+### 2.2 The `.` (dotted) axis — WIDENED S115 (0702 Ruling 1; the falsified premise)
+
+**Premise correction (the S113 de-scope note was falsified by probe).** The
+original S113 note keyed the predicate on `/` only, on the premise: *"a dotted
+name (`Point.x`) is a member/accessor form … and never appears in a raw
+declaration-head slot … widening the predicate to `.` is out of scope (Principle
+6 — no speculative widening)."* That premise is **wrong**. A dotted name reads
+as ONE `Sexp::Symbol("a.b")` (`reader.rs::read_dotted_name` :762 — an all-symbol
+dotted run joins verbatim), and that symbol reaches **every** binder-head slot
+exactly like any other symbol. The 0702 probe (FIXME, HEAD `8b2c3e20`) pinned the
+silent-accept faces at every position: `(defn a.b …)` binds `user/a.b`;
+`(let [a.b 5] …)`/`(defn g [a.b] 1)`/`(match 1 [a.b …])` bind a dotted local; and
+the sharpest — `(deftype A.B [:Int v])` silently accepts, echoing type `user/A.B`
+but minting **ctor `user/B`** (the dotted head is re-read downstream as a
+`Type.Ctor` member spelling — the `dotted-ctor-canonical-keys.md` keying — so the
+ctor identity is corrupted). The premise was never "speculative widening"; it was
+an unenforced hole in the same coverage-by-definition-variants class the `/`
+column closed. The S113 note assumed the reader never delivers a dotted symbol to
+a head slot; it does.
+
+**The ruling (user, 2026-07-20; SPRINT.md §Notes; 0702 SETTLED, Ruling 1).** A
+dotted (`.`) spelling in **any binder position** is a **located compile-time
+error**, span on the name, **exactly as a `/`-qualified binder already is**. `.`
+is reserved for type/trait qualification only; **reference** positions — the
+dotted ctor-pattern head `(Maybe.Some x)` (§6.2.1), dotted var/call/type
+references (§8.5) — **stay legal**. The rule is drawn at the binder/reference
+line, identical to the `/` rule. This is the binder-side sibling of the S114
+reader rulings (`foo/`, `/bar`, `:foo/`, `a.b/` are all located errors, never
+silent degradation) and the dual of §5's own binder principle: a dotted binder
+would name a nested *path*, which the language has no notion of, so it can only
+be an error.
+
+**Mechanism — ONE predicate widened at the shared helper, no per-site copies.**
+`reject_qualified_binder_head` widens from `/`-only to `/`-or-`.`. Two structural
+constraints hold the single-source property:
+
+1. **`split_qualified_name` (`:69`) stays `/`-only — do NOT widen it.** It is the
+   **reference** splitter (`type_ref_from_name`/`trait_ref_from_name` delegate to
+   it, `ast_builder.rs`): a reference splits `module/Name` at the last `/` and
+   reaches across modules. Widening *it* to `.` would corrupt legitimate dotted
+   references (`Maybe.Some`, `core.io/pure`). The `.` axis is a **binder-reject-
+   only** concern, so it lives in the reject helper, never in the shared splitter.
+2. **Add ONE sibling dotted splitter beside `split_qualified_name`** — the ONE
+   dotted predicate, delegated-to (never copied — Principle 7; and 0703's
+   no-new-mirror constraint, §3.5):
+
+   ```
+   /// The ONE dotted-name splitter for the binder-reject axis. A written name is
+   /// a dotted spelling iff splitting at the LAST `.` yields two NON-EMPTY halves
+   /// — the exact both-halves-non-empty discipline of `split_qualified_name`
+   /// (Principle 16). `.` is reserved for type/trait qualification (spec §5,
+   /// 0702 Ruling 1); a binder never carries one. The reader only ever forms a
+   /// dotted SYMBOL with non-empty segments (`read_dotted_name` requires a valid
+   /// member after each `.`), so a lone/leading/trailing `.` is not a dotted
+   /// spelling — mirroring how a bare `/` is not qualified.
+   fn split_dotted_name(name: &str) -> Option<(&str, &str)> {
+       name.rsplit_once('.')
+           .filter(|(head, member)| !head.is_empty() && !member.is_empty())
+   }
+   ```
+
+3. **The reject helper fires on EITHER split**, checking `/` first (so a
+   `module/…` binder reports the qualifier fault) then `.`:
+
+   ```
+   pub(crate) fn reject_qualified_binder_head(name: &str, span: Span)
+       -> Result<(), CranelispError>
+   {
+       if let Some((_module, bare)) = split_qualified_name(name) {
+           return Err(parse_err(&format!(
+               "'{name}' is a qualified name, but a binder must be a bare \
+                (unqualified) name — write '{bare}' (a binder introduces a name \
+                into the current module or scope; use an import or qualified \
+                reference to reach another module)"), span));
+       }
+       if let Some((_head, bare)) = split_dotted_name(name) {
+           return Err(parse_err(&format!(
+               "'{name}' is a dotted name, but a binder must be a bare \
+                (unqualified) name — write '{bare}' ('.' is reserved for \
+                type/trait qualification)"), span));
+       }
+       Ok(())
+   }
+   ```
+
+**Every binder site inherits the `.` reject for FREE — zero per-site edits.**
+Because the reader delivers `a.b` as a single symbol and every §5-family +
+value-level binder position *already* threads that symbol through this ONE helper
+(the census below), widening the helper alone closes the `.` column at every
+site the `/` column already covers. The site census (§3, verified in source at
+HEAD) doubles as the proof: each listed `reject_qualified_binder_head(…)` call
+now rejects the dotted spelling with no change at the call site. The **one**
+position that needs a call *added* is the deftype **type parameter** — the S113
+justified-exclusion the ruling's rider un-excludes (§3.2, revised below).
+
+**The `deftype A.B → user/B` identity-corruption cell — the sharpest face,
+closed at the root.** `build_type_head`'s bare arm (`:691`, `is_uppercase_start`
+guard matches `A.B`) already calls `reject_qualified_binder_head("A.B", span)`;
+with the widened helper `split_dotted_name("A.B")` → `Some(("A","B"))` → located
+reject at the head span **before** any constructor synthesis runs. The corrupted
+`user/B` ctor mint is now structurally unreachable — the incoherence never
+forms. This is the design's must-close; it needs no new site, only the widened
+predicate. Located per the S112 F1 `assert_err_span_at` precedent (span on the
+name).
+
+**Principle note.** The S113 "predicate keys on `/` only … no speculative
+widening (Principle 6)" is **retired** — the `.` axis was never speculative, it
+was an enforced-nowhere hole. The widening is now governed by **Principle 16**
+(the `.` member char is structurally significant — a binder may not carry it, the
+both-halves-non-empty guard keeps a degenerate `.` from over-reaching) and
+**Principle 18** (the reject fires where binder-ness is decided, one seam). See
+§10.
 
 ## 3. The head sites — exhaustive enumeration
 
@@ -173,16 +287,50 @@ This is inside the shared shape parser (con_var is a binder in **both** deftrait
 and impl echoed-head — `(impl (Functor prim/x) …)` is equally malformed), so
 unlike the trait-name reject it correctly lives in `parse_trait_head_shape`.
 
-### 3.2 Type-parameter symmetry (flagged, not a W3 blocker)
+### 3.2 Type-parameter binder — the S115 rider (was the S113 justified-exclusion)
 
-`build_type_head`'s `(Name params…)` arm binds each `param` as a type variable
-(`:607`). A qualified type param `(deftype (Pair prim/a b) …)` is the same
-qualified-lowercase-binder shape and currently accepts (`expect_symbol` only).
-Spec §5's principle names the **head name** specifically, not the secondary
-type-param binders, so this is **not** in the S113 reject scope; it is a
-symmetry candidate for `/qa`'s matrix (a `/qa` row, mirroring how F3 con_var was
-routed). Named here so the enumeration is complete and the exclusion is
-deliberate; `/dev` does not action it in W3 unless `/qa` adds the row.
+**Status change.** S113 flagged the deftype type parameter as the ONE justified
+exclusion (spec §5's principle named the head name, not the secondary param
+binders). The 0702 ruling's **rider** un-excludes it: *"the qualified type-param
+cell that today dies incidentally (`(deftype (Pair prim/a b) …)` →
+`module 'prim' not found` at a `0..0` span) becomes a clean located binder-reject
+in the same work."* The `/qa` M3 row that was never drawn (design §3.2 → FIXME
+0702 → `s115-test-plan.md` §4) is now authored, reject-polarity, for **both**
+`prim/a` (qualified) and `a.b` (dotted).
+
+**The gap (verified in source at HEAD).** `build_type_head`'s `(Name params…)`
+arm (`ast_builder.rs:714-739`) maps each param through `expect_symbol` + an
+`is_uppercase_start` reject (the type-var-must-be-lowercase gate, S113), then
+`Ok(n.into())`. It is the **only** binder site in the crate that does **not**
+call `reject_qualified_binder_head`. So a qualified param `prim/a` passes the
+lowercase gate (`is_uppercase_start` keys on the after-slash segment `a`) and
+mints a param named `prim/a` that dies downstream as the incidental
+`module 'prim' … not found` at a degenerate `0..0` span; a dotted param `a.b`
+(post-widening, still uncaught here) would likewise slip.
+
+**The fix — route the type-param arm through the shared helper (ONE new call).**
+Insert `reject_qualified_binder_head(n, n_span)?` in the param map closure
+(`ast_builder.rs:717`, immediately after `expect_symbol`, **before** the
+`is_uppercase_start` gate so a qualified/dotted spelling reports the binder fault
+regardless of its after-separator case — the same "qualified-before-case" order
+the ctor-name arm uses at `:712`). This:
+
+- makes `(deftype (Pair prim/a b) …)` a **located** binder-reject at the param
+  span (`n_span`), retiring the `0..0`-span incidental death (the rider's
+  explicit ask);
+- covers the dotted param `(deftype (Pair a.b c) …)` for free through the same
+  widened helper;
+- keeps the existing lowercase gate as the *next* check (a bare uppercase
+  `(deftype (Pair A) …)` still reports the type-var-case error);
+- is the **only** per-site edit the whole 0702 chain needs — every other binder
+  position already routes through the helper (§3, §3.4). This preserves the
+  "ONE predicate widening, no per-position copies" structural criterion: the
+  new call is not a *copy* of the predicate, it is the missing *routing* of one
+  site onto the ONE predicate (Principle 7).
+
+The `deftrait` con_var (§3.1, `:1109`) is the sibling type-var binder and
+already routes through the helper, so it inherits the `.` reject with no change;
+the deftype type-param is its overlooked twin, now converged onto the same seam.
 
 ### 3.3 deftype variant-constructor / field / platform names — LANDED (FIXME 0660 closed)
 
@@ -223,14 +371,16 @@ names are NOT a §3.2-style justified exclusion after all — the user's ruling
 made them binders, and the accessor-minting seam is a clean name-based reject
 site, so they landed with the ctor cells rather than deferring to a /qa row.
 
-**Type-params remain the one justified exclusion** (§3.2) — spec §5's principle
-names the head name + the now-scribed ctor/field/method-sig binders, not the
-secondary type-param binders (`(deftype (Pair prim/a b) …)`); that stays a /qa
-matrix candidate. `/qa`'s BD-ctor matrix rows (qualified-reject, lowercase-list-arm
-twin, bare-uppercase twin) are tracked in `tests/plan/s114-test-plan.md` §5.3
-(reserved rows against this now-final enumeration). **FIXME 0660 is deleted** —
-spec (done /spec), design enumeration (this §3.3 + §8), and implementation (all
-three cells) are complete; the /qa rows are the plan's to draw.
+**Type-params were the one justified exclusion (§3.2) — un-excluded S115.** The
+0702 rider brings the deftype type-param binder onto the shared helper (§3.2
+revised), so **no** §5-family binder position is now excluded: every declaration
+head, ctor name, field name, method-sig name, con_var, type param, and every
+value-level local (§3.4) routes through the ONE widened `reject_qualified_binder_head`.
+`/qa`'s BD-ctor matrix rows (qualified-reject, lowercase-list-arm twin,
+bare-uppercase twin) are tracked in `tests/plan/s114-test-plan.md` §5.3; the 0702
+`{/, .} × position` M3 matrix is `tests/plan/s115-test-plan.md` §4. **FIXME 0660
+is deleted** — spec (done /spec), design enumeration (this §3.3 + §8), and
+implementation are complete; the /qa rows are the plan's to draw.
 
 ### 3.4 Value-level local binders — the re-landing (0670-gated, F8 wave 2)
 
@@ -282,6 +432,56 @@ division reaches the splitters unsplit).
 (Track D) → /testing IQ-N1..N4 cells (Track D wave 3). This is the ONLY Track-D
 frontend item gated on 0670; §3.1–§3.3 (binder heads, con_var, deftype-ctor
 family) and `enforcement-matrices.md` (BD-A, RA) are all independent.
+
+**S115 note:** the value-level re-landing is now LANDED (S114 W-D2, crate
+`CLAUDE.md`) — the sites at `:1690/:1883/:1906/:2153/:2159` all call the helper
+(verified in source at HEAD). So they inherit the `.` reject from the §2.2
+widening with **zero** additional edits; the 0702 M3 value-level rows (`(let [a.b
+5] …)`, `(defn g [a.b] 1)`, `(match 1 [a.b …])`) reject located through the same
+seam under Ruling 1.
+
+### 3.5 How the S115 widening composes with 0703 / 0710 / 0711 (the /dev wave)
+
+The 0702 predicate-widening rides the **same /dev(frontend) wave** as three
+message/mirror FIXMEs. The design must compose cleanly with each; none conflicts,
+and one constraint (0703) is a hard *don't* on the widening.
+
+- **0703 (head-vocab mirrors residual) — the widening MUST NOT add a mirror.**
+  0703 is a *separate* /dev task (`is_defmacro`/`is_begin`/`module_extract` peel
+  re-listing `classify_head` vocabulary arms). It has **nothing to do** with the
+  binder-reject predicate — but its principle (Principle 7, no re-derived
+  vocabulary) governs the widening: the `.` axis is added by widening the ONE
+  `reject_qualified_binder_head` + adding the ONE `split_dotted_name` sibling
+  (delegated-to). It **must not** grow a second `.`-checking predicate anywhere
+  (no `name.contains('.')` scattered at call sites, no per-position dotted gate).
+  The `mod`/`platform` module-phase guard (`module_extract.rs`, `/`+`.`) is
+  pre-existing and is **not** a new mirror — it is a different phase with a
+  different rule (spec §5.8/§5.10, not a §5 declaration-head binder); the widening
+  does not touch it. **Structural /review check:** exactly ONE new dotted
+  predicate (`split_dotted_name`), consumed only inside `reject_qualified_binder_head`;
+  grep finds no other `.`-split for binder purposes.
+
+- **0711 (binder-reject wording at value-level positions) — folded into §2.1.**
+  The generalized position-neutral message ("a binder must be a bare (unqualified)
+  name", dropping "definition head") is the SAME string the widening touches, so
+  0711 lands *inside* the 0702 change-set rather than as a separate edit — one
+  message, correct at head AND `let`/`match`/param positions, for both the `/` and
+  `.` arms. No context param threaded (§2.1). A /spec accuracy rider (0711 notes
+  §5 prose may still frame the reject as head-specific) is `/spec`'s, not this
+  doc's — flagged, not actioned here.
+
+- **0710 (dangling-local-qualifier message parity) — a DIFFERENT seam (the
+  reader), not the binder helper.** 0710 is about the `read_local_name` reject
+  (`reader.rs:824`, `"expected local name after '/'"`) being terse vs the rich
+  `/bar` empty-module-half message (`reader.rs:564`). This is the **RA
+  reference/annotation family** (dangling qualifier at tokenization), owned by
+  `enforcement-matrices.md` §3, **not** the §5 binder-head axis this doc covers.
+  It rides the same wave only because both touch frontend message text; the
+  binder-reject widening neither depends on nor conflicts with it. The parity fix
+  is designed in `enforcement-matrices.md` §3.2 (see the S115 note added there).
+  Named here so the wave brief sees the full frontend message-family set (0710
+  reader + 0711 binder), but the two are independent seams — do not conflate the
+  reader dangling-qualifier message with the binder-reject message.
 
 ## 4. Span provenance across macro expansion — the LOAD-BEARING finding
 
@@ -485,7 +685,7 @@ enumerates the binder heads; this design's sites are checked against them:
 | **deftype variant-ctor name — qualified reject** | §5.2.2 | §3.3(b) `build_constructor_def:694/:712` both arms | ✓ **LANDED** — settled by the 2026-07-19 ruling (variant-ctor names are binders) |
 | deftype field names (secondary binder) | §5.2.6 | §3.3(c) `build_field_list:793/:804` both arms | ✓ **LANDED** — ruled a binder (mints `Type.field` accessor); qualified rejects |
 | `platform` name | §5.10 | §3.3(c) `parse_platform:455` | ✓ **LANDED** — `mod`-model `/`+`.` guard (module-phase, not `reject_qualified_binder_head`) |
-| deftype type-params (secondary binder) | §5.2 grammar | §3.2 | flagged to /qa, **justified exclusion** (spec §5 principle names the head name, not secondary param binders) |
+| deftype type-params (secondary binder) | §5.2 grammar | §3.2 (revised S115) | ✓ **COVERED (S115, 0702 rider)** — the one new `reject_qualified_binder_head` call at `build_type_head:717`; `prim/a` + `a.b` both located-reject at the param span (was the incidental `0..0` death) |
 | `mod`/`mod-` name | §5.8 | — | **justified exclusion**: `mod` already requires "a simple symbol (not qualified, not dotted)" (§5.8) — enforced at `module_extract.rs`, a module-phase decl, not a §5 declaration-head binder; not a new S113 site |
 
 **Result: the diff is NON-EMPTY on one axis, with the delta justified and
@@ -512,12 +712,30 @@ user ruled 2026-07-19 that variant-ctor AND field names are binders; /spec
 scribed §5 intro + §5.2.2/§5.2.6/§5.10 `[S113]`; and all four implementation
 cells LANDED (§3.3): **(a)** the list-arm uppercase gate, **(b)** the ctor-name
 qualified reject (both arms), **(c)** field-name qualified rejects (both arms) +
-the `platform` `mod`-model `/`+`.` guard. The remaining deltas (type-params,
-`mod`) stay justified-excluded with rationale; con_var and the deftype-ctor
-family are dispositioned. No design site lacks a spec basis; every §5-family
-binder cell is now **covered or justified-excluded**. FIXME 0660 deleted; the
-/qa BD-ctor matrix rows are reserved against this final enumeration
-(`s114-test-plan.md` §5.3).
+the `platform` `mod`-model `/`+`.` guard. con_var and the deftype-ctor family are
+dispositioned.
+
+**Third delta axis (S115, 0702 Ruling 1): the `.` (dotted) column + the
+type-param row — now CLOSED.** Two S113 exclusions are retired: (1) the design's
+`/`-only predicate is widened to `/`-or-`.` (§2.2), so the `.` column is enforced
+at **every** binder position the `/` column covers — the falsified "dotted never
+reaches a head slot" premise is corrected; (2) the deftype **type parameter**,
+the last justified-exclusion, routes onto the shared helper (§3.2 revised), so
+`(deftype (Pair prim/a b) …)` and `(deftype (Pair a.b c) …)` both give a **located**
+binder-reject instead of the incidental `0..0`-span death. `mod`/`platform` stay
+their own module-phase `/`+`.` guard (§3.3, not a §5 declaration head). **No
+design site lacks a spec basis; every §5-family binder cell is now covered on
+BOTH the `/` and `.` axes** — the enumeration is two-sided-complete against spec
+§5's categorical prose (0702 Ruling 1: "a qualified OR dotted spelling in any
+binder position is a compile-time error"). FIXME 0660 deleted; FIXME 0702
+actions/deletes with the /spec §5-table `.`-column scribe. The /qa BD-ctor matrix
+rows are reserved in `s114-test-plan.md` §5.3; the 0702 M3 `{/, .} × position`
+matrix is `s115-test-plan.md` §4.
+
+The spec-diff table above is extended by the `.` axis: **every** `[S113]`
+"covered" row now carries an implicit `.`-twin covered by the SAME widened helper
+(no new row — the widening is orthogonal to the site enumeration), and the former
+"type-params — justified exclusion" row flips to **covered** (§3.2).
 
 ## 9. Testability (Principle 5)
 
@@ -543,16 +761,27 @@ the trigger that keeps the int seam honest.
 ## 10. Principles cited
 
 - **Principle 7 (single source of truth)** — ONE `reject_qualified_binder_head`
-  at every head site; no per-form copies (§2); the shared-parser-vs-caller-policy
-  split preserved (§3, trait-name reject in `build_trait_head`, con_var reject
-  in `parse_trait_head_shape`).
+  at every head site; no per-form copies (§2); the `.` axis widens the ONE helper
+  (+ ONE sibling `split_dotted_name`, delegated-to, never copied — §2.2), NOT a
+  new per-position `.`-checker (0703's no-new-mirror constraint, §3.5); the
+  shared-parser-vs-caller-policy split preserved (§3, trait-name reject in
+  `build_trait_head`, con_var reject in `parse_trait_head_shape`).
 - **Principle 18 (enforce invariants structurally)** — the reject fires where
-  binder-ness is decided; 0589's routing decision made correct at the
-  type-var-ness decision point (§5), never merely backstopped downstream.
+  binder-ness is decided; the `.` reject inherits the same seam (§2.2); 0589's
+  routing decision made correct at the type-var-ness decision point (§5), never
+  merely backstopped downstream.
 - **Principle 19 (no module privileged by name)** — the macro-route span fix is
   NOT a `def`/`const`-name special-case (§4.1).
-- **Principle 6 (complexity has a budget)** — predicate keys on `/` only, no
-  speculative `.` widening (§2 note); type-param symmetry deferred not built (§3.2).
+- **Principle 16 (punctuation symbols are not special)** — the widened predicate
+  keys on `/` OR `.`, each under a both-halves-non-empty guard, so a bare `/`
+  (division operator) and a degenerate lone/leading/trailing `.` are NOT binder
+  rejects (§2.2). This **retires** the S113 "predicate keys on `/` only, no
+  speculative `.` widening" Principle-6 framing — the `.` axis was an unenforced
+  hole (falsified premise), not speculation; the ruling made it a required reject.
+- **Principle 6 (complexity has a budget)** — the `.` widening is the *minimal*
+  close: ONE predicate + ONE sibling splitter + ONE new routing call (type-param);
+  the position-neutral 0711 wording avoids threading a context param through ~15
+  call sites (§2.1).
 
 ## 11. Cross-references
 
@@ -570,6 +799,18 @@ the trigger that keeps the int seam honest.
   0589); `defmacro.rs` :239 (`parse_defmacro` name).
 - `src/marshal.rs:62` + `src/expander.rs:674/158` — the span-provenance loss (§4).
 - `tests/plan/s113-test-plan.md` §1.2/§1.3/§4 — BD-M1..M5 + corpus sweep + W3 rows.
+- `tests/plan/s115-test-plan.md` §4 — the 0702 `{/, .} × binder-position` M3
+  matrix (reject-polarity, both `/` and `.` columns; the sharpest-face
+  `deftype A.B → user/B` cell + the §6.2.1 `Maybe.Some` positive fence + the
+  never-drawn qualified-type-param row) that the §2.2/§3.2 design closes.
+- `design/arch/fixmes/0702-*` — the dotted-binder axis chain (SETTLED, Ruling 1,
+  2026-07-20): the falsified §2 premise this doc corrects (§2.2); /spec scribes
+  the §5-table `.` column + actions/deletes the FIXME. **0703** (head-vocab
+  mirrors — the no-new-mirror constraint on the widening, §3.5), **0710**
+  (reader dangling-local message parity — a different seam,
+  `enforcement-matrices.md` §3.2), **0711** (binder-reject wording generalized to
+  every position, folded into §2.1) — the three /dev(frontend) wave-siblings §3.5
+  composes with.
 - `design/arch/fixmes/0589-*`, `0590-*` — the annotation/resolver legs (§5/§6).
 - `design/arch/fixmes/0650-*` — the paired int-side span re-anchoring seam,
   `target: /arch` (§4 finding).

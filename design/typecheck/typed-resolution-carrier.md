@@ -511,15 +511,22 @@ Until the brief exists MS-P7 stays an attributed-RED carry in no wave's flip set
 4. Both bump-worthy changes (carrier reshape + B-2 escape-fact correction) in the
    ONE 21→22 window (F7).
 5. **0590** (the four `TypeExpr` resolver mirrors, `type-expr-resolver-convergence.md`)
-   is sequenced LAST among typecheck deployments and is the sanctioned defer-if-squeezed
-   item. Cheap relative-position note for /dev: 0590's never-error `Named` fabrication
-   arms live in `traits/type_resolve.rs` (×3) + `form.rs::check_type_expr` — a
-   **type-position** resolver family (`TypeExpr → Type`), structurally disjoint
-   from this carrier's **value/dispatch-position** verdicts (`Var`/`Apply` spans).
-   They do not overlap the carrier's write-sites, so the carrier neither blocks nor
-   is blocked by 0590; if the sprint squeezes, 0590 defers with its `_hkt`
-   never-error `Named` arms flagged as a latent-defect suspicion (do not design it
-   here).
+   **ALREADY LANDED in S110** — this item's original S114 framing was a zombie
+   record (audit `cranelisp-typecheck-s114.md` §2.2a, R-1), corrected at S115
+   Phase 3. The four mirrors
+   (`resolve_trait_type_expr`/`resolve_type_expr_hkt`/`resolve_type_expr_hkt_impl`
+   + `form.rs::check_type_expr`'s `collect_type_var_ids` pre-walk) **converged
+   onto the ONE canonical `resolve::resolve_type_expr` behind a `TypeExprCtx`**
+   at commit `5ed07d60`; the mirror functions are DELETED (only the collapse
+   comment remains, `traits/type_resolve.rs:154–157`); the never-error `Named`
+   fabrication arms are GONE — `resolve_named` (`resolve.rs`) ERRORS on an unknown
+   name (verified against source S115, METHOD §3.3); `form.rs::check_type_expr`
+   uses mint-on-miss via `resolve_type_expr`, its pre-walk deleted (`form.rs:413`).
+   FIXME 0590 was DELETED at S115 Phase 1 (audit-disposal exception; residual
+   rustdoc sub-item verified cured), and no S115 "0590 deployment" slot exists.
+   There is **no latent `_hkt` never-error suspicion** — that was the phantom's
+   framing over correct code. This item is retained only as the corrected record;
+   nothing here gates or is gated by the carrier flip.
 
 ---
 

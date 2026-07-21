@@ -112,9 +112,11 @@ holds — the pre-expansion cluster source text and each origin form's real span
   is the pre-expansion form whose real byte extent the erroring node's provenance
   belongs to — the same "outside the origin form's real byte range" test §3 uses,
   applied per-form. If the error's synthetic node cannot be attributed to a single
-  origin form (rare — a cluster-level check with no single culprit), fall back to
-  the cluster's own source span rather than a synthetic one (a real, if coarse,
-  location always beats a no-source-byte location).
+  origin form (rare — a cluster-level check with no single culprit), the **landed**
+  fallback is the **FIRST origin form's span** (not "the cluster's own source
+  span" as this doc originally read — aligned to as-built S115, FIXME 0699 item 4;
+  pinned by `process_form/tests.rs::reanchor_finalize_multi_form_falls_back_to_first_origin`,
+  `:1064`) — a real, if coarse, location always beats a no-source-byte location.
 - **Append provenance, never re-phrase** (§4) — the typecheck message stays
   single-sourced in `cranelisp-typecheck`; int adds `  in expansion of <written
   form>` naming the origin form it holds. Never reconstruct or second-guess the

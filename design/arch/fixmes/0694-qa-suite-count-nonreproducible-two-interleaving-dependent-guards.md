@@ -90,6 +90,21 @@ Record: `tests/plan/s114-test-plan.md` §11 item 2.
    The bisect question (new since W2/W4?) folds into the S115 row if opened
    — not worth build-window contention before the W7 seam work lands.
 
+## /qa S115 Phase-3 disposition (2026-07-20 — the root-cause row is drawn)
+
+The S114 Phase-7 ≥3-run verification did not complete before close (2/≥3);
+the nullary flap carried into S115 as the named flap set's first member.
+**Plan of record: `tests/plan/s115-test-plan.md` §2** — standing counting
+convention (stable-exact = 11 + named flaps, live-verified this session:
+the nullary face was GREEN in the single Phase-3 run); passive capture of
+the first in-suite failure output across the ≥2/≥3 certification runs;
+stabilization-hypothesis check after the S115 0709/no-impl-gate typecheck
+wave (×20 under-load re-run); a time-boxed load rig SHARED with 0604's
+re-induction attempt; disposition forks by what the captured output names.
+Close condition unchanged: ≥3 consecutive certification runs green + the
+post-fix ×20 green → close with the watch clause; any RED reopens the row
+by name, never "flake".
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

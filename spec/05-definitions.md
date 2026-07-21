@@ -329,7 +329,7 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 
 - **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type.
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
-- Constructor names are conventionally capitalized, but this is not enforced.
+- Constructor names MUST be capitalized — a **bare uppercase** symbol; a lowercase constructor name is rejected as ill-formed, and a qualified spelling is a compile-time error (§5.2.2).
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 
 ## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
@@ -479,6 +479,7 @@ For HKT traits, the impl echoes the declared head `(Functor f)` in slot 1 and na
 - Method definitions within `impl` follow `defn` syntax but MUST NOT include docstrings (the docstring comes from the trait declaration).
 - The method parameter count and types MUST conform to the trait's declared signature.
 - Method bodies are type-checked against the instantiated trait signature.
+- **Redefinition is hot-reload.** [S115] Re-entering an `impl` for a (trait, target-type) pair that already has an implementation in a live session **replaces** the previous implementation: subsequent method dispatch (§7.4) for that (trait, type) pair uses the **new** method bodies, exactly as re-entering a `defn` hot-reloads a function definition (redefinition runtime semantics — dependent recompilation, broken symbols, the frozen world — are `repl/spec.md` §18; source round-trip is `repl/spec.md` §15.6). The re-`impl` carries the same-type constraint that governs `defn` redefinition — the new method bodies MUST conform to the trait's declared signature for the target type (the conformance rules above), so a re-`impl` whose methods do not type-check against that signature is rejected exactly as any other non-conforming impl; a conforming re-`impl` leaves each method's compiled signature unchanged and is therefore signature-preserving (`repl/spec.md` §18.1). An implementation MUST NOT silently ignore a re-`impl` — accepting the form and printing the ordinary confirmation while continuing to dispatch to the **first** implementation is a defect.
 
 ## 5.5 Macro Definition (`defmacro` / `defmacro-`) [Tested tests/spec_05_definitions::defmacro_registers_with_display]
 

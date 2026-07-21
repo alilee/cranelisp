@@ -1,0 +1,244 @@
+# Sprint 115: Stabilise — Clean & Green + the Assertion Ladder Complete
+
+**Status**: PHASE 5 LANGUAGE (ACTIVE)
+
+**Goal**: Flip all 11 attributed carry REDs to green with zero new unattributed REDs, and close the gap between the QA/arch instrumentation-and-assertion recommendations and what is actually in place — so future failures name their seam instead of flapping.
+
+**Audit**: cranelisp-intrinsics (CONFIRMED at Phase 1 — last assessed in the S87-era pass, 2026-06-14; the Tier-5 diagnostic modes and RC/alloc seam assertions this sprint verifies live there)
+
+## Scope
+
+Context: S114 closed at 5164 run / 5153 passed / **11 attributed carries** / 1 skipped, with two standing findings this sprint answers directly: (1) heisenbug non-reproduction is a pattern (0604's 25/25 determinism evaporated; the 0694 flap; the ctor-crash shifted the same way) — the structural answer is synthesized triggers + seam assertions, not more quiet sweeps; (2) record-vs-source rot (the zombie 0590 five-agent chain) — the structural answer is the audit's process feedback landed as METHOD amendments.
+
+### A. Clean & green — the 11 attributed REDs (anchor)
+
+Fix every S114 carry RED at its attributed owner; each fix lands with its unit test per METHOD §2.2, flip-verified against the attribution in `tests/plan/s114-test-plan.md` §11/§12.
+
+- **/dev(typecheck)**: MS-P7 chained `MayAliasOf` faces ×2 (family-grain invariant BINDING on the fix; design-first rule per the S114 adjudication; **0693 fence lands BEFORE/WITH** — its re-anchored trigger fires here); 0719 wrapper-indirection carrier-loss ×1 (axis named: free-var-through-bound-parameter distance; acceptance = the §5.1.2 equivalence-TWIN bar); 0709 §7.1 occurrence-rule enforcement ×2 (nullary non-dispatchable trait-method no-impl must not leak to codegen).
+- **/dev(backend)**: ONE RC-release sweep covering the entry-payload leak + 0720 ADT-wrapped COW supersede ×2 (minimal repro: wrapped supersede tail loop leaks 2/iteration; discriminators recorded in plan §12); GOT-slot carrier-loss pair ×2 — fn-as-value + 0705 AutoCurry-over-local (the flagged collapse question: one mechanism or two — /design(backend) answers before the fix); **W-B5 patch collapse** as its own endorsed change-set (S114 deferral honored).
+- **/dev(src)**: impl-redefinition hot-reload ×1 (user RULED at S114 close: hot-reload with defn's same-type constraint; /spec scribes 0714 first; the pin's hot-reload branch is the required behavior); 0707 restore-notice count from record (minor); **0604 early wave** (Track B — the structural gate).
+- **/qa**: 0694 nullary-flap root-cause row (flapped 1-of-4 then 0-of-2 — root-cause under the standing counting convention; owner assigned by what the root cause names).
+- **0708** (`:Type` not folded in macro-argument position): /spec user framing first (§1.4.5 vs §2.3.8 at the macro-arg seam); post-ruling pin rides /testing; fix lands this sprint only if attribution resolves to an in-scope surface — otherwise attributed carry with rationale.
+
+Exit: suite green except REDs that are NEW, probe-discovered, and attributed this sprint; stable-REDs-exact + named-flap-set certification per the standing convention; ≥2 identical full-suite runs.
+
+### B. Instrumentation & assertions — the recommendations actually in place (user directive)
+
+The canonical recommendation set = `design/arch/safety-invariants.md` §4 register (R1–R13) + `tests/plan/memory-safety-coverage.md` (§1 oracle gate, §2 generative harness, §4.1 capability-fence lifecycle) + the s113 risk-assessment tiers (Tier-5 diagnostic modes, Tier-3 seam assertion density, standing `RC_DEC_CHECK` positives) + the 0604 observability rider (MODULE_TRACE + closure predicate).
+
+- **Early wave /qa — instrumentation-completeness verification matrix**: every recommendation row → its named mechanism → VERIFIED-IN-PLACE (cite file:line + the test that exercises it) or OWED. No row closes on "it was scheduled"; the S108-R-4 lesson (multi-part acceptance silently half-executed) is the audit lens. Known-suspect rows to verify hard: §1.3's "enforced nextest gate, not a manual cert" (is the differential-oracle combinator an enforced gate today?); §4.1's mandatory unit-tier synthetic self-test per diagnostic mode; standing `RC_DEC_CHECK` positive assertions (4 test files reference it — is that the designed standing set or residue?); Tier-3 assertion density at RC/alloc seams (R8's W5 build — landed or partial?).
+- **Owed items become dev change-sets THIS sprint** (wave-scheduled after the matrix lands): known-owed already from the register — **R4** mangle-family injectivity census beyond drop-glue (/design(backend) census → witness-or-disambiguator per family); **R6** persisted-index trust-boundary census → ONE validation seam in `deserialise_meta_with_build_id` (/dev(backend, cache)); **R1** §3b producer split if it slipped S114 (verify; typecheck); **R7 predicate correction rides 0604** (below).
+- **0604 structural gate (/dev(src), early)** per the re-based plan in the FIXME: disposition the missed census row (`commit_staging_to_live`), land the **declared-export-closure** predicate as an unconditional diagnosed error at the chokepoint (deadlock hazard honored — precompute the closure), MODULE_TRACE emission at the seam; /testing lands the **synthesized-trigger unit test** (injected out-of-closure write → diagnosed error; interleaving-independent); the 25/25 recipe demotes to a bounded no-regression sweep; one time-boxed load-amplified re-induction attempt, abandoned without prejudice. /design(int) §2.2 correction + fixture-comment correction ride the wave. **The gate ships on its merits — writer identification is desired, not required, for 0604 to retire.**
+- **R13** (fork-join error-slot ferry) — the one register row proposed to STAY parked: it is gated on the test-discovery implementation wave, not a stabilisation lever now. Explicit deferral recorded if the user concurs (see Phase-1 decisions).
+- **/arch Phase 2**: standing register re-audit (§4 "re-audited every Phase 2") + rule on any matrix disagreements.
+
+Exit: the matrix shows every row VERIFIED-IN-PLACE or carrying an explicit user-sanctioned deferral; no row rests on a scheduling claim.
+
+### C. Record integrity — S114 audit disposal + METHOD amendment
+
+Disposals proposed at Phase 1 (see Notes for the user decision record); on acceptance:
+
+- **R-1 (accept)**: 0590 dispositioned against the S110 source evidence — /sprint deletes the FIXME (lifecycle exception: audit-verified zombie; the sole live-residual candidate — the rustdoc-inaccuracy sub-item — re-checked first) + strikes the phantom S115 slot; riders: /design(typecheck) corrects the two design-doc rows; /dev(typecheck) the CLAUDE.md paragraph (merged into R-4); /testing the `hkt_named_arm_probe.rs` comment (test KEPT as a born-green fence).
+- **R-2 (accept)**: /design(typecheck) rewrites `typecheck.md` §§2–5 against the as-built crate (facade claims, dead file tree, retired roadmap, dead FIXME anchors, §10-vs-index disagreement).
+- **R-3 (accept)**: /dev(typecheck) executes the designed `program/tests.rs` split (per-submodule sibling files per `program-decomposition.md` §3) + re-budgets `finalize.rs` at the §11.8.10 harvest-window seams (≤ ~1,200/submodule). This is the S108 R-4 done-criterion finally met; second silent drop is not an option — decline requires superseding the design's rejected-alternative box.
+- **R-4 (accept)**: /dev(typecheck) crate-CLAUDE.md currency sweep (the falsified `build_concrete_codegen_view` contract is the safety-relevant fact).
+- **METHOD amendment (/sprint, user approval)**: §3.3 — a FIXME disposition or carry decision verifies the claim against `refers_to` source as its FIRST act; §2.4/Phase-7 — the close checklist asserts FIXME-table-vs-§Delivered consistency. The audit's §2.9 class-cure, adopted as process.
+
+### D. Ruling + diagnostics queue
+
+- **/spec**: 0714 scribe (impl-redefinition = hot-reload, same-type constraint — ruled at S114 close); 0708 framing for user ruling; 0702 dotted-binder matrix framing for user ruling (spec-prose/table/design three-way disagreement rides it); 0704 §5.2.7 wording fix.
+- **/dev(frontend)**: 0703 head-vocab mirrors residual; 0710 dangling-local-qualifier message parity; 0711 binder-reject wording at value-level positions. (+0708 fix if attributed here.)
+- **/design(int)**: 0699 qualify-walk residual gaps. /design(backend): 0696/0697 ride the W-B5/backend design touch.
+- **/qa + /testing**: 0702 cells post-ruling (polarity gated); examples 119→120 exit-code reconciliation rider (binding from S114).
+
+### Out of scope
+
+- Display-protocol §1.5 promotion (0050) — parked pending sprint slot; not a stabilisation lever. Target: next feature sprint.
+- Effect-concurrency slice-2 reactor implementation + `concurrency_capacity` timing defect — effect-concurrency track (sanctioned deferral class).
+- 0637 sibling-slot validation — parked to first consumer per the re-affirmed R5 ruling (S113 W5); the P8 co-landing rule IS the mechanism.
+- 0052 (docs learn-system), 0463 (examples network-poll shape) — standing user-proxy deferrals, triggers unmet.
+- R13 ferry — proposed parked (Phase-1 decision).
+
+## FIXME debt
+
+| FIXME | Target skill | Status | Notes |
+|---|---|---|---|
+| 0590 | — (zombie) | **DELETED at Phase 1** | Audit R-1 executed: residual rustdoc sub-item verified CURED against source; deleted vs S110 evidence (`5ed07d60`); no phantom slot in scope |
+| 0721 | /design(typecheck) | open — ships | Audit R-2 + R-1 design-doc riders (typecheck.md rewrite + carrier-doc 0590 row) |
+| 0722 | /dev(typecheck) | open — ships | Audit R-3: program/tests.rs split + finalize re-budget (2× escalation flagged) |
+| 0723 | /dev(typecheck) | open — ships | Audit R-4 + R-1 CLAUDE.md rider (currency sweep; codegen_view contract is the safety-relevant fact) |
+| 0724 | /testing | open — ships | Audit R-1 rider: hkt probe comment correction (test KEPT) |
+| 0604 | /dev(src) | open — ships (Track B) | 3-sprint carry, escalation flag honored: structural gate on merits, early wave |
+| 0693 | /dev(typecheck) | deferred → fires now | Re-anchored trigger = the MS-P7 chained fix (Track A); fence BEFORE/WITH |
+| 0694 | /qa | open — ships | Flap root-cause row (Track A) |
+| 0696 | /design(backend) | open — ships | Rides W-B5 change-set |
+| 0697 | /design(backend) | open — ships | Rides backend design touch |
+| 0699 | /design(int) | open — ships | Qualify-walk residual gaps |
+| 0702 | /spec → /qa | open — ships | Dotted-binder ruling framing; cells post-ruling |
+| 0703 | /dev(frontend) | open — ships | Head-vocab mirrors residual |
+| 0704 | /spec | open — ships | §5.2.7 wording |
+| 0705 | /dev(backend) | open — ships | AutoCurry GOT-slot pair (Track A; collapse question first) |
+| 0707 | /dev(src) | open — ships | Restore-notice count from record (minor) |
+| 0708 | /spec | open — ruling ships | User framing; fix in-sprint iff attribution in-scope |
+| 0710 | /dev(frontend) | open — ships | Diagnostic message parity |
+| 0711 | /dev(frontend) | open — ships | Binder-reject wording |
+| 0714 | /spec | open — ships | Impl-redefinition hot-reload scribe (ruled S114 close) |
+| 0050 | /repl-adjacent | deferred | Display-protocol promotion sprint |
+| 0052 | /docs | deferred | Standing |
+| 0463 | /examples | deferred | Standing; re-verified S114 |
+| 0553 | /arch | deferred | Trigger unmet |
+| 0637 | /design(backend) | deferred | Parked to first consumer (R5 ruling re-affirmed S113) |
+
+## Architecture review (Phase 2)
+
+**/arch, 2026-07-20. Verdict: SIGN-OFF WITH REVISIONS** (three revisions, listed at the end; none re-opens scope — the draft is coherent, debt-first, and P8-clean).
+
+### 1. Scope coherence + interim-architecture risk (Principle 8)
+
+The sprint is pure stabilisation debt with structural (not interim) mechanisms throughout: the 0604 gate is isolation-by-construction (S61→S93 precedent), the synthesized-trigger test is fail-on-revert by construction, the R6 seam is the ONE validation chokepoint, and the impl-redefinition fix reuses the existing redefinition path (below). No P8 half-measures found. The conditional 0708 fix ("only if attribution resolves in-scope") is a legitimate deferral-with-rationale, not an interim build.
+
+### 2. MS-P7 chained-face family — the design-first rule IS sufficient; frame made binding now
+
+No separate /arch ruling is needed before /design(typecheck) deploys. The family-grain invariant ("every may-alias link whose accounting includes a consumer-emitted release needs its protect") is the R1/R14 producer-truth obligation applied per-link — an instance of P25, already governed by the landed §16 frame (`ownership-inference.md`: §16.1 lattice + §16.2 rule table + §16.3 producer split, all verified in source at HEAD). Three constraints BINDING on the /design → /dev chain:
+
+1. The fix lands as **§16.2 rule-table rows/corrections at the family grain** — the enumerated-table discipline — NEVER a 5th per-consumer/per-context arm (the W7 arm was the 4th; a 5th is the instance-patch anti-pattern the plan's §0 risk-2 names).
+2. **Contingency route pre-authorized**: if the family rule requires carrier enrichment (a new `ResultMode` shape or advisory fact in `cranelisp-types/src/ownership.rs`), that is a `cranelisp-types` edit — FIXME `target: /arch` + my approval + ONE `CACHE_SCHEMA_VERSION` window (currently the sprint plans NO bump; see §7). Surface the need at Phase 3, not mid-wave.
+3. 0693 fence before/with (already binding); the Conditional-container face is probe-first (pin only a demonstrated RED).
+
+### 3. GOT-slot carrier-loss pair — ruling: ONE seam contract, presumptively TWO fixes; evidence step named
+
+The two defects meet at the same backend seam (the fn-as-value/AutoCurry wrapper emitter's loud keyed miss) but sit on **opposite sides of the carrier contract**:
+
+- **0705 (AutoCurry-over-local)** is a CONSUMER totality gap: typecheck is complete and correct (`VarRef::Local` + `ApplyRef::ViaCallee` recorded; no dispatch FQ — rightly, a local closure has no GOT slot); the backend wrapper emitter only supports slotted global targets and must gain the **curry-the-local-closure-value arm**.
+- **fn-as-value `'='` (plan §11 item 5)** is provisionally a PRODUCER gap (typecheck mono_collect fn-value rewrite seam mints the wrapper with no carrier for a global target that HAS a slot).
+
+The unifying architectural commitment (P24 corollary prong 3 / P20 exhaustiveness): **the wrapper-emission seam must be total over the closed carrier sum** — every legal carrier state {`Dispatch(FQ)`-slotted, `ViaCallee` + `VarRef::Local`} has an emission arm, and anything else is a located producer error. **Evidence /design(backend) must produce before the fix wave**: for each repro, dump the carrier state as read at the wrapper-emission seam (one keyed-read trace: `VarRef` verdict + `ApplyRef` + slot presence). If the `'='` face also arrives `ViaCallee`, both collapse into the ONE backend totality change-set; if it arrives `Global`/`Dispatch` with no slot carrier, its fix is **typecheck-side** and rides a typecheck wave. **Scope-text correction (revision 1)**: the draft's Track A line files the pair under /dev(backend) ×2; plan §11 item 5 attributes the fn-as-value face to typecheck. Phase 4 keeps a conditional typecheck slot; the evidence decides.
+
+### 4. 0604 structural gate — shape CONFIRMED against R7 + the S61→S93 precedent; two /arch findings feed the wave
+
+The declared-export-closure predicate at the chokepoint, closure PRECOMPUTED (deadlock hazard honored), MODULE_TRACE at the seam, synthesized injected-trigger unit test, recipe demoted to bounded sweep, writer-ID desired-not-required — all conform to R7's register row and the isolation-by-construction precedent. Verified at HEAD during the register re-audit:
+
+- **Both landed predicates are provider-existence-shaped and BLIND to the live phantom by construction** (`bit-and` IS a bundled public primitive, `cranelisp-primitives/src/lib.rs:412` — so `write_is_closure_valid` AND `prelude_write_is_closure_valid` pass it); `commit_staging_to_live` (src/worker.rs:439/:513) routes through NO gate. The census gap and predicate correction are both real and both necessary.
+- **Tier-3 sub-form ruling** (the CS-2 taxonomy nuance): the promotion is to an **unconditional diagnosed error** rather than an abort-tier `assert!` — acceptable at this seam PROVIDED the message self-identifies as an internal R7 invariant breach naming the seam (never mistakable for a user diagnostic; a session abort would kill a REPL on a defect the user cannot act on). This is now recorded on the R7 row.
+- **Rider added to the wave**: the falsified premise comment inside `prelude_write_is_closure_valid` ("bit-and … absent from primitives", src/imports.rs) is corrected alongside the /testing fixture-comment correction already in the FIXME.
+
+### 5. Impl-redefinition hot-reload (0714) — no NEW cross-crate/ABI implication; P11 constraint binding
+
+The redefinition machinery the fix needs **already exists** at `commit_staging_to_live` → `commit_slotted_def` (slot policy + freeze, `RedefinitionOutcome`, the ABI-changing dependent-recompilation transaction). Under the user's same-type constraint the re-impl is ABI-preserving ⇒ the **GOT-patch path** (same slot re-pointed), not the recompile/epoch path — cross-module compiled callers stay valid by construction (D35: GOT is the single source of truth for callable addresses). The epoch/freeze machinery is not engaged because a type-changing re-impl REJECTS (per the ruling), same as defn. Binding constraints: (a) **P11/P7 — the impl seam routes through the SAME redefinition commit path as defn**, never an impl-specific parallel path; the impl-specific residue is only the `TraitImpl` shell overwrite at the trait's home (same `impl_module`, D45) + the mangled method Def re-staging; (b) the same-type check applies §18's defn rule at the impl registration seam against the existing method's scheme; (c) /spec 0714 scribes FIRST (already a Phase-4 constraint). Ownership-summary skew on redefinition is NOT widened by this fix (it inherits exactly defn's existing exposure; the §5 dependent-recompilation machinery remains the R12-sprint answer). No cache/schema impact (session-side); no types edit. Sequencing note: this fix and the 0604 gate touch the same src seams — land 0604 (early wave) first.
+
+### 6. Standing register re-audit — DONE, rows updated in place (`design/arch/safety-invariants.md` §4)
+
+The re-audited register is the /qa matrix's baseline. Rows changed:
+
+- **R1**: the §3b producer split did NOT slip — §3a/§3b/§3c ALL landed S113 W5 (`3297adf8`); `Origin::{Unconditional,Conditional}` is walk-internal (`transfer.rs:150`, no serde ⇒ the anticipated schema bump was unnecessary); hard-claim arms match only `Unconditional` (`transfer.rs:263–283`). Open instance = the chained-face family (this sprint's fix, family grain).
+- **R7**: status corrected to `asserted`-but-BLIND — the "names its seam on next firing" claim was FALSE for the live phantom (both predicates provider-existence-shaped; census missing `commit_staging_to_live`); remedy text rewritten to the re-based 0604 wave incl. the diagnosed-error sub-form ruling and the stale-comment rider.
+- **R8**: the S113 W5 tier-5 + tier-3 build FULLY landed — M1 quarantine / M2 scrub / M3 alloc-parity in `cranelisp-intrinsics/src/diagnostics.rs`, each with unit-tier synthetic self-tests (`diagnostics/tests.rs`: quarantine ×2, scrub ×2, parity ×4 — the §4.1 mandate satisfied); A1–A4 seam checks release-gated on `CRANELISP_RC_DEC_CHECK` (intrinsics funnels + `backend/src/heap.rs` + `vec_codegen.rs`). Owed: nothing structural; the /qa matrix verifies the standing `RC_DEC_CHECK` positive set (designed-vs-residue) and self-test currency.
+- **R4/R6**: marked SCHEDULED S115; scope shape confirmed. R6's routing straight to /dev(backend, cache) is ACCEPTABLE — the register row + CS-2 taxonomy + the named seam constitute the design pin — with the revision that the census table lands as a durable artifact in the cache-submodule rustdoc and /review verifies census completeness (recorded on the row).
+- **R13**: user-sanctioned S115 deferral recorded (parked on the test-discovery implementation wave).
+- **R14**: refreshed — B-2 LANDED (schema window 21→22), MS-P7 attribution RESOLVED + immediate face fixed; open residue = the chained-face family (points at R1).
+
+Unchanged after spot-verification: R2/R3/R5/R9/R10/R11/R12. Archive-triage note: `backend-keyed-consumer.md`'s parked physical move to `archive/` stays parked — S115 actively cites it (0705, the GOT-slot seam error text).
+
+### 7. Public-API assessment
+
+**No planned `cranelisp-types` edits and no planned `CACHE_SCHEMA_VERSION` bump this sprint.** Named contingency (the only one): chained-face carrier enrichment (§2 above) — if it materializes it is a types edit + ONE schema window (22→23), /arch-approved via FIXME before any /dev work consumes it. Everything else is crate-internal: 0709's located error uses existing error machinery; 0604's diagnosed error is src-internal; the GOT-slot fixes work over the existing closed carrier sums; R6's `CacheStale` classes are backend-internal; W-B5 is the endorsed backend-internal change-set; impl-redefinition is src-internal. `public-api.txt` baselines: no expected diffs; any diff appearing in review is a finding requiring my approval per the standing discipline.
+
+### 8. Required Phase-4 sequencing (additions to the constraints already listed under §Waves)
+
+1. /design(backend) produces the **carrier-state evidence dump** (§3) BEFORE the GOT-slot pair fix wave; Phase 4 holds a **conditional typecheck slot** for the fn-as-value face.
+2. The MS-P7 chained-face chain is /design(typecheck) rule-table design → /dev, with the **types/schema contingency surfaced at Phase 3** (so a window, if needed, is coordinated once).
+3. **0604 early wave lands before the impl-redefinition fix** (same src seams, both /dev(src)).
+4. The backend RC-release sweep (entry-payload both faces + 0720) must not weaken the general G2/item-26 protect (§2.1 both-polarity fence, already in plan) and runs the tier-4 safety lane + RC_STATS pins as its acceptance.
+5. R6's /dev(backend, cache) change-set lands the census table in the cache-submodule rustdoc; /review verifies completeness (revision 3).
+
+### 9. Verdict
+
+**Sign-off with revisions**:
+
+1. **Scope-text correction**: the Track A "GOT-slot carrier-loss pair ×2 — /dev(backend)" line becomes conditional on the §3 evidence — the fn-as-value face may be a typecheck fix (plan §11 item 5's provisional attribution); keep a conditional typecheck slot.
+2. **0604 wave rider**: add the src/imports.rs falsified-premise comment correction (§4) to the wave's disposition list.
+3. **R6 execution shape**: /dev routing accepted with the census-artifact-in-rustdoc + /review-completeness requirement (recorded on the register row).
+
+No user-facing questions from this review — 0708/0702 are already correctly routed to /spec for user rulings; the diagnosed-error sub-form question at the 0604 chokepoint is architectural and ruled here (§4). Phase 3 may proceed.
+
+## Skill plans (Phase 3)
+
+{Collected at Phase 3.}
+
+## Waves (Phase 4 — FIRMED 2026-07-21; all source-touching waves SERIAL; wave-gate FIXME scan before each advance)
+
+Sequencing constraints honored: 0604 before impl-redefinition (same src seams); 0693 backend fence (W3) BEFORE the typecheck §17.2 escape-fact correction (W4); RC sweep before W-B5; generative harness after the Track-A fix waves; the `'='` producer fix rides W4 per the /design(backend) dump verdict. FIXME number bands pre-allocated per dispatch (numbering-race fix).
+
+### W1 — QA-first delta battery (Stage 1) — /testing sprint-wide
+
+The 11 carry REDs are already-committed pins; W1 authors the DELTAS per `tests/plan/s115-test-plan.md`: 0702 M3 dotted-binder reject cells (+ `Maybe.Some` §6.2.1 positive fence + the qualified-type-param located-reject cell); 0709 declaration-time-reject cells (polarity per the traits.md §2 design; `(zed [] self)` GREEN boundary control); 0719 equivalence-twin acceptance cells (if not already pinned); 0724 probe-comment correction (test KEPT); any RC-sweep face cells the plan owes beyond the existing pins. NO 0708 pin (awaits ruling). FIXME band: 0727–0739.
+
+### W2 — src early: the 0604 structural gate — /dev(src) then /review(src)
+
+Per `prelude-table-write-isolation.md` (as corrected): route `commit_staging_to_live` through `check_terminal_closure`; destination-keyed declared-export-closure predicate + `SharedState.declared_exports` map (precompute-before-guard); MODULE_TRACE at the seam; synthesized-trigger unit test (provides-name-but-outside-declared-exports — the /qa §3.1 binding shape); falsified-comment rider; ≥25× demoted no-regression sweep + ONE time-boxed load-amplified re-induction attempt; 0707 (form-granular, subtract `failed_forms`). Band: 0740–0744.
+
+### W3 — backend — /dev(backend) then /review(backend)
+
+Ordered change-sets: (1) 0693 consolidation + disagreement fence (MUST complete before W4); (2) RC-release sweep (entry-payload + 0720 ×2 per `s115-carrier-and-rc-sweep.md` §2; hazards honored); (3) 0705 curry-the-local-closure arm (totality table, no `_ =>`; ViaCallee+Global = located producer-contradiction error); (4) R4 `got_data_symbol_name` injectivity witness + census landing; R6 validation-seam extension in `deserialise_meta_with_build_id`; (5) W-B5 patch collapse (own change-set, incl. 0696 resolution; goldens certified). Band: 0745–0754.
+
+### W4 — typecheck — /dev(typecheck) then /review(typecheck)
+
+Gate: W3 change-set (1) landed. MS-P7 chained family fix (`ownership-inference.md` §17 rows; contingency tripwire = §17.6 — any schema bump outside it is a plan violation); `'='` producer fix at `mono_collect.rs::resolve_auto_curry` (re-resolve against concrete instance types; boundary: never transport a trait-method-decl FQ as dispatch carrier); 0719 window-3 extension (`monomorphisation.md` §11.8.11); 0709 declaration-time reject (`traits.md` §2); 0722 program/tests.rs split + finalize re-budget (re-survey stale anchors per the currency note); 0723 CLAUDE.md sweep. Band: 0755–0764.
+
+### W5 — frontend — /dev(frontend) then /review(frontend)
+
+Per `binder-head-reject.md` §2.2: the ONE-helper `.`-widening + `split_dotted_name` sibling + the type-param routing call + the 0711 message generalization; 0710 reader-seam parity one-liner; 0703 residual. /review greps per the design's structural acceptance. Flips the W1 0702 cells. Band: 0765–0769.
+
+### W6 — int second — /dev(src) then /review(src)
+
+Gate: W2 landed. Impl-redefinition hot-reload fix (`impl-redefinition-hot-reload.md`: enroll mangled method Defs into the FORCED loop; flips the S114 pin's hot-reload branch); 0718 qualify-walk fixes (quote shield + defn self-name + defmacro shield, §2.4–2.6). Band: 0770–0774.
+
+### W7 — stabilisation close: harness + 0694 + certification
+
+(1) /testing bounded generative-harness v1 dispatch (memory-safety-coverage §2; slip → explicit user sign-off for S116); (2) /qa 0694 nullary-flap root-cause row (suite-load experiments now safe — fix waves done); (3) certification: ≥2 identical full-suite runs, stable-REDs-exact + named-flap set, all 11 carries flip-verified against attribution, instrumentation matrix re-checked (every OWED row now VERIFIED). Band: 0775–0779.
+
+| Wave | Skill | Surface | Status |
+|---|---|---|---|
+| W1 | /testing | sprint-wide | pending |
+| W2 | /dev → /review | src/ | pending |
+| W3 | /dev → /review | cranelisp-backend | pending |
+| W4 | /dev → /review | cranelisp-typecheck | pending |
+| W5 | /dev → /review | cranelisp-frontend | pending |
+| W6 | /dev → /review | src/ | pending |
+| W7 | /testing + /qa | suite-wide | pending |
+
+## Dispatch log
+
+| Wave | Agent | Surface | Model | Effort | Non-default reason |
+|---|---|---|---|---|---|
+| P2 | /arch | scope review + register re-audit | fable (shim) | xhigh | — |
+| P3 | /qa | test plan + instrumentation matrix | fable (shim) | xhigh | — |
+| P3 | /spec | 0714/0704 scribe + 0702/0708 framings | opus[1m] (shim) | high | — |
+| P3 | /design | cranelisp-typecheck | opus[1m] (shim) | high | — |
+| P3 | /design | cranelisp-backend | opus[1m] (shim) | high | — |
+| P3 | /design | src/ (design/int/) | opus[1m] (shim) | high | — |
+| P3 | /design | cranelisp-frontend (0702 chain) | opus[1m] (shim) | high | — |
+
+## Notes
+
+- 2026-07-20: Phase 1 draft authored. Escalation items surfaced: 0604 (3-sprint carry — ships as structural gate); audit R-3 is the S108 R-4 acceptance completed at last (second carry of a half-executed acceptance — flagged). Audit disposal proposals R-1..R-4 all ACCEPT + METHOD amendment + R13-stays-parked presented to user.
+- 2026-07-21: **/design(typecheck) Phase 3 DELIVERED — PHASE 3 COMPLETE** (all 6 authority/design deliverables in). MS-P7 = §16.2 rule-table corrections at FAMILY grain (`ownership-inference.md` §17; root cause `transfer.rs:703-735` — escape-force reaches only the immediate syntactic `args[k]`; fix = Origin carries cow-alloc span-set, row 6 forces escape at every carried span; explicit no-5th-arm argument; internal-Origin only — no types/schema change; §17.6 precise carrier-enrichment tripwire NOT expected to fire); 0719 = window-3 EXTENSION not a 4th window (`monomorphisation.md` §11.8.11, derive-from-settled-subst, §11.3.2 precedent); 0709 = DECLARATION-time reject (`traits.md` §2 — occurrence rule is structural/P18; enforce-at-use applies to well-formed methods; `(zed [] self)` = GREEN boundary); **0721 RESOLVED+deleted** (typecheck.md §§2-5 rewritten vs as-built per R-2 criteria; both 0590-phantom rows corrected); program-decomposition §3 currency note added for 0722 (stale anchors; possible support/tests.rs sixth home). 0693 fence = cross-wave constraint (backend consolidation BEFORE the escape-fact correction). Phase-3 exit gate: public-API + interface set complete — ZERO types/schema/public-API changes across all four designs (consistent with the Phase-2 assessment; sole bounded contingency §17.6). **Phase 4 waves FIRMED (W1–W7 above); Status → PHASE 5 ACTIVE; baseline commit + W1 dispatch.**
+- 2026-07-21: **/design(int) Phase 3 DELIVERED**. **0604 wave design complete** (`prelude-table-write-isolation.md` §2.2 correction LANDED in-phase): live commit path is `worker::process_cluster_once`→`commit_staging_to_live` (the `insert_cluster` per-entry loop is a normally-EMPTY Wave-3a-β scaffold) → ROUTE through `check_terminal_closure`; corrected predicate = destination-keyed **declared-export closure** (`name ∈ D(M)` from M's own `(export …)` specs; own-def arm = Ok with NO map read; unknown D(M) permits — never false-fires); deadlock hazard honored via a NEW int-internal session-side `SharedState.declared_exports` DashMap (unserialized, `prelude_fallback` model — **no types/schema/public-API impact**) + precompute-before-guard; verified `bit-and` genuinely outside prelude's declared exports (`stdlib/prelude.cl:52` curated list). **Impl-redefinition silent-ignore ROOT-CAUSED** (`design/int/impl-redefinition-hot-reload.md`): `derive_codegen_batch`'s TraitImpl arm enrolls the UNMANGLED name (dead lookup); mangled Defs reachable only via the `already_compiled`-gated sweep, which SKIPS them because AbiPreserving reuse carries prior code → new body never recompiles. Fix = enroll mangled method Defs into the FORCED loop (mirror of the multi-sig defn arm :971-989); same-type constraint inherited (trait-conformance check + AbiPreserving classification) — P11 no parallel path. 0707 sound + form-granularity caveat (subtract `failed_forms[module]`). 0699 RESOLVED+deleted (quote shield + defn self-name + defmacro shield ruled §2.4-2.6; doc banners refreshed); code fixes → **FIXME 0718** (/dev int). **Process fix adopted (numbering race, 2 collisions this phase): /sprint pre-allocates FIXME number bands in every dispatch prompt henceforth**; METHOD §3.3 amendment candidate at Phase 7.
+- 2026-07-21: **/design(backend) Phase 3 DELIVERED** (`design/backend/s115-carrier-and-rc-sweep.md`; probe residue reverted, source clean). **GATING VERDICTS (carrier-state dumps at the wrapper-emission seam): 0705 = carrier CORRECT → backend consumer-totality fix (curry-the-local-closure arm; totality table over the closed sums, ViaCallee+Global = producer-contradiction located error). fn-as-value `'='` = carrier WRONG → TYPECHECK PRODUCER GAP; the pair does NOT collapse; the conditional /dev(typecheck) slot FIRES.** Producer locus named: `mono_collect.rs::resolve_auto_curry` fails to re-resolve trait_resolution against concrete instance types → transports the trait-method-DECL FQ (`prelude/=`, unslotted) as a dispatch carrier; decisive control: direct concrete `(= 3)` works (`Dispatch(primitives/eq-i64)`). Boundary rule: never transport a trait-method-decl FQ as a dispatch carrier. RC sweep designed (3 faces, toggle-independent discriminators; 0720 isolated decisively to `flush_superseded_heap_params_before_tail_jump` under-classifying single-ctor-product ADT loop params — variant-B evidence; hazards honored). R4 census: backend owed-witness = `got_data_symbol_name` (`.`→`_` flatten non-injective — constructible collision); LinkerSymbol/method-mangle `$`-join + platform names = cross-crate, routed. R6 seam = extend the ONE existing loop in `deserialise_meta_with_build_id`. W-B5 current (land RC sweep first). 0697 RESOLVED+deleted (+ /qa tripwire FIXME 0726); 0696 designed, rides W-B5 (/dev deletes). Note: 0725/0726 number collision avoided with /design(int).
+- 2026-07-21: **/design(frontend) Phase 3 DELIVERED** (`binder-head-reject.md` §2.2 + revisions; `enforcement-matrices.md` §3.2; `frontend.md` §4.2): S113 premise FALSIFIED-and-retired (root cause: `reader.rs::read_dotted_name:762` joins a dotted run into ONE `Sexp::Symbol` that reaches every head slot). Widening design = ONE helper (`reject_qualified_binder_head`, ast_builder.rs:129) gains the `.` arm via ONE sibling `split_dotted_name` (consumed only inside the helper; `split_qualified_name` stays `/`-only — it serves REFERENCES, `Maybe.Some` stays legal); site census verified: ALL binder sites already route through the helper — zero per-site edits — EXCEPT the deftype type-param arm (`:714-739`, the one missing ROUTING, not a copy; insert at `:717` before the case gate = the qualified-type-param rider). The `A.B → user/B` corruption closes before ctor synthesis. 0711 FOLDED into the change-set (message → "a binder must be a bare (unqualified) name", no context param); 0710 = independent reader-seam one-liner (parity with `/bar` rich message); 0703 hard constraint honored (no added mirror; /review greps specified). No escalations, no public-API impact. Awaiting: /design typecheck, backend, src-int.
+- 2026-07-20: **USER RULING — 0702 SETTLED (Ruling 1)**: dotted (`.`) binders REJECT in ALL binder positions, exactly like `/` — located error, span on the name; `.` is reserved for type/trait qualification only (reference positions like the `(Maybe.Some x)` ctor-pattern head stay legal). Rider: the qualified type-param cell's incidental `0..0`-span reject becomes a clean located binder-reject in the same work. Downstream unblocked: /spec scribes the §5 table `.` column + actions/deletes 0702 (next dispatch); /design(frontend) dispatched NOW (premise correction + widened predicate design); /testing lands the pre-authored reject-polarity M3 cells in W1; /dev(frontend) predicate widening joins the frontend wave. **0708 still OPEN** — user asked the macro-writer-impact question; /sprint supplied the three-shape analysis (A-structural: bounded author-side tax, one fold rule, no silent drop — recommended lean; A-metadata: disqualified by silent annotation loss (annotations ASSERT); B: per-macro pairing mirrors + user-side arity surprises); awaiting ruling. **O4 generative harness**: proceeding per /qa's recommendation (bounded /testing dispatch post-Track-A; slip to S116 requires explicit user sign-off).
+- 2026-07-20: **/qa Phase 3 DELIVERED** (`tests/plan/s115-instrumentation-matrix.md` + `s115-test-plan.md`): matrix = **14 VERIFIED-IN-PLACE · 5 OWED (O1 R7/0604 wave; O2 R6 seam; O3 R4 census; O4 §2 generative harness — NOT BUILT, recommendation owed-bounded /testing dispatch post-Track-A with explicit-user-deferral fallback; O5 §1.3 doc amendment DONE) · 3 sanctioned parks (R13/R12/0637) · 1 registered-future (R3 P7)**. Hard rows: §1.3 oracle combinator IS an enforced nextest gate (8 cells; 3 as-built deviations recorded); RC_DEC_CHECK 4-file set = DESIGNED set not residue; §4.1 per-mode self-tests + e2e env-wiring fences all confirmed; MODULE_TRACE at 6 seams, `commit_staging_to_live` the one owed. **Binding wave finding: the existing 0604 chokepoint unit test CANNOT guard the corrected predicate** (injected source lacks the name — passes both predicates); the synthesized trigger must be provides-name-but-outside-declared-exports. Sanctioned suite run: **5164/5153/11/1 — 11 REDs map 1:1 to the carry set, zero drift**; named flaps {0694 nullary, agent-lane}, neither manifested. Examples 119→120 reconciliation ALREADY DISCHARGED (`tests/examples.rs:153`). 0694 disposition appended. User decision queued for Phase 4: O4 harness owed-vs-defer.
+- 2026-07-20: **/spec Phase 3 DELIVERED**: 0714 scribed (spec/05-definitions.md §5.4.5 [S115] — re-`impl` replaces, dispatch uses new bodies, same-type constraint, silent-ignore = defect; §7.3 cross-ref; FIXME deleted) + 0704 fixed (§5.2.7 ctor-case sentence now matches §5.2.2 [S113] MUST; FIXME deleted). Two user framings appended to 0708 + 0702 (both OPEN — presented to user for ruling: 0708 = fold-in-macro-arg Reading A vs carve-out Reading B; 0702 = dotted-binder Ruling 1 reject-everywhere vs Ruling 2 park-unspecified; /spec consistency notes lean A-tension-noted and Ruling-1 respectively). Downstream gated: 0708 pin/fix; 0702 /design(frontend) premise + /testing M3 cells + /dev(frontend) predicate.
+- 2026-07-20: **Phase 2 SIGN-OFF WITH REVISIONS (/arch; §Architecture review filled in place).** Revisions absorbed into scope: (1) GOT-slot pair = presumptively TWO fixes across the carrier contract (0705 backend consumer-totality; `'='` fn-as-value face presumptively typecheck producer gap) — /design(backend) produces per-repro carrier-state dumps at the wrapper-emission seam BEFORE the fix wave; Phase 4 holds a conditional /dev(typecheck) slot. (2) 0604 wave gains the `prelude_write_is_closure_valid` falsified-comment rider (verified: `bit-and` IS a bundled public primitive — both landed predicates blind to the phantom by construction). (3) R6 executes as /dev(backend, cache), census table in cache-submodule rustdoc, /review verifies completeness. Key rulings: MS-P7 needs NO pre-deployment /arch ruling (design-first binding: fix = §16.2 rule-table rows at family grain, never a 5th consumer arm; carrier-enrichment contingency pre-authorized via FIXME→/arch, schema 22→23 if needed); 0604 gate shape CONFIRMED vs R7 + S61→S93 precedent (diagnosed error self-identifying as R7 breach); impl-redefinition hot-reload = existing GOT-patch path (P11: same path as defn, no impl-specific parallel; land 0604 first — same src seams). Register re-audited in place: R1 §3b landed S113 (`3297adf8`); R7 → asserted-but-BLIND; R8 tier-5/tier-3 FULLY landed S113 (M1/M2/M3 + per-mode self-tests); R4/R6 SCHEDULED S115; R13 deferral recorded; R14 refreshed. No planned types/schema/public-API change; sole contingency = chained-face carrier enrichment. Advanced to Phase 3: /qa + /spec dispatched file-confined parallel (tests/plan/ vs spec/); /design ×3 follow.
+- 2026-07-20: **Phase 1 APPROVED (user)** — scope stands as drafted; all four audit recommendations accepted; R13 stays parked; audit rotation = cranelisp-intrinsics. Disposal executed: 0590 residual verified CURED against source, file DELETED (audit-disposal exception); FIXMEs 0721–0724 filed (trail appended to `audits/cranelisp-typecheck-s114.md` §4); **METHOD amended** — §3.3 verify-against-source-first disposition rule + narrow Phase-1 audit-disposal deletion exception, §2.2 Phase-7 FIXME-vs-§Delivered close assertion. Advanced to Phase 2; /arch dispatched against the draft scope (standing register re-audit rides the dispatch).
+
+## Outcome (Phase 7)
+
+### Delivered
+-
+
+### Deferred (with rationale)
+-
+
+### Findings (record in FIXME's if not already)
+-

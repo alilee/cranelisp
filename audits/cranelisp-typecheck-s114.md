@@ -455,3 +455,28 @@ process feedback)*
 ## 4. Disposition trail
 
 *(Appended at S115 Phase 1 by `/sprint` + the user; not by `/audit`.)*
+
+**2026-07-20 — S115 Phase 1, user approved. All four recommendations ACCEPTED.**
+
+- **R-1 ACCEPTED and executed at Phase 1**: FIXME 0590 verified against source
+  per the recommendation's own re-check clause — the sole residual candidate
+  (the resolve.rs/checker.rs rustdoc inaccuracy) is CURED (rustdoc now
+  records the "former four mirror resolvers" past-tense with correct mint
+  semantics on the live `TypeExprCtx` path; `resolve.rs:116`,
+  `checker.rs:2950/2979/3005`). 0590 deleted by `/sprint` (audit-disposal
+  exception, METHOD §3.3 as amended this sprint); no S115 "0590 deployment"
+  slot exists in `sprints/SPRINT.md`. Riders filed: design-doc rows →
+  FIXME 0721 (folded with R-2, same owner/wave); CLAUDE.md paragraph →
+  FIXME 0723 (folded with R-4); probe-comment correction → FIXME 0724
+  (test KEPT as a born-green fence). **Process feedback ADOPTED as METHOD
+  amendments** (user-approved): §3.3 "verify-against-source first" binding
+  disposition rule + §2.2 Phase-7 close-checklist FIXME-vs-§Delivered
+  consistency assertion.
+- **R-2 ACCEPTED** → FIXME 0721, `target: /design` (typecheck), S115.
+- **R-3 ACCEPTED** → FIXME 0722, `target: /dev` (typecheck), S115. Flagged
+  under METHOD §2.4 2× escalation (second carry of the half-executed S108
+  R-4 acceptance): ships this sprint; a further silent drop is not an
+  option — decline path requires superseding the design's
+  rejected-alternative box.
+- **R-4 ACCEPTED** → FIXME 0723, `target: /dev` (typecheck), S115 (merges
+  the R-1 CLAUDE.md rider).

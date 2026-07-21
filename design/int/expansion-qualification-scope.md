@@ -7,9 +7,13 @@
 > (three waves, strict order). Pairs with `design/frontend/binder-head-reject.md`
 > (the frontend value-level reject that re-lands in wave 2).
 >
-> **Status: DESIGN, pre-implementation.** The seam is `qualify_expanded_sexp`
-> (`src/process_form/macro_resolution.rs:431`); the fix is to make it
-> scope-aware, structurally mirroring the expander's own binder handling.
+> **Status: LANDED (S114 W5, `58ac8e46`), with S115 residual rulings.** The
+> scope-aware rework of `qualify_expanded_sexp`
+> (`src/process_form/macro_resolution.rs:441`; `qualify_scoped` at `:466`) landed
+> — shared binder enumeration, both walks in lockstep. §2.4–§2.6 (S115, FIXME
+> 0699) rule on three residual asymmetries against the walk's own "qualify iff
+> free reference" rule that survived the W5 landing; their code fixes are carried
+> by fresh FIXME **0718** (`target: /dev(int)`) with /qa cells.
 
 ## 1. The defect — a scope-blind qualify pass mirrors a scope-aware expander
 
@@ -114,6 +118,81 @@ deftype ctor/field, defmacro params, module aliases). This pass handles only the
 value-level scoping forms above; the walk falls through non-binding heads
 structurally, so a form it does not special-case is qualified as ordinary children
 (correct — those forms carry no value-level binder the pass could mis-qualify).
+
+## 2.4 Residual ruling 1 — the quote shield (FIXME 0699 item 1, Important)
+
+**Verified against source** (`macro_resolution.rs:466–509`): `qualify_scoped`
+dispatches `Sexp::List` on `is_binding_form(head)` only; a `(quote …)` or
+`quasiquote` list has a **non-binding head**, so it falls to the "recurse into
+every child" arm (`:491–497`) and **rewrites symbols inside quoted DATA**. A
+foreign macro expanding to `'(name)` — where `name` lives in a defining module and
+is absent from the current module — yields `'(dm/name)`, a **different runtime
+value**. `expand_scoped` already holds quoted data out of the walk (Rule Q / Rule
+QQ, `quote-shield.md`); `qualify_scoped` has no such shield. Same defect family as
+0613.
+
+**Ruling.** A symbol inside quoted data is **not a reference at all**, so the §2.1
+rule ("qualify iff a free reference") already excludes it — the walk's arm list
+merely never named the quote family. `qualify_scoped` gains the **Rule Q / Rule QQ
+equivalent**, structurally identical to `expand_scoped`'s shield (Principle 7 — one
+shield model, not a second copy):
+
+- `(quote X)` — recognized **structurally** by the SAME test the expander shield
+  and the fold use (`quasiquote.rs::is_quote`: bare-symbol head `quote` + `len()==2`,
+  consulting neither `shadows` nor the resolver) — is held **fully verbatim** (no
+  descent);
+- a `quasiquote` body (`quasiquote.rs::is_quasiquote`) is walked holding everything
+  verbatim **except** the body of a **live** `unquote`/`unquote-splicing`, which is
+  re-entered through `qualify_scoped` (ordinary expression position, §9.4.2),
+  tracking quasiquote nesting depth exactly as the expander's `shield_qq` does. If
+  the two structural tests ever diverge, a subtree gets mis-qualified — so both
+  walks MUST call the one `quasiquote.rs` predicate, never a private copy.
+
+**Routing:** `target: /dev(int)` + a /qa cell (a foreign macro expanding to `'(name)`
+where `name` collides with a defining-module symbol; assert the quoted datum stays
+bare).
+
+## 2.5 Residual ruling 2 — defn self-name in body scope (FIXME 0699 item 2, Minor)
+
+**Verified against source** (`macro_resolution.rs:653–674`): `qualify_defn` pushes
+the defn **name** verbatim (`:664`) but seeds the body scope from
+`params_scope(param_items, shadows)` (`:673`) — the name is **not** added. So a
+recursive self-call in `(defn f [x] (f x))`, where a defining module also provides
+`f` and the current module does **not yet** (the defn is being defined this
+instant, so the `qualify_free_symbol` current-module availability skip at `:522–527`
+cannot fire), mis-qualifies the self-call to `dm/f` — silent wrong-target
+resolution, the same class as 0670 itself. The §2.3 table already lists the defn
+**name** as a binder slot; the walk just does not honor it for the body.
+
+**Ruling.** `qualify_defn` seeds the body scope with the defn **name** (each
+arity's body qualified under `params ∪ {name}`), completing the §2.3 enumeration.
+`expand_scoped`'s `expand_defn` shares the identical shape (the self-name is absent
+from its body scope too); the same /dev change-set mirrors the fix there so the two
+walks stay in lockstep (Principle 7 — the shared binder enumeration, `§2.3`
+"Reuse, do not re-derive"). **Routing:** rides the §2.4 /dev(int) FIXME; /qa cell =
+the first-definition self-recursion collision above.
+
+## 2.6 Residual ruling 3 — defmacro name/params shield (FIXME 0699 item 3, Minor)
+
+**Verified against source**: `is_binding_form` gates
+`qualify_binding_form`/`qualify_scoped`'s binder handling over
+`{let, fn, lambda, defn, defn-, match}` (`macro_resolution.rs:556–562`); `defmacro`
+is **not** in that set, so a macro-emitted `(defmacro name …)` recurses as ordinary
+children and can qualify the **NAME/params** on a defining-module collision →
+`(defmacro dm/name …)`, which the frontend then rejects as a qualified binder head
+(spec §5 — a binder must be bare): a **wrong-reject**. The §2.3 legal-skip
+rationale ("those forms carry no value-level binder the pass could mis-qualify")
+does **not** hold for this macro-emitted shape. `expand_scoped` already holds a
+`defmacro` head+name verbatim (CS-D1 shield); `qualify_scoped` does not.
+
+**Ruling.** Reachable in principle (a macro-defining macro), so **extend** rather
+than document-unreachable: `qualify_scoped` mirrors `expand_scoped`'s CS-D1
+`defmacro` shield — hold the `defmacro`/`defmacro-` head, the **name**, and the
+**param bracket(s)** verbatim, qualifying only the clause bodies (reference
+positions) under scope. Recognized structurally, single-sourced with the expander
+shield. **Routing:** rides the §2.4 /dev(int) FIXME; /qa cell = a macro-emitting-a-
+defmacro whose emitted name collides with a defining-module symbol (assert the
+emitted `defmacro` name stays bare and the def registers).
 
 ## 3. The mandatory expansion-seam unit test (`/arch`-named, METHOD §2.2)
 

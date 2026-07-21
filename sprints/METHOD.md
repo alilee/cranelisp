@@ -126,7 +126,7 @@ Scenarios are **expressed through the crate facade** wherever the seam is facade
 
 **Phase 6b — User-facing action.** Execute the 6a plan against what shipped. Demos test reachability of the spec'd capability through user surfaces.
 
-**Phase 7 — Close.** `/sprint` authors outcome, archives `SPRINT.md`, updates ROADMAP. **User approves close explicitly** — `/sprint` does not close unilaterally. Checkpoint on adequacy of arch's architectural principles.
+**Phase 7 — Close.** `/sprint` authors outcome, archives `SPRINT.md`, updates ROADMAP. **User approves close explicitly** — `/sprint` does not close unilaterally. Checkpoint on adequacy of arch's architectural principles. **Close checklist asserts FIXME-vs-§Delivered consistency (added S115)**: every FIXME the Outcome records as resolved has its file deleted (or its table row updated), and no surviving FIXME file or close-table row contradicts a §Delivered line. (S110 counterexample: the close table carried 0590 "open" beside a §Delivered line recording its convergence — the seed of the S113/S114 zombie chain.)
 
 ### 2.3 FIXME flow within a sprint
 
@@ -234,7 +234,9 @@ status: open  # open | deferred
 3. Owning skill resolves — incorporates the change into its owned files — then **deletes** the FIXME file with a commit message naming what was resolved. Git history is the audit trail.
 4. If deferred, owning skill sets `status: deferred` and adds rationale + target sprint; the file remains.
 
-**Only the owning skill deletes.** `/sprint` orchestrates and gates on FIXMEs but does not delete them. Filing is the one exception to file ownership — any skill may file a FIXME targeting any other skill.
+**Only the owning skill deletes.** `/sprint` orchestrates and gates on FIXMEs but does not delete them. Filing is the one exception to file ownership — any skill may file a FIXME targeting any other skill. (Narrow exception, S115: `/sprint` may delete a FIXME as a Phase-1 audit-disposal action when an `/audit` assessment has verified it resolved against source and the user has approved the disposal — the audit evidence + approval record substitute for the owning skill's resolution.)
+
+**Verify-against-source first (binding, added S115).** Any disposition of a FIXME — resolve, defer, re-target, carry into scope, or a scheduling decision built on it — verifies the FIXME's central claim against its `refers_to` source as its **first act**, and the disposition note records what was opened. A record asserting something about source that a single file-open would refute must not propagate. (S114 exhibit: zombie 0590 — resolved S110, falsely re-dispositioned S113 with "convergence has not happened", then consumed /sprint scheduling, /arch sequencing, /design deferral prose, a /testing probe, and an S115 scope slot across a five-agent chain in which nobody opened the `refers_to` file.)
 
 ### 3.4 Skill handoff
 

@@ -162,7 +162,23 @@ Full design — the helper, the exhaustive head-site enumeration, the con_var
 sibling cell (BD-M4), the spec-diff, and the **load-bearing span-provenance
 finding** (int's macro-expansion pipeline discards source provenance, so the
 macro-route span MUST needs a paired int-side re-anchoring seam) — in
-`design/frontend/binder-head-reject.md`. The **0589** sibling (qualified-lowercase
+`design/frontend/binder-head-reject.md`.
+
+**S115 (0702 SETTLED, Ruling 1): the `.` (dotted) axis widens the SAME helper.**
+A dotted spelling in ANY binder position (`(defn a.b …)`, `(deftype A.B …)`,
+`(let [a.b 5] …)`) is a located compile-time error, exactly as a `/`-qualified
+one — `.` is reserved for type/trait qualification (reference positions like the
+`(Maybe.Some x)` ctor-pattern head stay legal). The S113 "predicate keys on `/`
+only" premise was falsified by probe (a dotted name reaches every head slot via
+`read_dotted_name`; `(deftype A.B …)` silently minted a corrupted ctor `user/B`).
+Mechanism: widen `reject_qualified_binder_head` from `/`-only to `/`-or-`.` at the
+ONE shared helper (+ ONE sibling `split_dotted_name`, delegated-to — never a
+per-position copy), and route the deftype **type-param** arm (the last S113
+justified-exclusion) onto the helper so `(deftype (Pair prim/a b) …)` gives a
+clean located reject instead of the incidental `0..0`-span death. Every other
+binder site inherits `.` for free (all already call the helper). Message
+generalized to position-neutral wording (0711, drops "definition head"). Full
+design: `binder-head-reject.md` §2.2/§3.2/§3.5. The **0589** sibling (qualified-lowercase
 annotation `:user/int` mints a `TypeVar` carrying `/`) is folded in as a distinct
 **annotation-path** seam (`parse_annotation_name` routing, §5 of that doc), NOT
 the binder-head seam.
@@ -374,7 +390,7 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | Frontend plan | `crates/cranelisp-frontend/plan-frontend.md` | **Stale (architectural).** Names `peg` 0.8 as the parser; reality is hand-written. This is the highest-impact doc-drift item per audit HIGH-5 |
 | S66 Wave 3a-β (`build_form` + `expand`) | `design/frontend/wave-3a-build-form.md` | **Current.** Authored 2026-05-12 for FIXME 0156 + FIXME 0098 Phase 2 under Decision 44 (amended 0167, 0168) — `/dev` implementation target |
 | Quasiquote/quote desugar fold | `design/frontend/quasiquote-fold.md` | **Current (authored S111 Phase 3).** The FIXME 0613 fold of `expand_quasiquotes` into `build_forms`/`build_form`: fold point + chokepoint set, idempotence/fixpoint contract, backstop invariant, family coverage, `lib.rs:48` currency fix, and the named int quote-shield seam. `/dev` Phase-5 target. Makes `s76-syntactic-only.md:74`'s aspirational "quasiquote desugaring runs before `build_form`" literally accurate |
-| Qualified binder-head rejection (S113–S114) | `design/frontend/binder-head-reject.md` | **Current (authored S113 Phase 3; §3.3/§8 + §3.4 updated S114 Phase 3).** ONE shared `reject_qualified_binder_head` at the head sites (S1–S5) + con_var; §3.3 records the deftype-ctor/field/platform family LANDED (FIXME 0660 closed); §3.4 designs the value-level binder reject re-landing (0670-gated, F8 wave 2). Folds 0589 (annotation-path routing) + disposes 0590 (re-targeted typecheck). The span-provenance finding + int re-anchoring seam stand |
+| Qualified/dotted binder-head rejection (S113–S115) | `design/frontend/binder-head-reject.md` | **Current (authored S113 Phase 3; §3.3/§8 + §3.4 updated S114; §2.2/§3.2/§3.5/§8/§10 widened S115 for 0702 Ruling 1).** ONE shared `reject_qualified_binder_head` at the head sites (S1–S5) + con_var + value-level locals (LANDED S114); §3.3 records the deftype-ctor/field/platform family LANDED (0660 closed). **S115: the `.` axis widens the ONE helper** (+ ONE `split_dotted_name` sibling), the deftype type-param arm routes onto it (last exclusion retired), the message generalizes position-neutral (0711), and §3.5 composes with 0703 (no-new-mirror) / 0710 (reader seam, a different message). Folds 0589 (annotation routing) + disposes 0590 (typecheck). The span-provenance finding + int re-anchoring seam stand |
 | Enforcement matrices (S114 Track D) | `design/frontend/enforcement-matrices.md` | **Current (authored S114 Phase 3).** The BD-A operand-position one-seam (`build_body_to_end`, M1 anchor), the deftype-ctor trailing completion, and the RA dangling-qualifier/bound-form-type reject placement (reader `consume_dotted_module_path` + `read_operator` `/bar` guard; `try_consume_annotation` RA-N5). The annotation/operand family sibling of `binder-head-reject.md`. `/dev`(frontend) + `/review` Track-D target |
 | Trait/impl head parse (S112 b0) | `design/frontend/trait-impl-head-parse.md` | **Current (authored S112 Phase 3, leg b0).** The echo-the-head `impl` slot-1 change: `parse_impl` accepts bare `Display` (`head_con_var: None`) OR `(Functor f)` (`head_con_var: Some`), slot 2 rides the existing `build_impl_target`; NO kind classification / echo validation in the parser (typecheck's §7.3.5 Case-3 seam — Principle 24). Single-sources the head-shape grammar with `build_trait_head` (Principle 7); malformed-slot-1 diagnostics; additive-green at b0; pretty/​save form-agnostic round-trip (no change). `/dev`(frontend) + `/review` target. Consumer: `design/typecheck/hkt.md` §5.4 |
 
