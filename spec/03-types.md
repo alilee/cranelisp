@@ -608,7 +608,7 @@ In a trait declaration, a lowercase parameter may range over type constructors (
 
 ```clojure
 (deftrait (Functor f)
-  (fmap [(Fn [a] b) (f a)] (f b)))
+  (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 ```
 
 Here `f` is a **constructor variable**. The expressions `(f a)` and `(f b)` represent the application of `f` to type arguments `a` and `b` respectively.

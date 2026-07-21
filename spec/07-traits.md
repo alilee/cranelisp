@@ -74,9 +74,19 @@ Bare (unannotated) parameter names in a method signature have the implementing t
 
 `self` is NOT a type variable -- it is resolved at impl time to the concrete target type. It may appear in return types and in applied type positions (e.g., `(Option self)`).
 
-A trait MUST contain at least one method signature. Each method signature MUST contain at least one **occurrence of the implementing type** in the signature — in **parameter or return position** (a bare parameter, a `:self` annotation, or `self` in the return type) — except for higher-kinded trait methods (see 7.2). Return position is a bare `type_expr`; the leading `:` is **parameter-annotation syntax only**, so a return-type-dispatched method is written `(zed [] self)`, never `(zed [] :self)` / `(zed [] :a)`. A trait dispatched purely on its return type therefore uses the **bare head** and a `self` return: `(deftrait Zeroable (zed [] self))`.
+A trait MUST contain at least one method signature. Each method signature MUST contain at least one **occurrence of the implementing type** in the signature — in **parameter or return position** (a bare parameter, a `:self` annotation, or `self` in the return type) — except for higher-kinded trait methods (see 7.2). A trait dispatched purely on its return type therefore uses the **bare head** and a `self` return: `(deftrait Zeroable (zed [] self))`.
+
+**Return position takes a bare `type_expr` — no leading `:`.** In a `method_sig` the return type is written **without** the colon: the leading `:` is **parameter-annotation syntax only** and is legal only inside the parameter bracket. A return-type-dispatched method is written `(zed [] self)` — **never** `(zed [] :self)` or `(zed [] :a)`. This applies to every required method signature, not only the nullary ones: `(show [x] String)`, not `(show [x] :String)`. (The contrast with `defn` is deliberate and not an inconsistency: a `defn` has a **body**, and `(defn f [:Int x] :Int (+ x 1))` annotates that body expression in value position per [§3.3.3](03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction) — a required `method_sig` has no body, so its trailing element **is** the return `type_expr` itself.)
 
 **Occurrence rule and its diagnostic.** The requirement above is an **occurrence** rule: a method that mentions the implementing type **nowhere** — neither in a parameter nor in the return type — has nothing to dispatch on and MUST be rejected **for "no occurrence of the implementing type to dispatch on."** A **return-type-dispatched** method such as `(zed [] self)` (empty parameter list, `self` in return position) **satisfies** the rule — it mentions the implementing type in return position — and is resolved per [§3.3.3](03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction): a concrete-type ascription or a disambiguating context at the call site selects the impl (`:Int (zed)` → `0`, per §3.3.3 rows 13–15), and an unresolved use is the §3.11 ambiguity error. The malformed form is one whose signature mentions the implementing type nowhere — e.g. `(zed [] :a)` with `a` unrelated to `self`. This is a distinct check from the higher-kinded kind-check (§7.2.3): rejecting a primitive as an HK impl target is "not a type constructor," whereas rejecting a no-occurrence method is "nothing to dispatch on." The diagnostic MUST name the correct reason; a no-occurrence method MUST NOT be reported as an "HKT-on-primitive" error.
+
+**The occurrence rule is broad, not a nullary corner. [S115]** The rule above is scoped by **occurrence**, not by parameter count. A method of a conventional (bare-head) trait that mentions the implementing type **nowhere** MUST be rejected **whatever its arity** — a parameter list that is non-empty does not rescue it if every parameter is annotated with a type other than the implementing type. Thus `(deftrait Convertible (convert [:String s] Int))` is **rejected** on exactly the same ground as `(deftrait Zeroable (zed [] Int))`: neither signature contains a bare parameter, a `:self` annotation, or a `self` return. The diagnostic reason string is **"no occurrence of the implementing type"** (§7.1.1, above). Ruled by the user 2026-07-21.
+
+*Rationale.* A conventional trait carries **no trait-level type variable** — the implementing type is `self`, and §7.1 already rejects the parenthesized-head spelling of the same mistake (`(deftrait (Sizeable a) (size [:a x] Int))`, whose `a` is never applied). Cranelisp has **no explicit-qualification syntax** for trait-method calls — there is no analogue of Rust's `<Foo as Trait>::method` — so a method whose signature never mentions the implementing type is **undispatchable by construction**: there is no argument position to dispatch on, and no annotation the caller can write that names the impl. Even §7.1.1's own escape hatch — the `self` **return** type, selected by ascription per §3.3.3 — is unavailable to such a method, because it has no `self` anywhere. A trait method that cannot be reached from any call site has no meaning to give it.
+
+**Method-level type variables are unaffected.** The rule bites only on the **absence of the implementing type**; it places no restriction on other type variables. A method MAY introduce its own type variables anywhere in its signature so long as the implementing type also occurs — `(deftrait Mappable (map-val [:(Fn [a] b) f x] self))` is well-formed (`x` is bare, and the return is `self`). This ruling therefore **narrows but does not withdraw** §7.3.6's candidate answer ("method-level type variables only") to its open sub-question 1: method-level type variables stay legal, subject to the implementing type also occurring. See §7.1.4 for the type-expression forms a signature may use, and §7.2 for the higher-kinded exemption — an HKT method dispatches on its applied constructor variable `(f a)`, so the occurrence rule does not apply to it.
+
+> **Note — zero-method marker traits are a separate question.** A trait with **no** methods at all (Rust's `Send`/`Sync`/`Sized` shape — a pure marker carrying no signature to dispatch) is **not expressible** in Cranelisp: §7.1 requires at least one method signature. Marker traits are a distinct capability question, and they are **not** reachable by way of a method that never mentions the implementing type — such a method is rejected by the rule above. Should marker traits ever be wanted, they need their own design and their own user ruling.
 
 > **Note (compiler defect, not a language rule).** The legal return-type-dispatched self-form — a resolved `(zed [] self)` call such as `:Int (zed)` — must compile and run. A codegen-layer crash or leak on that resolved case (tracked as defect 0628) is a **compiler bug to be fixed**, not a language-level rejection of the form; §3.3.3 MUST (d)/(e) frame the resolved-vs-ambiguous behaviour and stand.
 
@@ -150,13 +160,17 @@ Return types and parameter annotations MAY use any valid type expression:
 
 Bare (unannotated) parameter names always have the implementing type. To give a parameter a different type, use a `:Type name` annotation.
 
+An annotated parameter's type is unconstrained — it may be any type expression, including one unrelated to the implementing type. What the signature as a whole MUST still satisfy is §7.1.1's **occurrence** rule: the implementing type must appear **somewhere** — in a bare parameter, a `:self` annotation, or the return type. Annotating *every* parameter with a non-`self` type and returning a non-`self` type leaves nothing to dispatch on, and is rejected (§7.1.1, [S115]).
+
 ```clojure
 (deftrait Mappable
-  (map-val [:(Fn [a] b) f x] self))
+  (map-val [:(Fn [a] b) f x] self))   ;; f is a function, x is self, returns self
 
 (deftrait Convertible
-  (convert [:String s] Int))        ;; s is String, not self
+  (convert [:String s] self))         ;; s is String, not self; returns self
 ```
+
+In `map-val` the implementing type occurs twice (the bare parameter `x` and the `self` return) and the method also introduces its own type variables `a` and `b` — method-level type variables are permitted wherever the implementing type also occurs. In `convert` the sole parameter is annotated `String`, and the **return** type carries the occurrence; `(convert [:String s] Int)` — annotated parameter *and* concrete return, no `self` anywhere — would be malformed.
 
 ## 7.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::bare_convar_full_0628_repro_no_leak_and_no_unresolved_var_display_neg]
 
@@ -168,6 +182,8 @@ con_var        = lowercase_symbol
 ```
 
 The trait head is wrapped in parentheses with a lowercase type constructor variable.
+
+**Higher-kinded methods are exempt from the occurrence rule ([§7.1.1](#711-the-self-type), [S115]).** A conventional trait's methods must each mention the implementing type (`self`); an HKT's methods do not — they dispatch on the applied constructor variable `(f a)` instead, which is the head variable and therefore *is* the implementing-type occurrence in the higher-kinded sense. `self` has no role in an HKT method signature. The requirement that bites here is §7.2.1's instead: the head variable MUST be **applied** at least once.
 
 ```clojure
 (deftrait (Functor f) "Mappable container"
