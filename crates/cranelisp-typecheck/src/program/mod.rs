@@ -47,6 +47,7 @@ mod test_driver;
 // level so sibling submodules reach them via `use super::*` and the
 // existing `crate::program::<fn>` call sites in checker/adt/traits/infer
 // keep resolving unchanged (a pure decomposition moves no path).
+pub(crate) use mono_collect::AutoCurryDrain;
 pub(crate) use support::*;
 pub(crate) use callees::*;
 
@@ -263,4 +264,4 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 }
 
 #[cfg(test)]
-mod tests;
+mod test_support;

@@ -129,6 +129,177 @@ fn test_register_identical_trait_twice_is_idempotent() {
     assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
 }
 
+// =================== §7.1.1 occurrence rule (S115 W4, FIXME 0709) ============
+//
+// The registration seam's accept/reject triple. The reject is DECLARATION-TIME
+// (Principle 18 — enforced where the malformed form is representable), so the
+// downstream `undefined function: zed` codegen leak is closed with no use-site
+// work: an unregistered trait has no method to call.
+
+/// A conventional (bare-head) trait `T` with one method `m` of the given
+/// parameter list and return type — the occurrence-rule fixture.
+fn occurrence_decl(
+    trait_name: &str,
+    method: &str,
+    params: Vec<(Symbol, cranelisp_types::TypeExpr)>,
+    ret_type: cranelisp_types::TypeExpr,
+) -> cranelisp_types::TraitDecl {
+    cranelisp_types::TraitDecl {
+        name: TraitName::from(trait_name),
+        docstring: None,
+        type_params: vec![],
+        methods: vec![cranelisp_types::TraitMethodSig {
+            name: Symbol::from(method),
+            docstring: None,
+            params,
+            ret_type,
+            span: cranelisp_types::Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_body: None,
+        }],
+        visibility: cranelisp_types::Visibility::Public,
+        span: cranelisp_types::Span::SYNTHETIC,
+    }
+}
+
+fn named_ty(n: &str) -> cranelisp_types::TypeExpr {
+    cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(n)))
+}
+
+// spec: spec/07-traits.md §7.1.1 — a NULLARY method mentioning the implementing
+// type nowhere (`(zed [] Int)`) has nothing to dispatch on and MUST be rejected
+// at declaration, with the spec-pinned reason substring.
+#[test]
+fn occurrence_rule_rejects_nullary_method_with_no_self_occurrence() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl("Zeroable", "zed", vec![], named_ty("Int"));
+    let err = tc
+        .register_trait_decl_self(&decl)
+        .expect_err("a nullary no-occurrence method MUST be rejected at declaration");
+    assert!(
+        err.message().contains("no occurrence of the implementing type"),
+        "the diagnostic MUST carry the §7.1.1 reason (never the §7.2.3 \
+         'not a type constructor' HK wording); got: {}",
+        err.message()
+    );
+    // The reject fires BEFORE the write — nothing is registered, so the
+    // downstream `(zed)` call can never reach codegen (the F-D2 leak's closure).
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("Zeroable")).is_none(),
+        "a rejected declaration MUST NOT leave a partially-written trait entry"
+    );
+    assert!(
+        tc.symbol_table().get("zed").is_none(),
+        "a rejected declaration MUST NOT register its method binding"
+    );
+}
+
+// spec: spec/07-traits.md §7.1.1 — GREEN boundary (a): `self` in RETURN position
+// satisfies the occurrence rule, so the return-type-dispatched form
+// `(zed [] self)` stays accepted; its resolution is at USE (§3.3.3 ascription /
+// §3.11 ambiguity), never at declaration.
+#[test]
+fn occurrence_rule_accepts_nullary_self_return_method() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl(
+        "Zero",
+        "z",
+        vec![],
+        cranelisp_types::TypeExpr::SelfType,
+    );
+    tc.register_trait_decl_self(&decl)
+        .expect("`(z [] self)` satisfies the occurrence rule via its return type");
+    assert!(tc.lookup_trait_decl(&TraitName::from("Zero")).is_some());
+}
+
+// spec: spec/07-traits.md §7.1.1 — GREEN boundary (b): a BARE parameter is the
+// implementing type, so `(size [x] Int)` satisfies the rule even with a concrete
+// return. The reject must fire on the CONJUNCTION (no param occurrence ∧ no self
+// return), never on "concrete return" alone.
+#[test]
+fn occurrence_rule_accepts_bare_param_method_with_concrete_return() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl(
+        "Sizeable",
+        "size",
+        vec![(Symbol::from("x"), cranelisp_types::TypeExpr::SelfType)],
+        named_ty("Int"),
+    );
+    tc.register_trait_decl_self(&decl)
+        .expect("a bare param carries the occurrence — concrete return is fine");
+    assert!(tc.lookup_trait_decl(&TraitName::from("Sizeable")).is_some());
+}
+
+// spec: spec/07-traits.md §7.1.4 — GREEN boundary (c), the SHIPPED SCOPE fence
+// (FIXME 0770): a method with an ANNOTATED non-`self` parameter and a concrete
+// return (`(convert [:String s] Int)`, §7.1.4's own example) stays ACCEPTED. The
+// shipped rule is the NULLARY corner only; widening it to §7.1.1's broader prose
+// reading would reject this §7.1.4-blessed form and the method-level-type-variable
+// form `(add2 [:a x :a y] :a)` that five spec-traceable e2e cells pin GREEN. This
+// cell is what makes the shipped scope explicit rather than incidental — if the
+// user rules the broader reading, this cell is the one that must be re-decided.
+#[test]
+fn occurrence_rule_shipped_scope_accepts_annotated_param_with_concrete_return() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl(
+        "Convertible",
+        "convert",
+        vec![(Symbol::from("s"), named_ty("String"))],
+        named_ty("Int"),
+    );
+    tc.register_trait_decl_self(&decl).expect(
+        "the shipped occurrence rule is the NULLARY corner only — a parameterised \
+         method keeps an argument position to dispatch on (§7.1.4)",
+    );
+    assert!(tc.lookup_trait_decl(&TraitName::from("Convertible")).is_some());
+}
+
+// spec: spec/07-traits.md §7.1.1 — the occurrence may be NESTED: `(Option self)`
+// in return position mentions the implementing type ("It may appear in return
+// types and in applied type positions"), so the predicate must search the type
+// expression tree, not just its head.
+#[test]
+fn occurrence_rule_accepts_self_nested_in_applied_or_fn_type() {
+    // Asserted at the PREDICATE (the applied/`Fn` head types are not in the
+    // prims fixture world, so a full registration would fail on type resolution
+    // for an unrelated reason and could not discriminate).
+    let applied = occurrence_decl(
+        "Maybeish",
+        "mk",
+        vec![],
+        cranelisp_types::TypeExpr::Applied(
+            cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
+            vec![cranelisp_types::TypeExpr::SelfType],
+        ),
+    );
+    assert!(
+        method_mentions_self(&applied.methods[0]),
+        "`(Option self)` in return position is an occurrence"
+    );
+    let fn_ty = occurrence_decl(
+        "Mapper",
+        "mk",
+        vec![(
+            Symbol::from("f"),
+            cranelisp_types::TypeExpr::FnType(
+                vec![cranelisp_types::TypeExpr::SelfType],
+                Box::new(named_ty("Int")),
+            ),
+        )],
+        named_ty("Int"),
+    );
+    assert!(
+        method_mentions_self(&fn_ty.methods[0]),
+        "`:(Fn [self] Int)` in parameter position is an occurrence"
+    );
+    // NEGATIVE: nothing anywhere in the tree.
+    let none = occurrence_decl("Nope", "n", vec![], named_ty("Int"));
+    assert!(
+        !method_mentions_self(&none.methods[0]),
+        "a signature with no `self` anywhere has no occurrence"
+    );
+}
+
 // spec: 03-types §3.4.1 — trait method scheme carries trait constraint
 #[test]
 fn test_trait_method_has_constrained_scheme() {

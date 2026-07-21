@@ -159,6 +159,65 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return self.register_hkt_trait(state, decl);
         }
 
+        // §7.1.1 OCCURRENCE RULE (S115 W4, FIXME 0709; `design/typecheck/traits.md`
+        // §2 "Occurrence-rule enforcement"). CONVENTIONAL (bare-head, kind-`*`)
+        // traits only — the HKT branch above already returned, so §7.2 methods are
+        // exempt by construction, not by a flag. Every method signature MUST
+        // mention the implementing type at least once, in parameter or return
+        // position; a method that mentions it NOWHERE has nothing to dispatch on.
+        //
+        // Declaration-time, per method, BEFORE the trait entry is written
+        // (Principle 18 — the invariant is enforced at the seam where the
+        // malformed form is representable). This subsumes the downstream
+        // check-gate leak: `(deftrait Zeroable (zed [] Int))` no longer registers,
+        // so `(zed)` can never reach codegen as an `undefined function`.
+        //
+        // The occurrence forms are exactly the three §7.1.1 spellings, and they
+        // are ONE syntactic signal: the frontend lowers a BARE param to
+        // `TypeExpr::SelfType` (`ast_builder::build_method_sig`), a `:self`
+        // annotation to `TypeExpr::SelfType` (`parse_annotation_name`), and a
+        // `self` return to `TypeExpr::SelfType` (`build_type_expr`) — so the
+        // predicate is a single `SelfType` search over the signature's type
+        // expressions, the same signal `build_method_type` substitutes.
+        //
+        // BOUNDARY (the over-reach guard): reject on the CONJUNCTION
+        // no-param-occurrence ∧ no-self-return, never on "concrete return" alone.
+        // `(size [x] Int)` has an occurrence via its bare param and is ACCEPTED;
+        // `(zed [] self)` has one via its return and is ACCEPTED.
+        //
+        // **SCOPE AS SHIPPED — the NULLARY form only (S115 W4; FIXME 0770 to
+        // /spec).** §7.1.1's *prose* is broader than its worked examples: read
+        // literally it also rejects a method whose parameters are all
+        // ANNOTATED with non-`self` types — `(convert [:String s] Int)`, which
+        // §7.1.4 presents as a BLESSED example, and `(add2 [:a x :a y] :a)`,
+        // the method-level-type-variable form §7.1.4 permits and five
+        // spec-traceable e2e cells pin GREEN. Both §7.1.1 worked malformed
+        // examples are NULLARY (`(zed [] Int)`, `(zed [] :a)`), and both its
+        // worked accepted examples carry a parameter or a `self` return, so the
+        // nullary scope satisfies every example on both sides while the broader
+        // reading contradicts §7.1.4. A method with at least one parameter has
+        // an argument position to dispatch on; a NULLARY method with a
+        // non-`self` return has neither a dispatch input nor a dispatch output —
+        // literally nothing. That degenerate corner is the F-D2 check-gate leak
+        // 0709 names, and it is what this rejects. The prose/§7.1.4 conflict is
+        // filed for the user's ruling; widening here is a spec change, not an
+        // implementation choice.
+        for method in &decl.methods {
+            if method.params.is_empty() && !method_mentions_self(method) {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "trait `{}` method `{}`: no occurrence of the implementing \
+                         type to dispatch on — a nullary method signature MUST \
+                         return the implementing type (`({} [] self)`), or take a \
+                         parameter of it (a bare name `[x …]` or a `:self` \
+                         annotation)",
+                        decl.name, method.name, method.name,
+                    ),
+                    location: ErrorLocation::from_span(method.span),
+                });
+            }
+        }
+
         // Allocate a fresh type variable for the trait's type parameter
         let (_, type_var_id) = self.fresh_var_id();
 

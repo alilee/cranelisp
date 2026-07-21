@@ -45,6 +45,38 @@ pub(super) fn trait_decl_matches(existing: &TraitDeclInfo, incoming: &TraitDecl)
             .all(|(a, b)| a.name == b.name && a.params.len() == b.params.len())
 }
 
+/// Does this CONVENTIONAL (bare-head, kind-`*`) trait method signature contain at
+/// least one **occurrence of the implementing type** (spec §7.1.1)?
+///
+/// The three spelled forms — a bare parameter `[x …]`, a `:self`-annotated
+/// parameter, and a `self` return type — all arrive here as
+/// [`TypeExpr::SelfType`] (the frontend lowers all three to that one marker), so
+/// the occurrence question is a single `SelfType` search over the signature's
+/// parameter and return type expressions. Nested positions count: `(Option self)`
+/// and `(Fn [self] Int)` mention the implementing type (spec §7.1.1 — "It may
+/// appear in return types and in applied type positions").
+///
+/// Callers MUST have discriminated the kind first: a higher-kinded method (§7.2)
+/// is EXEMPT and never reaches this predicate (`register_trait_decl` routes the
+/// applied-con_var head to `register_hkt_trait` before the check).
+pub(super) fn method_mentions_self(method: &cranelisp_types::TraitMethodSig) -> bool {
+    method.params.iter().any(|(_, p)| type_expr_mentions_self(p))
+        || type_expr_mentions_self(&method.ret_type)
+}
+
+/// Does `texpr` mention [`TypeExpr::SelfType`] anywhere in its tree?
+fn type_expr_mentions_self(texpr: &cranelisp_types::TypeExpr) -> bool {
+    use cranelisp_types::TypeExpr;
+    match texpr {
+        TypeExpr::SelfType => true,
+        TypeExpr::Applied(_, args) => args.iter().any(type_expr_mentions_self),
+        TypeExpr::FnType(params, ret) => {
+            params.iter().any(type_expr_mentions_self) || type_expr_mentions_self(ret)
+        }
+        TypeExpr::Named(_) | TypeExpr::TypeVar(_) | TypeExpr::Bounds(_) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TypeExpr -> Type resolution (free functions)
 // ---------------------------------------------------------------------------

@@ -910,6 +910,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 arg_types.clone(),
                 ret_ty.clone(),
                 is_self_call,
+                // FIXME 0719 — carry the callee `Var`'s own span so the drain can
+                // retype it to the SELECTED clause's signature, exactly as the
+                // inline arm above does. Without it the node keeps the
+                // pre-dispatch instantiation of the overloaded base and a
+                // wrapper-indirected mono instance ships a residual `Var` into
+                // `from_expr`.
+                callee.span(),
             ));
             // Record arg types in expr_types for each arg
             for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {

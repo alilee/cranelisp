@@ -29,6 +29,27 @@ fn mono_scan_bodies(defn: &Defn) -> Vec<&Expr> {
     }
 }
 
+/// The settlement discipline a `resolve_auto_curry` drain runs under (S115 W4).
+///
+/// The auto-curry drain runs at SIX seams, and they are not equivalent: the
+/// per-form body drains fire while later forms may still pin the operand type,
+/// whereas the finalize drain runs post-drain/post-Phase-A on settled state.
+/// Only a settled drain may conclude "this trait operator has no impl to
+/// dispatch to"; a pre-settlement one must hold the entry back rather than
+/// transport the trait-method DECLARATION FQ as a dispatch carrier
+/// (`design/backend/s115-carrier-and-rc-sweep.md` §1.3 — the `'='` face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoCurryDrain {
+    /// A pre-settlement seam (per-form / per-variant body post-pass). An
+    /// operator whose only available carrier is a trait-method-decl FQ is
+    /// pushed to `CheckState::deferred_auto_curry` for the settled retry.
+    Deferrable,
+    /// A settled or recheck-scoped seam (finalize; impl-method and mono-body
+    /// rechecks, whose resolution maps and module scope are swapped so nothing
+    /// may be deferred out of them). No entry is held back.
+    Final,
+}
+
 // --- Name mangling for multi-sig overload dispatch ---
 
 
@@ -749,7 +770,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// typechecker detected partial application (fewer args than params).
     /// This converts them to `ResolvedCall::AutoCurry` entries that the
     /// backend can use for codegen.
+    ///
+    /// `drain` selects the S115 settlement discipline (see
+    /// [`AutoCurryDrain`]). Callers that run at a PRE-settlement seam (the
+    /// per-form / per-variant body drains) pass [`AutoCurryDrain::Deferrable`];
+    /// every recheck-scoped or settled seam passes [`AutoCurryDrain::Final`].
     pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState) {
+        self.resolve_auto_curry_with(state, AutoCurryDrain::Final)
+    }
+
+    /// [`Self::resolve_auto_curry`] with an explicit settlement discipline.
+    pub(crate) fn resolve_auto_curry_with(&self, state: &mut CheckState, drain: AutoCurryDrain) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
         for (span, name, applied_count, total_count, callee_ty, mut trait_resolution, callee_var_span)
             in pending
@@ -784,6 +815,56 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         trait_resolution = Some(ResolvedCall::BuiltinFn { name: jit_name });
                     }
                 }
+            }
+
+            // S115 W4 — the fn-as-value `'='` producer boundary
+            // (`design/backend/s115-carrier-and-rc-sweep.md` §1.3). A trait
+            // OPERATOR whose operand type is still a free `Var` at this seam
+            // resolves to NO impl, so the transport branch below would carry the
+            // callee `Var`'s `VarRef::Global(prelude/=)` — the trait-method
+            // DECLARATION FQ, a dispatch-table key with no GOT slot — into
+            // `ApplyRef::Dispatch`. The wrapper emitter then dies at the
+            // GOT terminal ("reached codegen with no GOT-slot carrier").
+            //
+            // BOUNDARY (structural, both drains): a trait-method-decl FQ is
+            // NEVER transported as a dispatch carrier. At a DEFERRABLE
+            // (pre-settlement) seam the whole entry is held back for the
+            // settled finalize drain, where the call site has pinned the
+            // operand concrete and `try_resolve_trait_method` above yields the
+            // real impl (`primitives/eq-i64`) — P26, record from settled state.
+            if trait_resolution.is_none()
+                && let Some(cvs) = callee_var_span
+                && let Some(cranelisp_types::VarRef::Global(fq)) =
+                    state.method_resolutions.var_refs.get(&cvs)
+                && self.fq_is_trait_method_decl(fq)
+            {
+                if matches!(drain, AutoCurryDrain::Deferrable) {
+                    state.deferred_auto_curry.push((
+                        span,
+                        name,
+                        applied_count,
+                        total_count,
+                        callee_ty,
+                        trait_resolution,
+                        callee_var_span,
+                    ));
+                    continue;
+                }
+                // FINAL drain and still unresolved: record the `AutoCurry`
+                // without a dispatch carrier (the Apply epilogue's
+                // `ApplyRef::ViaCallee` stands). The backend's 0705 totality
+                // table then reports a LOCATED producer contradiction rather
+                // than the raw GOT-terminal miss — a decl FQ still never rides.
+                state.method_resolutions.resolved_calls.insert(
+                    span,
+                    ResolvedCall::AutoCurry {
+                        target_name: name,
+                        applied_count,
+                        total_count,
+                        trait_resolution: None,
+                    },
+                );
+                continue;
             }
 
             let has_inner = trait_resolution.is_some();
@@ -823,6 +904,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
 
+    /// Is `fq` the storage identity of a trait-method **DECLARATION** (the
+    /// `deftrait` method entry carrying `trait_origin`), as opposed to a
+    /// callable — a plain user fn, a builtin, or a resolved impl method?
+    ///
+    /// Carrier-keyed (Principle 24): the question is asked of the FQ that would
+    /// be transported, not of the raw source name. A declaration entry is a
+    /// dispatch-table key — it never has a GOT slot — so it must never appear in
+    /// an `ApplyRef::Dispatch`.
+    pub(crate) fn fq_is_trait_method_decl(&self, fq: &cranelisp_types::FQSymbol) -> bool {
+        self.method_to_trait_in_module(&fq.module, &fq.symbol).is_some()
+    }
+
     /// Resolve all recorded expr_types through the current substitution.
     pub(super) fn resolve_expr_types(&self, state: &CheckState) -> HashMap<Span, Type> {
         state.expr_types
@@ -832,3 +925,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
 }
+
+#[cfg(test)]
+mod tests;

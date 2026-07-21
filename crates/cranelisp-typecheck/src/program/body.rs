@@ -81,7 +81,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Per-defn post-passes: resolve auto-curry accumulated during this
         // defn's body check. Overload resolution is deferred to finalize
         // because resolved_overloads is populated by resolve_multi_sig_overloads.
-        self.resolve_auto_curry(state);
+        // DEFERRABLE (S115 W4): this seam is PRE-settlement — a later form's call
+        // site may still pin this body's operand types — so a trait operator with
+        // no resolvable impl yet is held for the settled finalize drain instead of
+        // transporting its declaration FQ as a dispatch carrier.
+        self.resolve_auto_curry_with(state, AutoCurryDrain::Deferrable);
 
         // Eager constrained-fn detection + the S83 determination point: finalise
         // this defn's `fn_state` (Concrete{slot} / Constrained / Polymorphic)
@@ -431,8 +435,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.resolve_deferred_trait_calls(state, internal_defn.body())?;
             self.resolve_value_position_trait_methods(state, internal_defn.body(), false)?;
 
-            // Per-variant post-passes (auto-curry only; overloads deferred to finalize)
-            self.resolve_auto_curry(state);
+            // Per-variant post-passes (auto-curry only; overloads deferred to
+            // finalize). DEFERRABLE for the same pre-settlement reason as the
+            // single-sig seam above.
+            self.resolve_auto_curry_with(state, AutoCurryDrain::Deferrable);
 
             // Per-variant AST annotation
             {
@@ -736,3 +742,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     // --- Monomorphisation passes ---
 
 }
+
+#[cfg(test)]
+mod tests;

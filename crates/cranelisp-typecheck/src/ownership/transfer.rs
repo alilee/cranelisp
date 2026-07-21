@@ -163,7 +163,23 @@ enum Origin {
     /// container. `rep` is a representative param-rooted binding (lowest reaching
     /// index on a join). A hard claim is UNREPRESENTABLE from here — it can only
     /// publish `MayAliasOf` (§16.3), keeping every protect/dec the fresh arm needs.
-    Conditional { rep: Symbol, projection: bool },
+    ///
+    /// **`cow` — the may-alias LINK set (§17.2, S115 MS-P7 chained family).** The
+    /// `Apply` spans at which a `MayAliasOf`-declared call MINTED a may-alias
+    /// reference on this value's provenance chain. The obligation "every
+    /// may-alias link whose accounting includes a consumer-emitted release needs
+    /// its protect" belongs to the VALUE (P25 — narrowing carries its check), not
+    /// to a consumer's syntactic view of its argument, so the value carries its
+    /// own allocation history: row 8 unions each new link, rows 2/4 carry and
+    /// join it, and the single projection-out consumer (row 6) discharges the
+    /// WHOLE chain by forcing the escape fact at every carried span. This is what
+    /// makes a chain of length ≥2 — nested `Apply`, or `let`-mediated `Var` —
+    /// reachable from one arm instead of one arm per chain shape (§17.3).
+    ///
+    /// Walk-internal ONLY: it never crosses the summary boundary (the persisted
+    /// `ResultMode` is unchanged — §17.6, no `cranelisp-types` edit, no
+    /// `CACHE_SCHEMA_VERSION` bump).
+    Conditional { rep: Symbol, projection: bool, cow: Vec<Span> },
 }
 
 impl Origin {
@@ -172,9 +188,10 @@ impl Origin {
     fn unconditional(root: Symbol, projection: bool) -> Origin {
         Origin::Unconditional { root, projection }
     }
-    /// Construct a conditional (may-reach) origin — the ex-`MayParam` variant.
-    fn conditional(rep: Symbol, projection: bool) -> Origin {
-        Origin::Conditional { rep, projection }
+    /// Construct a conditional (may-reach) origin — the ex-`MayParam` variant —
+    /// carrying `cow`, the §17.2 may-alias link set.
+    fn conditional(rep: Symbol, projection: bool, cow: Vec<Span>) -> Origin {
+        Origin::Conditional { rep, projection, cow }
     }
     fn root(&self) -> Option<&Symbol> {
         match self {
@@ -183,6 +200,26 @@ impl Origin {
             Origin::Fresh => None,
         }
     }
+    /// The §17.2 may-alias link set this value carries (empty for every origin
+    /// that is not a `Conditional`).
+    fn cow_spans(&self) -> &[Span] {
+        match self {
+            Origin::Conditional { cow, .. } => cow,
+            Origin::Fresh | Origin::Unconditional { .. } => &[],
+        }
+    }
+}
+
+/// UNION two may-alias link sets (§17.2 rows 4/8), order-stable and deduped —
+/// the set only ever grows along a chain, so the composition is monotone.
+fn union_cow(a: &[Span], b: &[Span]) -> Vec<Span> {
+    let mut out: Vec<Span> = a.to_vec();
+    for s in b {
+        if !out.contains(s) {
+            out.push(*s);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -296,7 +333,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             Origin::Unconditional { root, projection } => {
                 self.param_root(root).map(|i| (i, *projection, root.clone()))
             }
-            Origin::Conditional { rep, projection } => {
+            Origin::Conditional { rep, projection, .. } => {
                 self.param_root(rep).map(|i| (i, *projection, rep.clone()))
             }
         }
@@ -320,20 +357,32 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// representative = the reaching param of LOWEST index (deterministic);
     /// `projection` only when EVERY reaching path is a projection (a mixed
     /// alias/projection join is the stronger `AliasOf`, keeping protect).
+    /// **Row 4 (§17.2) — the may-alias link sets UNION across the join.** An
+    /// `If`/`Match`-produced `Conditional` container carries the links of BOTH
+    /// arms, so the terminal projection-out (row 6) discharges whichever arm ran.
+    /// Widening and monotone (the set only grows), and it is the composition —
+    /// not a new consumer arm — that covers the face-3 container shape (§17.4).
     fn join_origin(&self, a: Origin, b: Origin) -> Origin {
+        let cow = union_cow(a.cow_spans(), b.cow_spans());
         match (self.reach(&a), self.reach(&b)) {
             (None, None) => Origin::Fresh,
             (Some((ia, pa, _)), Some((ib, pb, _))) if ia == ib && pa == pb => {
                 // Same param, same kind ⇒ both paths definitely alias it: keep
                 // the definite origin (over-claiming aliasing is the safe
-                // direction if either input was itself a may-alias).
-                a
+                // direction if either input was itself a may-alias) — but a
+                // `Conditional` keeps the UNIONED link set (row 4).
+                match a {
+                    Origin::Conditional { rep, projection, .. } => {
+                        Origin::conditional(rep, projection, cow)
+                    }
+                    other => other,
+                }
             }
             (Some((ia, pa, sa)), Some((ib, pb, sb))) => {
                 let (idx_sym, _) = if ia <= ib { (sa, ia) } else { (sb, ib) };
-                Origin::conditional(idx_sym, pa && pb)
+                Origin::conditional(idx_sym, pa && pb, cow)
             }
-            (Some((_, p, s)), None) | (None, Some((_, p, s))) => Origin::conditional(s, p),
+            (Some((_, p, s)), None) | (None, Some((_, p, s))) => Origin::conditional(s, p, cow),
         }
     }
 
@@ -700,7 +749,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                                 self.facts.provenance.insert(*span, root.clone());
                                 Origin::unconditional(root, true)
                             }
-                            Origin::Conditional { rep, .. } => {
+                            Origin::Conditional { rep, cow, .. } => {
                                 // MS-P7 (§3.6) — PROJECTING OUT of a may-alias
                                 // CONTAINER: `(vec-get (vec-set v 0 9) 0)`, where the
                                 // container `(vec-set v 0 9)` is a COW result that may
@@ -726,12 +775,25 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                                 // so its escape fact stays `Some(false)` and the
                                 // in-place reuse is preserved. Only a Fresh container
                                 // (no param reach) skips this (the `Fresh` arm).
-                                if let MonoExpr::Apply { span: container_span, .. } =
-                                    &args[k]
-                                {
-                                    self.facts.escapes.insert(*container_span, true);
+                                //
+                                // §17.2 ROW 6 (S115 MS-P7 chained family) — the
+                                // W7 reach `if let MonoExpr::Apply = &args[k]` is
+                                // DELETED. That syntactic reach found the
+                                // allocation to protect only when the consumer's
+                                // immediate argument HAPPENED to be a direct
+                                // `Apply`, so a chain of length ≥2 (a nested
+                                // `Apply`, or a `let`-mediated `Var`) hid its
+                                // INNER links and they double-dec'd. The
+                                // container's own `Origin` already carries EVERY
+                                // may-alias allocation on the chain (rows 8/2/4),
+                                // so the force covers all of them from this ONE
+                                // pre-existing arm — no per-shape arm is added
+                                // (§17.3, the family-grain ruling). Monotone: the
+                                // force only ADDS incs.
+                                for cow_span in &cow {
+                                    self.facts.escapes.insert(*cow_span, true);
                                 }
-                                Origin::conditional(rep, true)
+                                Origin::conditional(rep, true, cow)
                             }
                             Origin::Fresh => Origin::Fresh,
                         }
@@ -746,7 +808,24 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // exact 0520 may-alias composition, no new join logic.
                     ResultMode::MayAliasOf(k) => {
                         let arg = arg_origins.get(k).cloned().unwrap_or(Origin::Fresh);
-                        self.join_origin(Origin::Fresh, arg)
+                        // §17.2 ROW 8 — this call MINTS a fresh may-alias LINK at
+                        // its own span, so the produced `Conditional` unions THIS
+                        // `Apply`'s span with the links the container argument
+                        // already carried. That union is what composes a chain:
+                        // `(vec-set (vec-set v 0 1) 1 2)` carries `[inner, outer]`
+                        // by the time the terminal projection consumes it. The
+                        // `rep`/reach axis is unchanged (§16 already correct); the
+                        // link set is the added carrier, and it only grows.
+                        //
+                        // A container with NO param reach joins to `Fresh` — no
+                        // aliased param can be double-dec'd, so no link is
+                        // recorded (the fresh container's own dec is balanced).
+                        match self.join_origin(Origin::Fresh, arg) {
+                            Origin::Conditional { rep, projection, cow } => {
+                                Origin::conditional(rep, projection, union_cow(&cow, &[*span]))
+                            }
+                            other => other,
+                        }
                     }
                     ResultMode::Fresh => Origin::Fresh,
                 };
@@ -968,7 +1047,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             } else {
                 match scrut_origin {
                     Origin::Unconditional { root, .. } => Origin::unconditional(root.clone(), true),
-                    Origin::Conditional { rep, .. } => Origin::conditional(rep.clone(), true),
+                    // Row 3 (§17.2 rider) — a destructured field of a
+                    // CONDITIONAL scrutinee carries the scrutinee's may-alias
+                    // link set, so a match-mediated chain composes exactly as a
+                    // `let`-mediated one does.
+                    Origin::Conditional { rep, cow, .. } => {
+                        Origin::conditional(rep.clone(), true, cow.clone())
+                    }
                     Origin::Fresh => Origin::Fresh,
                 }
             };

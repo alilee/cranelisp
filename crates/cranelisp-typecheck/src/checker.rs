@@ -107,6 +107,19 @@ pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
     }
 }
 
+/// One deferred auto-curry site: `(call_span, function_name, applied_arg_count,
+/// total_param_count, callee_type, target_resolution, callee_var_span)`.
+///
+/// `callee_var_span` (S110 W0.1b, §1.1.1) is the span of the callee `Var`, used
+/// at drain time to transport the callee's already-recorded `var_refs` (S114
+/// carrier flip — was `resolved_targets`) storage carrier for a PLAIN-fn curry
+/// (resolve-once, shadow-correct — `infer_var` recorded the target's
+/// `VarRef::Global` terminal storage FQ, or a `VarRef::Local` for a local
+/// binding). `None` when the callee is not a `Var` (auto-curry requires a `Var`
+/// callee, so this is always `Some` in practice).
+pub(crate) type PendingAutoCurry =
+    (Span, Symbol, usize, usize, Type, Option<ResolvedCall>, Option<Span>);
+
 /// Per-check transient state for type inference.
 ///
 /// Created or reused by each `check()` call. Contains all state that is
@@ -162,20 +175,22 @@ pub struct CheckState {
     /// Transient flag: set true during `infer_apply` when inferring the callee.
     /// Used to suppress the "constrained fn as value" error for direct calls.
     pub(crate) in_call_position: bool,
-    /// Pending auto-curry resolutions for single-arity functions.
-    /// (call_span, function_name, applied_arg_count, total_param_count,
-    /// callee_type, target_resolution, callee_var_span).
-    ///
-    /// `callee_var_span` (S110 W0.1b, §1.1.1) is the span of the callee `Var`,
-    /// used at drain time to transport the callee's already-recorded `var_refs`
-    /// (S114 carrier flip — was `resolved_targets`) storage carrier for a
-    /// PLAIN-fn curry (resolve-once, shadow-correct — `infer_var` recorded the
-    /// target's `VarRef::Global` terminal storage FQ, or a `VarRef::Local` for a
-    /// local binding). `None` when the callee is not a `Var`
-    /// (auto-curry requires a `Var` callee, so this is always `Some` in
-    /// practice).
-    pub(crate) pending_auto_curry:
-        Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>, Option<Span>)>,
+    /// Pending auto-curry resolutions for single-arity functions
+    /// ([`PendingAutoCurry`]).
+    pub(crate) pending_auto_curry: Vec<PendingAutoCurry>,
+    /// Auto-curry entries HELD BACK by a deferrable drain because the only
+    /// carrier available at that (pre-settlement) moment was a **trait-method
+    /// DECLARATION** FQ (`prelude/=`) — an unslotted dispatch-table key, never a
+    /// callable. Transporting it is the S115 fn-as-value `'='` carrier-loss
+    /// defect (`design/backend/s115-carrier-and-rc-sweep.md` §1.3); the boundary
+    /// rule is **never transport a trait-method-decl FQ as a dispatch carrier**.
+    /// Re-attempted ONCE from settled state at the finalize drain (P26 — record
+    /// from settled state), where the operand type the template left as a free
+    /// `Var` has been pinned by the call site. Same tuple shape as
+    /// [`Self::pending_auto_curry`]; drained only at `finalize_check_result_inner`
+    /// (never inside a mono/impl body recheck, whose resolution maps and module
+    /// scope are swapped).
+    pub(crate) deferred_auto_curry: Vec<PendingAutoCurry>,
     /// Multi-sig overload table: base name → [(internal_name, arity)].
     /// Populated during pass 1 when a `Defn` has multiple variants.
     pub(crate) overloads: HashMap<Symbol, Vec<(Symbol, usize)>>,
@@ -203,7 +218,16 @@ pub struct CheckState {
     /// than instantiating a fresh copy. An EXTERNAL call (`false`) to a genuinely-
     /// polymorphic or constrained clause instead monomorphises (fresh
     /// instantiation), so distinct external calls at distinct types never conflict.
-    pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type, bool)>,
+    ///
+    /// The trailing `Span` is the **callee `Var` node's own span** (S115 W4,
+    /// FIXME 0719). The INLINE dispatch arm in `infer_apply` already retypes that
+    /// node to the selected clause's concrete signature ("`from_expr` requires
+    /// every node concrete, and the base otherwise carries the polymorphic
+    /// union"); the DEFERRED arm could not, having thrown the callee span away.
+    /// The drain re-records it from settled state (P26) — see
+    /// `register.rs::resolve_one_overload_call`.
+    pub(crate) pending_overload_resolutions:
+        Vec<(Span, Symbol, Vec<Type>, Type, bool, Span)>,
     /// Deferred self-call dispatch worklist (S112 leg a §11.3.2, the B1 fix).
     /// `(self_call_span, base_name, selected_variant_index)`.
     ///
@@ -323,6 +347,7 @@ impl CheckState {
             pending_gap: None,
             in_call_position: false,
             pending_auto_curry: Vec::new(),
+            deferred_auto_curry: Vec::new(),
             overloads: HashMap::new(),
             resolved_overloads: HashMap::new(),
             overload_homes: HashMap::new(),

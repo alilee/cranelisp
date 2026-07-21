@@ -895,6 +895,175 @@ fn cow_container_transferred_to_call_stays_non_escaping_lc3() {
     );
 }
 
+// =================== §17.2 MS-P7 chained may-alias family (S115 W4) ===========
+//
+// The four cells below exercise the corrected §16.2 rows as a FAMILY: row 8 mints
+// a link on each `MayAliasOf` call, rows 2/4 carry and join the set, row 6
+// discharges the WHOLE chain at the single projection-out consumer. The W7
+// mechanism reached the allocation to protect only through the consumer's
+// immediate syntactic `args[k]`, so a chain of length ≥2 hid its inner links.
+
+/// The chained-family env: `cow` is a `MayAliasOf(0)` COW producer, `vec-get` a
+/// `ProjectionOf(0)` consumer, `consume` a plain `Fresh`-returning callee.
+fn chained_env() -> TestEnv {
+    TestEnv::default()
+        .summary(
+            "vec-get",
+            sm(
+                vec![Mode::Borrowed, Mode::Copy],
+                ResultMode::ProjectionOf(0),
+                vec![ParamFlow::Consumed, ParamFlow::Consumed],
+            ),
+        )
+        .summary(
+            "cow",
+            sm(vec![Mode::Owned], ResultMode::MayAliasOf(0), vec![ParamFlow::IntoResult]),
+        )
+        .summary(
+            "consume",
+            sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+        )
+}
+
+#[test]
+fn msp7_chained_nested_cow_projection_forces_escape_at_every_link() {
+    // §17.2 rows 8 + 6, face (a) — `(vec-get (cow (cow v)) 0)`. The INNER `cow`
+    // is an arg-temp of the outer one; both are may-alias links whose accounting
+    // includes a consumer-emitted release, so BOTH escape facts must be forced
+    // true. The W7 `if let MonoExpr::Apply = &args[k]` reach saw only the OUTER
+    // span (the syntactic argument) and the inner link double-dec'd (`--link`
+    // abort, `safety_oracle_lane::safety_lane_chained_nested_cow_projection_*`).
+    let inner = Span::new(700, 701);
+    let outer = Span::new(702, 703);
+    let body = call(
+        "vec-get",
+        vec![
+            call_sp(outer, "cow", vec![call_sp(inner, "cow", vec![var("v")])]),
+            MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+        ],
+    );
+    let r = run(&[strparam("v")], body, chained_env());
+    assert_eq!(
+        r.facts.escapes.get(&outer),
+        Some(&true),
+        "the OUTER (syntactic) may-alias link is protected (the W7 face, unchanged)"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&inner),
+        Some(&true),
+        "the INNER may-alias link is protected too — the projection-out discharges \
+         EVERY span the container Origin carries (§17.2 row 6), not just args[k]"
+    );
+}
+
+#[test]
+fn msp7_chained_let_bound_cow_projection_forces_escape_at_every_link() {
+    // §17.2 rows 8 + 2 + 6, face (b) — `(let [w (cow v)] (vec-get (cow w) 0))`.
+    // Row 2 carries `w`'s link set into the new binding, so when the outer `cow`
+    // consumes `w` (a `MonoExpr::Var`, NOT an `Apply`) the chain is intact. This
+    // is the face the syntactic reach could never see: `args[k]` is a `Var`, so
+    // W7 never found `w`'s RHS allocation span at all.
+    let rhs = Span::new(710, 711);
+    let outer = Span::new(712, 713);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("w"), call_sp(rhs, "cow", vec![var("v")]))],
+        body: Box::new(call(
+            "vec-get",
+            vec![
+                call_sp(outer, "cow", vec![var("w")]),
+                MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int },
+            ],
+        )),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("v")], body, chained_env());
+    assert_eq!(
+        r.facts.escapes.get(&outer),
+        Some(&true),
+        "the outer may-alias link is protected"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&rhs),
+        Some(&true),
+        "the LET-BOUND inner link is protected — row 2 carries the link set through \
+         the binding, so the terminal projection reaches an allocation whose span \
+         never appears in the consumer's argument"
+    );
+}
+
+#[test]
+fn msp7_chained_whole_value_transfer_without_projection_stays_non_escaping() {
+    // §17.2 NEGATIVE CONTROL (the family boundary, unit twin of
+    // `safety_oracle_lane::safety_lane_whole_value_nested_transfer_clean_green`).
+    // The SAME 2-link chain, but transferred WHOLE to a non-projection callee —
+    // no in-frame projection-out consumer, so the accumulated link set is never
+    // force-triggered and BOTH links keep `Some(false)`. This is what fences the
+    // fix as "chained-may-alias × projection-IN-THE-SAME-FRAME", not "nested COW
+    // per se": over-widening here would add spurious incs (a leak) and would
+    // regress the l_c3 in-place reuse.
+    //
+    // `cow` is re-declared `Borrowed`/`Consumed` here so NEITHER link escapes by
+    // its ordinary argument context — with the `Owned`/`IntoResult` shape the
+    // inner link's `Arg{Owned, IntoResult}` position escapes on its own merits
+    // and could not discriminate the row-6 force from the ordinary site fact.
+    let inner = Span::new(720, 721);
+    let outer = Span::new(722, 723);
+    let env = chained_env().summary(
+        "cow",
+        sm(vec![Mode::Borrowed], ResultMode::MayAliasOf(0), vec![ParamFlow::Consumed]),
+    );
+    let body = call(
+        "consume",
+        vec![call_sp(outer, "cow", vec![call_sp(inner, "cow", vec![var("v")])])],
+    );
+    let r = run(&[strparam("v")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&outer),
+        Some(&false),
+        "no projection-out consumer ⇒ the outer link is not force-protected"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&inner),
+        Some(&false),
+        "no projection-out consumer ⇒ the inner link is not force-protected either \
+         (the accumulating link set is inert until row 6 fires)"
+    );
+}
+
+#[test]
+fn msp7_chained_if_container_projection_forces_escape_in_both_arms() {
+    // §17.2 row 4 (the face-3 groundwork, §17.4) — an `If`-produced container
+    // carries the UNION of both arms' link sets, so the terminal projection-out
+    // discharges whichever arm ran. No new consumer arm is authored for this
+    // shape: the join composition alone covers it (§17.3 — the table's row count
+    // is fixed).
+    let then_span = Span::new(730, 731);
+    let else_span = Span::new(732, 733);
+    let container = MonoExpr::If {
+        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        then_branch: Box::new(call_sp(then_span, "cow", vec![var("v")])),
+        else_branch: Box::new(call_sp(else_span, "cow", vec![var("v")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = call(
+        "vec-get",
+        vec![container, MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }],
+    );
+    let r = run(&[strparam("v")], body, chained_env());
+    assert_eq!(
+        r.facts.escapes.get(&then_span),
+        Some(&true),
+        "the then-arm may-alias link is protected (row 4 union → row 6 force)"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&else_span),
+        Some(&true),
+        "the else-arm may-alias link is protected too — the join carries both"
+    );
+}
+
 #[test]
 fn shadowed_root_emits_no_provenance() {
     // spec: §13.6(d) — a pattern binding shadowing the scrutinee root ⇒ None.

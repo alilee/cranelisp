@@ -603,5 +603,5 @@ pub(crate) fn select_unique_overload_variant<'v>(
     }
 }
 
-
-
+#[cfg(test)]
+mod tests;

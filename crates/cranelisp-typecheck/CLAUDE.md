@@ -89,11 +89,17 @@ The pieces:
 **Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
 caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type
 var is a BARE lowercase identifier); the in-crate `!contains('/')` guard is the
-backstop. FIXME 0590 records four MIRROR resolvers (`traits/type_resolve.rs` ×3
-+ `form.rs`) that hand-roll their own mint-on-miss — STILL OPEN: the W6.3
-constraint-rigidity landed via `resolve_bound_param`/`active_constraints` (defn
-params), NOT by converging the mirrors, so 0590's P7 single-source refactor is
-independent of this model.
+backstop. **FIXME 0590 is CLOSED (S110): the four mirror `TypeExpr -> Type`
+resolvers converged.** `crate::resolve::resolve_type_expr` is now the SOLE
+`TypeExpr -> Type` walk in the crate (`resolve.rs` §5), driven by a
+`TypeExprCtx` head-resolution context; the trait-sig / HKT-sig / HKT-impl
+callers reach it through the thin wrappers `resolve_trait_sig_type_expr` /
+`resolve_hkt_sig_type_expr` / `resolve_hkt_impl_type_expr` on `TypeCheckEnv`
+(`checker.rs`), and `form.rs::check_type_expr`'s pre-walk is gone. The former
+never-error `Named` fabrication arms were DELETED with the mirrors — an unknown
+type name in a signature is a source error, resolved against the symbol table
+exactly as a `defn`/`deftype` field ref is. Do NOT re-introduce a local
+mint-on-miss at a new call site; extend `TypeExprCtx` instead.
 
 **Not yet landed (reported to `/sprint` as a coordinated seam):** the §3.11
 ambiguity gate for an UNRESOLVED return-type-polymorphic dispatch (`(zed)` with
@@ -112,27 +118,49 @@ the symbol-table registration sites, NOT a side `Vec` (the transitional
 `CheckState.mono_variants` was retired — the entry is the single source of truth,
 Principle 7):
 
-- **Mono instances** — built at the `monomorphise_call` seam (`traits.rs:~1508`,
+- **Mono instances** — built at the `monomorphise_call` seam (`traits/monomorphise.rs::monomorphise_call`,
   `MonoExpr::from_expr` over the subst-resolved instance body) and set via
   `builder.codegen_view(..)` at `register_mono_entry`. **Hard-errors** on a
   non-concrete body (a minted mono instance MUST be concrete post-Phase-4-A) —
   the §3.11.1 ambiguity message.
-- **Ordinary concrete defns** — single-sig (`program.rs` `check_form_body_single_defn`,
-  next to the `ast` writeback), multi-sig mangled variants (`register_mangled_variants`),
-  trait-impl methods (`traits.rs::check_impl_method`), test-fn mono roots
-  (`register_test_fn_mono_roots`). All route through the shared
-  `program::build_concrete_codegen_view(name, variant)` helper. It is
-  **best-effort**: `Some` on `from_expr` success (the universal real-program
-  case), `None` on failure. Only a `UserFnState::Concrete` entry gets a view —
-  guard on the kind before calling the helper.
+- **Ordinary concrete defns** — single-sig (`program/body.rs`
+  `check_form_body_single_defn`, next to the `ast` writeback), multi-sig mangled
+  variants (`program/register/multi_sig.rs::register_mangled_variants`),
+  trait-impl methods (`traits/impl_check.rs::check_impl_method`), test-fn mono
+  roots (`program/register.rs::register_test_fn_mono_roots`), and the finalize
+  post-mono rebuild (`program/finalize.rs::finalize_annotations_and_publish`).
+  All route through the shared `program::build_concrete_codegen_view(name,
+  variant, pattern_ctors, var_refs, apply_refs)` helper (`program/support.rs`).
+  Only a `UserFnState::Concrete` entry gets a view — guard on the kind before
+  calling the helper.
 
-**Why best-effort (NOT hard-error) for concrete defns.** `defined_symbols()` also
+> **The helper is NOT "best-effort `Option`" — that contract was FALSIFIED by the
+> S114 carrier flip, and the distinction is safety-relevant.** Its signature is
+> `Result<Option<MonoDefnVariant>, CranelispError>`, and the two
+> `ViewBuildError` arms are deliberately asymmetric:
+>
+> - **`NotConcrete`** (a residual `Type::Var` / unresolved HKT head / an
+>   un-annotated node — a ctor's synthetic body, an `f$Var` multi-sig variant)
+>   — **FALLS BACK** to `lenient_from_expr`, exactly as pre-flip. These are valid
+>   programs the `ast`-path codegen compiles fine.
+> - **`Unresolved { span, name }`** (a real-span `Var`/`Apply` for which
+>   typecheck recorded NO typed verdict — no `VarRef`, no `ApplyRef`) —
+>   **PROPAGATES** as a LOCATED typecheck-phase error. It is the phase-boundary
+>   gate the carrier exists for; the lenient walk would seam-assert on the very
+>   same miss. Callers thread `?`.
+>
+> **Conflating the two re-opens the check-gate-leak class one level up**: swallow
+> `Unresolved` into the lenient fallback and a body with no recorded resolution
+> ships to the backend, where the miss resurfaces as a raw codegen error with no
+> source location. When adding a caller, propagate — never `.ok()` — the `Err`.
+
+**Why `NotConcrete` falls back (NOT hard-error) for concrete defns.** `defined_symbols()` also
 yields `DefKind::Constructor` (ctor + accessor) entries whose synthetic bodies are
 `inferred_type: None` (`adt.rs`), and `f$Var` multi-sig variants whose param is a
 genuine `Type::Var` — neither converts via `from_expr`, yet the current `ast`-path
 codegen compiles them fine (ctor codegen reads field types from the signature, not
 node `inferred_type`). Hard-erroring would reject valid programs. The
-`None`-vs-hard-error asymmetry + the ctor/accessor gap is recorded in **FIXME 0393**
+fallback-vs-hard-error asymmetry + the ctor/accessor gap is recorded in **FIXME 0393**
 (the Phase-3/0391 backend backstop must scope its `expect` to `Concrete` entries,
 not the whole `defined_symbols()` set). The `--workspace` e2e suite produced ZERO
 `from_expr`-fail on a real concrete defn — the validation payoff holds.
@@ -150,7 +178,10 @@ consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
 - `CheckState.user_fn_refs` — recorded at the `infer_var` chokepoint by
   `checker::record_reference_target` (the S110 W0.1 "resolve once" consolidation;
   the former `record_user_fn_ref` was deleted — `infer_var` now resolves each
-  name ONCE via `resolve_ref_target`, writes `resolved_targets`, and derives the
+  name ONCE via `resolve_ref_target`, writes the TYPED carrier
+  `MethodResolutions.var_refs` (a `VarRef::Global`/`VarRef::Local` verdict — the
+  S114 carrier flip renamed the former `resolved_targets`; its Apply-side sibling
+  is `apply_refs: ApplyRef`), and derives the
   `callees` edge as a `UserFn`-filtered projection of that resolution) for every
   successfully-typed `Var` whose name is NOT locally shadowed and resolves
   (chain-follow to home, prelude-fallback-aware, `lookup`-mirroring qualified
@@ -192,7 +223,9 @@ transaction's reverse index — **silently dropping edges starves its
 affected-set closure**. Changing what `callees` records is a `.meta.json`
 meaning change: bump `CACHE_SCHEMA_VERSION` in the same change-set (the 0472
 seam cure landed inside the S101 v10→v11 window — no re-bump). Guarded by
-`program::tests::callees_*` (`tests/plan/s101-coverage-postmortem.md` §2.1).
+`program::callees::tests::callees_*` (S115 FIXME 0722 moved these out of the
+pooled `program::tests::`; `tests/plan/s101-coverage-postmortem.md` §2.1 still
+cites the old path — FIXME 0771 to `/qa`).
 
 ## Bare-name resolution & the prelude fallback (S108 Wave-G convergence)
 
@@ -230,7 +263,7 @@ level with its own rules.
    prelude-globbed one") — a name is NOT free merely because the prelude
    provides it (§8.6.4); that rule of thumb produced the S14 deftrait
    silent-accept. Every definition form routes through this ONE seam:
-   `defn`/`deftype` at the `program.rs` `check_form_register` arms, `deftrait`
+   `defn`/`deftype` at the `program/register.rs::check_form_register` arms, `deftrait`
    (trait name + each method name) at the `TraitDecl` arm, `defmacro` in int.
 
 **The ONE legitimate fallback-less probe** is the *idempotent re-registration
@@ -285,8 +318,8 @@ fallback — the structural-not-skip guarantee).
 
 A constrained (trait-bound) fn defined in an imported module and called
 cross-module is monomorphised by `pass4_monomorphise`
-(`program.rs::collect_imported_constrained_calls`) → `monomorphise_call`
-(`traits.rs`). The mono variant (`cmp$Int+Int`) is an ordinary concrete
+(`program/mono_collect.rs::collect_imported_constrained_calls`) →
+`monomorphise_call` (`traits/monomorphise.rs`). The mono variant (`cmp$Int+Int`) is an ordinary concrete
 `UserFn` `Def` registered in the **caller's** module with its own GOT slot — the
 backend's existing concrete-mono codegen path wires it; **no backend special-case**.
 
@@ -301,13 +334,21 @@ and the call mis-typechecks (symptom: a spurious `no impl of trait T for type X`
    (`instantiate_and_resolve`'s original→fresh `var_mapping`), **not the raw
    scheme var_ids** — cross-module the original var_ids are stale and may COLLIDE
    with a caller var.
-3. **Impl lookup for verification roots in `home` too** (`has_impl_with_state`
-   runs under the `home` switch, finding a defining-module-local trait impl).
+3. **Impl lookup for verification roots at the TRAIT'S HOME**
+   (`traits/dispatch.rs::has_impl_in_home`, reached from
+   `traits/monomorphise.rs::verify_mono_constraints`) — Decision 45 writes every
+   `TraitImpl` entry into the trait's defining module, so the coherence question
+   is answered by one keyed scan THERE. **`has_impl_with_state` is NOT the live
+   verification path** — its only remaining caller is the test fixture
+   (`checker/test_support.rs`); it re-resolves the BARE trait name in the
+   caller's scope and therefore wrong-rejects a method-only import (§7.11.2(e)).
+   Do not reach for it in production code.
 
 The full rationale, the var-collision walkthrough, and the sketch/backend
 comparison now live in **`design/typecheck/monomorphisation.md` §3.7
 "Cross-module body-recheck scoping"**. Guarded by
-`program::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`.
+`program::mono_collect::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`
+(S115 FIXME 0722 moved it out of the pooled `program::tests::`).
 
 ## Product-ctor dual facet
 
@@ -352,6 +393,40 @@ the navigation primitives; staging-aware via `probe_module_entry_owned`
 (FIXME 0179 — staging shadows live when `module_path == staging.module`).
 
 ## Testing
+
+### Test homes in `program/` (S115 FIXME 0722)
+
+The pooled 10,576-line `program/tests.rs` is GONE. Each production submodule
+carries its own sibling test file, so a RED attributes to ONE production unit by
+file (METHOD §2.2 / Principle 23; `design/typecheck/program-decomposition.md` §3):
+
+| Production unit | Test home |
+|---|---|
+| `program/register.rs` | `program/register/tests.rs` |
+| `program/register/multi_sig.rs` | `program/register/multi_sig/tests.rs` |
+| `program/body.rs` | `program/body/tests.rs` (+ `tests/annotation.rs`, `tests/check_form_arms.rs`) |
+| `program/finalize.rs` | `program/finalize/tests.rs` |
+| `program/finalize/ambiguity.rs` | `program/finalize/ambiguity/tests.rs` |
+| `program/mono_collect.rs` | `program/mono_collect/tests.rs` (+ `tests/batch.rs`, `tests/carriers.rs`, `tests/multi_sig.rs`) |
+| `program/callees.rs` | `program/callees/tests.rs` |
+| `program/support.rs` | `program/support/tests.rs` |
+
+Everything shared by more than one of those files lives ONCE in
+`program/test_support.rs` (`#[cfg(test)]`), which also **re-exports** the common
+`cranelisp_types` surface. So a test file needs exactly two glob imports and no
+per-file import churn:
+
+```rust
+use super::*;                             // its own production module
+use crate::program::test_support::*;      // fixtures + the type re-exports
+```
+
+(A nested `tests/<topic>.rs` needs only `use super::*` — the parent test module's
+globs reach it.) When you add a test, put it in the home of the production
+submodule it exercises; when you add a shared fixture, put it in
+`test_support.rs`, never a second copy.
+
+### General
 
 Unit tests live in-crate (`#[cfg(test)]`), driven by `TestFixture`
 (`checker/test_support.rs`). `TestFixture::new()` seeds the full synthetic world
