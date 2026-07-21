@@ -11,14 +11,21 @@ trait_decl     = '(' 'deftrait' trait_head docstring? method_sig+ ')'
 trait_head     = trait_name                  (* simple trait *)
                | '(' trait_name con_var ')'  (* higher-kinded trait, see 7.2 *)
 trait_name     = uppercase_symbol
-method_sig     = required_method | default_method
-required_method = '(' method_name docstring? '[' param* ']' type_expr ')'  (* param* — a return-type-dispatched method may take zero params, §7.1.1 *)
-default_method  = '(' method_name docstring? '[' param+ ']' body ')'
-param           = ':' type_expr symbol | symbol
+method_sig     = '(' method_name docstring? '[' param* ']' ( type_expr | expr ) ')'
+param          = ':' type_expr symbol | symbol
 method_name    = symbol
 ```
 
-The `deftrait` form introduces a named trait with one or more method signatures. All methods use named parameters in square brackets. Required methods end with a return type expression; default methods end with a body expression.
+The `deftrait` form introduces a named trait with one or more method signatures. All methods use named parameters in square brackets.
+
+**One production, one trailing element. [S115]** A method signature has **exactly one** element after the parameter bracket, and that element decides what kind of method it is:
+
+- a **type expression** (a type name and nothing else — **no** leading `:`) ⇒ the method is **required**, and every `impl` of the trait MUST define it;
+- any **other expression** ⇒ the method is a **default method**, and that expression is its body (§7.1.5).
+
+There is **no** three-element `[params] ret_type body` form: writing a *type* in the trailing slot **is** saying "no implementation here." A default method's type is **inferred in the context of its parameters**, exactly as any expression's type is inferred; to pin it, annotate the body with the ordinary optional `:Type` annotation that any expression may carry — `(<= [a b] :Bool (not (> a b)))`. (User ruling 2026-07-21: *types are inferred; annotations add constraints* — a trait constraint, or the pinning of a single type. There is no special return-type slot for a form that has a body.)
+
+The parameter list is `param*` in **both** cases: a default method MAY take zero parameters (`(greet [] "hi")`), just as a return-type-dispatched required method may (`(zed [] self)`, §7.1.1). *The grammar does not forbid what the type rules already govern* — whether a nullary method is dispatchable is settled by the occurrence rule in §7.1.1, not by an arity restriction in the grammar.
 
 **The trait head is a binder. [S113]** `trait_name` binds a **new** trait name into the current module, so it MUST be a **bare (unqualified) uppercase symbol** ([§5](05-definitions.md#5-definitions), *Declaration heads are binders*). A **qualified** head — `(deftrait (fmt/Foo f) …)` or `(deftrait fmt/Foo …)` — is a **compile-time error** (user ruling 2026-07-18); there is no mechanism for declaring a trait into another module. A **dotted** head (`(deftrait A.Foo …)`) is likewise a compile-time error, and so is a dotted or qualified **con_var** — `.` is type/trait qualification syntax, never a binder (user ruling 2026-07-21; §5, *Binder positions*). [S115]
 
@@ -32,11 +39,11 @@ This makes the head shape carry exactly one bit of meaning — conventional vs. 
 
 **Parameters:** Bare parameter names default to the implementing type (`self`). Annotated parameters (`:Type name`) have explicit types. `self` (lowercase) in return type position refers to the implementing type (see §7.1.1).
 
-**Disambiguation:** The parser distinguishes required from default methods positionally. The element immediately following the parameter bracket is always the return type; if a further element follows it, that element is the default body:
-- `(method_name "doc"? [params] ret_type)` -- a return type follows the bracket and nothing else: the method is required.
-- `(method_name "doc"? [params] ret_type body)` -- a body expression follows the return type: the method has a default implementation.
+**How the trailing element is discriminated. [S115]** The trailing element is a **return type if and only if it resolves as a type expression** — every name occurring in it is a type, `self`, or (inside a higher-kinded trait) that trait's declared constructor variable. Otherwise it is a **body expression** and the method is a default method. The rule is stated in terms of **resolution**, not spelling: there is **no case convention**, no marker token, and no positional count involved. `Bool` resolves as a type, so `(< [a b] Bool)` is required; `not` does not resolve as a type, so `(<= [a b] (not (> a b)))` is a default method.
 
 A return type is a type expression: `self` (the implementing type), a named type (`Int`, `Bool`, `String`), an applied type (`(Option self)`, `(Fn [a] b)`), or a type variable.
+
+> **Implementation note (non-normative).** Recognising the trailing element is a **resolution-time** activity, not a parse-time one: a conforming implementation needs a *try*-resolve that can answer "this is not a type" rather than raising, and the required-vs-default distinction is therefore settled during type checking, not by the reader or the parser. A parser that commits the trailing element to a return-type slot before resolution will reject every conforming default method.
 
 **Example:** A standard library might define traits for arithmetic, equality, and display:
 
@@ -76,7 +83,7 @@ Bare (unannotated) parameter names in a method signature have the implementing t
 
 A trait MUST contain at least one method signature. Each method signature MUST contain at least one **occurrence of the implementing type** in the signature — in **parameter or return position** (a bare parameter, a `:self` annotation, or `self` in the return type) — except for higher-kinded trait methods (see 7.2). A trait dispatched purely on its return type therefore uses the **bare head** and a `self` return: `(deftrait Zeroable (zed [] self))`.
 
-**Return position takes a bare `type_expr` — no leading `:`.** In a `method_sig` the return type is written **without** the colon: the leading `:` is **parameter-annotation syntax only** and is legal only inside the parameter bracket. A return-type-dispatched method is written `(zed [] self)` — **never** `(zed [] :self)` or `(zed [] :a)`. This applies to every required method signature, not only the nullary ones: `(show [x] String)`, not `(show [x] :String)`. (The contrast with `defn` is deliberate and not an inconsistency: a `defn` has a **body**, and `(defn f [:Int x] :Int (+ x 1))` annotates that body expression in value position per [§3.3.3](03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction) — a required `method_sig` has no body, so its trailing element **is** the return `type_expr` itself.)
+**Return position takes a bare `type_expr` — no leading `:`.** In a `method_sig` the return type is written **without** the colon: the leading `:` is **parameter-annotation syntax only** and is legal only inside the parameter bracket. A return-type-dispatched method is written `(zed [] self)` — **never** `(zed [] :self)` or `(zed [] :a)`. This applies to every required method signature, not only the nullary ones: `(show [x] String)`, not `(show [x] :String)`. (The contrast with `defn` is deliberate and not an inconsistency: a `defn` has a **body**, and `(defn f [:Int x] :Int (+ x 1))` annotates that body expression in value position per [§3.3.3](03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction) — a required `method_sig` has no body, so its trailing element **is** the return `type_expr` itself.) A **default** method, which does have a body, therefore behaves like `defn`: its body MAY carry a leading `:Type` annotation — `(<= [a b] :Bool (not (> a b)))` — because that annotation binds the following **expression** (§1.4.5), not a return slot. [S115]
 
 > **How the invalid spelling is rejected. [S115]** Under the read-time annotation fold (§1.4.5), a `:` introducer as the **last** element of a required `method_sig` — `(zed [] :self)`, `(show [x] :String)` — has no following form to bind before the closing `)`, so it is a **located reader error** (`annotation missing expression`) at the introducer. The rule above is therefore enforced mechanically by the reader rather than by a trait-specific check; a conforming implementation needs no separate return-position annotation check, and no such spelling can reach the trait checker. (Sequencing consequence: any existing source written with `:`-annotated return positions must be repaired before an implementation adopts the fold — those files stop reading at all, rather than being silently tolerated.)
 
@@ -119,7 +126,17 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
 
 ### 7.1.5 Default Method Implementations [Tested tests/spec_07_traits::default_method_used_when_not_overridden]
 
-A method signature MAY include a default body. Default methods have a body expression as the last element (rather than a return type). The return type of a default method is inferred from its body.
+A method signature whose trailing element is an **ordinary expression** (rather than a type expression, §7.1) is a **default method**, and that expression is its body. [S115]
+
+**The type is inferred; an annotation constrains it.** A default method's type is inferred **in the context of its parameters**, exactly as any expression's type is inferred — there is no return-type slot to write, and none is needed. Where a specific type is wanted, the body carries the ordinary optional `:Type` annotation that **any** expression may carry ([§3.3.3](03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction)):
+
+```clojure
+(<= "Test less-than-or-equal" [a b] :Bool (not (> a b)))
+```
+
+This is the universal annotation mechanism, not a special form of signature. (User ruling 2026-07-21: *types are inferred; annotations add constraints* — trait constraints especially, but also the pinning of a single type.)
+
+A default method MAY take **zero** parameters — `(greet [] "hi")` is a well-formed default method — subject only to §7.1.1's occurrence rule, which governs dispatchability for required and default methods alike.
 
 The default body provides an implementation that is used when an `impl` block does not explicitly override the method. Default methods may call other methods of the same trait.
 
@@ -150,9 +167,32 @@ An impl MAY override a default method by providing an explicit definition:
   (defn >= [x y] (ge-i64 x y)))
 ```
 
+**A default method is a per-impl template. [S115]** The default body is not type-checked once for the trait; it is **instantiated per impl**, against that impl's target type. An impl that supplies its own definition for the method **never instantiates the template** and is unaffected by anything the template would have required.
+
 **Compilation model:** Default bodies are stored as raw S-expressions on the trait declaration. When an `impl` block omits a method that has a default, a `Defn` is synthesized from the default body with the mangled name (e.g. `<=$MyType`). The synthesized defn is type-checked and compiled identically to an explicit impl method, with the dispatch parameter's type pre-unified with the impl target type.
 
-**Restriction:** Default method implementations are NOT supported on higher-kinded traits. A `deftrait` with type constructor parameters (e.g. `(deftrait (Functor f) ...)`) MUST NOT contain methods with default bodies. This is checked at parse time.
+#### Constraints induced by a default body are per-impl, not trait-level [S115]
+
+A default body MAY use operations that require the implementing type to satisfy some other trait. For example, in
+
+```clojure
+(deftrait Loud
+  (shout [x] (show x)))       ;; `show` is Display/show — the body needs self : Display
+```
+
+the body of `shout` can only be instantiated for a type that implements `Display`.
+
+**That requirement belongs to the default method, not to the trait.** `Loud` does **not** acquire `Display` as an obligation; declaring `Loud` places no constraint on any implementing type. The requirement is discharged only by an impl that **actually instantiates the template**:
+
+| Impl | Outcome |
+|---|---|
+| `(impl Loud Box)`, where `Box` implements `Display` | Uses the default. **Accepted.** |
+| `(impl Loud Widget (defn shout [w] "widget!"))`, `Widget` not `Display` | **Overrides** the method, so the template is never instantiated. **Accepted.** |
+| `(impl Loud Widget)`, no override, `Widget` not `Display` | **Error** — and the error is about the **default method**, not about `Loud`. |
+
+**Diagnostic requirement.** The failure in the third row MUST name the **default method** as the thing requiring the constraint (not the trait, and not the impl target in isolation), and MUST offer **both** remedies: implement the required trait for the target type, **or** override the method in the impl. A diagnostic that reports this as "trait `Loud` requires `Display`" is wrong — it describes a supertrait relationship that does not exist (§7.12.1, *No supertraits*).
+
+**Restriction:** Default method implementations are NOT supported on higher-kinded traits. A `deftrait` with type constructor parameters (e.g. `(deftrait (Functor f) ...)`) MUST NOT contain methods with default bodies. Because required-vs-default is discriminated at **resolution** (§7.1), this is checked when the trait's method signatures are resolved, not by the parser. [S115]
 
 ### 7.1.4 Type Expressions in Signatures
 
@@ -899,7 +939,7 @@ The following edge cells are normative [S113]:
 
 - **No default methods on HKT traits.** Higher-kinded traits (those with type constructor parameters) do not support default method implementations.
 - **Limited automatic deriving.** The `derive` macro supports `Eq`, `Ord`, and `Display` only (see Section 7.13).
-- **No supertraits.** A trait cannot require that implementing types also implement another trait (e.g., `Ord` cannot require `Eq`).
+- **No supertraits.** A trait cannot require that implementing types also implement another trait (e.g., `Ord` cannot require `Eq`). This stays true in the presence of default methods: a constraint induced by a **default body** belongs to that **method**, not to the trait, and is owed only by an impl that actually instantiates the default — an impl that overrides the method owes nothing (§7.1.5, *Constraints induced by a default body are per-impl*). No trait-level obligation is ever created. [S115]
 - **No orphan rules.** There are no restrictions on which module may define an impl for a given trait-type pair.
 - **No multi-parameter type classes.** Traits are parameterized over a single type (or single type constructor for HKT).
 - **No associated types.** Traits cannot declare type members.

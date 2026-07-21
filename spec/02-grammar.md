@@ -193,11 +193,9 @@ deftrait_kw     = 'deftrait' | 'deftrait-'
 trait_head      = TRAIT_NAME
                 | '(' TRAIT_NAME type_param+ ')'
 
-method_sig      = required_method | default_method
-
-required_method = '(' method_name docstring? '[' param+ ']' type_expr ')'
-
-default_method  = '(' method_name docstring? '[' param+ ']' expr ')'
+method_sig      = '(' method_name docstring? '[' param* ']' ( type_expr | expr ) ')'
+                  (* trailing type_expr => required method; any other expr => default
+                     method (§7.1, §7.1.5). Discriminated at resolution, not parse. *)
 
 param           = annotation SYMBOL          (* typed parameter *)
                 | SYMBOL                      (* bare -- implementing type *)
@@ -207,7 +205,7 @@ The `deftrait` form declares a trait -- a named collection of method signatures.
 
 The **trait head** is either a bare name (for simple traits) or a parenthesized name with type constructor parameters (for higher-kinded traits). Trait names MUST start with an uppercase letter.
 
-**Simple traits**: Bare (unannotated) parameter names default to the implementing type. `self` (lowercase) in return type position refers to the implementing type. Required methods end with a return type; default methods end with a body expression.
+**Simple traits**: Bare (unannotated) parameter names default to the implementing type. `self` (lowercase) in return type position refers to the implementing type. A method signature has exactly **one** element after the parameter bracket: a **type expression** makes the method **required**, any other **expression** makes it a **default** method whose type is inferred from that body. There is no three-element `[params] ret_type body` form; to pin a default's type, annotate its body (`:Bool (not (> a b))`). See [§7.1](07-traits.md#71-trait-declaration). [S115]
 
 ```clojure
 (deftrait Display

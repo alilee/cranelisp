@@ -344,9 +344,9 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig+ ')'
 trait_head     = name                         (* simple trait *)
                | '(' name type_var+ ')'       (* higher-kinded trait *)
-method_sig     = required_method | default_method
-required_method = '(' name docstring? '[' param* ']' type_expr ')'  (* param* — a return-type-dispatched method may take zero params, §7.1.1 *)
-default_method  = '(' name docstring? '[' param+ ']' body ')'
+method_sig     = '(' name docstring? '[' param* ']' ( type_expr | expr ) ')'
+                 (* trailing type_expr => required; any other expr => default method
+                    whose type is inferred (§7.1, §7.1.5). param* throughout. *)
 param          = ':' type_expr symbol          (* typed parameter *)
                | symbol                        (* bare -- implementing type *)
 type_expr      = 'self'                       (* implementing type *)
@@ -355,7 +355,7 @@ type_expr      = 'self'                       (* implementing type *)
                | '(' name type_expr+ ')'       (* applied type *)
 ```
 
-A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression. The trait head (`name` in the grammar above) is a **binder** — a **bare (unqualified) uppercase symbol** (§5, *Declaration heads are binders*, and [§7.1](07-traits.md#71-trait-declaration)); a qualified **or dotted** head is a compile-time error (§5, *Binder positions*). [S113] [S115]
+A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. A method signature has exactly **one** element after the parameter bracket: a **type expression** makes the method **required**; any other **expression** makes it a **default** method whose type is inferred from that body, optionally pinned by an ordinary `:Type` annotation on the body. There is no three-element `[params] ret_type body` form. [S115] The trait head (`name` in the grammar above) is a **binder** — a **bare (unqualified) uppercase symbol** (§5, *Declaration heads are binders*, and [§7.1](07-traits.md#71-trait-declaration)); a qualified **or dotted** head is a compile-time error (§5, *Binder positions*). [S113] [S115]
 
 ### 5.3.1 Simple Traits [Tested tests/spec_07_traits::user_trait_simple, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
@@ -369,7 +369,7 @@ A trait declaration introduces a named interface with one or more method signatu
 
 - All methods use named parameters in brackets. Bare parameter names default to the implementing type.
 - `self` (lowercase) in return type position refers to the implementing type.
-- Required methods end with a return type expression; default methods end with a body expression.
+- A required method ends with a return **type expression**; a default method ends with a **body expression** whose type is inferred (§7.1.5). Which one it is, is discriminated at resolution — the trailing element is a return type iff it resolves as a type expression. [S115]
 - An optional docstring MAY appear on the trait itself and on each method.
 
 ### 5.3.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg]
