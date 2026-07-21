@@ -297,6 +297,95 @@ documented `main` return (sum of sub-test passes); it is the value
   (traits) + 16 (multi-file modules). Multi-file, so `tests/examples.rs` drives
   `37-method-import/main.cl` (like `16-modules/main.cl`), not a bare top-level file.
 
+## 2b. S115 Phase-6a assessment record (2026-07-21) — 6b plan
+
+**Full replay green, BOTH modes: 37/37.** Every top-level example plus both
+directory projects run at their documented exit code under `--run` *and* under
+`--link`-then-run — no divergence, no drift. Binary rebuilt in full first
+(`cargo build --workspace`) so no piecemeal-build skew; invoked with
+`cwd=examples/` (the harness's own invocation, so `lib-dirs = ["./lib"]` is
+discovered and NO `CRANELISP_LIB` is set — examples resolve their own prelude,
+zero stdlib). The four concurrency/parallel examples (28/30/32/34) were
+additionally run 3× each: exit-stable.
+
+The **S114 exit-code rider (119 → 120) is DISCHARGED**: `29-annotations.cl`
+measures 120 in both modes and `tests/examples.rs:153` asserts `&[120]`. The
+on-disk top-level file set (35 files) matches `expected_exits()` exactly, so
+the umbrella's file-set cross-check is satisfied.
+
+### Ruling impact — verified against the tree, not assumed
+
+| S115 ruling | Impact on `examples/` | Evidence |
+|---|---|---|
+| Dotted binders reject (`.` illegal in ANY binder) | **None — clean.** Every dotted name in the tree is a REFERENCE: dotted module paths in `import` (21/22/23/24/34, 37's `main.traits`), module-qualified calls (16), dotted ctor heads in VALUE position (35: `Maybe.Some`) and in PATTERN position (35: `(Maybe.Some x)` — the head is dotted, the binder `x` is bare) | full-tree grep of every `ident.ident` occurrence |
+| Trait-method occurrence rule at ANY arity | **None — clean.** All 12 declared methods across 15/17/19/20/30/37 mention the implementing type (bare param, HKT `:(f a)` param, or `self` return). `37`'s `(blank [] self)` is the nullary return-`self` case | every `deftrait` body read; live probe confirms the arity-1 reject fires |
+| `:Type` in a trait method's RETURN slot (latent, S116 `:`-fold) | **None — clean.** No `deftrait` in the tree carries `:` in the trailing slot. The only `:` inside a method signature is on HKT *parameters* (`(fmap [:(Fn [a] b) func :(f a) x] (f b))` in 26/30), which is the legal position | `awk` extraction of all `deftrait` forms |
+| Auto-curry over a local closure works; `def`-bound route blocked (0800) | **No risk, and the blocked route is unreachable here**: `def` is a *stdlib macro* (spec §5.7 — "there is no native `def` special form") and the examples prelude does not provide it, so no free-standing example can bind a function with `def` at all. `25-curry.cl` already uses the `let` form exclusively | `(def adder (fn …))` in a free-standing probe → `undefined variable: def` |
+| Impl redefinition hot-reloads | **New capability, not yet taught** — see the 6b plan | probe below |
+
+### New capability delivered this sprint that the sequence should teach
+
+Two, both **in-sequence extensions of an existing example**, not a new file
+bolted at the end:
+
+1. **Impl redefinition is batch-observable → extend `33-redefinition.cl`.**
+   33 already teaches "definitions are live"; the S115 hot-reload ruling makes
+   the *same* claim true of `impl` blocks, and 33 sits after 15/17/20, so
+   traits are already in the reader's vocabulary. Verified probes (`--run` ==
+   `--link`):
+   - **re-impl replaces**: a second `(impl Sized Box …)` supersedes the first
+     method body;
+   - **omitting a method reverts it to the trait default** (`tag` omitted from
+     the re-impl → the `deftrait` default body is used again);
+   - **dependents rebind**: a `defn` written *before* the re-impl dispatches to
+     the *new* impl — the exact liveness claim 33's existing three sub-tests
+     make for plain `defn`, now shown for methods.
+   A type-changing re-impl is *rejected with the prior impl intact* — that half
+   is interactive-recovery UX and stays with `/repl`/`/docs`, as the batch/REPL
+   split already recorded for 33.
+2. **Auto-curry over a LOCAL closure → extend `25-curry.cl`.** Every current
+   sub-test curries a top-level `defn`. The S115 fix makes
+   `(let [g (mk 10)] ((g 1) 2))` work — currying a closure *value* — and a
+   **trait-operator partial** keeps its carrier (`(let [add5 (+ 5)] (add5 3))`
+   → 8, verified). 25 builds on 12 (closures) and 13 (HOFs), so both beats are
+   cumulative-legal exactly where they belong. Keep captures scalar (FIXME 0796:
+   auto-curried partials reach the 0760 capture-stranding seam for heap captures
+   — an Int capture is unaffected).
+
+### 6b plan
+
+| # | Item | File | Exit impact |
+|---|---|---|---|
+| 1 | Impl-redefinition section: re-impl replaces / omitted method reverts to trait default / dependent rebinds | `33-redefinition.cl` | 136 → +3 sub-tests (needs a trait with a default method — see item 3) |
+| 2 | Curry-a-local-closure + trait-operator-partial sub-tests | `25-curry.cl` | 118 → +2 |
+| 3 | Trait **default methods** (§7.1.5) — currently taught by NO example, though 15's `Ord` is the spec's own worked default-method example. Introduce as one beat in `15-traits.cl` (`<=`/`>=` synthesized from `<`/`>`), which item 1 then relies on | `15-traits.cl` | 58 → +1..2 |
+| 4 | Dotted-binder rejection as a teaching beat: `.` is for type/trait qualification ONLY. `35-ctor-disambiguation.cl` is the sequence's dotted-name teacher, so the comment beat belongs there (comment-only, quoting the now-stable located message: "`'a.b' is a dotted name, but a binder must be a bare (unqualified) name — write 'b' ('.' is reserved for type/trait qualification)`") — uniform across all four binder positions (defn head, param, `let`, `match`) | `35-ctor-disambiguation.cl` | none |
+| 5 | §4 spec-feature-coverage table: add rows for trait default methods, impl redefinition, and the dotted-binder/binder-vs-reference boundary | this file | — |
+| 6 | Exit-code reconciliation FIXME to `/testing` for items 1–3 (one FIXME, all rows together), filed **with** the 6b change-set, in the same phase commit — `/examples` does not edit `tests/` | — | — |
+
+Ordering: 3 → 1 → 2 → 4 → 5 → 6 (item 1's "reverts to the default" beat reads
+as a payoff only once defaults have been introduced).
+
+### Gap FIXMEs filed at 6a
+
+- **0820 → /testing** — `examples/16-modules/main.cl` has no e2e row. The
+  umbrella covers only top-level `*.cl`; `37-method-import/` got its own
+  directory-project test at S113, 16 never did. The stated reason for not
+  coupling to it (`tests/examples.rs:276` — "not yet relaid out to the nested
+  shape") is **false at HEAD**: `16-modules/main.cl` + `main/math.cl` +
+  `main/shapes.cl` IS the nested §8.2.5 shape. Ask: one row, exit **47**,
+  modelled on the 37 test; verified both modes at 6a.
+
+### Not defects
+
+No example failed, in either mode, so no defect handoff is owed this phase.
+Two housekeeping observations, neither actionable: (a) `examples/.cranelisp-cache/`
+carries residue from other agents' probes (`_probe_sp.o`) and a stray stdlib-named
+`control.o` — gitignored derived state, and `CRANELISP_MODULE_TRACE=1` confirms a
+current example run resolves NO stdlib module, so free-standing isolation holds;
+(b) FIXME 0463 (network poll shape) remains blocked on the same unmet
+dependency, re-verified — no free-standing socket platform exists.
+
 ## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
 
 > Both 6b candidates below were executed the same day: `33-redefinition.cl`
@@ -432,7 +521,16 @@ to reconcile that table.
 
 ## Next skills
 
-- `/testing` (S114 Phase 6b) — the `tests/examples.rs:151` `29-annotations.cl`
+- `/testing` (S115 Phase 6a) — **FIXME 0820**: add a directory-project e2e row
+  for `examples/16-modules/main.cl` => **47** (verified `--run` == `--link`,
+  fresh cache, 2026-07-21), modelled on the existing `37-method-import` test,
+  and correct the stale "not yet relaid out to the nested shape" rationale at
+  `tests/examples.rs:276`.
+- ~~`/testing` (S114 Phase 6b)~~ — **DISCHARGED at S115 Phase 6a**: the
+  `29-annotations.cl` expected exit **119 → 120** landed;
+  `tests/examples.rs:153` asserts `&[120]` and the example measures 120 in both
+  modes. Historical note retained below for the sub-test-tally discrepancy.
+  The original ask was: the `tests/examples.rs:151` `29-annotations.cl`
   expected exit **119 → 120** (new `space-form` whitespace-tolerance sub-test,
   +1). Lands in the SAME phase commit as this example change (binding handoff);
   `/examples` does NOT edit `tests/`. Verified `--run` == `--link` == 120,
