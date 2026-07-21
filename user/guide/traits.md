@@ -196,9 +196,17 @@ the *value-level* ones: a `defn`/`fn` parameter, a `let` name, and a `match`
 variable pattern all reject a qualified spelling too (only a `match` pattern's
 constructor *name* stays a reference and may be qualified). And a name is malformed
 outright if either half around a `/` is empty — `foo/` or `/bar` are *dangling
-qualifiers*, rejected in any position. The
+qualifiers*, rejected in any position.
+
+A **dotted** spelling is rejected in a binder too — `(deftype A.B …)`,
+`(defn a.b [x] x)`, `(let [a.b 5] …)`. In Cranelisp `.` is *type/trait
+qualification*: a way of **reaching** an existing name (`Maybe.Just` in a
+pattern, `Pt.x` as an accessor, `platform.posix` in an import), never a way of
+introducing one. The
 [errors catalogue](../errors/trait-impl-diagnostics.md#qualified-name-in-a-binder-position)
-covers the qualified-binder messages and the
+covers the qualified-binder messages, the
+[dotted-binder](../errors/trait-impl-diagnostics.md#dotted-name-in-a-binder-position)
+ones, and the
 [dangling-qualifier](../errors/trait-impl-diagnostics.md#dangling-qualifier--an-empty-module-or-local-half)
 ones; the rule is [spec §5](../../spec/05-definitions.md)'s binder-positions table.
 

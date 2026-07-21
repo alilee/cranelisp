@@ -20,15 +20,19 @@ head position is rejected, and the message names the bare form to write.
 
 ```
 user> (defn user/foo [n] n)
-Error: parse error: 'user/foo' is a qualified name, but a definition head is a binder and must be a bare (unqualified) name — write 'foo' (a definition binds into the current module; use an import/qualified reference to reach another module)
+Error: parse error at 6..14: 'user/foo' is a qualified name, but a binder must be a bare (unqualified) name — write 'foo' (a binder introduces a name into the current module or scope; use an import or qualified reference to reach another module)
 ```
 
 **A `deftype` constructor head** — same rule, the message names the constructor:
 
 ```
 user> (deftype Shape (user/Circle [:Int r]))
-Error: parse error: 'user/Circle' is a qualified name, but a definition head is a binder and must be a bare (unqualified) name — write 'Circle' (…)
+Error: parse error at 16..27: 'user/Circle' is a qualified name, but a binder must be a bare (unqualified) name — write 'Circle' (…)
 ```
+
+The message is **position-neutral** — it says "a binder", not "a definition
+head", because the same rule reaches local binders (`let`, parameters, `match`)
+where "definition head" would be wrong.
 
 The rule applies uniformly to **every** binder head: `defn`/`defn-`,
 `deftype`/`deftype-`, `deftrait`/`deftrait-`, `defmacro`/`defmacro-`, trait
@@ -48,11 +52,10 @@ user> (let [user/y 5] y)
 user> (match v [(Some user/w) w])
 ```
 
-each rejects the qualified binder. (In a `match` constructor pattern only the
-*bindings* are binders — the constructor name itself, e.g. `Some` above, is a
-reference and may be qualified.) The exact message at these value-level positions
-is terser than the head-position one and is being sharpened; the **reject itself**
-is firm today, and the remedy is the same — drop the module prefix.
+each rejects the qualified binder, with the **same** message as a definition
+head — one rule, one wording, every position. (In a `match` constructor pattern
+only the *bindings* are binders — the constructor name itself, e.g. `Some` above,
+is a reference and may be qualified.)
 
 **Why:** there is no mechanism for declaring a name into another module; a
 definition always binds where it is written. Qualification is a *reference* form
@@ -62,6 +65,48 @@ value position, not in a definition head.
 
 Normative: [spec §5](../../spec/05-definitions.md) (binder-positions table),
 [spec §8.5](../../spec/08-modules.md) (references carry qualifiers; binders do not).
+
+## Dotted name in a binder position
+
+A **dotted** spelling (`a.b`) in a binder position is rejected on exactly the
+same footing as a qualified one, with its own message:
+
+```
+user> (defn a.b [x] x)
+Error: parse error at 6..9: 'a.b' is a dotted name, but a binder must be a bare (unqualified) name — write 'b' ('.' is reserved for type/trait qualification)
+```
+
+It fires at **every** binder position the `/` rule covers — definition heads,
+variant-constructor names, field names, type parameters, trait method-signature
+names and constructor variables, `defmacro` heads, and the value-level `let`,
+parameter and `match` binders:
+
+```
+user> (deftype A.B [:Int r])          ; head
+user> (deftype P [:Int a.b])          ; field name
+user> (let [a.b 5] a.b)               ; let binding
+user> (defn g [a.b] 1)                ; parameter
+user> (match 1 [a.b a.b])             ; variable pattern
+```
+
+**The line worth remembering is binder vs reference.** `.` in Cranelisp is
+**type/trait qualification syntax** — a *reference* device, never a
+name-introducing one. So dots stay perfectly legal wherever you are *reaching*
+for something that already exists:
+
+| Dotted **reference** — legal | What it is |
+|---|---|
+| `(Maybe.Just x)` in a `match` pattern head | qualified constructor pattern ([constructors guide](../guide/constructors.md)) |
+| `(Pt.x p)` | field accessor ([field accessors](../guide/field-accessors.md)) |
+| `:(Option Int)` / a dotted type or trait reference | type-position qualification |
+| `(import [platform.posix [*]])` | dotted module path ([using platforms](../guide/using-platforms.md)) |
+
+**Fix:** in a binder, write the bare last segment (`b`). If you meant to *reach*
+an existing name, you are in a reference position and the dot is fine there.
+
+Normative: [spec §5](../../spec/05-definitions.md) (*Dotted binders reject
+exactly as qualified ones do*), [spec §1.4.4](../../spec/01-lexical.md) (`.` is
+type/trait qualification).
 
 ## Dangling qualifier — an empty module or local half
 
@@ -91,13 +136,12 @@ with whitespace around it (`(/ 6 2)`) is arithmetic and stays legal — only a `
 
 ```
 user> foo/
-Error: parse error at 4..4: expected local name after '/'
+Error: parse error at 4..4: `/` here has no local name after it — a qualified name needs a non-empty local (`mod/name`); drop the trailing `/` to write a bare name
 ```
 
-This is the same rule from the other side, and it fires in a binder slot too —
-`(defn f [foo/] …)`, `(let [foo/ 5] …)` — with the same message. This message is
-currently terser than the empty-module one; a wording improvement to bring it in
-line is in flight. The **remedy** is stable regardless.
+This is the same rule from the other side, at the same level of detail as the
+empty-module half, and it fires in a binder slot too — `(defn f [foo/] …)`,
+`(let [foo/ 5] …)` — with the same message.
 
 **Fix:** write both halves (`mod/name`), or remove the stray `/`. If you meant
 division, separate the `/` with spaces (`(/ a b)`).
