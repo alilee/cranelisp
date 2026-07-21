@@ -230,10 +230,117 @@ before the change, and it is a session-memory artifact only: frozen chains die
 with the session, and a restart rebuilds everything from source in the current
 world. The precise contract is [`repl/spec.md §18.7`](../../repl/spec.md).
 
+## Redefining an impl
+
+A trait implementation is a body you edit too. Re-entering an `impl` for a
+(trait, type) pair that already has one **replaces** it — the whole
+implementation, not just the methods you happened to retype — and subsequent
+dispatch reaches the new bodies at the next call.
+
+This is a **body edit at the dispatch layer**, so it behaves like one: each
+method's compiled signature is the trait's declared signature for that type
+(conformance is what makes the form legal at all), so nothing downstream needs
+recompiling. No cascade report, no ceremony, and the confirmation line is the
+ordinary one — there is no "redefined" marker, because *this is the impl now* is
+the whole story:
+
+```
+user> (import [primitives [add-i64 mul-i64 sub-i64]])
+user> (deftype Box [:Int w :Int h])
+:(Fn [primitives/Int primitives/Int] user/Box) user/Box ; deftype
+
+user> (deftrait Sizeable (size [x] Int) (tag [x] Int))
+:user/Sizeable ; deftrait
+; defn:
+;  size tag
+
+user> (impl Sizeable Box (defn size [b] (match b [(Box w h) (mul-i64 w h)])) (defn tag [b] 7))
+impl user/Sizeable for user/Box
+
+user> (size (Box 3 4))
+:primitives/Int 12
+
+user> (impl Sizeable Box (defn size [b] (match b [(Box w h) (add-i64 w h)])) (defn tag [b] 7))
+impl user/Sizeable for user/Box
+
+user> (size (Box 3 4))
+:primitives/Int 7
+```
+
+### Replacement is wholesale
+
+The unit of replacement is the **whole implementation for the pair**, never the
+individual method. Two things follow.
+
+**A re-`impl` must still implement the trait on its own.** Leaving out a required
+method is not "keep the old one" — the replacement, taken alone, does not
+implement the trait, so it is rejected by the ordinary conformance error:
+
+```
+user> (impl Sizeable Box (defn size [b] (match b [(Box w h) (sub-i64 w h)])))
+Error: type error at 0..71: impl Sizeable for Box: missing required method tag
+```
+
+**Introspection reports what dispatches, not the history.** However many `impl`
+forms you entered for a pair, `/info` on the trait lists exactly one entry:
+
+```
+user> /info Sizeable
+:user/Sizeable ; deftrait
+; defn:
+;  size tag
+; impl:
+;  Box
+  (deftrait Sizeable
+    (size [x] Int)
+    (tag [x] Int))
+```
+
+### A rejected re-`impl` changes nothing
+
+Whether it fails on completeness (a missing method, above) or on conformance (a
+body that does not typecheck against the declared signature), a rejected
+re-`impl` leaves the **previous implementation installed and dispatching**. You
+are never left with the pair half-replaced or emptied — the next call returns
+exactly what it returned before:
+
+```
+user> (impl Sizeable Box (defn size [b] "nope") (defn tag [b] 7))
+Error: type error at 19..41: type mismatch: expected primitives/String, got primitives/Int
+
+user> (size (Box 3 4))
+:primitives/Int 7
+```
+
+> **Read that message backwards.** The trait declares `size` returning `Int` and
+> the body returns a `String`, so the message you want is *expected Int, got
+> String* — the emitted text has the roles the other way round, and names neither
+> the trait, the method, nor the fact that this is an impl-conformance failure.
+> The rejection is right; only the wording is misleading. Tracked as FIXME 0806;
+> the [errors catalogue](../errors/trait-impl-diagnostics.md#an-impl-method-does-not-conform-to-the-trait-signature)
+> carries the same warning.
+
+Persistence follows the same rule: the backing file keeps the **latest** `impl`
+for the pair and only that one, so a restart reproduces the session that was
+dispatching rather than replaying your edits. A rejected re-`impl` is never
+written.
+
+> **Default methods are outside this guarantee today.** A trait
+> [default method](traits.md#default-methods--a-body-instead-of-a-return-type)
+> whose body calls a **sibling** method of the same trait does not survive a
+> re-`impl` of that trait for the type: the sibling call fails to link and the
+> error points inside the `deftrait`, which is not where you changed anything.
+> Each half is fine alone — defaults work, re-`impl` works — only the combination
+> is broken. Tracked as FIXME 0832.
+
+The normative pins are [`repl/spec.md §18.9`](../../repl/spec.md) (what you see)
+and [`spec/05-definitions.md §5.4.5`](../../spec/05-definitions.md) (what is
+legal).
+
 ## Beyond concrete functions — silent reloads and the remaining gaps
 
-Everything above — the cascade report, broken marking, the trap — is the story
-for a **concrete single-signature function** (a plain `defn` with one
+The cascade report, broken marking, and the trap are the story for a **concrete
+single-signature function** (a plain `defn` with one
 monomorphic type, like every example on this page, which is why they use
 concretely-typed primitives such as `add-i64`). Redefining anything else takes
 a different path, and after the S103 fix those paths split in two: generic and

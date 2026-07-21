@@ -206,6 +206,88 @@ Error: type error: trait `Boxy`'s type parameter `f` is never applied `(f …)`;
 and write `self` where the implementing type appears. If you meant a higher-kinded
 trait, apply `f` in a signature, e.g. `[:(f a) x]`.
 
+### No occurrence of the implementing type
+
+Every method of a conventional (bare-head) trait must mention the implementing
+type at least once — a bare parameter, a `:self` annotation, or `self` in the
+return type. A method that mentions it nowhere has nothing to dispatch on:
+
+```
+user> (deftrait Zeroable (zed [] Int))
+Error: type error at 19..31: trait `Zeroable` method `zed`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
+```
+
+The rule is about **occurrence, not arity** — a non-empty parameter list does not
+help if every parameter is annotated with some other type:
+
+```
+user> (deftrait Conv (cvt [:String s] Int))
+Error: type error at 15..36: trait `Conv` method `cvt`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
+```
+
+**Fix:** the message lists the three spellings. `(zed [] Int)` almost always meant
+`(zed [] self)`; `(cvt [:String s] Int)` usually meant a plain `defn`, not a trait
+method. Note that this is *not* the way to write a marker trait — see the
+[traits guide](../guide/traits.md#marker-traits-are-not-available). A method's own
+type variables are unaffected by the rule, as long as the implementing type also
+occurs. Normative:
+[spec §7.1.1](../../spec/07-traits.md#711-the-self-type).
+
+### A trait with no methods
+
+```
+user> (deftrait Marker)
+Error: parse error at 0..17: deftrait requires a trait head and at least one method
+```
+
+**Fix:** none — marker traits have no form in Cranelisp today, and the dummy-method
+workaround is rejected by the occurrence rule above. See the
+[traits guide](../guide/traits.md#marker-traits-are-not-available).
+
+### An impl method does not conform to the trait signature
+
+An impl method's body must typecheck against the trait's declared signature for
+the target type. When it does not, the impl is rejected:
+
+```
+user> (deftrait Sizeable (size [x] Int) (tag [x] Int))
+user> (deftype Box [:Int w :Int h])
+user> (impl Sizeable Box (defn size [b] "nope") (defn tag [b] 7))
+Error: type error at 19..41: type mismatch: expected primitives/String, got primitives/Int
+```
+
+> **Warning — this message reads backwards.** The trait declares `size` returning
+> `Int`; the body returns a `String`. The message you would expect is *expected
+> Int, got String*, and the emitted text says the opposite, because it reports the
+> unifier's argument order rather than the declaration's direction. It also names
+> neither the trait, nor the method, nor the fact that this is an
+> **impl-conformance** failure rather than an ordinary expression mismatch. Read
+> the two types as "these two disagree" and check the trait declaration to see
+> which is which. The rejection itself is correct. Tracked as FIXME 0806.
+
+**Fix:** make the body's type match the signature the trait declares for the
+method, or change the trait. This is also the message a **re-`impl`** hits when
+the new bodies do not conform — and there the rejection is load-bearing: the
+previous implementation stays installed and dispatching (see
+[live development — redefining an impl](../guide/live-development.md#a-rejected-re-impl-changes-nothing)).
+
+### A re-`impl` that omits a required method
+
+Re-entering an `impl` replaces the whole implementation for the (trait, type)
+pair, so the new one must implement the trait on its own. Omitting a method is
+not "keep the previous one":
+
+```
+user> (impl Sizeable Box (defn size [b] (match b [(Box w h) (sub-i64 w h)])))
+Error: type error at 0..71: impl Sizeable for Box: missing required method tag
+```
+
+**Fix:** include every required method in the replacement. The previous
+implementation is left installed and dispatching, so nothing is lost while you
+retype it. Normative:
+[spec §5.4.5](../../spec/05-definitions.md#545-implementation-semantics) and
+[`repl/spec.md §18.9`](../../repl/spec.md).
+
 ### Pairing-head does not name the trait (HKT impl)
 
 A higher-kinded impl's slot 2 is a trait-constructor pairing `(Trait Constructor)`

@@ -11,6 +11,12 @@ The normative rules live in [`spec/07-traits.md`](../../spec/07-traits.md) and
 [`spec/05-definitions.md §5.3`–`§5.4`](../../spec/05-definitions.md); reach for
 them at the edges.
 
+> **About the transcripts.** Every `user>` transcript on this page was checked
+> against the real binary; the prompt's timing prefix (`3+0ms; user>`) is elided
+> to `user>` for readability. The examples import primitives explicitly
+> (`add-i64`, `str-len`) so they run in any directory, with or without the
+> standard prelude on the search path.
+
 ## Declaring a trait — `deftrait`
 
 A trait is a bare (uppercase) name followed by one or more **method signatures**.
@@ -27,10 +33,9 @@ Two things to know about the parameter list:
   `self` is the conventional spelling for "the type this trait is implemented
   for". Writing `(describe [self] String)` means: for each impl, `describe` takes
   one value of the implementing type and returns a `String`.
-- Every signature must mention the implementing type **somewhere** — a bare
-  parameter, or the lowercase token `self` in the return type. A method that
-  mentions it nowhere has nothing to dispatch on and is rejected. There is no
-  capitalized `Self`; the keyword is the lowercase `self`
+- Every signature must mention the implementing type **somewhere** — see
+  [the occurrence rule](#every-method-must-mention-the-implementing-type) below.
+  There is no capitalized `Self`; the keyword is the lowercase `self`
   ([spec §7.1.1](../../spec/07-traits.md#711-the-self-type)).
 
 A trait may declare several methods:
@@ -43,6 +48,110 @@ A trait may declare several methods:
 
 Here the bare params `a` and `b` both take the implementing type, so for
 `(impl Eq Int …)` the methods are `Int -> Int -> Bool`.
+
+### The return type is written without a colon
+
+Inside the parameter bracket, `:Type name` is how you annotate a parameter. In
+the **return** position there is no colon: you write the type bare.
+
+```clojure
+(deftrait Describe
+  (describe [self] String))     ; String — not :String
+```
+
+This looks like an inconsistency with `defn`, and it is worth understanding why
+it is not. A `defn` has a **body**:
+
+```clojure
+(defn area [:Int r] :Int (mul-i64 r r))
+```
+
+That `:Int` is not a "return type slot" at all — it is the ordinary value-position
+annotation, and it binds **the form that follows it**, which is the body
+expression. It says "this expression is an `Int`", the same thing `:Int` means
+anywhere else ([spec §3.3.3](../../spec/03-types.md#333-a-value-position-annotation-is-a-check-or-a-resolution-not-an-abstraction)).
+
+A trait method signature has **no body**. There is no following form for a `:` to
+bind, so its trailing element *is* the return type itself — a plain type
+expression, colon-free. `(zed [] self)`, never `(zed [] :self)`;
+`(show [x] String)`, never `(show [x] :String)`.
+
+The same reading explains the one place a colon *does* appear after the bracket:
+a [default method](#default-methods--a-body-instead-of-a-return-type) has a body,
+so it may annotate that body just like a `defn` does. Normative:
+[spec §7.1.1](../../spec/07-traits.md#711-the-self-type).
+
+### Every method must mention the implementing type
+
+A trait exists to be dispatched on. Cranelisp has no way to say "call *this*
+impl's version" explicitly — there is no `<Foo as Trait>::method` spelling — so
+the compiler must be able to work out the impl from the types at the call site.
+That means **every method signature must mention the implementing type at least
+once**, in a parameter or in the return type. Three spellings satisfy it:
+
+- a **bare** parameter — `(size [x] Int)`;
+- an explicit **`:self`** annotation — `(cmp [:self a :self b] Bool)`;
+- **`self` in the return type** — `(zed [] self)`.
+
+A signature with none of them has nothing to dispatch on and is rejected. It is
+an **occurrence** rule, not a rule about parameter counts — a non-empty parameter
+list does not rescue a signature if every parameter is annotated with some *other*
+type:
+
+```
+user> (deftrait Zeroable (zed [] Int))
+Error: type error at 19..31: trait `Zeroable` method `zed`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
+
+user> (deftrait Conv (cvt [:String s] Int))
+Error: type error at 15..36: trait `Conv` method `cvt`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
+```
+
+Both are the same mistake: `Zeroable`'s `zed` returns `Int` where it meant `self`,
+and `Conv`'s `cvt` describes a `String -> Int` function that has nothing to do
+with the type being implemented — that is a plain `defn`, not a trait method.
+
+**The rule bites only on the *absence* of the implementing type.** It places no
+restriction on any other type variables a method wants to introduce, so a method
+may be generic in its own right as long as the implementing type also occurs:
+
+```
+user> (deftrait Mappable (map-val [:(Fn [a] b) f x] self))
+:user/Mappable ; deftrait
+; defn:
+;  map-val
+```
+
+Here `a` and `b` are the method's own type variables, `x` is bare (the
+implementing type) and the return is `self` — accepted. Higher-kinded traits are
+exempt from the rule entirely: an HKT method dispatches on its applied
+constructor variable `(f a)` instead ([below](#higher-kinded-traits--trait-f)).
+Normative: [spec §7.1.1](../../spec/07-traits.md#711-the-self-type).
+
+### Marker traits are not available
+
+A **marker trait** — a trait with no methods at all, existing only to be asserted
+by an impl and required as a bound, like other languages' `Send` or `Sized` — has
+**no form in Cranelisp today**. A trait must declare at least one method:
+
+```
+user> (deftrait Marker)
+Error: parse error at 0..17: deftrait requires a trait head and at least one method
+```
+
+The honest answer is that there is no workaround, and in particular the obvious
+one does not work. Declaring a dummy method that ignores the implementing type —
+`(deftrait Marker (mark [:Int x] Int))` — is rejected by the
+[occurrence rule](#every-method-must-mention-the-implementing-type) above, and it
+would be a different thing anyway: an undispatchable method, not a marker.
+
+This is a **parked boundary, not a principle**. Nothing in the design forecloses
+marker traits, and the machinery that would consume one (inline trait constraints,
+[spec §7.3.6](../../spec/07-traits.md#736-inline-constraints-on-type-arguments))
+already exists; the capability may be specified in a future revision if a real
+program shows its absence limiting. Until then the answer is a clear "not
+specified" rather than a hedge — see
+[spec §7.1.1](../../spec/07-traits.md#711-the-self-type) and
+[§7.12.1](../../spec/07-traits.md#7121-current-restrictions).
 
 ## Implementing a trait — `impl`
 
@@ -63,7 +172,10 @@ user> (describe (Dog 3))
 :primitives/String "a dog"
 ```
 
-An impl MUST provide every method the trait declares (that has no default body).
+An impl MUST provide every method the trait declares, except those with a
+[default body](#default-methods--a-body-instead-of-a-return-type).
+Re-entering an `impl` for the same (trait, type) pair **replaces** it — see
+[live development](live-development.md#redefining-an-impl).
 A method's name may not collide with an existing **field accessor** of the target
 type — see [spec §7.3.1](../../spec/07-traits.md#731-concrete-implementation).
 
@@ -74,6 +186,130 @@ Writing `(impl Trait Type …)` requires the **trait** to resolve at the impl si
 **not** enough to *declare* an impl — declaration reaches the trait; dispatch
 reaches the method (see [Importing trait methods](#importing-trait-methods-a-method-reference-is-enough)
 below, and [spec §7.11.2(d)](../../spec/07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)).
+
+## Default methods — a body instead of a return type
+
+Most trait methods are **required**: the trait declares the signature and every
+impl must supply the body. But a method can carry a body of its own in the
+`deftrait`, and then impls get it for free. That is a **default method**.
+
+The distinction is made by the single element after the parameter bracket:
+
+- a **type** there (`Int`, `String`, `self`) means "no implementation here" — the
+  method is **required**;
+- anything else is an **expression**, and it is the method's **default body**.
+
+```clojure
+(deftrait Sized
+  (size [x] Int)                            ; required — impls must define it
+  (tag  [x] (add-i64 (size x) 1000)))       ; default — a body, so impls need not
+```
+
+A default method's type is **inferred** from its body in the context of its
+parameters, exactly like any other expression's type. There is no return-type
+slot to fill in — and if you want to pin the type, you annotate the *body* with
+the ordinary `:Type` annotation, the same one you would use anywhere else:
+
+```clojure
+(<= [a b] :Bool (not (> a b)))
+```
+
+That is the governing idea, and it is worth carrying around: **types are
+inferred; annotations add constraints.** A default method is not a special form
+of signature — it is a parameter list and an expression.
+
+> **The compiler has not caught up with this spelling yet.** At the current build,
+> `(tag [x] (add-i64 (size x) 1000))` is rejected — `parse error: invalid type
+> expression` — because the parser still commits the element after the bracket to
+> a return-type slot before it can tell a type from an expression. Today you must
+> write the return type **and** the body, `(tag [x] Int (add-i64 (size x) 1000))`,
+> which the settled [spec §7.1](../../spec/07-traits.md#71-trait-declaration)
+> no longer has a production for. The transcripts below use the spelling that
+> works today; the *model* they teach — inference, override, per-impl templates —
+> is the settled one and does not change. (FIXME 0838.)
+
+### An impl inherits the default, or overrides it
+
+```
+user> (import [primitives [add-i64]])
+user> (deftrait Sized (size [x] Int) (tag [x] Int (add-i64 (size x) 1000)))
+:user/Sized ; deftrait
+; defn:
+;  size tag
+
+user> (deftype Box [:Int n])
+:(Fn [primitives/Int] user/Box) user/Box ; deftype
+
+user> (impl Sized Box (defn size [b] (match b [(Box v) v])))
+impl user/Sized for user/Box
+
+user> (tag (Box 5))
+:primitives/Int 1005
+```
+
+The impl defined only `size`; `tag` came from the trait, and the default body's
+call to `size` reached *this impl's* `size`. Supply your own `tag` in the impl
+and yours wins instead — the default is simply not used for that type.
+
+### A default is a per-impl template, not a trait-level promise
+
+This is the part worth being precise about, because it is easy to assume the
+wrong thing. When a default body calls something — a method of *another* trait,
+say — that requirement belongs to **the method, and only for impls that actually
+use the default**. It does **not** become a requirement of the trait.
+
+So a type that cannot satisfy what the default body needs can still implement the
+trait perfectly well, by overriding the method:
+
+```
+user> (import [primitives [str-len]])
+user> (deftrait Display2 (show2 [x] String))
+:user/Display2 ; deftrait
+; defn:
+;  show2
+
+user> (deftrait Named (nm [x] String) (label [x] String (show2 x)))
+:user/Named ; deftrait
+; defn:
+;  label nm
+
+user> (deftype A [:Int n])
+:(Fn [primitives/Int] user/A) user/A ; deftype
+
+user> (impl Display2 A (defn show2 [a] "an A"))
+impl user/Display2 for user/A
+
+user> (impl Named A (defn nm [a] "A"))       ; no label — takes the default
+impl user/Named for user/A
+
+user> (str-len (label (A 1)))
+:primitives/Int 4                            ; "an A" — the default called show2
+
+user> (deftype B [:Int n])
+:(Fn [primitives/Int] user/B) user/B ; deftype
+
+user> (impl Named B (defn nm [b] "B") (defn label [b] "own label"))
+impl user/Named for user/B                   ; B is not Display2 — and needn't be
+
+user> (str-len (label (B 1)))
+:primitives/Int 9
+```
+
+`A` instantiates the default, so `A` owes a `Display2` impl. `B` overrides
+`label`, so **`B` owes nothing** — and the `Named` trait itself never required
+`Display2` of anybody.
+
+**This is not a supertrait.** Cranelisp has no supertraits, and default methods
+do not sneak one in: a constraint induced by a default body is per-impl, never a
+trait-level obligation
+([spec §7.12.1](../../spec/07-traits.md#7121-current-restrictions),
+[§7.1.5](../../spec/07-traits.md#715-default-method-implementations)).
+
+> **One combination is broken today.** A default method whose body calls a
+> sibling method does **not** survive re-`impl`ing that trait for the type: the
+> sibling call fails to link, and the error points inside the `deftrait` — a
+> place you did not edit. Each half works alone; only the combination fails. See
+> [Redefining an impl](live-development.md#redefining-an-impl) and FIXME 0832.
 
 ## Return-type dispatch and the `:Type` remedy
 
@@ -220,3 +456,5 @@ ones; the rule is [spec §5](../../spec/05-definitions.md)'s binder-positions ta
   — every rejection message this guide points at, with its remedy.
 - [Functions](functions.md) — multi-arity `defn` and dispatch, which trait
   methods build on.
+- [Live development](live-development.md#redefining-an-impl) — what happens when
+  you re-enter an `impl` in a running session.
