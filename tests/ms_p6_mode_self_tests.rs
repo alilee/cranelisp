@@ -21,17 +21,50 @@ mod helpers;
 
 use helpers::e2e::{Cranelisp, PreludeVariant};
 
-// A program with a planted alloc/dealloc IMBALANCE — a NON-`main` fresh-`Apply`
-// teardown leak: `g` binds a heap string then returns `(Pure 9)`; the general
-// G2/item-26 protect over-inc leaves one of the two heap boxes unfreed on `g`'s
-// return (2 allocs / 1 free, delta=1). RE-PLANTED S114 (FIXME 0690): the original
-// plant was the entry-`main` teardown shape `(defn main [] (let [s "hi"] (Pure 9)))`,
-// which the W4 F-R1 fix (`rc_emission.rs::protect_return_value`) balanced — so the
-// plant went stale and the fence inverted to RED. This shape is UNTOUCHED by F-R1
-// (a non-`main`, non-single-consumer-IO return), so the parity mode has a live
-// imbalance to catch again. FLIP-HAZARD: if the G2/item-26 protect over-inc is
-// ever fixed this fence re-inverts — re-plant on another deterministic imbalance.
-const LEAK_PROG: &str = "(defn g [] (let [s \"hi\"] (Pure 9)))\n(defn main [] (g))\n";
+// TOMBSTONE (S115 W3c, FIXME 0746) — `m3_parity_catches_planted_leak` is RETIRED,
+// per the `tests/plan/memory-safety-coverage.md` §4.1 prong-2 lifecycle ruling and
+// /qa's disposition at `tests/plan/s115-test-plan.md` §8.2.
+//
+// It was an e2e capability fence whose planted fault was a LIVE compiler defect, so
+// it expired every time that defect was fixed — twice:
+//
+//   1. Original plant, the entry-`main` teardown shape
+//      `(defn main [] (let [s "hi"] (Pure 9)))` — DRAINED by the S114 W4 F-R1 fix
+//      (`rc_emission.rs::protect_return_value`); re-planted per FIXME 0690.
+//   2. Re-plant, the non-`main` sibling `(defn g [] (let [s "hi"] (Pure 9)))
+//      (defn main [] (g))` — DRAINED by the S115 W3 item-26 generalisation (no
+//      protective inc for a fresh-construction return in ANY function), which
+//      superseded the `main`-keyed F-R1 special case. The test's own FLIP-HAZARD
+//      note predicted this verbatim.
+//
+// Both faces of the planted class are gone; the compiler moved in the correct
+// direction each time and the fence's stimulus evaporated. A third plant drawn from
+// a live defect would expire the same way, and /qa REJECTED the available candidate
+// (the entry-`main` heap-payload leak, FIXME 0745) on exactly that ground — it now
+// has an owner and a fix path, and a capability fence must not be collateral of
+// someone else's fix.
+//
+// Why no synthetic e2e re-plant here: the compliant durable shape is a test-only
+// injected imbalance at the intrinsics allocator/diagnostics seam behind an
+// inert-unless-set env gate (the S114 MS-P6 precedent,
+// `safety_lane_detects_falsified_clean_expectation_capability_green`, `7c2d5168`).
+// That hook is `/dev`(intrinsics) source — outside `/testing`'s boundary — and did
+// not land in this wave, so the §4.1 fallback applies. When the hook is authored,
+// the fence returns here as `m3_parity_catches_injected_imbalance` and the hook
+// joins `diagnostics/tests.rs::all_gates_default_off` in the same change-set.
+//
+// Coverage after retirement (§4.1's three prongs, all satisfied — NOT a regression):
+//   - prong 1 (durable capability record): the four M3 parity self-tests at the
+//     intrinsics allocator seam — `crates/cranelisp-intrinsics/src/diagnostics/
+//     tests.rs::{parity_report_flags_leak, parity_report_flags_double_free,
+//     parity_report_flags_nonempty_live_set, parity_report_none_when_balanced}`
+//     (`:100/:108/:116/:124`) — prove the detection logic fires on a synthetic
+//     leak, a synthetic double-free, and a non-empty live set, and stays silent
+//     when balanced. These never depend on a live compiler defect.
+//   - prong 3 (per-MODE env wiring, e2e): `m3_parity_no_false_abort_on_clean`
+//     below keeps `CRANELISP_ALLOC_PARITY` exercised end-to-end through the
+//     subprocess env plumbing that unit tests are structurally blind to.
+//
 // A memory-clean program — a vec build + indexed read, balanced. → 20.
 const CLEAN_PROG: &str = "(defn main [] (Pure (vec-get [10 20 30] 1)))\n";
 
@@ -46,22 +79,9 @@ fn run_with(prog: &str, envs: &[(&str, &str)]) -> helpers::e2e::CrOutput {
     b.output()
 }
 
-// M3 (parity) — CATCHES a planted imbalance: the teardown-leak program under
-// `CRANELISP_ALLOC_PARITY` aborts at exit with the located `[ALLOC_PARITY]
-// IMBALANCE` report. GREEN = the mode sees the fault.
-// spec: design/intrinsics/diagnostic-modes.md §3 M3 — atexit alloc-parity abort.
-#[test]
-fn m3_parity_catches_planted_leak() {
-    let out = run_with(LEAK_PROG, &[("CRANELISP_ALLOC_PARITY", "1")]);
-    let c = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        out.status.code() != Some(9)
-            && (c.contains("IMBALANCE") || c.contains("PARITY") || c.contains("LEAK")),
-        "M3 (CRANELISP_ALLOC_PARITY) MUST abort on the planted teardown-leak \
-         imbalance with a located parity report; got exit {:?}:\n{c}",
-        out.status.code()
-    );
-}
+// M3 (parity) — the planted-imbalance fence `m3_parity_catches_planted_leak` was
+// RETIRED here in S115 W3c; see the tombstone at the head of this file for the
+// drained fault set, the unit-tier successor, and the surviving wiring face.
 
 // M3 (parity) — does NOT false-fire on a clean program (byte-identical-off for a
 // balanced program): CLEAN + parity exits with the correct value 20.

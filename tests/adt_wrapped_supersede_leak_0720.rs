@@ -1,21 +1,30 @@
 // adt_wrapped_supersede_leak_0720.rs — S114 Phase-6b, FIXME 0720 pin batch.
+// UPGRADED S115 W3c (FIXME 0763): the pins now assert EXACT balance in BOTH
+// ownership-toggle states; the defect is FIXED.
 //
-// The exemplar's full solve leaks ~11.8k objects/solve (allocs≠deallocs). /qa's
-// RC_TRACE per-pointer reconciliation (43,683 events): 11,772 of the 11,823 leaked
-// are allocated then NEVER inc'd, dec'd, or freed (born rc=1, dropped) — a genuine
-// never-freed face, NOT an accounting artifact.
+// History. The exemplar's full solve leaked ~11.8k objects/solve (allocs≠deallocs).
+// /qa's RC_TRACE per-pointer reconciliation (43,683 events) showed 11,772 of the
+// 11,823 leaked were allocated then NEVER inc'd, dec'd, or freed (born rc=1,
+// dropped) — a genuine never-freed face, NOT an accounting artifact.
 //
-// The W4 MS-P8 fix released the BARE heap loop-param at the TCO tail-jump; it does
-// NOT cover the ADT-WRAPPED loop-param — the exemplar's `set-cell` shape
+// The S114 W4 MS-P8 fix released the BARE heap loop-param at the TCO tail-jump; it
+// did NOT cover the ADT-WRAPPED loop-param — the exemplar's `set-cell` shape
 // (match-extract → COW vec-set → re-wrap in the ADT → supersede). The minimal
 // scaling repro below (an ADT `Gr` wrapping a `cells` vec, superseded in a tail
-// loop) leaks BOTH the superseded `Gr` box AND its `cells` vec every iteration:
+// loop) leaked BOTH the superseded `Gr` box AND its `cells` vec every iteration:
 // N=200 → allocs=403 deallocs=2 (residue 401); N=400 → allocs=803 deallocs=2
-// (residue 801) — 2 leaked objects/iteration, scaling with N (~5.9k supersedes × 2
-// ≈ 11.8k/solve, serial ≡ parallel; no concurrency). The BARE-vec twin of the same
-// loop balances exactly (the GREEN control). Fix = S115 backend (MS-P8 sibling —
-// the tail-jump superseded-param release keyed on "heap loop-param", not the vec
-// shape), folded with §11-item-4's entry-return leak into ONE RC-release sweep.
+// (residue 801) — 2 leaked objects/iteration, scaling with N.
+//
+// FIXED in the S115 W3/W3b backend RC-release sweep (ONE type-directed
+// `emit_typed_rc_dec`). The face is now EXACT at every N in both toggles —
+// N=1 5/5, N=2 7/7, N=200 403/403, N=400 803/803 — so these pins assert exact
+// equality rather than the weaker "residue does not scale" property that was all
+// the leaking tree could support. Exactness is what spec §12.3.1 actually
+// requires, and it is the only assertion that also catches the opposite-polarity
+// regression (an over-correction into a premature free / under-count).
+//
+// Sibling batch: `tests/rc_escape_release_0763.rs` (the escaping-fresh-value
+// faces of the same sweep).
 //
 // Serial (CRANELISP_NO_LENIENT=1 — the loop has no sparks; belt-and-suspenders for
 // the RC-test-runs-serially convention). PrimitivesOnly, no stdlib.
@@ -37,19 +46,24 @@ fn adt_wrapped_loop(n: usize) -> String {
     )
 }
 
-fn rc_alloc_dealloc(src: &str) -> (i64, i64) {
-    let out = Cranelisp::new()
+fn rc_alloc_dealloc(src: &str, ownership_off: bool) -> (i64, i64) {
+    let mut b = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(src)
         .env("CRANELISP_RC_STATS", "1")
-        .env("CRANELISP_NO_LENIENT", "1")
-        .output();
+        .env("CRANELISP_NO_LENIENT", "1");
+    if ownership_off {
+        b = b.env("CRANELISP_NO_OWNERSHIP", "1");
+    }
+    let out = b.output();
     let line = out
         .stderr
         .lines()
+        .rev()
         .find(|l| l.contains("[RC_STATS]"))
-        .unwrap_or_else(|| panic!("no [RC_STATS] line:\n{}", out.stderr));
+        .unwrap_or_else(|| panic!("no [RC_STATS] line:\n{}", out.stderr))
+        .to_string();
     let field = |k: &str| -> i64 {
         line.split_whitespace()
             .find_map(|t| t.strip_prefix(k).and_then(|v| v.parse().ok()))
@@ -58,54 +72,52 @@ fn rc_alloc_dealloc(src: &str) -> (i64, i64) {
     (field("allocs="), field("deallocs="))
 }
 
-// Small allowance for the O(1) live-at-exit residue (the returned scalar's box
-// chain) — the leak we pin scales with N and dwarfs this.
-const SMALL_CONST: i64 = 8;
+fn assert_exact(n: usize, ownership_off: bool) {
+    let (allocs, deallocs) = rc_alloc_dealloc(&adt_wrapped_loop(n), ownership_off);
+    let toggle = if ownership_off {
+        "CRANELISP_NO_OWNERSHIP=1"
+    } else {
+        "ownership analysis ON"
+    };
+    assert_eq!(
+        allocs, deallocs,
+        "ADT-wrapped supersede loop (N={n}, {toggle}) MUST balance exactly: \
+         allocs={allocs} deallocs={deallocs} (residue {}). Each superseded `Gr` \
+         box and its cells vec is freed at the tail jump.",
+        allocs - deallocs
+    );
+}
 
-// 0720 pin 1 (RED) — the ADT-wrapped supersede loop MUST NOT leak: the at-exit
-// residue (allocs − deallocs) must be a small O(1) constant, NOT ~2·N. Today at
-// N=200 the residue is 401 (allocs=403 deallocs=2) — every superseded `Gr` box AND
-// its cells vec leaks. Flips with the S115 backend ADT-wrapped-param release.
+// 0720 pin 1 — the ADT-wrapped supersede loop balances EXACTLY at N=200 in both
+// toggle states. Before the S115 W3 sweep: allocs=403 deallocs=2 (residue 401) —
+// every superseded `Gr` box AND its cells vec leaked.
 // spec: spec/12-runtime.md §12.3.1 — a superseded heap value (the old `Gr` box and
 // its cells vec) is freed when no longer reachable.
 // defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump superseded-param release — ADT-wrapped loop param never released (MS-P8 sibling; bare-vec face fixed W4) found=S114 owner=/dev
 #[test]
 fn adt_wrapped_supersede_loop_does_not_leak() {
-    let (allocs, deallocs) = rc_alloc_dealloc(&adt_wrapped_loop(200));
-    let residue = allocs - deallocs;
-    assert!(
-        residue <= SMALL_CONST,
-        "ADT-wrapped supersede loop (N=200) MUST NOT leak: residue = allocs − \
-         deallocs = {allocs} − {deallocs} = {residue}, expected ≤ {SMALL_CONST}. \
-         The superseded `Gr` box and its cells vec leak every iteration."
-    );
+    assert_exact(200, false);
+    assert_exact(200, true);
 }
 
-// 0720 pin 2 (RED) — the residue MUST NOT SCALE with N: the never-freed face is a
-// per-iteration leak, so residue(N=400) − residue(N=200) is ~2·200 today (801 −
-// 401 = 400). A correct release makes the residue N-independent (both ~O(1)).
+// 0720 pin 2 — exactness holds at EVERY N, in both toggles: N=1, N=2, N=400. The
+// former assertion was the weaker "residue(400) − residue(200) does not grow";
+// exactness at each N subsumes it and additionally catches an under-count.
 // spec: spec/12-runtime.md §12.3.1 — per-iteration superseded values are freed, so
-// at-exit residue is O(1) in the iteration count.
-// defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump superseded-param release — ADT-wrapped loop param never released (residue scales 2/iteration) found=S114 owner=/dev
+// the at-exit residue is zero at every iteration count.
+// defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump superseded-param release — ADT-wrapped loop param never released (residue scaled 2/iteration) found=S114 owner=/dev
 #[test]
 fn adt_wrapped_supersede_residue_does_not_scale_with_n() {
-    let (a200, d200) = rc_alloc_dealloc(&adt_wrapped_loop(200));
-    let (a400, d400) = rc_alloc_dealloc(&adt_wrapped_loop(400));
-    let growth = (a400 - d400) - (a200 - d200);
-    assert!(
-        growth <= SMALL_CONST,
-        "ADT-wrapped supersede residue MUST NOT scale with N: residue(400) − \
-         residue(200) = {} − {} = {growth}, expected ≤ {SMALL_CONST}. Today it \
-         grows ~2 objects/iteration (the superseded `Gr` + cells vec).",
-        a400 - d400,
-        a200 - d200
-    );
+    for n in [1usize, 2, 400] {
+        assert_exact(n, false);
+        assert_exact(n, true);
+    }
 }
 
-// 0720 CONTROL (GREEN) — the BARE-vec twin of the SAME supersede loop (no ADT wrap)
-// balances exactly (allocs == deallocs). Proves the leak is specific to the
-// ADT-wrapped loop-param, not the supersede loop shape — the W4 MS-P8 fix covers
-// this bare face. Must stay green; guards the fix from over-correcting into an
+// 0720 CONTROL — the BARE-vec twin of the SAME supersede loop (no ADT wrap)
+// balances exactly in both toggles. Proves the leak was specific to the
+// ADT-wrapped loop-param, not the supersede loop shape — the S114 W4 MS-P8 fix
+// covers this bare face. Guards the ADT-side fix from over-correcting into an
 // under-count on the bare path.
 // spec: spec/12-runtime.md §12.3.1 — a bare superseded heap loop-param is freed at
 // the tail jump (the W4 MS-P8 fix).
@@ -114,10 +126,12 @@ fn bare_vec_supersede_loop_balances_green() {
     let bare = "(defn set0 [cells m] (vec-set cells 0 m))\n\
          (defn go [cells m] (if (eq-i64 m 0) (vec-get cells 0) (go (set0 cells m) (add-i64 m -1))))\n\
          (defn main [] (Pure (go [5 5] 200)))\n";
-    let (allocs, deallocs) = rc_alloc_dealloc(bare);
-    assert_eq!(
-        allocs, deallocs,
-        "the bare-vec supersede twin MUST balance (the W4 MS-P8 bare-face fix): \
-         allocs={allocs} deallocs={deallocs}."
-    );
+    for ownership_off in [false, true] {
+        let (allocs, deallocs) = rc_alloc_dealloc(bare, ownership_off);
+        assert_eq!(
+            allocs, deallocs,
+            "the bare-vec supersede twin MUST balance (the W4 MS-P8 bare-face fix): \
+             allocs={allocs} deallocs={deallocs} (ownership_off={ownership_off})."
+        );
+    }
 }

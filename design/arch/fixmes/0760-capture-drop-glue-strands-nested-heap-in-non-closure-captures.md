@@ -112,6 +112,29 @@ owning shape is a compile error at the dispatch rather than a silent
 fall-through to the stranding plain dec. What it cannot do is force a
 SITE to use it — that is what the balance lane is for.
 
+## /testing — the repros are COMMITTED (S115 W3c)
+
+`tests/capture_drop_glue_strands_nested_heap_0760.rs`, failing-not-ignored, both
+ownership toggles, `--run`, PrimitivesOnly. This FIXME stays open because it asks
+for a `/design`(backend) RULING (a-vs-b), not merely a record — but the record
+and the CI trigger are now the tests, and the acceptance is their flip:
+
+- `closure_capturing_vec_of_strings_does_not_leak` — K, RED (401/201).
+- `closure_capturing_adt_with_string_field_does_not_leak` — L, RED (301/201).
+- `nested_adt_chain_past_glue_depth_limit_does_not_leak` — RED. **The
+  `MAX_DROP_GLUE_DEPTH = 4` truncation named in resolution (b) is now MEASURED,
+  not just admitted by its own comment: the cliff is exactly at nesting depth 5.**
+  Depth ≤ 4 balances (201/201, 301/301, 401/401, 501/501); depth 5 leaks
+  1/iteration (601/501); depth 6 leaks 2/iteration (701/501) — one further leaked
+  object per level past the limit, toggle-independent. This materially
+  strengthens option (b): it collapses BOTH faces, and the truncation face grows
+  without bound in the nesting depth.
+- GREEN controls committed alongside: capture of a Vec of scalars; capture of a
+  closure that captures a String; the `Borrowed`-ARGUMENT position twins of K and
+  L (the W3b `emit_post_call_decs` arm); the nested exemplar shape (an ADT whose
+  field is a Vec of ADTs — the `solve-range` shape, GREEN at both a scalar and a
+  String leaf, 401/401 and 601/601); and depths 1–4.
+
 ## Context
 
 Found by `/dev`(backend) while diagnosing FIXME 0749 mechanism (b): the

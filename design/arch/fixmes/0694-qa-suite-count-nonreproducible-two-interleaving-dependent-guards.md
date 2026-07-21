@@ -105,6 +105,53 @@ Close condition unchanged: ≥3 consecutive certification runs green + the
 post-fix ×20 green → close with the watch clause; any RED reopens the row
 by name, never "flake".
 
+## /testing roster update (2026-07-21, S115 W3c) — the named flap set is now THREE
+
+`agent::y_short_flag_errors_on_non_agent_build` (`tests/agent.rs:240`) joins the
+named flap family recorded in the S114 disposition item 3 / `s115-test-plan.md`
+§2. Same signature as the 0694 nullary face: **passes in isolation, fails only
+under full-suite parallel load**, and traces to no unattributed defect. Observed
+in the W3b baseline run at `1ee57501` (suite 5255 run / 5225 passed / 28 stable
+REDs / 1 skipped, plus these two flaps).
+
+Consequences for the counting convention (unchanged in kind, wider in scope):
+
+- the certification scalar remains **stable-REDs-exact + a NAMED flap set**, and
+  that set now has TWO members: `{0694 nullary load-flap,
+  agent::y_short_flag_errors_on_non_agent_build}`. Neither is folded into the
+  exact count.
+- the ≥3-run close condition in the S115 Phase-3 disposition applies to the
+  nullary face only; the agent-lane face is a NEW observation whose
+  characterization (isolation vs load, in-suite output capture, attribution) is
+  owed the same treatment before it can close. Per the failing-test discipline
+  "flaky" is not a disposition for either.
+- note the lane asymmetry: `tests/agent.rs` cells run in BOTH lanes (the
+  `#[cfg(not(feature = "agent"))]` face here runs in the DEFAULT suite, not
+  through `run-agent-lane.sh`), so the binary-provenance isolation of FIXME 0615
+  is not by itself an explanation — a candidate mechanism, to be demonstrated
+  rather than presumed, is process/resource contention at spawn under full
+  parallel load.
+
+**THIRD member, observed live this session:
+`multi_sig_module_locality::imported_multi_sig_base_direct_call_repl`
+(`tests/multi_sig_module_locality.rs:83`).** Two consecutive full
+`cargo nextest run --no-fail-fast` runs on the SAME tree (W3c, HEAD `1ee57501`
+plus this wave's test-only edits): RED in run 1, GREEN in run 2. It is a
+declared GREEN fence ("Was RED pre-W2; GREEN fence now" — the MC-X2 REPL face
+of the S113 carrier-loss family, `// defect:` class=carrier-loss,
+owner=/dev(typecheck)), so like the nullary face this is a should-be-green
+test failing only under full-suite parallel load. Its in-suite failure output
+was NOT captured (run 1 was not tee'd — my miss; run 2 onward is logged).
+Notably it is a REPL-mode cell of the same multi-sig/no-impl-fallback seam
+family as the nullary face — a shared-seam hypothesis worth testing before a
+harness-contention one.
+
+Both new members carry the same evidentiary obligation as the nullary face
+(isolation-vs-load characterization, in-suite output capture, attribution);
+none may be dispositioned as "flaky".
+
+This FIXME stays OPEN (roster update only; no disposition change).
+
 ## Context
 
 Found by /review W4 while verifying dispatch priority 8 (suite-state

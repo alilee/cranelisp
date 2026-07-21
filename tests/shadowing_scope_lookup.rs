@@ -347,23 +347,24 @@ fn let_shadowed_trait_operator_call_repl_resolves_to_local() {
 // of the shadowed local `+` — `((+ 1) 2)` — MUST auto-curry the LOCAL closure and
 // yield 0.
 //
-// RE-ATTRIBUTED S114 W7 (FIXME 0705): the typecheck mis-dispatch this cell originally
-// pinned (the `infer.rs` auto-curry filler keyed on the raw AST name `+`, dispatching
-// the Num trait method → 3) was FIXED by the W7 trait-shadow carrier discipline. The
-// cell did NOT flip green — its SYMPTOM CHANGED (the MC-E1 "a non-flip is evidence"
-// pattern): it now fails at codegen —
-//   fn-as-value wrapper for '+' reached codegen with no GOT-slot carrier
-// `resolve_auto_curry` correctly produces an `AutoCurry` over the LOCAL closure
-// (`VarRef::Local`, no Dispatch FQ), but the BACKEND then looks up `+`'s GOT slot and
-// a local closure has none. Typecheck is complete; this re-attributes to the BACKEND
-// (AutoCurry-over-local-target / fn-as-value-wrapper-for-local seam). Fix = S115.
+// HISTORY (FIXED — GREEN; this cell is a regression guard, not an open defect).
+// Two successive faults lived here. (1) Typecheck: the `infer.rs` auto-curry filler
+// keyed on the raw AST name `+` and dispatched the Num trait method → 3; fixed by
+// the S114 W7 trait-shadow carrier discipline. (2) The cell did NOT flip green then
+// — its SYMPTOM CHANGED (the MC-E1 "a non-flip is evidence" pattern) to a codegen
+// failure, `fn-as-value wrapper for '+' reached codegen with no GOT-slot carrier`:
+// `resolve_auto_curry` correctly produced an `AutoCurry` over the LOCAL closure
+// (`VarRef::Local`, no Dispatch FQ), and the BACKEND then looked up `+`'s GOT slot,
+// which a local closure does not have. That re-attributed to the backend and was
+// FIXED in S115 W3 change-set 3 (totality over the closed carrier sums — no `_ =>`
+// arm; a `ViaCallee` + `Global` pairing is now a located producer-contradiction
+// error rather than a GOT-slot lookup). FIXME 0705 retired at that flip.
 //
 // FAMILY CROSS-REF: `fn_as_value_carrier_loss.rs::
-// trait_operator_partial_app_impl_present_has_got_carrier` surfaces the IDENTICAL
-// "no GOT-slot carrier" error for the impl-PRESENT (non-shadowed, global) trait-op
-// partial-app face; the two are PLAUSIBLY the same fn-as-value-wrapper-carrier seam
-// family (this face over a §4.6 LOCAL closure, that one over a GLOBAL trait op).
-// Failing-not-ignored.
+// trait_operator_partial_app_impl_present_has_got_carrier` pins the impl-PRESENT
+// (non-shadowed, global) trait-op partial-app face of the same fn-as-value-wrapper
+// carrier family; it is separately owned (`/dev`(typecheck), producer gap at
+// `mono_collect.rs::resolve_auto_curry`) and is the record for that face.
 // defect: class=carrier-loss locus=crates/cranelisp-backend AutoCurry-over-local-target fn-as-value wrapper — a local closure has no GOT slot (FIXME 0705; re-attributed out of typecheck infer.rs; plausibly the fn_as_value_carrier_loss seam family) found=S114 owner=/dev
 #[test]
 fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
@@ -382,6 +383,39 @@ fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
         "`((+ 1) 2)` with a let-shadowed local `+` MUST auto-curry the LOCAL closure \
          (`(fn [a b] 0)`) and yield 0 — the auto-curry filler MUST NOT dispatch the \
          Num trait method `+` (which returns 3); got exit {:?}:\n{c}",
+        out.status.code()
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.3 — the NON-TRAIT auto-curry control (born
+// green; FIXME 0705's requested cell, added S115 W3c).
+//
+// The TWIN of the auto-curry cell above with the ONLY difference being the callee's
+// name: a plain local closure `g` instead of the trait-shadowing `+`. Same prelude,
+// same shape, same assertion. It isolates AutoCurry-over-a-LOCAL-TARGET from trait
+// dispatch — the backend carrier fault above was in the local-target wrapper, not in
+// trait resolution, and this cell would have named that without the trait shadow
+// confounding it. A coverage-by-definition-variants cell (the local-closure variant
+// of the auto-curry family, `tests/CLAUDE.md` §"Coverage by definition variants"),
+// not a nice-to-have: if a future fix re-keys the wrapper on trait-ness, the twins
+// diverge and the failing one names the site.
+#[test]
+fn local_closure_auto_curry_non_trait_control_resolves_to_local() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .run("user.cl")
+        .user(
+            "(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))\n\
+             (defn main [] (Pure (f)))\n",
+        )
+        .output();
+    let c = format!("{}{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`((g 1) 2)` over a plain local closure MUST auto-curry the LOCAL target and \
+         yield 0 — no trait dispatch is involved, so this face must never depend on \
+         the trait-shadow path; got exit {:?}:\n{c}",
         out.status.code()
     );
 }
