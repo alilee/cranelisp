@@ -33,11 +33,17 @@ scaffolding both build on `synth::{sym,int,str,list,bracket,cons,nil,…}` — n
 hand-roll `Sexp::{Symbol,List,Bracket}` + `next_synthetic_span()` inline. Spans
 are opaque-unique (BC invariant 4), so consolidating never changed behaviour.
 
-**`classify_head` is the ONE top-level-head classifier** (FIXME 0678):
-`build_form_inner` (dispatch) and `is_top_level_form_sexp`/`head_is_top_level_form`
-(build_form-vs-bare-expr routing) both consume it, and the `ast_builder/tests.rs`
-adapter routes through the prod `is_top_level_form_sexp` — adding a top-level head
-is exactly ONE edit in `classify_head`, and the test router cannot drift.
+**`classify_head` is the ONE top-level-head classifier** (FIXME 0678/0703):
+`build_form_inner` (dispatch), `is_top_level_form_sexp`/`head_is_top_level_form`
+(build_form-vs-bare-expr routing), the public shape recognisers
+`defmacro::is_defmacro`/`is_begin`, and `module_extract`'s peel dispatch (via the
+`HeadKind::StructuralDecl(StructuralKind)` payload) all consume it — adding a
+top-level head is exactly ONE edit in `classify_head`, and neither the test router
+nor the int-consumed recognisers can drift. Do NOT re-derive an arm
+(`head == "defmacro" || head == "defmacro-"`) anywhere: `is_defmacro` is public
+and int-consumed, so drift there mis-routes real dispatch. Cross-crate straggler
+for whenever int is next deployed: `src/expander.rs` hand-rolls an inline
+`is_defmacro_form` instead of calling the exported `cranelisp_frontend::is_defmacro`.
 
 ## Reader token disambiguation (spec §1.7) — `read_form` dispatch order is load-bearing
 
@@ -122,8 +128,37 @@ bare, so a qualified spelling rejects (spec §5 binder-positions table, S113). I
 uses the SAME both-halves-non-empty predicate — a bare `/` (division operator)
 splits to empty halves and is NOT qualified (Principle 16).
 
+**The `.` (dotted) axis is the SAME one predicate** (S115, spec §5 `[S115]`,
+0702 Ruling 1): a dotted spelling in ANY binder position is a located
+compile-time error too, because `.` is type/trait *qualification* — a reference
+device — and the language has no notion of binding into a nested path. The
+widening is exactly **one** sibling splitter `split_dotted_name` (rsplit at the
+last `.`, both halves non-empty, mirroring the `/` guard) consumed **only**
+inside `reject_qualified_binder_head`. Two structural rules hold the single
+source (Principle 7; 0703's no-new-mirror constraint):
+
+- **`split_qualified_name` stays `/`-only — never widen it.** It serves
+  REFERENCES, where a dot is legal (`Maybe.Some`, `core.io/pure`, dotted module
+  paths in imports); splitting those would corrupt them.
+- **No second `.`-checker for binder purposes.** Do not add a `contains('.')` at
+  a call site or a per-position dotted gate — route the site onto the helper
+  instead. The `mod`/`platform` `/`+`.` guard (`module_extract.rs`) is a
+  *module-phase* rule (spec §5.8/§5.10), a different phase, not a mirror.
+
+The reject fires on the dotted spelling **independent of each site's case gate**
+(`is_uppercase_start` keys on the after-separator segment, so `A.b` would
+otherwise pass a matchable-ctor gate); the helper is called BEFORE the case check
+at every site that has one. The shared message is **position-neutral** — "a
+binder must be a bare (unqualified) name", never "definition head" — because the
+ONE string is emitted at head AND `let`/`match`/param positions (FIXME 0711); do
+not thread a position noun through the call sites.
+
 **Landed binder-reject sites** (all see raw pre-int source, so the reject is
-sound): the §5 native heads (defn / deftype-both-arms / deftrait-caller /
+sound; each enforces BOTH the `/` and `.` axes through the one helper): the
+**`deftype` type parameter** (`build_type_head`'s param map — the last site to be
+routed, S115; it was the one binder position that never called the helper, so a
+qualified param died downstream as an incidental `module … not found` at a
+degenerate `0..0` span) and the §5 native heads (defn / deftype-both-arms / deftrait-caller /
 defmacro / method-sig / con_var); `deftype` **constructor names** (both arms) and
 **field names** (both arms); `defmacro` **params** (`parse_param_items` +
 `parse_bracket_pattern`); the `import`/`export` **module alias**

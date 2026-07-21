@@ -21,6 +21,7 @@
 //! this boundary. All `super`-resolution happens against the parsing
 //! module's own path per spec §8.3.7.
 
+use crate::ast_builder::{HeadKind, StructuralKind, classify_head};
 use cranelisp_types::{ErrorLocation,
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
     PlatformSpec, Sexp, Span, Visibility,
@@ -109,35 +110,33 @@ pub fn extract_module_declarations(
     for sexp in sexps {
         match sexp {
             Sexp::List(elems, span) if !elems.is_empty() => {
-                if let Sexp::Symbol(head, _) = &elems[0] {
-                    match head.as_str() {
-                        "mod" | "mod-" => {
-                            let visibility = if head == "mod-" {
-                                Visibility::Private
-                            } else {
-                                Visibility::Public
-                            };
+                // Peel dispatch consumes the ONE head classifier's structural
+                // payload (FIXME 0678/0703 (3)) rather than re-listing
+                // `"mod" | "mod-" | "import" | "export" | "platform"` — a head
+                // added to `classify_head` alone would otherwise be rejected by
+                // `build_form` as "must be peeled" while never being peeled here.
+                if let Sexp::Symbol(head, _) = &elems[0]
+                    && let HeadKind::StructuralDecl(kind) = classify_head(head)
+                {
+                    match kind {
+                        StructuralKind::Mod(visibility) => {
                             let decl = parse_mod_decl(elems, *span, visibility)?;
                             mod_decls.push(decl);
-                            continue;
                         }
-                        "import" => {
+                        StructuralKind::Import => {
                             let specs = parse_import(elems, *span, containing_module)?;
                             import_specs.extend(specs);
-                            continue;
                         }
-                        "export" => {
+                        StructuralKind::Export => {
                             let specs = parse_export(elems, *span)?;
                             export_specs.extend(specs);
-                            continue;
                         }
-                        "platform" => {
+                        StructuralKind::Platform => {
                             let spec = parse_platform(elems, *span)?;
                             platform_specs.push(spec);
-                            continue;
                         }
-                        _ => {}
                     }
+                    continue;
                 }
                 remaining.push(sexp.clone());
             }

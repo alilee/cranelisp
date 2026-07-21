@@ -821,7 +821,15 @@ fn read_local_name(r: &mut Reader) -> Result<String, CranelispError> {
             return Ok(r.src[op_start..r.pos].to_string());
         }
     }
-    Err(r.error("expected local name after '/'"))
+    // Empty LOCAL half (`foo/`, `:foo/`, `a.b/`) — the dangling-qualifier twin of
+    // the empty-MODULE-half `/bar` reject in `read_operator`. Brought to message
+    // PARITY with that sibling (FIXME 0710): name the malformed shape and the
+    // remedy, not just the missing token. Message text only — same `Err`, same
+    // seam, same located span (spec §8.5.1 both-halves-non-empty).
+    Err(r.error(
+        "`/` here has no local name after it — a qualified name needs a non-empty \
+         local (`mod/name`); drop the trailing `/` to write a bare name",
+    ))
 }
 
 fn consume_symbol_chars(r: &mut Reader) {

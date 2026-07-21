@@ -71,6 +71,31 @@ fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
         .filter(|(module, bare)| !module.is_empty() && !bare.is_empty())
 }
 
+/// The ONE dotted-name splitter for the **binder-reject axis**
+/// (`design/frontend/binder-head-reject.md` §2.2; 0702 Ruling 1).
+///
+/// A written name is a dotted spelling **iff** splitting at the LAST `.` yields
+/// two NON-EMPTY halves — the exact both-halves-non-empty discipline
+/// [`split_qualified_name`] uses (Principle 16). `.` is reserved for type/trait
+/// qualification (spec/05-definitions.md §5, `[S115]`); a binder never carries
+/// one. The reader only ever forms a dotted SYMBOL with non-empty segments
+/// (`read_dotted_name` requires a valid member after each `.`), so a
+/// lone/leading/trailing `.` is not a dotted spelling — mirroring how a bare `/`
+/// is not qualified.
+///
+/// Deliberately **NOT** a widening of [`split_qualified_name`]: that one serves
+/// **references** (`type_ref_from_name` / `trait_ref_from_name`), where a dotted
+/// spelling is LEGAL (`Maybe.Some`, a dotted module path in an import) and
+/// splitting it would corrupt the reference. The `.` axis is a binder-reject-only
+/// concern, so it is consumed **only** inside [`reject_qualified_binder_head`] —
+/// the single-source property the 0703 no-new-mirror constraint requires
+/// (Principle 7): there is no second `.`-checking predicate for binder purposes
+/// anywhere in the crate.
+fn split_dotted_name(name: &str) -> Option<(&str, &str)> {
+    name.rsplit_once('.')
+        .filter(|(head, member)| !head.is_empty() && !member.is_empty())
+}
+
 /// Reserved names that root special forms claim. A root special form's name
 /// cannot be defined or bound by user code (spec/02-grammar.md §2.9, Principle
 /// 10's two-category amendment). The set is **only** `trace` — the other root
@@ -100,39 +125,67 @@ pub(crate) fn reject_reserved_binder_name(name: &str, span: Span) -> Result<(), 
     Ok(())
 }
 
-/// Reject a qualified (slash-bearing) spelling in DECLARATION-HEAD position.
+/// Reject a qualified (`/`-bearing) **or dotted (`.`-bearing)** spelling in a
+/// BINDER position.
 ///
-/// A declaration head is a binder, not a reference (spec/05-definitions.md §5,
-/// "Declaration heads are binders") — it binds a NEW name into the CURRENT
-/// module and MUST be a bare (unqualified) symbol. A qualified head (`fmt/foo`,
+/// A binder is not a reference (spec/05-definitions.md §5, "Declaration heads
+/// are binders") — it introduces a NEW name into the CURRENT module or scope and
+/// MUST be a bare (unqualified) symbol. A qualified spelling (`fmt/foo`,
 /// `fmt/Foo`) is a compile-time error; there is no mechanism for declaring a
 /// name into another module. This is the exact dual of the §8.5 reference
 /// splitters (`type_ref_from_name` / `trait_ref_from_name`) that split a
 /// *reference* at the last `/`: a reference reaches across modules; a binder
 /// never does.
 ///
-/// Single-sourced (Principle 7) so every binder head site enforces the
-/// identical rule — the sibling of [`reject_reserved_binder_name`]: one gates
-/// reserved names (`trace`), one gates qualified spellings; both fire where
-/// binder-ness is decided (Principle 18).
+/// A **dotted** spelling (`a.b`, `A.B`) is equally a compile-time error (user
+/// ruling 2026-07-21, spec §5 `[S115]`; 0702 Ruling 1): `.` is reserved for
+/// type/trait qualification — a *reference* device — and the language has no
+/// notion of defining a name into a nested path, so a dotted binder has no
+/// meaning to give. **Reference** positions keep their dots (the `Maybe.Some`
+/// ctor-pattern head §6.2.1, `Type.field` accessors, dotted type/trait refs
+/// §8.5, dotted module paths in imports) — the rule is drawn at the
+/// binder/reference line, identically for both separators.
+///
+/// Single-sourced (Principle 7) so every binder site — the §5 declaration heads
+/// AND the value-level locals (`let`/`match`/params) — enforces the identical
+/// rule on BOTH axes; the sibling of [`reject_reserved_binder_name`]: one gates
+/// reserved names (`trace`), one gates qualified/dotted spellings; both fire
+/// where binder-ness is decided (Principle 18). Widening the `.` axis is exactly
+/// this one predicate plus the one delegated-to [`split_dotted_name`] — never a
+/// per-position `contains('.')` gate (0703's no-new-mirror constraint).
 ///
 /// A name is qualified iff splitting at the LAST `/` yields two NON-EMPTY halves
-/// — the exact guard the §8.5 reference splitters use (`type_ref_from_name` /
-/// `trait_ref_from_name`), so this is their precise dual. The both-halves-
+/// (and dotted iff the same holds at the last `.`) — the exact guard the §8.5
+/// reference splitters use, so this is their precise dual. The both-halves-
 /// non-empty condition is load-bearing (Principle 16): a bare `/` is the
 /// legitimate division-operator name (`(deftrait Num (/ [a b] self) …)`,
 /// `stdlib/num/num.cl`), and `/`, `foo/`, `/bar` all split to an empty half and
 /// are therefore NOT qualified — a coarse `contains('/')` would wrongly reject
-/// the `/` operator binder. The predicate keys on `/` only: a dotted name
-/// (`Point.x`) is a member/accessor form, never a raw declaration head, and
-/// widening to `.` is out of scope (Principle 6).
+/// the `/` operator binder, and a coarse `contains('.')` would wrongly reject a
+/// degenerate lone/leading/trailing `.`.
+///
+/// The `/` arm is checked first, so a `module/…` binder reports the qualifier
+/// fault. The message is deliberately **position-neutral** ("a binder must be a
+/// bare (unqualified) name", FIXME 0711): the one string is shared by head and
+/// value-level positions, so it must not say "definition head" at a `let`/
+/// `match`/param binder. No position noun is threaded through the ~20 call sites
+/// (Principle 6).
 pub(crate) fn reject_qualified_binder_head(name: &str, span: Span) -> Result<(), CranelispError> {
     if let Some((_module, bare)) = split_qualified_name(name) {
         return Err(parse_err(
             &format!(
-                "'{name}' is a qualified name, but a definition head is a binder and must be a \
-                 bare (unqualified) name — write '{bare}' (a definition binds into the current \
-                 module; use an import/qualified reference to reach another module)"
+                "'{name}' is a qualified name, but a binder must be a bare (unqualified) name — \
+                 write '{bare}' (a binder introduces a name into the current module or scope; use \
+                 an import or qualified reference to reach another module)"
+            ),
+            span,
+        ));
+    }
+    if let Some((_head, member)) = split_dotted_name(name) {
+        return Err(parse_err(
+            &format!(
+                "'{name}' is a dotted name, but a binder must be a bare (unqualified) name — \
+                 write '{member}' ('.' is reserved for type/trait qualification)"
             ),
             span,
         ));
@@ -203,10 +256,29 @@ pub(crate) enum HeadKind {
     /// `begin` — a cluster the orchestrator must flatten before per-form dispatch.
     Begin,
     /// A module-phase structural declaration (`mod`/`mod-`/`import`/`export`/
-    /// `platform`) the orchestrator must peel before per-form dispatch.
-    StructuralDecl,
+    /// `platform`) the orchestrator must peel before per-form dispatch. The
+    /// payload names WHICH declaration so `module_extract`'s peel dispatch
+    /// consumes this classification instead of re-listing the same vocabulary
+    /// (FIXME 0703 (3), Principle 7).
+    StructuralDecl(StructuralKind),
     /// Not a recognised top-level head — a bare expression / unknown form.
     Expr,
+}
+
+/// Which module-phase structural declaration a [`HeadKind::StructuralDecl`] head
+/// names. The peel dispatch (`module_extract::extract_module_declarations`) needs
+/// per-decl routing that [`classify_head`] would otherwise collapse; carrying it
+/// as a payload keeps the vocabulary single-sourced (FIXME 0703 (3)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StructuralKind {
+    /// `mod` / `mod-` (visibility from the suffix).
+    Mod(Visibility),
+    /// `import`.
+    Import,
+    /// `export`.
+    Export,
+    /// `platform`.
+    Platform,
 }
 
 /// Classify a form head symbol. The single source of the top-level head
@@ -222,7 +294,11 @@ pub(crate) fn classify_head(head: &str) -> HeadKind {
         "defmacro" | "defmacro-" => HeadKind::Defmacro,
         "impl" => HeadKind::Impl,
         "begin" => HeadKind::Begin,
-        "mod" | "mod-" | "import" | "export" | "platform" => HeadKind::StructuralDecl,
+        "mod" => HeadKind::StructuralDecl(StructuralKind::Mod(Visibility::Public)),
+        "mod-" => HeadKind::StructuralDecl(StructuralKind::Mod(Visibility::Private)),
+        "import" => HeadKind::StructuralDecl(StructuralKind::Import),
+        "export" => HeadKind::StructuralDecl(StructuralKind::Export),
+        "platform" => HeadKind::StructuralDecl(StructuralKind::Platform),
         _ => HeadKind::Expr,
     }
 }
@@ -328,7 +404,7 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
             "build_form: `(begin …)` must be flattened by the orchestrator before per-form dispatch",
             head_span,
         )),
-        HeadKind::StructuralDecl => Err(parse_err(
+        HeadKind::StructuralDecl(_) => Err(parse_err(
             "build_form: structural declarations must be peeled by `extract_module_declarations` before per-form dispatch",
             head_span,
         )),
@@ -715,6 +791,18 @@ fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispErro
                 .iter()
                 .map(|s| {
                     let (n, n_span) = expect_symbol(s)?;
+                    // A `deftype` type parameter is a BINDER (spec §5 binder table,
+                    // `[S115]`) — it introduces a type variable into the type's
+                    // scope — so a qualified/dotted spelling rejects here, located
+                    // at the param span. Checked BEFORE the lowercase gate (the
+                    // same qualified-before-case order the ctor-name arm uses):
+                    // `is_uppercase_start` keys on the after-separator segment, so
+                    // `prim/a` would otherwise pass the case gate and die
+                    // downstream as an incidental `module 'prim' … not found` at a
+                    // degenerate `0..0` span (0702 §3.2 rider). This is the ONE
+                    // binder site that was never routed onto the shared helper; it
+                    // is a routing call, not a copy of the predicate (Principle 7).
+                    reject_qualified_binder_head(n, n_span)?;
                     // A `deftype` type parameter is a type VARIABLE and MUST be a
                     // lowercase symbol (spec §2.2.2 `type_param = SYMBOL
                     // (* lowercase *)`; §2.4.2 — an uppercase symbol is a

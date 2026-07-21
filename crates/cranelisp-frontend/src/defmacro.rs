@@ -38,11 +38,18 @@ pub use cranelisp_types::{DefmacroInfo, MacroClause};
 ///
 /// Shape recogniser used by the orchestrator to route forms to the
 /// correct per-shape handler before invoking [`parse_defmacro`].
+///
+/// Delegates to the ONE head-vocabulary classifier (FIXME 0678/0703 (1)) — this
+/// is a **public**, int-consumed predicate, so a re-derived `head == "defmacro"`
+/// list here would mis-route real dispatch, not just tests (Principle 7).
 pub fn is_defmacro(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
     {
-        return head == "defmacro" || head == "defmacro-";
+        return matches!(
+            crate::ast_builder::classify_head(head),
+            crate::ast_builder::HeadKind::Defmacro
+        );
     }
     false
 }
@@ -53,11 +60,16 @@ pub fn is_defmacro(sexp: &Sexp) -> bool {
 /// by [`flatten_begin`] before per-form `build_form` dispatch. The
 /// `build_form` entry point rejects `begin` directly to surface the
 /// missing flatten step early.
+/// Delegates to the ONE head-vocabulary classifier (FIXME 0678/0703 (2)) so the
+/// `begin` arm cannot drift from `build_form`'s must-be-flattened reject.
 pub fn is_begin(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
     {
-        return head == "begin";
+        return matches!(
+            crate::ast_builder::classify_head(head),
+            crate::ast_builder::HeadKind::Begin
+        );
     }
     false
 }

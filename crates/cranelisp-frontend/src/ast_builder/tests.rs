@@ -2198,6 +2198,155 @@
         );
     }
 
+    // spec: spec/05-definitions.md §5 — a DOTTED spelling in a binder position is
+    // a located compile-time error on the same footing as a qualified one (user
+    // ruling 2026-07-21, `[S115]`; 0702 Ruling 1). The predicate is the `/` arm's
+    // twin: both-halves-non-empty at the LAST `.` (Principle 16), so a degenerate
+    // lone/leading/trailing `.` is NOT a dotted spelling. The discriminating
+    // control is the reference splitter: `split_qualified_name` stays `/`-only, so
+    // a dotted REFERENCE is never split (the fences `Maybe.Some` / dotted module
+    // paths rest on that).
+    #[test]
+    fn reject_qualified_binder_head_rejects_dotted_and_names_member_fix() {
+        let span = Span::new(3, 10);
+        let err = reject_qualified_binder_head("a.b", span)
+            .expect_err("a dotted binder is rejected");
+        let msg = err.message();
+        assert!(
+            msg.contains("dotted name") && msg.contains("binder"),
+            "message names the dotted-binder rule; got: {msg}"
+        );
+        assert!(msg.contains("write 'b'"), "message names the bare fix `b`; got: {msg}");
+        assert_eq!(err.location().span, span, "reject is located at the binder span");
+        // Uppercase-dotted rejects on the DOTTED spelling, independent of the
+        // per-site case gates (`A.b` passes an uppercase-start gate).
+        assert!(reject_qualified_binder_head("A.b", span).is_err());
+        assert!(reject_qualified_binder_head("A.B", span).is_err());
+        // Deep-dotted names the LAST segment.
+        let deep = reject_qualified_binder_head("a.b.c", span).unwrap_err();
+        assert!(deep.message().contains("write 'c'"), "got: {}", deep.message());
+        // Both-halves-non-empty controls: a degenerate `.` is NOT dotted.
+        assert!(reject_qualified_binder_head(".", span).is_ok(), "lone `.` must pass");
+        assert!(reject_qualified_binder_head("a.", span).is_ok());
+        assert!(reject_qualified_binder_head(".b", span).is_ok());
+        // The `/` arm is checked FIRST, so a name carrying both reports the
+        // qualifier fault.
+        let both = reject_qualified_binder_head("a.b/c", span).unwrap_err();
+        assert!(both.message().contains("qualified name"), "got: {}", both.message());
+        // CONTROL — the REFERENCE splitter is untouched by the widening: a dotted
+        // name is not a qualified split, so dotted references keep working.
+        assert_eq!(split_qualified_name("Maybe.Some"), None);
+        assert_eq!(split_qualified_name("core.io/pure"), Some(("core.io", "pure")));
+    }
+
+    // spec: spec/05-definitions.md §5 — the ONE binder-reject message is shared by
+    // declaration heads AND value-level locals (`let`/`match`/param), so it must
+    // be position-neutral: saying "a definition head is a binder" at a `let`
+    // binder describes something the user did not write (FIXME 0711).
+    #[test]
+    fn binder_reject_message_is_position_neutral() {
+        let span = Span::new(0, 5);
+        for name in ["fmt/foo", "a.b"] {
+            let err = reject_qualified_binder_head(name, span).unwrap_err();
+            let msg = err.message();
+            assert!(
+                msg.contains("a binder must be a bare (unqualified) name"),
+                "message must state the position-neutral binder rule; got: {msg}"
+            );
+            assert!(
+                !msg.contains("definition head"),
+                "message must NOT say \"definition head\" (wrong at let/match/param \
+                 positions, FIXME 0711); got: {msg}"
+            );
+        }
+    }
+
+    // spec: spec/05-definitions.md §5 — the `.` column of the binder matrix: every
+    // native binder-head form rejects a DOTTED head and accepts its bare twin,
+    // through the SAME one seam the `/` column uses (a cell that flipped
+    // differently would have grown its own path). Located at the head substring.
+    #[test]
+    fn native_binder_heads_reject_dotted_and_accept_bare_twin() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("(defn a.b [x] x)", "a.b", "(defn ab [x] x)"),
+            ("(defn- a.b [x] x)", "a.b", "(defn- ab [x] x)"),
+            ("(deftype A.B [:Int n])", "A.B", "(deftype AB [:Int n])"),
+            ("(deftype- A.B [:Int n])", "A.B", "(deftype- AB [:Int n])"),
+            ("(deftype (A.Pair a b) [:a x :b y])", "A.Pair", "(deftype (APair a b) [:a x :b y])"),
+            // Variant-ctor name: UPPERCASE-dotted, so the reject must fire on the
+            // dotted spelling INDEPENDENT of the pre-existing uppercase gate.
+            ("(deftype Shape (A.b [:Int r]))", "A.b", "(deftype Shape (Ab [:Int r]))"),
+            // Field name (mints a `Type.field` accessor — §5.2.6).
+            ("(deftype P [:Int a.b])", "a.b", "(deftype P [:Int ab])"),
+            ("(deftrait A.B (m [self] self))", "A.B", "(deftrait AB (m [self] self))"),
+            ("(deftrait- A.B (m [self] self))", "A.B", "(deftrait- AB (m [self] self))"),
+            ("(deftrait (Cat.X f) (fmap [g self] self))", "Cat.X", "(deftrait (CatX f) (fmap [g self] self))"),
+            // con_var (§7.2 bare lowercase type-constructor variable).
+            ("(deftrait (Functor a.b) (fmap [g self] self))", "a.b", "(deftrait (Functor ab) (fmap [g self] self))"),
+            // Method-signature name (§5.3.3).
+            ("(deftrait Foo (a.b [self] self))", "a.b", "(deftrait Foo (ab [self] self))"),
+            ("(defmacro a.b [x] x)", "a.b", "(defmacro ab [x] x)"),
+            ("(defmacro- a.b [x] x)", "a.b", "(defmacro- ab [x] x)"),
+        ];
+        let build_one = |src: &str| -> Result<(), CranelispError> {
+            let sexps = crate::reader::parse(src)?;
+            build_form(&sexps[0]).map(|_| ())
+        };
+        for (dotted, head, bare) in cases {
+            let err = build_one(dotted)
+                .expect_err(&format!("dotted head `{dotted}` must be rejected"));
+            assert!(
+                err.message().contains("dotted name") && err.message().contains("binder"),
+                "for `{dotted}` expected the dotted-binder message, got: {}",
+                err.message()
+            );
+            assert_err_span_at(dotted, &err, head, 0);
+            assert!(build_one(bare).is_ok(), "bare-head twin `{bare}` must parse");
+        }
+    }
+
+    // spec: spec/05-definitions.md §5 — the deftype TYPE PARAMETER is a binder
+    // (`[S115]` binder table). It was the ONE binder site never routed onto the
+    // shared helper: `is_uppercase_start` keys on the after-separator segment, so
+    // `prim/a` passed the lowercase gate and died downstream as an incidental
+    // `module 'prim' … not found` at a degenerate `0..0` span. The routing call
+    // makes both separators a located reject at the PARAM span, with the lowercase
+    // gate still the next check for a bare uppercase param.
+    #[test]
+    fn deftype_type_param_rejects_qualified_and_dotted_located_at_param() {
+        let build_one = |src: &str| -> Result<(), CranelispError> {
+            let sexps = crate::reader::parse(src)?;
+            build_form(&sexps[0]).map(|_| ())
+        };
+        let err = build_one("(deftype (Duo prim/a b) [:b x])")
+            .expect_err("a qualified type param is rejected");
+        assert!(
+            err.message().contains("qualified name") && err.message().contains("binder"),
+            "got: {}", err.message()
+        );
+        assert!(
+            !err.message().contains("not found"),
+            "must be a located binder reject, NOT the incidental module-resolution \
+             death; got: {}", err.message()
+        );
+        assert_err_span_at("(deftype (Duo prim/a b) [:b x])", &err, "prim/a", 0);
+        // The `.` twin, same seam.
+        let dotted = build_one("(deftype (Duo a.b c) [:c x])")
+            .expect_err("a dotted type param is rejected");
+        assert!(dotted.message().contains("dotted name"), "got: {}", dotted.message());
+        assert_err_span_at("(deftype (Duo a.b c) [:c x])", &dotted, "a.b", 0);
+        // Bare lowercase param still binds (the positive twin).
+        assert!(build_one("(deftype (Duo a c) [:c x])").is_ok());
+        // The lowercase gate is still the NEXT check for a bare uppercase param.
+        let upper = build_one("(deftype (Duo A c) [:c x])")
+            .expect_err("a bare uppercase type param still reports the case rule");
+        assert!(
+            upper.message().contains("lowercase"),
+            "the case gate must still fire for a bare uppercase param; got: {}",
+            upper.message()
+        );
+    }
+
     // spec: spec/05-definitions.md §5 — the native binder-head forms
     // (`defn`/`defn-`, `deftype`/`deftype-` bare and parenthesized, `deftrait`/
     // `deftrait-` bare and parenthesized, deftrait method-signature name,
@@ -3807,9 +3956,48 @@
             assert_eq!(classify_head("defmacro"), HeadKind::Defmacro);
             assert_eq!(classify_head("impl"), HeadKind::Impl);
             assert_eq!(classify_head("begin"), HeadKind::Begin);
-            assert_eq!(classify_head("import"), HeadKind::StructuralDecl);
-            assert_eq!(classify_head("platform"), HeadKind::StructuralDecl);
+            assert_eq!(
+                classify_head("import"),
+                HeadKind::StructuralDecl(StructuralKind::Import)
+            );
+            assert_eq!(
+                classify_head("platform"),
+                HeadKind::StructuralDecl(StructuralKind::Platform)
+            );
+            assert_eq!(
+                classify_head("mod-"),
+                HeadKind::StructuralDecl(StructuralKind::Mod(Visibility::Private))
+            );
             assert_eq!(classify_head("add-i64"), HeadKind::Expr);
+        }
+
+        // FIXME 0703 (1)/(2): the public shape recognisers `is_defmacro`/`is_begin`
+        // used to re-derive their arms (`head == "defmacro" || head == "defmacro-"`)
+        // — a PUBLIC, int-consumed predicate, so drift there mis-routes real
+        // dispatch. They now delegate to `classify_head`. Detection proof: this
+        // test compares both predicates against the classifier across the whole
+        // vocabulary, so a re-derived list that omits (say) `defmacro-` reds here.
+        #[test]
+        fn shape_recognisers_agree_with_classifier() {
+            use crate::defmacro::{is_begin, is_defmacro};
+            let vocab = [
+                "defn", "defn-", "deftype", "deftype-", "deftrait", "deftrait-",
+                "defmacro", "defmacro-", "impl", "begin", "mod", "mod-", "import",
+                "export", "platform", "add-i64", "foo",
+            ];
+            for head in vocab {
+                let form = crate::reader::parse(&format!("({head})")).unwrap();
+                assert_eq!(
+                    is_defmacro(&form[0]),
+                    matches!(classify_head(head), HeadKind::Defmacro),
+                    "`is_defmacro` must agree with the classifier for `{head}`"
+                );
+                assert_eq!(
+                    is_begin(&form[0]),
+                    matches!(classify_head(head), HeadKind::Begin),
+                    "`is_begin` must agree with the classifier for `{head}`"
+                );
+            }
         }
 
         // `head_is_top_level_form` (the routing predicate) is defined over

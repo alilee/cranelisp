@@ -1041,6 +1041,33 @@
             );
         }
 
+        // spec: 08-modules §8.5.1 — the empty-LOCAL-half reject (`foo/`, `:foo/`,
+        // `a.b/`) names the malformed shape AND the remedy, at parity with its
+        // rich empty-MODULE-half sibling (`/bar`) rather than the terse
+        // "expected local name after '/'" it used to emit (FIXME 0710). Message
+        // text only — same seam, same located span. Detection proof: reverting the
+        // message reds this test on the remedy substring.
+        #[test]
+        fn empty_local_half_message_names_shape_and_remedy() {
+            for src in ["foo/", ":foo/", ":a.b/"] {
+                let err = read_err(src);
+                let msg = err.message();
+                assert!(
+                    msg.contains("no local name after it"),
+                    "`{src}` must name the dangling-qualifier shape, got: {msg}"
+                );
+                assert!(
+                    msg.contains("mod/name") && msg.contains("drop the trailing"),
+                    "`{src}` must name the remedy (parity with the `/bar` sibling), \
+                     got: {msg}"
+                );
+            }
+            // The sibling it is at parity with still carries its own remedy.
+            let sibling = read_err("/bar");
+            let module_half = sibling.message();
+            assert!(module_half.contains("mod/name"), "got: {module_half}");
+        }
+
         // spec: 08-modules §8.5.1 — a bare `/` (division) stays legal (RA-N4
         // fence; Principle 16). It reads as the operator symbol `/`.
         #[test]
