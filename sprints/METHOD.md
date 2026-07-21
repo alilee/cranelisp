@@ -202,6 +202,16 @@ Scenarios are **expressed through the crate facade** wherever the seam is facade
 
 **Phase 6a — User-facing assessment.** User-proxy skills assess what was *actually* delivered (not what was scoped) and plan the user-facing work outside-in from spec + scope. Gaps file as FIXMEs to next sprint.
 
+**Each user-proxy owns a standing QUALITY, not a regression surface (binding, added S115 — user-directed).** "Does it still compile / still run / still match the transcript" is the *floor* of a 6a pass, not its content. Every proxy owns a question that is never finished and is re-asked every sprint against the whole artifact, not just against the delta:
+
+- **`/examples`** — *is this a comprehensive learning sequence, and the best way to learn the full language and its nuances by reading code?* That means coverage of the language (what is unteachable from the sequence today?), **order** (does each example earn its place and build on what precedes it?), **nuance** (does it teach the boundaries, traps and negative space, or only the happy path?), and the quality of the code *as reading material* — an example is prose that happens to compile.
+- **`/docs`** — is this the best way to understand the language by reading prose?
+- **`/repl`** — is every interaction self-documenting and genuinely useful (the §Design Principles bar), not merely non-erroring?
+- **`/stdlib`** — is this a library a user would choose to use, and does it read as one design?
+- **`/port`** — is the exemplar something a competent developer would admire, and does it still exercise the language the way a real project would?
+
+`/sprint` writes the standing quality into the dispatch, not just the sprint's delta; a brief that lists only "verify X still works" has mis-scoped the phase. The tell that this went wrong in S115: `/examples` was briefed on exit codes and ruling-impact and *nonetheless* reported, on its own initiative, that **trait default methods are taught by no example at all** — while the spec's own worked example for defaults is the very `Ord` trait that example teaches. The skill knew its remit better than the brief did, and a narrower skill would have returned a green table and nothing else.
+
 **Phase 6b — User-facing action.** Execute the 6a plan against what shipped. Demos test reachability of the spec'd capability through user surfaces.
 
 **Phase 7 — Close.** `/sprint` authors outcome, archives `SPRINT.md`, updates ROADMAP. **User approves close explicitly** — `/sprint` does not close unilaterally. Checkpoint on adequacy of arch's architectural principles. **Close checklist asserts FIXME-vs-§Delivered consistency (added S115)**: every FIXME the Outcome records as resolved has its file deleted (or its table row updated), and no surviving FIXME file or close-table row contradicts a §Delivered line. (S110 counterexample: the close table carried 0590 "open" beside a §Delivered line recording its convergence — the seed of the S113/S114 zombie chain.)
