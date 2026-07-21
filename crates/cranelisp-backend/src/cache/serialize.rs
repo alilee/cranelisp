@@ -24,6 +24,44 @@
 //! (`read_cached_metadata`, `write_cached_metadata`) were REMOVED at S111 CS-5
 //! (FIXME 0634) — the on-disk format has been SymbolTable-direct since Sprint 58
 //! Wave 2b; the envelope lingered only as an in-memory `CachedModule` wrapper.
+//!
+//! # R6 — the persisted-index trust boundary (the census)
+//!
+//! `design/arch/safety-invariants.md` §4 R6: *every index / key / slot
+//! deserialised from `.meta.json` is validated at load; a violation is a
+//! diagnosed [`CacheStale`], never trusted into emission.* Cache bytes are
+//! **external data** (§2 tier-3 trust-boundary sub-form) — so every arm below
+//! DIAGNOSES and recompiles; none of them `assert!` (contrast the in-process
+//! `store_slot`/`load_slot` asserts, where an out-of-range index is a compiler
+//! invariant breach).
+//!
+//! There is exactly ONE validation site — the per-entry loop in
+//! `deserialise_meta_with_build_id` — and ONE pass over
+//! `SymbolTable::all_symbols()`. Each family is a cheap field check with its own
+//! `CacheStale` class, so a diagnosis names the family that failed.
+//!
+//! | Persisted index | Corrupt-bytes hazard | Validation arm | `CacheStale` class |
+//! |---|---|---|---|
+//! | `callable_got_slot()` | OOB slot → `store_slot`/`load_slot` `assert!` panics on disk content | `< GOT_TABLE_SIZE` | [`CacheStale::GotSlotOutOfRange`] |
+//! | `PrimitiveBody::Extern.borrowed_sibling_slot` (R5 carrier) | OOB → the same GOT panic when its first consumer reads it | `< GOT_TABLE_SIZE` when present | [`CacheStale::SiblingSlotOutOfRange`] |
+//! | summary param index — `ResultMode::MayAliasOf(k)` | `k ≥ arity` → `arg_origins[k]` OOB read at the consume seam | `k < arity` (signature arity, `param_names` fallback) | [`CacheStale::SummaryParamIndexOutOfRange`] |
+//! | `Def.callees` FQs (feeds the reverse who-calls-whom index) | empty module/symbol component → resolve / reverse-index corruption | non-empty module AND symbol | [`CacheStale::MalformedCalleeFq`] |
+//! | `codegen_view` span | `start > end` → out-of-source slice / keyed-read miss at the diagnostic seam | `start ≤ end` | [`CacheStale::MalformedSpanKey`] |
+//!
+//! **Scope note (kept honest).** The typecheck-side span-keyed sidecars
+//! (`MethodResolutions::{resolved_calls, var_refs, apply_refs, pattern_ctors}`)
+//! are NOT persisted — they are consumed when the mono view is built, and the
+//! S114 typed-carrier flip moved their content ONTO the `MonoExpr` nodes. The
+//! spans that survive into `.meta.json` therefore ride inside `codegen_view` as
+//! diagnostic locations, not as lookup keys; the row above validates the view's
+//! own span, and per-node spans are deliberately NOT walked (the one-pass,
+//! no-allocation constraint — a deep walk over every mono body at every cache
+//! load is not a cheap field check).
+//!
+//! **Maintenance rule (R6).** Any NEW persisted index adds its row here AND its
+//! arm in the loop, in the same change-set that introduces the index. `/review`
+//! verifies census completeness against this table — no persisted index may
+//! escape a row.
 
 use std::path::Path;
 
@@ -88,6 +126,44 @@ pub enum CacheStale {
         path: std::path::PathBuf,
         slot: usize,
     },
+    /// A restored entry carried a `borrowed_sibling_slot >= GOT_TABLE_SIZE`
+    /// (S115 W3 change-set 4; R6 census row 2). The R5 sibling-slot carrier is
+    /// a GOT index like any other: an out-of-range value on disk would reach the
+    /// always-on `store_slot`/`load_slot` `assert!` as a panic on disk content
+    /// when its first consumer reads it. Validated at load defensively (the
+    /// co-landing rule); the CONSUMER itself stays parked to its first reader
+    /// (FIXME 0637 / the re-affirmed R5 ruling).
+    SiblingSlotOutOfRange {
+        path: std::path::PathBuf,
+        slot: usize,
+    },
+    /// A restored ownership summary carried `ResultMode::MayAliasOf(k)` with
+    /// `k >= arity` (S115 W3 change-set 4; R6 census row 3). The consume seam
+    /// indexes `arg_origins[k]` off this value, so an out-of-range `k` from disk
+    /// is an OOB read — the exact hazard the R6 register row names.
+    SummaryParamIndexOutOfRange {
+        path: std::path::PathBuf,
+        index: usize,
+        arity: usize,
+    },
+    /// A restored entry carried a malformed `callees` FQ — an empty module or
+    /// symbol component (S115 W3 change-set 4; R6 census row 4). The `callees`
+    /// edge set feeds resolution and the reverse who-calls-whom index; an empty
+    /// component is not a nameable key and would corrupt both.
+    MalformedCalleeFq {
+        path: std::path::PathBuf,
+        symbol: String,
+    },
+    /// A restored mono codegen view carried a malformed span (`start > end`)
+    /// (S115 W3 change-set 4; R6 census row 5). Spans locate diagnostics and key
+    /// the producer-side sidecars; an inverted span yields a keyed-read miss or
+    /// an out-of-source slice at the diagnostic seam.
+    MalformedSpanKey {
+        path: std::path::PathBuf,
+        symbol: String,
+        start: u32,
+        end: u32,
+    },
 }
 
 impl CacheStale {
@@ -101,6 +177,12 @@ impl CacheStale {
             CacheStale::Deserialise { .. } => "deserialise",
             CacheStale::PathMismatch { .. } => "path_mismatch",
             CacheStale::GotSlotOutOfRange { .. } => "got_slot_out_of_range",
+            CacheStale::SiblingSlotOutOfRange { .. } => "sibling_slot_out_of_range",
+            CacheStale::SummaryParamIndexOutOfRange { .. } => {
+                "summary_param_index_out_of_range"
+            }
+            CacheStale::MalformedCalleeFq { .. } => "malformed_callee_fq",
+            CacheStale::MalformedSpanKey { .. } => "malformed_span_key",
         }
     }
 }
@@ -149,6 +231,30 @@ impl std::fmt::Display for CacheStale {
             CacheStale::GotSlotOutOfRange { path, slot } => write!(
                 f,
                 "cache GOT slot out of range at {}: slot {slot} >= {GOT_TABLE_SIZE}",
+                path.display()
+            ),
+            CacheStale::SiblingSlotOutOfRange { path, slot } => write!(
+                f,
+                "cache borrowed-sibling GOT slot out of range at {}: slot {slot} >= \
+                 {GOT_TABLE_SIZE}",
+                path.display()
+            ),
+            CacheStale::SummaryParamIndexOutOfRange { path, index, arity } => write!(
+                f,
+                "cache ownership summary param index out of range at {}: \
+                 MayAliasOf({index}) with arity {arity}",
+                path.display()
+            ),
+            CacheStale::MalformedCalleeFq { path, symbol } => write!(
+                f,
+                "cache malformed callee FQ at {}: entry {symbol} carries a callee with \
+                 an empty module or symbol component",
+                path.display()
+            ),
+            CacheStale::MalformedSpanKey { path, symbol, start, end } => write!(
+                f,
+                "cache malformed span at {}: entry {symbol} codegen view span \
+                 {start}..{end} is inverted",
                 path.display()
             ),
         }
@@ -291,13 +397,79 @@ pub(crate) fn deserialise_meta_with_build_id(
     // `.meta.json`. Treat it as cache-stale (→ recompile) rather than letting it
     // reach the always-on `store_slot`/`load_slot` `assert!` as a panic on disk
     // content.
-    for (_sym, entry) in table.all_symbols() {
+    //
+    // S115 W3 change-set 4 (R6, `design/arch/safety-invariants.md` §4) — this is
+    // the ONE per-entry validation loop for EVERY persisted index; each family
+    // below is one cheap field check with its own `CacheStale` class. The census
+    // it implements is the module rustdoc table above; a NEW persisted index adds
+    // its row + its arm HERE, in the same change-set that introduces it (the R6
+    // maintenance rule). Never a parallel walk, and never an `assert!`: cache
+    // bytes are EXTERNAL data (the tier-3 trust-boundary sub-form) — diagnose and
+    // recompile.
+    for (sym, entry) in table.all_symbols() {
         if let Some(slot) = entry.callable_got_slot()
             && slot >= GOT_TABLE_SIZE
         {
             return Err(CacheStale::GotSlotOutOfRange {
                 path: path.to_path_buf(),
                 slot,
+            });
+        }
+        if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
+            && let cranelisp_types::DefKind::Primitive {
+                body:
+                    cranelisp_types::PrimitiveBody::Extern {
+                        borrowed_sibling_slot: Some(slot),
+                        ..
+                    },
+                ..
+            } = kind.as_ref()
+            && *slot >= GOT_TABLE_SIZE
+        {
+            return Err(CacheStale::SiblingSlotOutOfRange {
+                path: path.to_path_buf(),
+                slot: *slot,
+            });
+        }
+        if let Some(summary) = entry.mode_summary()
+            && let cranelisp_types::ResultMode::MayAliasOf(k) = summary.result
+        {
+            // Arity from the persisted signature — the same positional vector
+            // the consume seam's `arg_origins` is built over. The `param_names`
+            // list is the fallback for entries whose scheme is not a `Fn` shape.
+            let arity = match entry {
+                cranelisp_types::ModuleEntry::Def { scheme, param_names, .. } => {
+                    match &scheme.ty {
+                        cranelisp_types::Type::Fn(params, _) => params.len(),
+                        _ => param_names.len(),
+                    }
+                }
+                _ => 0,
+            };
+            if k >= arity {
+                return Err(CacheStale::SummaryParamIndexOutOfRange {
+                    path: path.to_path_buf(),
+                    index: k,
+                    arity,
+                });
+            }
+        }
+        for callee in entry.callees() {
+            if callee.module.as_ref().is_empty() || callee.symbol.as_ref().is_empty() {
+                return Err(CacheStale::MalformedCalleeFq {
+                    path: path.to_path_buf(),
+                    symbol: sym.to_string(),
+                });
+            }
+        }
+        if let Some(view) = entry.codegen_view()
+            && view.span.start > view.span.end
+        {
+            return Err(CacheStale::MalformedSpanKey {
+                path: path.to_path_buf(),
+                symbol: sym.to_string(),
+                start: view.span.start,
+                end: view.span.end,
             });
         }
     }

@@ -12,7 +12,7 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ErrorLocation,
-    ConcreteType, CranelispError, HeapHeader, MonoExpr, Span, Type,
+    ConcreteType, CranelispError, HeapHeader, MonoExpr, Span, Symbol, Type,
 };
 
 use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, RcAtomicity, NULLARY_THRESHOLD_I64};
@@ -143,6 +143,91 @@ fn retain_reused_source<M: Module>(
     if matches!(source_ownership, SourceOwnership::Borrowed { retain_reused: true }) {
         heap::emit_rc_inc(builder, module, vec_val);
     }
+}
+
+// =============================================================================
+// The ONE §13.7 COW retain gate (FIXME 0693 consolidation)
+//
+// The gate has TWO consumers on opposite sides of the same emission: the
+// PRODUCER (`cow_source_ownership`, which classifies the source and emits the
+// mutate/grow-branch escape-inc) and the R3 dec-side CONSUMER
+// (`fn_compiler.rs::scrutinee_cow_retains_reused`, which must let the BALANCING
+// dec fire exactly when that inc was emitted). Before S115 the consumer
+// re-derived the site's identity from the SYNTACTIC callee spelling
+// (`matches!(callee_name, "vec-set" | "vec-push")`) — the resolver-mirror class
+// (Principle 24: name is a trigger, the carrier is the identity), with a latent
+// UAF channel (a user fn literally named `vec-set` makes the name test true
+// though the producer's COW gate never ran).
+//
+// The three functions below are the single source of truth, and they are PURE
+// (no `&self`) so the whole §13.5-style matrix is unit-testable without a live
+// `FnCompiler` — the `resolve_borrowed_status` precedent (FIXME 0692).
+// =============================================================================
+
+/// The vec builtins whose in-place branch returns the SOURCE pointer and can
+/// therefore emit the §13.7 retention inc. `vec-get`/`vec-len` are reads (no COW
+/// branch), so they are NOT gate sites.
+pub(crate) fn is_cow_vec_op(name: &str) -> bool {
+    matches!(name, "vec-set" | "vec-push")
+}
+
+/// Is this COW source classified `Borrowed` (as opposed to `Owned`)? The
+/// producer's classification, extracted verbatim: analysis-ON, a `Var` source
+/// (a fresh producing temporary transfers its sole reference ⇒ `Owned`), and
+/// NOT the function's return-COW-source (whose copy branch releases ⇒ `Owned`).
+pub(crate) fn cow_source_is_borrowed(
+    source: &MonoExpr,
+    return_cow_source: Option<&Symbol>,
+    analysis_off: bool,
+) -> bool {
+    if analysis_off {
+        // R14: toggle-off is the conservative all-`Owned` lowering; `Borrowed`
+        // is unreachable, so no retention inc exists to balance.
+        return false;
+    }
+    let MonoExpr::Var { name, .. } = source else {
+        return false;
+    };
+    return_cow_source != Some(name)
+}
+
+/// Does this COW site emit the §13.7 mutate/grow-branch retention inc on the
+/// returned pointer? `Borrowed` classification AND the escape gate (escape or
+/// absent fact ⇒ inc, the UAF-safe P25 default; a recorded `Some(false)`
+/// recur-transfer / in-frame consume ⇒ no inc).
+pub(crate) fn cow_retains_reused_gate(
+    source: &MonoExpr,
+    escapes: Option<bool>,
+    return_cow_source: Option<&Symbol>,
+    analysis_off: bool,
+) -> bool {
+    cow_source_is_borrowed(source, return_cow_source, analysis_off) && escapes != Some(false)
+}
+
+/// The gate verdict for a whole COW **site** (an `Apply` node), keyed off the
+/// RESOLUTION CARRIER (`ResolvedCall::BuiltinFn`) exactly as the producer's own
+/// dispatch is (`compile_resolved_call`'s `BuiltinFn` arm → `is_vec_primitive`
+/// → `compile_vec_op`) — never off the callee's written spelling.
+///
+/// `None` ⇒ the node is not a COW-builtin site at all (a non-`Apply`, a
+/// user-defined fn that merely SPELLS `vec-set`, a non-COW builtin, a
+/// trait/sig/curry dispatch) ⇒ no retention inc can have been emitted for it.
+pub(crate) fn cow_site_retain_verdict(
+    node: &MonoExpr,
+    return_cow_source: Option<&Symbol>,
+    analysis_off: bool,
+) -> Option<bool> {
+    let MonoExpr::Apply { resolved_call, args, escapes, .. } = node else {
+        return None;
+    };
+    let Some(cranelisp_types::ResolvedCall::BuiltinFn { name }) = resolved_call.as_deref() else {
+        return None;
+    };
+    if !is_cow_vec_op(name.as_ref()) {
+        return None;
+    }
+    let source = args.first()?;
+    Some(cow_retains_reused_gate(source, *escapes, return_cow_source, analysis_off))
 }
 
 /// Read the increment-II `unique_static` write-path proof off a **fresh-
@@ -651,17 +736,46 @@ where
         elem_type: &Option<Type>,
         span: Span,
     ) -> Result<SourceOwnership, CranelispError> {
-        let is_var_source = matches!(vec_expr, MonoExpr::Var { .. });
-        let is_return_source = matches!(
-            vec_expr,
-            MonoExpr::Var { name, .. } if self.return_cow_source.as_ref() == Some(name)
-        );
-        if is_return_source || !is_var_source || cranelisp_types::ownership_analysis_off() {
+        let analysis_off = cranelisp_types::ownership_analysis_off();
+        // FIXME 0693: the Owned/Borrowed classification is the ONE shared
+        // predicate (`cow_source_is_borrowed`) — the R3 dec-side consumer reads
+        // the SAME function, never a re-derivation from the callee spelling.
+        if !cow_source_is_borrowed(vec_expr, self.return_cow_source.as_ref(), analysis_off) {
+            // Owned ⇒ no mutate-branch retention inc at this site; record the
+            // NEGATIVE verdict so the R3 consumer can tell "producer ran and
+            // declined" from "producer never ran" (the fence below).
+            self.record_cow_retain_decision(span, false);
             return self.build_owned_source_release(elem_type, span);
         }
         // analysis-ON live-`Var` binding: escape-gated (escape OR absent-fact ⇒ inc).
-        let retain_reused = self.pending_cow_escapes != Some(false);
+        let retain_reused = cow_retains_reused_gate(
+            vec_expr,
+            self.pending_cow_escapes,
+            self.return_cow_source.as_ref(),
+            analysis_off,
+        );
+        self.record_cow_retain_decision(span, retain_reused);
         Ok(SourceOwnership::Borrowed { retain_reused })
+    }
+
+    /// Record THIS COW site's emitted retain decision, keyed by the COW
+    /// `Apply`'s span, for the R3 match-consume seam to READ (FIXME 0693 — the
+    /// mirror becomes a derivation, not a re-derivation: the producer's decision
+    /// IS the identity, per Principle 7 / Principle 24).
+    ///
+    /// Span collision (two distinct COW sites lowered under one span — only
+    /// reachable for `Span::SYNTHETIC` bodies) collapses to the AMBIGUOUS marker
+    /// `None`, which the consumer reads as the leak-safe verdict (suppress the
+    /// dec — never a spurious dec, i.e. never the UAF direction).
+    fn record_cow_retain_decision(&mut self, span: Span, retain_reused: bool) {
+        self.cow_retain_decisions
+            .entry(span)
+            .and_modify(|e| {
+                if *e != Some(retain_reused) {
+                    *e = None;
+                }
+            })
+            .or_insert(Some(retain_reused));
     }
 
     /// Build the `SourceOwnership::Owned` release descriptor (the `vec_drop` fn-id
@@ -1973,6 +2087,9 @@ mod vec_set_rc_tests;
 
 #[cfg(test)]
 mod cow_polarity_tests;
+
+#[cfg(test)]
+mod cow_gate_tests;
 
 #[cfg(test)]
 mod temp_drop_rc_tests;

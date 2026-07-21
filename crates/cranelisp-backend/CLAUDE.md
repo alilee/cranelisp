@@ -165,3 +165,47 @@ the two span-keyed mirrors (closure + auto-curry) shares ONE envelope
 (`emit_capture_dec_glue`, `lambda.rs`) owning idempotency + declare/build/define;
 the ADT builder keeps its own multi-ctor-body envelope but shares the naming fn
 (S111 R6 §4.3 fallback).
+
+## RC-emission gates that are ONE predicate, not per-site syntax (S115 W3)
+
+Three RC decisions used to be re-derived at each consuming site from local node
+syntax. Each is now a single pure predicate; the sites call it, and the pure form
+is what the unit tier pins (constructing a live `FnCompiler` is not needed).
+
+| Predicate | Home | Consumers | Why it is shared |
+|---|---|---|---|
+| `vec_codegen::cow_source_is_borrowed` / `cow_retains_reused_gate` / `cow_site_retain_verdict` | `vec_codegen.rs` | the COW producer `cow_source_ownership` (emits the §13.7 escape-inc) + the R3 dec-side seam `fn_compiler::scrutinee_cow_retains_reused` (emits the balancing dec) | the two sides of ONE gate. The consumer used to re-derive the site's identity from the **syntactic callee spelling** (`matches!(callee_name, "vec-set"\|"vec-push")`) — the resolver-mirror class, with a latent UAF: a user fn literally named `vec-set` made the name test true though the COW gate never ran. Identity now comes from the RESOLUTION CARRIER (`ResolvedCall::BuiltinFn`), P24. |
+| `fn_compiler::is_fresh_construction` | `fn_compiler.rs` | `protect_return_value` (fn-return AND match-arm protect sites) | the return-protect's only license is that the returned box cannot alias a scope binding. Keying it on the fn NAME (`== "main"`) was the 0632/P19 class; freshness is the real license, and it forwards through `let` and through control-flow joins (fresh iff EVERY arm is fresh). |
+| `apply::classify_auto_curry_target` | `apply.rs` | `compile_auto_curry_call` | the auto-curry seam's totality over the CLOSED carrier sums. The enum IS the totality claim — a new carrier state is a non-exhaustive-match compile error, never a `_ =>` fallthrough. |
+
+**The R3 gate additionally DERIVES rather than re-derives**: `cow_source_ownership`
+records its emitted retain decision span-keyed into `FnCompiler::cow_retain_decisions`,
+and the match seam READS it; the shared predicate is then a `debug_assert_eq!`
+disagreement fence (a producer/consumer mismatch is the spurious-dec/UAF channel).
+A span collision collapses to the leak-safe verdict; an absent record (the
+producer ran in another compiler frame) falls back to the shared predicate.
+
+## `got_data_symbol_name` is a FORWARD — never a second body
+
+The GOT data-symbol scheme's canonical home is
+`cranelisp_types::got_data_symbol_name` (relocated down at S76). The backend
+**references** the symbol (`Linkage::Import` at every cross-module GOT-indirect
+call site); **int defines** it (`jit.rs::symbol_lookup_fn`, `worker.rs`,
+`exe.rs` — all on the types-owned fn). `compiler/resolution.rs`'s function is a
+one-line forward and must stay one: changing it alone makes the consumer emit
+relocations against names the definer never registers, and EVERY cross-module
+call dies with `can't resolve symbol __cranelisp_got_…` (observed S115 W3 — the
+whole stdlib stopped loading). Fenced by
+`resolution::tests::got_data_symbol_name_agrees_with_the_types_owned_home`.
+The scheme is non-injective (`a.b` collides with `a_b`); the fix is a types edit,
+FIXME 0748 → `/arch`.
+
+## Cache-load validation is ONE loop (R6)
+
+Every persisted index deserialised from `.meta.json` is validated in the single
+per-entry loop in `cache/serialize.rs::deserialise_meta_with_build_id`, one arm +
+one distinct `CacheStale` class per family, and the census table lives in that
+module's `//!` rustdoc. Cache bytes are EXTERNAL data: every arm **diagnoses and
+recompiles**, never `assert!`s (contrast the in-process `store_slot`/`load_slot`
+asserts). A new persisted index adds its row AND its arm in the change-set that
+introduces it — never a parallel walk.

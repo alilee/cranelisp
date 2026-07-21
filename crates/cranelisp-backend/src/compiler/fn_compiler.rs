@@ -339,6 +339,49 @@ where
     /// (FIXME 0664 /arch ruling). `None` ⇒ absent fact ⇒ the UAF-safe inc default
     /// (P25). Analysis-OFF ignores it (toggle-off is all-Owned, R14).
     pub(crate) pending_cow_escapes: Option<bool>,
+
+    /// FIXME 0693 — the producer's OWN retain decision per COW site, keyed by
+    /// the COW `Apply`'s span, written by
+    /// `vec_codegen.rs::cow_source_ownership` at the moment it classifies the
+    /// source, and read by the R3 match-consume seam
+    /// ([`FnCompiler::scrutinee_cow_retains_reused`]). This makes the dec side a
+    /// DERIVATION of the producer's decision rather than a re-derivation from
+    /// the callee spelling (Principle 7 single source of truth / Principle 24
+    /// resolve once).
+    ///
+    /// `Some(v)` = one consistent verdict recorded at that span; `None` =
+    /// AMBIGUOUS (two distinct COW sites collapsed onto one span — reachable
+    /// only for `Span::SYNTHETIC` bodies), read as the leak-safe verdict
+    /// (suppress the dec; never a spurious dec, i.e. never the UAF direction).
+    /// Absent key = the producer never ran in THIS compiler frame.
+    pub(crate) cow_retain_decisions: HashMap<Span, Option<bool>>,
+
+    /// FIXME 0720 (S115 W3 change-set 2) — the `Borrowed` heap params this frame
+    /// has PROMOTED to frame-owned for the duration of a TCO loop, because a tail
+    /// self-call SUPERSEDES their slot with a value the caller does not own.
+    ///
+    /// A `Borrowed` param means "the caller owns this reference; do not dec it".
+    /// That contract holds for the value the caller actually passed — but a TCO
+    /// back-edge OVERWRITES the slot with the tail argument, and for a
+    /// non-transferring argument (a temporary such as `(set0 g m)`) that value is
+    /// owned by THIS frame, not by any caller. With the slot skipped as "borrowed"
+    /// on every iteration, nothing ever released it: the ADT-wrapped supersede
+    /// loop leaked its box AND its fields, 2 objects per iteration.
+    ///
+    /// The cure keeps the borrow contract intact and makes the frame's ownership
+    /// uniform instead: [`FnCompiler::compile_body`] emits ONE `rc_inc` on the
+    /// caller's incoming value in the ENTRY block (so the caller's reference is
+    /// never the one released), and the param is then treated as frame-owned by
+    /// exactly two consumers — the tail-jump param flush and the function-exit
+    /// scope cleanup. Invariant: **the frame owns exactly one reference to
+    /// whatever occupies the slot** — established at entry by the inc, preserved
+    /// at each back-edge (flush decs the old value; the fresh argument arrives
+    /// frame-owned), discharged at exit by the scope cleanup.
+    ///
+    /// `is_borrowed` itself is NOT cleared: last-use ownership transfer and
+    /// in-place COW mutation must stay refused for these params (they may still
+    /// alias the caller's value on the first iteration).
+    pub(crate) tco_owned_params: std::collections::HashSet<Symbol>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -399,6 +442,8 @@ where
             elide_vecget_span: None,
             return_cow_source: None,
             pending_cow_escapes: None,
+            cow_retain_decisions: HashMap::new(),
+            tco_owned_params: std::collections::HashSet::new(),
         }
     }
 
@@ -491,8 +536,27 @@ where
             builder.append_block_param(loop_header, types::I64);
         }
 
-        // Jump from entry to loop header with initial parameter values.
+        // FIXME 0720 (S115 W3 change-set 2) — promote `Borrowed` heap params that a
+        // tail self-call SUPERSEDES to frame-owned, with ONE `rc_inc` here in the
+        // entry block (the caller's incoming value, executed exactly once — NOT
+        // per iteration, which the loop header would give). See the
+        // `tco_owned_params` field rustdoc for the invariant this establishes.
+        let promoted =
+            tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), &ctx);
         let entry_params: Vec<Value> = builder.block_params(entry_block).to_vec();
+        for (i, _, category) in &promoted {
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut builder, module, entry_params[*i]);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut builder, module, entry_params[*i]);
+                }
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
+            }
+        }
+
+        // Jump from entry to loop header with initial parameter values.
         builder.ins().jump(loop_header, &entry_params);
 
         // Switch to loop header. Do NOT seal it yet -- back-edges from tail calls
@@ -542,10 +606,14 @@ where
             elide_vecget_span: None,
             return_cow_source: None,
             pending_cow_escapes: None,
+            cow_retain_decisions: HashMap::new(),
+            tco_owned_params: std::collections::HashSet::new(),
         };
 
         // Seed the function's parameters into scope + variable_types.
         compiler.bind_defn_params(defn, body, loop_header);
+        compiler.tco_owned_params =
+            promoted.into_iter().map(|(_, name, _)| name).collect();
 
         // Compile the function body with scope cleanup for parameters.
         // This implements the consuming calling convention: the callee owns
@@ -614,16 +682,7 @@ where
         //
         // Read from the symbol table's Scheme.ty (authoritative source) rather
         // than from expr_types side map (Step 1c: AST-sourced codegen).
-        let defn_param_types: Vec<Option<Type>> = self.ctx.symbol_tables
-            .get(&self.ctx.current_module)
-            .and_then(|table| {
-                if let Some(ModuleEntry::Def { scheme, .. }) = table.get(defn.name.as_ref())
-                    && let Type::Fn(ref param_types, _) = scheme.ty {
-                        return Some(param_types.iter().map(|t| Some(t.clone())).collect());
-                }
-                None
-            })
-            .unwrap_or_else(|| vec![None; defn.params().len()]);
+        let defn_param_types: Vec<Option<Type>> = defn_param_types(&self.ctx, defn);
 
         // Bind function parameters from loop header block params (not entry block).
         // Also record parameter types in variable_types so scope cleanup
@@ -1052,8 +1111,10 @@ where
                     && name == skip {
                         return true;
                     }
-                // Skip borrowed variables (owner handles cleanup).
-                this.is_borrowed(name)
+                // Skip borrowed variables (owner handles cleanup) — EXCEPT a
+                // TCO-promoted param, whose frame-owned reference (the entry inc)
+                // this exit dec discharges (FIXME 0720).
+                this.is_borrowed(name) && !this.tco_owned_params.contains(name)
             });
             self.emit_heap_binding_decs(&to_dec);
         }
@@ -1218,7 +1279,13 @@ where
         };
         let analysis_off = cranelisp_types::ownership_analysis_off();
         let to_dec = self.collect_frame_heap_decs(&param_frame, |this, name| {
-            if transfer_skip.contains(name) || this.is_borrowed(name) {
+            // A borrowed param is the caller's to release — EXCEPT one this frame
+            // PROMOTED because the back-edge supersedes its slot with a value the
+            // caller does not own (FIXME 0720; the entry inc keeps the caller's
+            // own reference out of reach of this dec).
+            if transfer_skip.contains(name)
+                || (this.is_borrowed(name) && !this.tco_owned_params.contains(name))
+            {
                 return true;
             }
             // In-place COW hazard (analysis-ON only): if SOME tail arg is an
@@ -1415,70 +1482,82 @@ where
         operand_live_binding_root(node, &|name| self.variables.contains_key(name))
     }
 
-    /// F-R1 (FIXME 0688 verdict a) — is `body` a FRESHLY-CONSTRUCTED value (a
-    /// brand-new heap box that cannot alias any scope binding)? True for a
-    /// `ConstrADT` node and for an `Apply` whose callee resolves to a constructor
-    /// (`ctor_meta_at` hits its carrier) — both mint a fresh box. A general
-    /// `Apply` (a user/trait call) may RETURN an aliased argument (e.g. `(id x)`),
-    /// so it is NOT fresh and still needs the return-protect. This is the precise
-    /// predicate that lets the entry-`main` IO-result suppression fire on `(Pure
-    /// 9)` while leaving an aliasing return protected — analysis-independent
-    /// (reads only the ctor carrier, no ownership fact).
+    /// Is `body` a FRESHLY-CONSTRUCTED value (a brand-new heap box that cannot
+    /// alias any scope binding)? The thin `&self` wrapper over the pure
+    /// [`is_fresh_construction`] (the ctor probe is the only context-dependent
+    /// part; the shape rules are unit-tested directly).
     pub(crate) fn body_is_fresh_construction(&self, body: &MonoExpr) -> bool {
-        match body {
-            MonoExpr::ConstrADT { .. } => true,
-            MonoExpr::Apply { callee, .. } => match callee.as_ref() {
-                MonoExpr::Var { resolution: VarRef::Global(fq), .. } => {
-                    self.ctx.ctor_meta_at(fq).is_some()
-                }
-                _ => false,
-            },
-            // A `let` forwards its body's provenance: a fresh construction returned
-            // through nested `let`s is still fresh, so the suppression stays
-            // SCALE-INVARIANT (the R-3 fixed-residual signature — the entry-`main`
-            // over-inc is the same one alloc regardless of heap-let depth).
-            MonoExpr::Let { body, .. } => self.body_is_fresh_construction(body),
-            _ => false,
-        }
+        is_fresh_construction(body, &|fq| self.ctx.ctor_meta_at(fq).is_some())
     }
 
-    /// Mirror of the §13.7 COW escape gate's `retain_reused` condition
-    /// (`vec_codegen.rs::cow_source_ownership`), read at the match consume seam so
-    /// R3 (forwarding-suppresses-dec) and the COW producer's escape-inc stay a
-    /// MATCHED PAIR. Returns `true` iff `node` is a direct `vec-set`/`vec-push`
-    /// COW whose in-place/mutate branch emits the escape-inc on the returned
-    /// pointer — i.e. a live-`Var` source, analysis-ON, recorded `escapes !=
-    /// Some(false)`, and NOT the function's return-COW-source (that path is
-    /// `Owned`, releasing on copy, never a mutate-branch retain). When this holds,
-    /// the scrutinee-dec is the BALANCING dec for that inc and MUST fire; when it
-    /// does not (non-COW temp, alias, toggle-off, or a nested/non-escaping COW
-    /// whose gate declined the inc), the forwarding dec is spurious and R3
-    /// suppresses it. This is the dec side of the SAME escape gate — NOT a
-    /// "distinguish wrong-`Some(false)`" workaround (R14/F4): a `Some(false)` is
-    /// treated uniformly as "no escape-inc ⇒ suppress", never corrected.
+    /// The dec side of the §13.7 COW escape gate, read at the match consume seam
+    /// so R3 (forwarding-suppresses-dec) and the COW producer's escape-inc stay a
+    /// MATCHED PAIR. Returns `true` iff `node` is a COW `vec-set`/`vec-push` site
+    /// whose in-place/mutate branch emitted the retention inc on the returned
+    /// pointer; then the scrutinee-dec is that inc's BALANCING dec and MUST fire.
+    /// When it does not hold (non-COW temp, alias, toggle-off, or a
+    /// nested/non-escaping COW whose gate declined the inc), the forwarding dec
+    /// is spurious and R3 suppresses it. NOT a "distinguish wrong-`Some(false)`"
+    /// workaround (R14/F4): a `Some(false)` is treated uniformly as "no
+    /// escape-inc ⇒ suppress", never corrected.
+    ///
+    /// **FIXME 0693 (S115 W3 change-set 1) — consolidated.** This was a MIRROR
+    /// that re-derived the site's identity from the syntactic callee spelling
+    /// (`matches!(callee_name, "vec-set" | "vec-push")`) plus a `variables`
+    /// liveness condition the producer does not have — the resolver-mirror class
+    /// (P24: the name is a trigger, the CARRIER is the identity), with a latent
+    /// UAF channel (a user fn literally named `vec-set` under
+    /// `PreludeVariant::None` made the name test true although the producer's COW
+    /// gate never ran; masked today only by typecheck recording
+    /// `escapes = Some(false)` on that scrutinee — a mask the W4 escape-fact
+    /// correction can lift). It is now a DERIVATION on two levels:
+    ///
+    /// 1. the site identity + gate condition come from the ONE shared predicate
+    ///    [`cow_site_retain_verdict`], which the producer's
+    ///    `cow_source_ownership` also calls (via `cow_source_is_borrowed` /
+    ///    `cow_retains_reused_gate`) and which keys on the RESOLUTION CARRIER;
+    /// 2. the value actually returned is the producer's OWN recorded decision
+    ///    (`cow_retain_decisions`, span-keyed) whenever it is available.
+    ///
+    /// **The disagreement fence** is the `debug_assert_eq!`: if the recorded
+    /// decision and the shared-predicate derivation ever disagree, the producer
+    /// ran a different gate than this seam believes, which is exactly the
+    /// spurious-dec (UAF) channel 0693 named. Release builds take the RECORDED
+    /// verdict, so a disagreement degrades to the producer's truth rather than
+    /// to a guess.
     pub(crate) fn scrutinee_cow_retains_reused(&self, node: &MonoExpr) -> bool {
-        if cranelisp_types::ownership_analysis_off() {
-            return false;
-        }
-        let MonoExpr::Apply { callee, args, escapes, .. } = node else {
-            return false;
-        };
-        let MonoExpr::Var { name: callee_name, .. } = callee.as_ref() else {
-            return false;
-        };
-        if !matches!(callee_name.as_ref(), "vec-set" | "vec-push") {
-            return false;
-        }
-        let Some(MonoExpr::Var { name: src, .. }) = args.first() else {
+        let Some(derived) = crate::compiler::vec_codegen::cow_site_retain_verdict(
+            node,
+            self.return_cow_source.as_ref(),
+            cranelisp_types::ownership_analysis_off(),
+        ) else {
+            // Not a carrier-identified COW site ⇒ no retention inc exists.
             return false;
         };
-        if !self.variables.contains_key(src) {
+        let MonoExpr::Apply { span, .. } = node else {
             return false;
+        };
+        match self.cow_retain_decisions.get(span).copied() {
+            Some(Some(recorded)) => {
+                debug_assert_eq!(
+                    recorded, derived,
+                    "FIXME 0693 disagreement fence: the COW producer \
+                     (vec_codegen::cow_source_ownership) recorded retain_reused={recorded} at \
+                     span {span:?}, but the R3 match-consume seam's shared-predicate derivation \
+                     says {derived}. The two sides of the §13.7 escape gate MUST agree — a \
+                     consumer-side `true` without a producer inc is a spurious dec (UAF)."
+                );
+                recorded
+            }
+            // Ambiguous span (two COW sites under one synthetic span): take the
+            // leak-safe verdict — suppress the dec, never emit a spurious one.
+            Some(None) => false,
+            // The producer did not run in THIS compiler frame (e.g. the site was
+            // lowered by an inner compiler). Fall back to the shared predicate —
+            // the same answer the consolidated gate gives, never a re-derivation
+            // from the callee spelling.
+            None => derived,
         }
-        if self.return_cow_source.as_ref() == Some(src) {
-            return false;
-        }
-        *escapes != Some(false)
     }
 }
 
@@ -1753,59 +1832,242 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// byte-identical — the carrier-match / name-differ case is unreachable today,
 /// see FIXME 0654 reachability probes). The sharper per-flow check ("only
 /// decline when the value flows into a `recur` arg") is a noted follow-on.
+/// Is `body` a FRESHLY-CONSTRUCTED value — a brand-new heap box that cannot
+/// alias any scope binding? (The item-26 return-protect predicate; the license
+/// for suppressing `protect_return_value`, S115 W3 change-set 2 / FIXME 0696.)
+///
+/// True for a `ConstrADT` node and for an `Apply` whose callee resolves to a
+/// constructor (`is_ctor` hits its carrier) — both mint a fresh box. A general
+/// `Apply` (a user/trait call) may RETURN an aliased argument (e.g. `(id x)`),
+/// so it is NOT fresh and still needs the return-protect — the §2.1 fence's
+/// G2/item-26 class, deliberately untouched.
+///
+/// Binding-indirection and control-flow joins FORWARD freshness:
+/// - `Let` — a fresh construction returned through nested `let`s is still
+///   fresh, so the suppression is SCALE-INVARIANT in heap-let depth (the R-3
+///   fixed-residual signature);
+/// - `If` / `Match` — fresh iff EVERY arm is fresh. One non-fresh arm (an arm
+///   returning a scope binding, or a general `Apply` result) makes the join
+///   non-fresh and the protect stands. This is what recognises the FIXME-0720
+///   shape `(match g [(Gr cells) (Gr (vec-set cells 0 m))])` as the fresh
+///   construction it is; the analysis-ON path already reached that verdict via
+///   `return_is_fresh_by_summary`, so the two now agree by construction rather
+///   than by coincidence (Principle 7).
+///
+/// Analysis-independent (reads only the ctor carrier, never an ownership fact),
+/// so it answers identically under both `CRANELISP_NO_OWNERSHIP` states.
+/// Pure over the node + the ctor probe, so the shape rules are unit-testable
+/// without a live `FnCompiler` (the `operand_live_binding_root` precedent).
+pub(crate) fn is_fresh_construction(
+    body: &MonoExpr,
+    is_ctor: &impl Fn(&cranelisp_types::FQSymbol) -> bool,
+) -> bool {
+    match body {
+        MonoExpr::ConstrADT { .. } => true,
+        MonoExpr::Apply { callee, .. } => match callee.as_ref() {
+            MonoExpr::Var { resolution: VarRef::Global(fq), .. } => is_ctor(fq),
+            _ => false,
+        },
+        MonoExpr::Let { body, .. } => is_fresh_construction(body, is_ctor),
+        MonoExpr::If { then_branch, else_branch, .. } => {
+            is_fresh_construction(then_branch, is_ctor)
+                && is_fresh_construction(else_branch, is_ctor)
+        }
+        MonoExpr::Match { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|arm| is_fresh_construction(&arm.body, is_ctor))
+        }
+        _ => false,
+    }
+}
+
+/// The authoritative per-position parameter types of `defn`, read from the
+/// symbol table's `Scheme.ty` (Principle 7 — the ONE lookup shared by
+/// [`FnCompiler::bind_defn_params`] and the FIXME-0720 promotion set, which must
+/// classify heap-ness against exactly the types the binder records). `None` at a
+/// position ⇒ no authoritative type (the binder falls back to use-site inference;
+/// the promotion declines).
+fn defn_param_types<C, L>(
+    ctx: &CompileContext<'_, C, L>,
+    defn: &Defn,
+) -> Vec<Option<Type>>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    ctx.symbol_tables
+        .get(&ctx.current_module)
+        .and_then(|table| {
+            if let Some(ModuleEntry::Def { scheme, .. }) = table.get(defn.name.as_ref())
+                && let Type::Fn(ref param_types, _) = scheme.ty
+            {
+                return Some(param_types.iter().map(|t| Some(t.clone())).collect());
+            }
+            None
+        })
+        .unwrap_or_else(|| vec![None; defn.params().len()])
+}
+
+/// Is the tail self-call argument at position `i` a value that SUPERSEDES the
+/// param slot — i.e. NOT a bare `Var` naming the param itself? (FIXME 0720.)
+///
+/// A bare `Var` of the same name CARRIES the slot forward (the `transfer_skip`
+/// move contract: the same box occupies the slot after the jump, so nothing is
+/// released and nothing needs to be owned). Anything else — a temporary, a
+/// different binding, a control-flow join — replaces the slot's occupant, and the
+/// old occupant's reference is the one that leaked.
+///
+/// Pure over the argument list, so the whole decision table is unit-testable
+/// without a live `FnCompiler`.
+pub(crate) fn tail_arg_supersedes_param(arg: &MonoExpr, param: &Symbol) -> bool {
+    !matches!(arg, MonoExpr::Var { name, .. } if name == param)
+}
+
+/// The `Borrowed` heap params that a tail self-call supersedes — the set
+/// [`FnCompiler::compile_body`] promotes to frame-owned (FIXME 0720; see the
+/// `tco_owned_params` field rustdoc for the ownership invariant).
+///
+/// Narrow by construction: a param qualifies only when ALL of
+/// 1. the ownership summary marks it `Borrowed` (an `Owned` param is already
+///    flushed and released — the bare-vec twin, which must not change), and
+/// 2. it is heap-typed (nothing to release otherwise), and
+/// 3. some self-call in the body passes a SUPERSEDING argument at its position.
+///
+/// A function without a self-call, or one that only carries its params forward
+/// (`(go v (- n 1))`), promotes nothing and is byte-identical.
+fn tco_promoted_borrowed_params<C, L>(
+    defn: &Defn,
+    body: &MonoExpr,
+    mode_summary: Option<&cranelisp_types::ModeSummary>,
+    ctx: &CompileContext<'_, C, L>,
+) -> Vec<(usize, Symbol, HeapCategory)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let Some(summary) = mode_summary else {
+        // Toggle-off / summary-absent ⇒ no param is `Borrowed` ⇒ nothing to
+        // promote (the conservative all-`Owned` lowering already flushes).
+        return Vec::new();
+    };
+    let param_types = defn_param_types(ctx, defn);
+    defn.params()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (param_name, _))| {
+            if summary.param_mode(i) != cranelisp_types::Mode::Borrowed {
+                return None;
+            }
+            let ty = param_types.get(i)?.as_ref()?;
+            let category = signature_heap_category(ty, Some(ctx.symbol_tables));
+            if !matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
+                return None;
+            }
+            if !self_call_supersedes_param(body, &defn.name, &ctx.current_module, i, param_name) {
+                return None;
+            }
+            Some((i, param_name.clone(), category))
+        })
+        .collect()
+}
+
+/// Does some self-call in `body` pass a SUPERSEDING argument at position `i`?
+/// (FIXME 0720 — the promotion trigger.)
+fn self_call_supersedes_param(
+    body: &MonoExpr,
+    fn_name: &Symbol,
+    current_module: &ModuleFullPath,
+    index: usize,
+    param: &Symbol,
+) -> bool {
+    let mut found = false;
+    visit_self_calls(body, fn_name, current_module, &mut |args| {
+        if args.len() > index && tail_arg_supersedes_param(&args[index], param) {
+            found = true;
+        }
+    });
+    found
+}
+
 pub(crate) fn body_has_self_call(
     body: &MonoExpr,
     fn_name: &Symbol,
     current_module: &ModuleFullPath,
 ) -> bool {
+    let mut found = false;
+    visit_self_calls(body, fn_name, current_module, &mut |_| found = true);
+    found
+}
+
+/// Visit the argument list of every self-call in `body` (ONE walk, shared by the
+/// B3.4 stack-alloc gate 3 [`body_has_self_call`] and the FIXME-0720 promotion
+/// trigger [`self_call_supersedes_param`] — Principle 7: the two answer different
+/// questions about the SAME call set, so they must not walk the tree twice with
+/// two independently-maintained arm lists).
+///
+/// Self-call identity is the shared [`is_self_call`] carrier predicate OR the
+/// historical bare-name over-approximation (always sound to over-report here:
+/// gate 3 declines a stack slot, the 0720 promotion adds a balanced inc/dec pair).
+/// The match is exhaustive over `MonoExpr` by construction — a new variant is a
+/// compile error, not a silently unvisited subtree.
+fn visit_self_calls(
+    body: &MonoExpr,
+    fn_name: &Symbol,
+    current_module: &ModuleFullPath,
+    f: &mut impl FnMut(&[MonoExpr]),
+) {
     use cranelisp_types::MonoExpr as E;
-    fn walk(e: &E, fn_name: &Symbol, current_module: &ModuleFullPath) -> bool {
-        match e {
-            E::Apply { callee, args, resolved_call, .. } => {
-                // The shared TCO-agreeing predicate OR the historical bare-name
-                // over-approximation (always sound to decline).
-                is_self_call(callee, resolved_call.as_deref(), current_module, Some(fn_name))
-                    || matches!(callee.as_ref(), E::Var { name, .. } if name == fn_name)
-                    || walk(callee, fn_name, current_module)
-                    || args.iter().any(|a| walk(a, fn_name, current_module))
+    match body {
+        E::Apply { callee, args, resolved_call, .. } => {
+            if is_self_call(callee, resolved_call.as_deref(), current_module, Some(fn_name))
+                || matches!(callee.as_ref(), E::Var { name, .. } if name == fn_name)
+            {
+                f(args);
             }
-            E::Let { bindings, body, .. } => {
-                bindings.iter().any(|(_, v)| walk(v, fn_name, current_module))
-                    || walk(body, fn_name, current_module)
+            visit_self_calls(callee, fn_name, current_module, f);
+            for a in args {
+                visit_self_calls(a, fn_name, current_module, f);
             }
-            E::If { cond, then_branch, else_branch, .. } => {
-                walk(cond, fn_name, current_module)
-                    || walk(then_branch, fn_name, current_module)
-                    || walk(else_branch, fn_name, current_module)
-            }
-            E::Lambda { body, .. } => walk(body, fn_name, current_module),
-            E::Match { scrutinee, arms, .. } => {
-                walk(scrutinee, fn_name, current_module)
-                    || arms.iter().any(|a| walk(&a.body, fn_name, current_module))
-            }
-            E::VecLit { elements, .. } => {
-                elements.iter().any(|el| walk(el, fn_name, current_module))
-            }
-            E::Trace { body, .. } => walk(body, fn_name, current_module),
-            E::ParBind { bindings, body, .. } => {
-                bindings.iter().any(|(_, v)| walk(v, fn_name, current_module))
-                    || walk(body, fn_name, current_module)
-            }
-            E::LaunchContinue { launched, continuation, .. } => {
-                walk(launched, fn_name, current_module)
-                    || walk(continuation, fn_name, current_module)
-            }
-            E::ConstrADT { fields, .. } => {
-                fields.iter().any(|f| walk(f, fn_name, current_module))
-            }
-            E::IntLit { .. }
-            | E::FloatLit { .. }
-            | E::BoolLit { .. }
-            | E::StringLit { .. }
-            | E::Var { .. } => false,
         }
+        E::Let { bindings, body, .. } | E::ParBind { bindings, body, .. } => {
+            for (_, v) in bindings {
+                visit_self_calls(v, fn_name, current_module, f);
+            }
+            visit_self_calls(body, fn_name, current_module, f);
+        }
+        E::If { cond, then_branch, else_branch, .. } => {
+            visit_self_calls(cond, fn_name, current_module, f);
+            visit_self_calls(then_branch, fn_name, current_module, f);
+            visit_self_calls(else_branch, fn_name, current_module, f);
+        }
+        E::Lambda { body, .. } | E::Trace { body, .. } => {
+            visit_self_calls(body, fn_name, current_module, f);
+        }
+        E::Match { scrutinee, arms, .. } => {
+            visit_self_calls(scrutinee, fn_name, current_module, f);
+            for a in arms {
+                visit_self_calls(&a.body, fn_name, current_module, f);
+            }
+        }
+        E::VecLit { elements, .. } => {
+            for el in elements {
+                visit_self_calls(el, fn_name, current_module, f);
+            }
+        }
+        E::LaunchContinue { launched, continuation, .. } => {
+            visit_self_calls(launched, fn_name, current_module, f);
+            visit_self_calls(continuation, fn_name, current_module, f);
+        }
+        E::ConstrADT { fields, .. } => {
+            for fl in fields {
+                visit_self_calls(fl, fn_name, current_module, f);
+            }
+        }
+        E::IntLit { .. }
+        | E::FloatLit { .. }
+        | E::BoolLit { .. }
+        | E::StringLit { .. }
+        | E::Var { .. } => {}
     }
-    walk(body, fn_name, current_module)
 }
 
 /// The ONE self-call identity predicate (Principle 7 single-source-of-truth /
@@ -2745,5 +3007,273 @@ mod binding_indirection_classifier_tests {
             assert!(!match_forwards_scrutinee(arms));
         }
         assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
+    }
+}
+
+#[cfg(test)]
+mod rc_release_sweep_tests {
+    //! S115 W3 change-set 2 — the RC-release sweep's two backend seams
+    //! (`design/backend/s115-carrier-and-rc-sweep.md` §2; `tests/plan/s115-test-plan.md`
+    //! §6.5). Both are pinned at the exact predicate the emission keys on, so a
+    //! revert of either mechanism flips these RED without needing a live JIT.
+    //!
+    //! 1. **Item-26 fresh-construction return** ([`is_fresh_construction`]) — the
+    //!    license for suppressing `protect_return_value`. Generalised this sprint
+    //!    from the `main`-keyed F-R1 special case (FIXME 0696: name-as-identity)
+    //!    to freshness, and extended across control-flow joins, which is what
+    //!    makes the toggle-OFF half of FIXME 0720 balance.
+    //! 2. **TCO borrowed-param promotion** ([`tail_arg_supersedes_param`] /
+    //!    [`self_call_supersedes_param`]) — the trigger that decides which
+    //!    `Borrowed` heap params the frame must own across a TCO back-edge, the
+    //!    toggle-ON half of FIXME 0720.
+
+    use super::{is_fresh_construction, self_call_supersedes_param, tail_arg_supersedes_param};
+    use cranelisp_types::{
+        ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
+        VarRef,
+    };
+
+    fn fq(module: &str, symbol: &str) -> FQSymbol {
+        FQSymbol { module: ModuleFullPath::from(module), symbol: Symbol::from(symbol) }
+    }
+
+    fn var(name: &str) -> MonoExpr {
+        MonoExpr::Var {
+            resolution: VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
+            name: Symbol::from(name),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    fn global_var(module: &str, name: &str) -> MonoExpr {
+        MonoExpr::Var {
+            resolution: VarRef::Global(fq(module, name)),
+            name: Symbol::from(name),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    fn ctor_adt() -> MonoExpr {
+        MonoExpr::ConstrADT {
+            type_name: cranelisp_types::FQTypeName::new(
+                ModuleFullPath::from("user"),
+                cranelisp_types::TypeName::from("G2"),
+            ),
+            tag: 0,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+        }
+    }
+
+    fn apply(callee: MonoExpr, args: Vec<MonoExpr>) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(callee),
+            args,
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            dispatch: cranelisp_types::ApplyRef::ViaCallee,
+            ty: ConcreteType::Int,
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
+        }
+    }
+
+    fn match_of(scrutinee: MonoExpr, bodies: Vec<MonoExpr>) -> MonoExpr {
+        MonoExpr::Match {
+            scrutinee: Box::new(scrutinee),
+            compiler_generated: false,
+            arms: bodies
+                .into_iter()
+                .map(|body| MonoMatchArm {
+                    pattern: Pattern::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                    body,
+                    span: Span::SYNTHETIC,
+                    provenance: None,
+                    resolved_ctor: None,
+                })
+                .collect(),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    fn let_of(body: MonoExpr) -> MonoExpr {
+        MonoExpr::Let {
+            bindings: vec![(Symbol::from("s"), var("t"))],
+            body: Box::new(body),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    /// Ctor probe: `user/Gr` is a constructor, nothing else is.
+    fn is_ctor(f: &FQSymbol) -> bool {
+        f.symbol.as_ref() == "Gr"
+    }
+
+    // ---- 1. item-26 fresh-construction ------------------------------------
+
+    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.1 / FIXME 0696 — a
+    // freshly-constructed return needs no protect, in ANY function.
+    #[test]
+    fn constr_adt_and_ctor_apply_are_fresh() {
+        assert!(is_fresh_construction(&ctor_adt(), &is_ctor));
+        assert!(is_fresh_construction(
+            &apply(global_var("user", "Gr"), vec![var("c")]),
+            &is_ctor
+        ));
+    }
+
+    // spec: §2.1 fence — the general G2/item-26 protect MUST NOT weaken: a plain
+    // user/trait `Apply` may return an ALIASED argument (`(id x)`), and a bare
+    // `Var` return IS a scope binding. Both keep their protect.
+    #[test]
+    fn general_apply_and_var_returns_are_not_fresh_neg() {
+        assert!(!is_fresh_construction(
+            &apply(global_var("user", "id"), vec![var("x")]),
+            &is_ctor
+        ));
+        assert!(!is_fresh_construction(&var("v"), &is_ctor));
+        // A LOCAL-resolved callee (a closure value) is never a ctor.
+        assert!(!is_fresh_construction(&apply(var("f"), vec![]), &is_ctor));
+    }
+
+    // spec: §2.1 — `let` forwards freshness, so the suppression is scale-invariant
+    // in heap-let depth (the R-3 fixed-residual signature).
+    #[test]
+    fn let_forwards_freshness_both_ways() {
+        assert!(is_fresh_construction(&let_of(ctor_adt()), &is_ctor));
+        assert!(is_fresh_construction(&let_of(let_of(ctor_adt())), &is_ctor));
+        assert!(!is_fresh_construction(&let_of(var("v")), &is_ctor));
+    }
+
+    // spec: §2.2 (FIXME 0720 toggle-OFF half) — a control-flow JOIN is fresh iff
+    // EVERY arm is fresh. This is the `set0` shape
+    // `(match g [(Gr cells) (Gr (vec-set cells 0 m))])`; without it the protect
+    // inc left every loop-carried box at rc≥2 and the TCO flush never reached 0.
+    #[test]
+    fn control_flow_join_is_fresh_iff_every_arm_is() {
+        assert!(is_fresh_construction(
+            &match_of(var("g"), vec![ctor_adt()]),
+            &is_ctor
+        ));
+        assert!(is_fresh_construction(
+            &match_of(var("g"), vec![ctor_adt(), ctor_adt()]),
+            &is_ctor
+        ));
+        let if_fresh = MonoExpr::If {
+            cond: Box::new(var("c")),
+            then_branch: Box::new(ctor_adt()),
+            else_branch: Box::new(ctor_adt()),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(is_fresh_construction(&if_fresh, &is_ctor));
+    }
+
+    // spec: §2.1 fence (NEGATIVE, the load-bearing half) — ONE non-fresh arm makes
+    // the join non-fresh and the protect STANDS. Without this the join rule would
+    // be an under-count: an arm returning a scope binding would lose the inc that
+    // keeps it alive past scope cleanup (the UAF direction).
+    #[test]
+    fn one_non_fresh_arm_makes_the_join_non_fresh_neg() {
+        assert!(!is_fresh_construction(
+            &match_of(var("g"), vec![ctor_adt(), var("v")]),
+            &is_ctor
+        ));
+        assert!(!is_fresh_construction(
+            &match_of(var("g"), vec![var("v"), ctor_adt()]),
+            &is_ctor
+        ));
+        let if_mixed = MonoExpr::If {
+            cond: Box::new(var("c")),
+            then_branch: Box::new(ctor_adt()),
+            else_branch: Box::new(var("v")),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(!is_fresh_construction(&if_mixed, &is_ctor));
+        // An arm-less match yields no value that could be fresh.
+        assert!(!is_fresh_construction(&match_of(var("g"), vec![]), &is_ctor));
+    }
+
+    // ---- 2. TCO borrowed-param promotion trigger ---------------------------
+
+    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.2 (FIXME 0720) — a bare
+    // `Var` of the SAME param CARRIES the slot forward (the `transfer_skip` move
+    // contract): nothing is superseded, nothing is owed.
+    #[test]
+    fn bare_same_var_arg_does_not_supersede_neg() {
+        assert!(!tail_arg_supersedes_param(&var("g"), &Symbol::from("g")));
+    }
+
+    // spec: §2.2 — every other argument REPLACES the slot's occupant, so the old
+    // occupant's reference is the one that leaked: a temporary, a different
+    // binding, a control-flow join.
+    #[test]
+    fn temporary_other_binding_and_join_args_supersede() {
+        let g = Symbol::from("g");
+        assert!(tail_arg_supersedes_param(
+            &apply(global_var("user", "set0"), vec![var("g"), var("m")]),
+            &g
+        ));
+        assert!(tail_arg_supersedes_param(&var("w"), &g));
+        assert!(tail_arg_supersedes_param(&ctor_adt(), &g));
+        assert!(tail_arg_supersedes_param(&match_of(var("g"), vec![ctor_adt()]), &g));
+    }
+
+    // spec: §2.2 — the promotion TRIGGER: the exact 0720 body
+    // `(if (eq-i64 m 0) … (go (set0 g m) (add-i64 m -1)))` supersedes slot 0 and
+    // carries slot 1's scalar. Position-exact.
+    #[test]
+    fn self_call_supersede_detection_is_position_exact() {
+        let module = ModuleFullPath::from("user");
+        let go = Symbol::from("go");
+        let body = MonoExpr::If {
+            cond: Box::new(var("c")),
+            then_branch: Box::new(var("r")),
+            else_branch: Box::new(apply(
+                var("go"),
+                vec![
+                    apply(global_var("user", "set0"), vec![var("g"), var("m")]),
+                    var("m"),
+                ],
+            )),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert!(self_call_supersedes_param(&body, &go, &module, 0, &Symbol::from("g")));
+        assert!(!self_call_supersedes_param(&body, &go, &module, 1, &Symbol::from("m")));
+    }
+
+    // spec: §2.2 (NEGATIVE / byte-identical fence) — a body with NO self-call, and
+    // a self-call that only CARRIES its params forward, promote nothing. This is
+    // what keeps every non-TCO function and the `(go v (- n 1))` shape emission-
+    // identical: no entry inc, no changed flush.
+    #[test]
+    fn no_self_call_or_carry_only_call_promotes_nothing_neg() {
+        let module = ModuleFullPath::from("user");
+        let go = Symbol::from("go");
+        let v = Symbol::from("v");
+        let no_self_call = apply(global_var("user", "other"), vec![var("v")]);
+        assert!(!self_call_supersedes_param(&no_self_call, &go, &module, 0, &v));
+        let carry_only = apply(var("go"), vec![var("v"), apply(global_var("user", "dec"), vec![var("n")])]);
+        assert!(!self_call_supersedes_param(&carry_only, &go, &module, 0, &v));
+        // ...and the SECOND position of that same call IS superseded (the walk
+        // reaches nested calls, so the detection is not accidentally position-blind).
+        assert!(self_call_supersedes_param(&carry_only, &go, &module, 1, &Symbol::from("n")));
     }
 }

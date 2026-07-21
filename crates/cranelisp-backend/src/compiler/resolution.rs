@@ -32,6 +32,38 @@ use cranelisp_types::{
 /// (own module + imported modules) as `Export` with a placeholder value;
 /// the linker/loader patches them at load time.
 ///
+/// # Principle 7 — this is a DELEGATION, not a second scheme (S115 W3)
+///
+/// The canonical home is [`cranelisp_types::got_data_symbol_name`], relocated
+/// DOWN from this module at S76 precisely so the scheme is not duplicated: the
+/// backend REFERENCES the symbol (`Linkage::Import` at every cross-module
+/// GOT-indirect call site) while **int DEFINES it** (`jit.rs::symbol_lookup_fn`,
+/// `worker.rs:1610`, `exe.rs:862` — all on the types-owned fn). A backend-local
+/// copy of the scheme is therefore a definer/consumer divergence channel: change
+/// one side and every cross-module call fails to link with
+/// `can't resolve symbol __cranelisp_got_…`.
+///
+/// The S76 relocation left this function behind as a live duplicate body; it is
+/// now a one-line forward. The agreement is unit-fenced
+/// (`resolution::tests::got_data_symbol_name_agrees_with_the_types_owned_home`).
+///
+/// # R4 status — OWED at the types home, not here
+///
+/// `design/arch/safety-invariants.md` §4 R4 (census:
+/// `design/backend/s115-carrier-and-rc-sweep.md` §4) records this family as the
+/// one backend-facing OWED-witness: the `.`→`_` flatten is **not injective** —
+/// module names admit `_` as well as `.`, so the two-component path `a.b` and
+/// the one-component module `a_b` both flatten to `__cranelisp_got_a_b`, i.e.
+/// two modules sharing ONE GOT slab data symbol (cross-module wrong-slab
+/// dispatch, the R4 class one level up from the drop-glue keying defect
+/// 0633/0640). Constructible in a multi-module program.
+///
+/// The fix is a `cranelisp-types` edit (the scheme's canonical home) and is
+/// filed as FIXME 0748 `target: /arch` with the pinned diff — an injective,
+/// prefix-free escape with a round-trip decoder, exactly the CS-1.2 model
+/// `escape_symbol` already provides for drop-glue keying. Fixing it HERE alone
+/// is the divergence above (verified: the whole stdlib fails to load).
+///
 /// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
 ///
 /// Returns the per-module GOT data-symbol name `__cranelisp_got_{M}` (the
@@ -48,11 +80,7 @@ use cranelisp_types::{
 /// construct the same relocation name int-side — int reaching into backend's
 /// codegen-naming internals; re-wired S77.
 pub(crate) fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
-    let flat = module_path.as_ref().replace('.', "_");
-    format!(
-        "__cranelisp_got_{}",
-        if flat.is_empty() { "_entry" } else { &flat }
-    )
+    cranelisp_types::got_data_symbol_name(module_path)
 }
 
 /// Pure core of `FnCompiler::inner_fn_discriminator` (FIXME 0347 defect 1).

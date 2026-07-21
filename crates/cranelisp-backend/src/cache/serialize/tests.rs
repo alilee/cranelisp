@@ -455,3 +455,211 @@ fn cache_load_rejects_out_of_range_got_slot_as_stale() {
         other => panic!("expected GotSlotOutOfRange cache-stale, got {other:?}"),
     }
 }
+
+// =============================================================================
+// R6 — the persisted-index trust boundary (S115 W3 change-set 4)
+//
+// `design/arch/safety-invariants.md` §4 R6 + the census table in this module's
+// rustdoc + `tests/plan/s115-test-plan.md` §6.1. Each cell corrupts ONE
+// persisted index and asserts its OWN `CacheStale` class (the classes must be
+// distinct — a diagnosis has to name the family that failed), plus the
+// false-fire fence: a valid meta with every index populated round-trips clean.
+//
+// Each cell fails on revert of its validation arm: without the arm the corrupt
+// meta LOADS, and the assertion that it was refused fails.
+// =============================================================================
+
+/// A primitive Def carrying an `Extern` body with the R5 borrowed-sibling slot
+/// forged to `slot` — the second GOT-index family.
+fn make_primitive_with_sibling_slot(slot: usize) -> ModuleEntry {
+    let mut entry = make_def("p");
+    if let ModuleEntry::Def { kind, .. } = &mut entry {
+        **kind = DefKind::Primitive {
+            body: cranelisp_types::PrimitiveBody::Extern {
+                got_slot: 3,
+                borrowed_sibling_slot: Some(slot),
+            },
+            mode_summary: None,
+        };
+    }
+    entry
+}
+
+/// A Def whose ownership summary declares `MayAliasOf(index)` over a signature
+/// of `arity` parameters.
+fn make_def_with_may_alias(index: usize, arity: usize) -> ModuleEntry {
+    let mut entry = make_def("m");
+    if let ModuleEntry::Def { kind, scheme, param_names, .. } = &mut entry {
+        scheme.ty = Type::Fn(vec![Type::Int; arity], Box::new(Type::Int));
+        *param_names = (0..arity).map(|i| Symbol::from(format!("p{i}"))).collect();
+        **kind = DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 1,
+                mode_summary: Some(cranelisp_types::ModeSummary {
+                    result: cranelisp_types::ResultMode::MayAliasOf(index),
+                    ..Default::default()
+                }),
+            },
+        };
+    }
+    entry
+}
+
+fn make_def_with_callee(module: &str, symbol: &str) -> ModuleEntry {
+    let mut entry = make_def("c");
+    if let ModuleEntry::Def { callees, .. } = &mut entry {
+        *callees = vec![FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(symbol),
+        }];
+    }
+    entry
+}
+
+fn make_def_with_view_span(start: u32, end: u32) -> ModuleEntry {
+    let mut entry = make_def("v");
+    if let ModuleEntry::Def { codegen_view, .. } = &mut entry {
+        *codegen_view = Some(cranelisp_types::MonoDefnVariant {
+            name: Symbol::from("v"),
+            params: vec![],
+            body: cranelisp_types::MonoExpr::IntLit {
+                value: 1,
+                span: TSpan::SYNTHETIC,
+                ty: cranelisp_types::ConcreteType::Int,
+            },
+            span: TSpan { start, end },
+            mode_summary: None,
+        });
+    }
+    entry
+}
+
+/// Write a one-entry table and attempt to load it back.
+fn roundtrip(dir: &std::path::Path, name: &str, entry: ModuleEntry) -> Result<SymbolTable, CacheStale> {
+    let meta_path = dir.join(format!("{name}.meta.json"));
+    let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
+    table.insert(Symbol::from(name), entry);
+    write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    load_meta(&meta_path)
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 — the R5 borrowed-sibling slot is
+// a GOT index like any other; an out-of-range value on disk must be diagnosed at
+// load, not left to panic in `store_slot`/`load_slot` when its first consumer
+// reads it (the co-landing rule — validation lands now, the CONSUMER stays
+// parked per FIXME 0637).
+#[test]
+fn cache_load_rejects_out_of_range_sibling_slot_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    roundtrip(dir.path(), "ok", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 1))
+        .expect("an in-bounds sibling slot must load");
+    match roundtrip(dir.path(), "bad", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE)) {
+        Err(CacheStale::SiblingSlotOutOfRange { slot, .. }) => {
+            assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE);
+        }
+        other => panic!("expected SiblingSlotOutOfRange, got {other:?}"),
+    }
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 — a persisted
+// `ResultMode::MayAliasOf(k)` with `k >= arity` is the `arg_origins[k]` OOB read
+// the register row names. Boundary-exact: `k == arity - 1` loads, `k == arity`
+// is refused.
+#[test]
+fn cache_load_rejects_out_of_range_summary_param_index_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    roundtrip(dir.path(), "ok", make_def_with_may_alias(1, 2))
+        .expect("MayAliasOf(arity-1) is in range and must load");
+    match roundtrip(dir.path(), "bad", make_def_with_may_alias(2, 2)) {
+        Err(CacheStale::SummaryParamIndexOutOfRange { index, arity, .. }) => {
+            assert_eq!((index, arity), (2, 2), "reports the offending index + arity");
+        }
+        other => panic!("expected SummaryParamIndexOutOfRange, got {other:?}"),
+    }
+    // A nullary callable with ANY MayAliasOf is out of range by construction.
+    assert!(matches!(
+        roundtrip(dir.path(), "nullary", make_def_with_may_alias(0, 0)),
+        Err(CacheStale::SummaryParamIndexOutOfRange { .. })
+    ));
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 — a `callees` FQ with an empty
+// module or symbol component is not a nameable key; it would corrupt resolution
+// and the reverse who-calls-whom index the dependent-recompilation transaction
+// derives from these edges.
+#[test]
+fn cache_load_rejects_malformed_callee_fq_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    roundtrip(dir.path(), "ok", make_def_with_callee("user", "f"))
+        .expect("a well-formed callee FQ must load");
+    for (module, symbol) in [("", "f"), ("user", ""), ("", "")] {
+        match roundtrip(dir.path(), "bad", make_def_with_callee(module, symbol)) {
+            Err(CacheStale::MalformedCalleeFq { .. }) => {}
+            other => panic!("expected MalformedCalleeFq for ({module:?}, {symbol:?}), got {other:?}"),
+        }
+    }
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 — an inverted persisted span
+// (`start > end`) yields an out-of-source slice / keyed-read miss at the
+// diagnostic seam.
+#[test]
+fn cache_load_rejects_malformed_span_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    roundtrip(dir.path(), "ok", make_def_with_view_span(3, 9))
+        .expect("a well-formed span must load");
+    roundtrip(dir.path(), "empty", make_def_with_view_span(4, 4))
+        .expect("an EMPTY (start == end) span is well-formed and must load");
+    match roundtrip(dir.path(), "bad", make_def_with_view_span(9, 3)) {
+        Err(CacheStale::MalformedSpanKey { start, end, .. }) => {
+            assert_eq!((start, end), (9, 3));
+        }
+        other => panic!("expected MalformedSpanKey, got {other:?}"),
+    }
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 (FALSE-FIRE FENCE) — a valid meta
+// with EVERY persisted index populated at a legal value round-trips untouched.
+// Without this, an over-eager arm could reject healthy caches and the only
+// symptom would be a silent permanent recompile.
+#[test]
+fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join("all.meta.json");
+    let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
+    table.insert(Symbol::from("slot"), make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE - 1));
+    table.insert(
+        Symbol::from("sib"),
+        make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE - 2),
+    );
+    table.insert(Symbol::from("alias"), make_def_with_may_alias(0, 1));
+    table.insert(Symbol::from("callee"), make_def_with_callee("user", "f"));
+    table.insert(Symbol::from("view"), make_def_with_view_span(0, 12));
+    write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+    let loaded = load_meta(&meta_path).expect("a fully-populated valid meta must load clean");
+    assert_eq!(loaded.symbols.len(), 5);
+}
+
+// spec: design/arch/safety-invariants.md §4 R6 — the classes are DISTINCT, so a
+// diagnosis names the family that failed rather than collapsing every corrupt
+// index onto one reason string.
+#[test]
+fn r6_stale_classes_are_distinct_per_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let reasons: Vec<&'static str> = vec![
+        roundtrip(dir.path(), "a", make_def_with_slot(cranelisp_types::GOT_TABLE_SIZE)),
+        roundtrip(dir.path(), "b", make_primitive_with_sibling_slot(cranelisp_types::GOT_TABLE_SIZE)),
+        roundtrip(dir.path(), "c", make_def_with_may_alias(5, 1)),
+        roundtrip(dir.path(), "d", make_def_with_callee("", "f")),
+        roundtrip(dir.path(), "e", make_def_with_view_span(9, 1)),
+    ]
+    .into_iter()
+    .map(|r| r.expect_err("each forged index must be refused").reason())
+    .collect();
+    let unique: std::collections::HashSet<_> = reasons.iter().collect();
+    assert_eq!(
+        unique.len(),
+        reasons.len(),
+        "each persisted-index family needs its OWN CacheStale class; got {reasons:?}"
+    );
+}

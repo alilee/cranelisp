@@ -286,25 +286,38 @@ where
         if matches!(body, MonoExpr::Lambda { .. } | MonoExpr::StringLit { .. }) {
             return;
         }
-        // F-R1 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — entry-`main`'s IO
-        // result is consumed EXACTLY ONCE by the IO trampoline
-        // (`cranelisp_intrinsics::drop::consume_io_tree`), so a protective inc on it
-        // is a FIXED over-retention the single consumer can never balance — the
-        // §13.3 G2/item-26 class localized to the known nullary entry frame. A
-        // freshly-constructed IO value (`ConstrADT` — the `Pure`/effect ctor) is a
-        // brand-new box that never aliases a scope binding, so scope cleanup cannot
-        // free it and the protect is pure over-inc. Suppress it for exactly this
-        // shape: nullary `main`, tail return, fresh `ConstrADT` body. Licensed
-        // SOLELY by the entry-`main` single-consumer trampoline contract — the
-        // general G2 protect (an `Apply` return that MAY alias an argument and
-        // needs B2 callee summaries to narrow) is UNTOUCHED (the plan §2.1 fence:
-        // do not weaken the general protect). Balances `allocs == deallocs`
-        // EXACTLY: the trampoline's one `consume_io_tree` dec now frees the box.
-        if self.current_fn_name.as_ref().is_some_and(|n| n.as_ref() == "main")
-            && self.fn_param_count == 0
-            && self.in_tail_position
-            && self.body_is_fresh_construction(body)
-        {
+        // Item-26 — a FRESH-CONSTRUCTION return needs no protect, in ANY function
+        // (S115 W3 change-set 2; supersedes the S114 F-R1 `main`-keyed special case
+        // and resolves FIXME 0696 against its design ruling `direction (b)`,
+        // `design/backend/s115-carrier-and-rc-sweep.md` §7).
+        //
+        // The protect exists for ONE reason: scope cleanup decs the scope's heap
+        // bindings, and the returned value may BE one of them. A freshly
+        // constructed box (`ConstrADT`, or an `Apply` whose callee resolves to a
+        // constructor — `body_is_fresh_construction`) is brand new: it cannot
+        // alias any scope binding, so cleanup cannot touch it and the inc is a
+        // pure over-retention the caller's single consuming dec can never balance.
+        // This is the SAME reasoning that already skips `Lambda`/`StringLit` above
+        // — freshness, one step further; the license is freshness, never the fn
+        // name (0696: name-as-identity is the 0632 / Principle-19 class, and the
+        // F-R1 comment's "entry-`main` trampoline contract" was never the real
+        // license — `body_is_fresh_construction` was doing the work).
+        //
+        // The §2.1 fence is HONORED, not weakened: `body_is_fresh_construction`
+        // admits ONLY `ConstrADT` / ctor-`Apply` / `Let`-forwarded-fresh. A general
+        // `Apply` return (a user/trait call that MAY return an aliased argument,
+        // e.g. `(id x)`) is NOT fresh and keeps its protect verbatim — the G2 class
+        // the fence protects is untouched.
+        //
+        // Measured (S115 W3): this is the toggle-OFF half of FIXME 0720. In
+        // `(defn set0 [g m] (match g [(Gr cells) (Gr (vec-set cells 0 m))]))` the
+        // returned `Gr` is fresh; under `CRANELISP_NO_OWNERSHIP` (no summary ⇒
+        // `return_is_fresh_by_summary` cannot fire) the protect inc left every
+        // loop-carried `Gr` at rc≥2, so the TCO flush's dec never reached zero —
+        // 2 objects leaked per iteration. Analysis-ON the summary already
+        // suppressed it, which is why the two toggles disagreed; the two paths now
+        // agree by construction (Principle 7).
+        if self.body_is_fresh_construction(body) {
             return;
         }
         // Only protect if the current scope has heap-typed bindings that

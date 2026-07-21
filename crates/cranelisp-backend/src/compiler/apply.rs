@@ -396,7 +396,9 @@ where
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
-            return self.compile_resolved_call(resolved.clone(), args, span, saved_tail, apply_target, apply_escapes);
+            return self.compile_resolved_call(
+                resolved.clone(), callee, args, span, saved_tail, apply_target, apply_escapes,
+            );
         }
 
         // Regular function call: callee must be a Var referring to a known function,
@@ -451,9 +453,13 @@ where
     /// `FnCompiler` method per variant (S111 R5 §2 — pure protocol-boundary
     /// extraction, byte-identical). TraitMethod and SigDispatch share
     /// `compile_moded_user_call` (the P7 dedup: identical below the `sym` bind).
+    #[allow(clippy::too_many_arguments)] // +1 for the FIXME-0705 callee carrier
     fn compile_resolved_call(
         &mut self,
         resolved: ResolvedCall,
+        // FIXME 0705: the callee expression — the identity carrier for the
+        // `ApplyRef::ViaCallee` auto-curry state (see `compile_auto_curry_call`).
+        callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
@@ -484,6 +490,7 @@ where
                 ref trait_resolution,
             } => self.compile_auto_curry_call(
                 target_name,
+                callee,
                 args,
                 applied_count,
                 total_count,
@@ -852,11 +859,35 @@ where
         Ok(result)
     }
 
-    /// The `ResolvedCall::AutoCurry` arm (S111 R5 §2.2).
+    /// The `ResolvedCall::AutoCurry` arm (S111 R5 §2.2) — **TOTAL over the closed
+    /// carrier sums** (S115 W3 change-set 3 / FIXME 0705;
+    /// `design/backend/s115-carrier-and-rc-sweep.md` §3; Principle 24 corollary
+    /// prong 3 / Principle 20 exhaustiveness).
+    ///
+    /// After the S114 typed-resolution flip both carrier sums are CLOSED:
+    /// `ApplyRef ∈ {Dispatch(FQ), ViaCallee}` and
+    /// `VarRef ∈ {Global(FQ), Local{binder, binding_span}}`. The seam has an arm
+    /// for every legal state and a LOCATED PRODUCER ERROR for nothing else — no
+    /// `_ =>` fallback, no name-resolver re-derivation (Rev-2):
+    ///
+    /// | carrier state | arm |
+    /// |---|---|
+    /// | `Dispatch(fq)` (slotted / current-unit / ctor / inline-primitive) | the landed `emit_wrapper_call` family |
+    /// | `ViaCallee` + inner `TraitMethod`/`BuiltinFn` resolution | the landed self-derived impl carrier (`emit_curry_target_call`) |
+    /// | `ViaCallee` + callee `VarRef::Local` | **curry the LOCAL CLOSURE VALUE** (0705, new) |
+    /// | `ViaCallee` + a computed (non-`Var`) callee | same closure-value arm — `ViaCallee` means the identity rides the callee EXPRESSION |
+    /// | `ViaCallee` + callee `VarRef::Global`, no inner resolution | **located producer contradiction** — `resolve_auto_curry` transports a `Global` plain-fn callee as `ApplyRef::Dispatch`, so this state cannot be produced correctly |
+    ///
+    /// The 0705 repro `(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))` is row 3:
+    /// typecheck is complete and correct (a local closure HAS no GOT slot, so
+    /// `ViaCallee` + `Local` with no dispatch FQ is the honest carrier); the gap
+    /// was purely the missing consumer arm, which fell through
+    /// `func_ids`/ctor/inline-primitive to the loud GOT terminal.
     #[allow(clippy::too_many_arguments)]
     fn compile_auto_curry_call(
         &mut self,
         target_name: &Symbol,
+        callee: &MonoExpr,
         args: &[MonoExpr],
         applied_count: usize,
         total_count: usize,
@@ -865,6 +896,47 @@ where
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
+        match classify_auto_curry_target(apply_target, trait_resolution, callee) {
+            AutoCurryTarget::ProducerContradiction(fq) => {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "auto-curry carrier contradiction for '{target_name}': the Apply \
+                         records ApplyRef::ViaCallee (no dispatch target) while the callee \
+                         Var resolves to VarRef::Global({fq}) with no inner trait/builtin \
+                         resolution. A Global plain-fn callee is transported as \
+                         ApplyRef::Dispatch by the producer (mono_collect.rs::resolve_auto_curry), \
+                         so this state is a producer defect — the backend does NOT re-resolve \
+                         from the name (FIXME 0705; backend-keyed-consumer.md §1.2 Rev-2)"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+            AutoCurryTarget::ClosureValue => {
+            // Curry the CLOSURE VALUE. Source order: the callee is evaluated
+            // before the arguments. Routed through `compile_consuming_arg_list`
+            // so the target gets exactly the capture ownership the applied args
+            // get — a live-`Var` closure is inc'd (the enclosing scope keeps its
+            // own reference, dec'd at scope exit), a computed temporary transfers.
+            let target_val =
+                self.compile_consuming_arg_list(std::slice::from_ref(callee))?[0];
+            let arg_vals = self.compile_consuming_arg_list(args)?;
+            self.in_tail_position = saved_tail;
+            return self.compile_auto_curry(
+                target_name,
+                &arg_vals,
+                applied_count,
+                total_count,
+                args,
+                span,
+                trait_resolution,
+                apply_target,
+                Some(target_val),
+            );
+            }
+            // The landed table-symbol arms (Dispatch / inner trait-or-builtin
+            // resolution) fall through to the shared tail below.
+            AutoCurryTarget::Dispatch | AutoCurryTarget::InnerResolution => {}
+        }
         // Compile applied args with consuming convention:
         // the auto-curry closure captures them, and the wrapper
         // will inc before forwarding to the target function.
@@ -882,6 +954,7 @@ where
             span,
             trait_resolution,
             apply_target,
+            None,
         )
     }
 
@@ -2332,6 +2405,56 @@ fn is_extern_primitive(name: &str) -> bool {
 }
 
 /// Check if a builtin name is a Vec primitive (compiled inline by vec_codegen).
+/// The auto-curry emission seam's verdict over the CLOSED carrier sums
+/// (FIXME 0705; `design/backend/s115-carrier-and-rc-sweep.md` §3). One variant
+/// per legal carrier state plus the one illegal state — the enum IS the totality
+/// claim, so a new carrier state is a non-exhaustive-match compile error rather
+/// than a silent `_ =>` fallthrough (Principle 20).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AutoCurryTarget {
+    /// `ApplyRef::Dispatch(fq)` — a table symbol; the landed
+    /// `emit_wrapper_call` family (GOT-indirect / current-unit direct / ctor /
+    /// inline-primitive) resolves it off the carrier.
+    Dispatch,
+    /// `ApplyRef::ViaCallee` with an inner `TraitMethod`/`BuiltinFn` resolution —
+    /// the landed self-derived impl carrier (`emit_curry_target_call`).
+    InnerResolution,
+    /// `ApplyRef::ViaCallee` over a scope-stack CLOSURE VALUE (a
+    /// `VarRef::Local` callee, or a computed callee expression). The 0705 arm.
+    ClosureValue,
+    /// `ApplyRef::ViaCallee` + callee `VarRef::Global` + no inner resolution —
+    /// a producer contradiction (carries the offending storage FQ for the
+    /// located error). `resolve_auto_curry` transports a `Global` plain-fn
+    /// callee as `ApplyRef::Dispatch`, so this pairing cannot be produced
+    /// correctly; the backend reports it rather than re-resolving from the name.
+    ProducerContradiction(FQSymbol),
+}
+
+/// Classify the auto-curry seam's carrier state. Pure over the three carrier
+/// inputs, so the whole totality table is unit-testable without a live
+/// `FnCompiler` (the `resolve_borrowed_status` precedent).
+pub(crate) fn classify_auto_curry_target(
+    apply_target: Option<&FQSymbol>,
+    trait_resolution: Option<&ResolvedCall>,
+    callee: &MonoExpr,
+) -> AutoCurryTarget {
+    if apply_target.is_some() {
+        return AutoCurryTarget::Dispatch;
+    }
+    if trait_resolution.is_some() {
+        return AutoCurryTarget::InnerResolution;
+    }
+    match callee {
+        MonoExpr::Var { resolution: VarRef::Global(fq), .. } => {
+            AutoCurryTarget::ProducerContradiction(fq.clone())
+        }
+        // `VarRef::Local` — the 0705 arm; and a computed (non-`Var`) callee,
+        // which `ApplyRef::ViaCallee` explicitly admits ("the identity rides the
+        // callee expression … or a computed closure value").
+        _ => AutoCurryTarget::ClosureValue,
+    }
+}
+
 fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }
@@ -2428,3 +2551,6 @@ mod keyed_miss_tests;
 
 #[cfg(test)]
 mod tco_self_call_carrier_tests;
+
+#[cfg(test)]
+mod auto_curry_totality_tests;

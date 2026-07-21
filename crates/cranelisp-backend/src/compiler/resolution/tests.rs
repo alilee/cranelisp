@@ -365,3 +365,89 @@ fn instantiation_mangle_is_injective_over_special_chars() {
          sanitize rendered identically"
     );
 }
+
+// ── R4 — the GOT data-symbol mint (S115 W3 change-set 4) ─────────────────
+//
+// `design/arch/safety-invariants.md` §4 R4 ("every mangle semantic-identity →
+// symbol is injective, or additionally disambiguator-keyed"); census in
+// `design/backend/s115-carrier-and-rc-sweep.md` §4, where `got_data_symbol_name`
+// is the ONE backend-facing OWED-witness.
+//
+// TWO facts are pinned here, and only one of them is closable inside this crate:
+//
+// 1. **P7 agreement (closed).** The scheme's canonical home is
+//    `cranelisp_types::got_data_symbol_name` (relocated DOWN at S76 so it is not
+//    duplicated). The backend REFERENCES the symbol; **int DEFINES** it off the
+//    types-owned fn. A backend-local second body is a definer/consumer
+//    divergence channel — verified the hard way during this change-set: escaping
+//    the path here alone made every cross-module call fail with
+//    `can't resolve symbol __cranelisp_got_compare_dord` and the whole stdlib
+//    stopped loading. This cell is that fence.
+// 2. **Injectivity (OWED, FIXME 0748 → /arch).** The `.`→`_` flatten collides
+//    `a.b` with `a_b`. The fix belongs at the types home; it cannot land
+//    one-sidedly here (see 1).
+
+// spec: design/arch/principles/07-single-source-of-truth.md — the GOT
+// data-symbol scheme has ONE home (`cranelisp_types::got_data_symbol_name`); the
+// backend's `got_data_symbol_name` is a forward, never a second body. A
+// divergence breaks every cross-module GOT-indirect call at link time (the
+// consumer emits a relocation against a name the definer never registers).
+#[test]
+fn got_data_symbol_name_agrees_with_the_types_owned_home() {
+    use cranelisp_types::ModuleFullPath;
+    for path in [
+        "", "user", "prelude", "primitives", "compare.ord", "fn.option.test",
+        "a.b", "a_b", "a-b", "my-lib.sub_mod.deep",
+    ] {
+        let m = ModuleFullPath::from(path);
+        assert_eq!(
+            got_data_symbol_name(&m),
+            cranelisp_types::got_data_symbol_name(&m),
+            "backend and types MUST mint the identical GOT data symbol for {path:?} \
+             — the backend references what int defines"
+        );
+    }
+}
+
+// spec: design/arch/safety-invariants.md §4 R4 — the pinned link-time ABI names.
+// `__cranelisp_got_primitives` is an `export_name` LITERAL in
+// `cranelisp-primitives/src/lib.rs`, so this mint must agree with it exactly;
+// any future injectivity fix (FIXME 0748) must keep purely-alphanumeric paths as
+// fixed points or move that literal in the same change-set.
+#[test]
+fn got_data_symbol_name_matches_the_pinned_link_time_abi_literals() {
+    use cranelisp_types::ModuleFullPath;
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("primitives")),
+        "__cranelisp_got_primitives",
+        "must match the `export_name` literal in cranelisp-primitives"
+    );
+    for path in ["prelude", "user", "macros"] {
+        assert_eq!(
+            got_data_symbol_name(&ModuleFullPath::from(path)),
+            format!("__cranelisp_got_{path}")
+        );
+    }
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("")),
+        "__cranelisp_got__entry"
+    );
+}
+
+// spec: design/arch/safety-invariants.md §4 R4 — the OWED collision, recorded so
+// the census claim is checkable against source rather than asserted. This pins
+// the CURRENT (non-injective) behaviour deliberately: it is the evidence FIXME
+// 0748 carries, and it flips to an injectivity assertion in the change-set that
+// fixes the types-owned mint.
+#[test]
+fn got_data_symbol_name_collision_is_the_owed_r4_witness() {
+    use cranelisp_types::ModuleFullPath;
+    assert_eq!(
+        got_data_symbol_name(&ModuleFullPath::from("a.b")),
+        got_data_symbol_name(&ModuleFullPath::from("a_b")),
+        "R4 OWED (FIXME 0748): the `.`->`_` flatten collides these two distinct \
+         modules onto ONE GOT slab data symbol. When 0748 lands at the types \
+         home this assertion INVERTS to assert_ne! — it is the witness, not an \
+         endorsement."
+    );
+}

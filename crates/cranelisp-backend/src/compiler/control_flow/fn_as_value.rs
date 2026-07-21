@@ -792,6 +792,13 @@ where
         // wrapper's `_ =>`/no-resolution GOT read; the TraitMethod/BuiltinFn arms
         // self-derive their own.
         target_fq: Option<&FQSymbol>,
+        // FIXME 0705 (S115 W3 change-set 3): the CLOSURE-VALUE target — `Some`
+        // for the `ApplyRef::ViaCallee` carrier state, where the curry target is
+        // a scope-stack closure value, not a table symbol. It is captured
+        // ALONGSIDE the applied args (at capture slot `applied_count`, so the
+        // applied captures keep their indices) and the wrapper dispatches through
+        // its embedded `CODE_PTR` instead of a GOT slot.
+        target_closure: Option<Value>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -827,16 +834,20 @@ where
             trait_resolution,
             vec_elem.as_ref(),
             target_fq,
+            target_closure.is_some(),
         )?;
 
         // 2. Build drop glue for heap-typed captures.
         let drop_glue_id = self.build_auto_curry_drop_glue(
             &arg_categories,
+            target_closure.is_some().then_some(applied_count),
             span,
         )?;
 
-        // 3. Allocate closure env.
-        let payload_size = HeapClosure::payload_size(applied_count) as i64;
+        // 3. Allocate closure env. One extra capture slot when the target is a
+        // closure VALUE (FIXME 0705) — it rides at index `applied_count`.
+        let capture_count = applied_count + usize::from(target_closure.is_some());
+        let payload_size = HeapClosure::payload_size(capture_count) as i64;
         let base_ptr = heap::emit_alloc(
             &mut self.builder,
             self.module,
@@ -892,6 +903,18 @@ where
                 HeapClosure::capture_offset(i),
             );
         }
+        // The closure-value target rides the LAST capture slot (FIXME 0705). Its
+        // reference was established by the caller (`compile_consuming_arg_list`
+        // over the callee expression: a live-`Var` target is inc'd, a computed
+        // temporary transfers) — exactly as for the applied args above.
+        if let Some(target_val) = target_closure {
+            heap::heap_store(
+                &mut self.builder,
+                target_val,
+                base_ptr,
+                HeapClosure::capture_offset(applied_count),
+            );
+        }
 
         Ok(base_ptr)
     }
@@ -912,6 +935,10 @@ where
         vec_elem: Option<&Type>,
         // S110 W2 (§4; row 17): the plain-fn curry target's carrier.
         target_fq: Option<&FQSymbol>,
+        // FIXME 0705: the target is a CLOSURE VALUE captured at slot
+        // `applied_count`; dispatch through its embedded `CODE_PTR` rather than
+        // a table symbol.
+        target_is_closure_capture: bool,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         // Mono-discriminated span name (FIXME 0347 defect 1).
         let wrapper_name = format!(
@@ -968,19 +995,47 @@ where
         }
         all_args.extend_from_slice(&remaining_args);
 
-        // Call the target function. For trait methods resolved to inline
-        // builtins (e.g., + → add-i64), emit the IR directly in the wrapper.
-        // For extern primitives, emit an extern call. For user functions,
-        // use emit_wrapper_call (handles Batch/Interactive modes).
-        let result = self.emit_curry_target_call(
-            &mut builder,
-            target_name,
-            &all_args,
-            span,
-            trait_resolution,
-            vec_elem,
-            target_fq,
-        )?;
+        // Call the target. FIXME 0705 — when the target is a captured CLOSURE
+        // VALUE (the `ApplyRef::ViaCallee` + `VarRef::Local` carrier state) there
+        // is no table symbol and no GOT slot to dispatch through: load the
+        // captured closure and call its embedded `CODE_PTR` with the closure
+        // itself as the env pointer. This is the auto-curry analogue of
+        // `compile_closure_call` (the FULL-application locals-first path in
+        // `compile_var_apply`), extended from full to PARTIAL application.
+        //
+        // The captured target is NOT inc'd here: calling a closure does not
+        // consume it (`compile_closure_call` emits no inc/dec either), and the
+        // curry env's own reference is released by the drop glue.
+        let result = if target_is_closure_capture {
+            let target_val = heap::heap_load(
+                &mut builder,
+                env_ptr,
+                HeapClosure::capture_offset(applied_count),
+            );
+            let code_ptr =
+                heap::heap_load(&mut builder, target_val, HeapClosure::CODE_PTR_OFFSET);
+            let mut call_sig = self.module.make_signature();
+            call_sig.params.push(AbiParam::new(types::I64)); // env ptr
+            for _ in &all_args {
+                call_sig.params.push(AbiParam::new(types::I64));
+            }
+            call_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = builder.import_signature(call_sig);
+            let mut call_args = vec![target_val];
+            call_args.extend_from_slice(&all_args);
+            let call = builder.ins().call_indirect(sig_ref, code_ptr, &call_args);
+            builder.inst_results(call)[0]
+        } else {
+            self.emit_curry_target_call(
+                &mut builder,
+                target_name,
+                &all_args,
+                span,
+                trait_resolution,
+                vec_elem,
+                target_fq,
+            )?
+        };
 
         builder.ins().return_(&[result]);
         builder.seal_all_blocks();
@@ -1003,10 +1058,15 @@ where
     fn build_auto_curry_drop_glue(
         &mut self,
         arg_categories: &[HeapCategory],
+        // FIXME 0705: `Some(slot)` when a closure-VALUE target rides capture
+        // `slot`; it is heap by construction (a closure is always a heap box) and
+        // the curry env owns one reference to it, so the glue must release it or
+        // the curried closure leaks its target.
+        target_closure_slot: Option<usize>,
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         // Collect indices of heap-typed captures — the capture layout specific.
-        let heap_indices: Vec<(usize, HeapCategory)> = arg_categories
+        let mut heap_indices: Vec<(usize, HeapCategory)> = arg_categories
             .iter()
             .enumerate()
             .filter_map(|(i, cat)| match cat {
@@ -1014,6 +1074,9 @@ where
                 HeapCategory::NeverHeap | HeapCategory::Value => None,
             })
             .collect();
+        if let Some(slot) = target_closure_slot {
+            heap_indices.push((slot, HeapCategory::AlwaysHeap));
+        }
 
         // Naming identity (ledger item 25): fold `inner_fn_discriminator()` +
         // span IDENTICALLY to the sibling `__curry_…` wrapper so glue identity

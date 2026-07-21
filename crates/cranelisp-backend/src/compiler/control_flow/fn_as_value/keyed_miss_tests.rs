@@ -134,9 +134,23 @@ fn kc_n3_value_seam_carrier_none_hard_errors() {
         Err(e) => e,
     };
     let msg = format!("{err:?}");
+    // S115 W3 change-set 3 (FIXME 0705) — the seam became TOTAL over the closed
+    // carrier sums, which SHARPENS this miss rather than removing it. With no
+    // Apply-span carrier the state is `ApplyRef::ViaCallee`, and with no callee
+    // carrier the typed `VarRef` is `Local` — so the seam now takes the
+    // curry-the-local-closure arm and hard-errors at the scope-stack read
+    // ("binder 'bar' … absent from the backend scope stack"), which is a STRICTLY
+    // more precise diagnosis of the same producer defect than the former
+    // GOT-terminal message. KC-N3's invariant is unchanged and is what is
+    // asserted here: a carrier-less value-seam curry HARD-ERRORS, LOCATED, NAMING
+    // the reference — never a silent fallback to a name-keyed resolver (Rev-2).
     assert!(
-        msg.contains("no GOT-slot carrier") && msg.contains("bar"),
-        "value-seam carrier-None must name the reference + the missing carrier; got: {msg}"
+        msg.contains("bar")
+            && (msg.contains("no GOT-slot carrier")
+                || msg.contains("absent from the backend scope stack")),
+        "value-seam carrier-None must name the reference + the missing carrier \
+         (GOT-slot carrier miss, or the VarRef::Local scope-stack miss the 0705 \
+         totality arm reports); got: {msg}"
     );
 }
 

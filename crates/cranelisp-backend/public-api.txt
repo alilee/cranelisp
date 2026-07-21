@@ -198,6 +198,14 @@ pub cranelisp_backend::cache::serialize::CacheStale::GotSlotOutOfRange::slot: us
 pub cranelisp_backend::cache::serialize::CacheStale::Io
 pub cranelisp_backend::cache::serialize::CacheStale::Io::message: alloc::string::String
 pub cranelisp_backend::cache::serialize::CacheStale::Io::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedCalleeFq
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedCalleeFq::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedCalleeFq::symbol: alloc::string::String
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedSpanKey
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedSpanKey::end: u32
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedSpanKey::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedSpanKey::start: u32
+pub cranelisp_backend::cache::serialize::CacheStale::MalformedSpanKey::symbol: alloc::string::String
 pub cranelisp_backend::cache::serialize::CacheStale::Missing
 pub cranelisp_backend::cache::serialize::CacheStale::Missing::path: std::path::PathBuf
 pub cranelisp_backend::cache::serialize::CacheStale::PathMismatch
@@ -208,6 +216,13 @@ pub cranelisp_backend::cache::serialize::CacheStale::SchemaMismatch
 pub cranelisp_backend::cache::serialize::CacheStale::SchemaMismatch::expected: u32
 pub cranelisp_backend::cache::serialize::CacheStale::SchemaMismatch::found: u32
 pub cranelisp_backend::cache::serialize::CacheStale::SchemaMismatch::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::SiblingSlotOutOfRange
+pub cranelisp_backend::cache::serialize::CacheStale::SiblingSlotOutOfRange::path: std::path::PathBuf
+pub cranelisp_backend::cache::serialize::CacheStale::SiblingSlotOutOfRange::slot: usize
+pub cranelisp_backend::cache::serialize::CacheStale::SummaryParamIndexOutOfRange
+pub cranelisp_backend::cache::serialize::CacheStale::SummaryParamIndexOutOfRange::arity: usize
+pub cranelisp_backend::cache::serialize::CacheStale::SummaryParamIndexOutOfRange::index: usize
+pub cranelisp_backend::cache::serialize::CacheStale::SummaryParamIndexOutOfRange::path: std::path::PathBuf
 impl cranelisp_backend::cache::serialize::CacheStale
 pub fn cranelisp_backend::cache::serialize::CacheStale::reason(&self) -> &'static str
 impl core::fmt::Display for cranelisp_backend::cache::serialize::CacheStale
