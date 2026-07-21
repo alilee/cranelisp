@@ -1,6 +1,6 @@
 # Sprint 115: Stabilise — Clean & Green + the Assertion Ladder Complete
 
-**Status**: PHASE 6A ASSESSMENT
+**Status**: PHASE 7 CLOSE — outcome authored; awaiting user approval to archive
 
 **Goal**: Flip all 11 attributed carry REDs to green with zero new unattributed REDs, and close the gap between the QA/arch instrumentation-and-assertion recommendations and what is actually in place — so future failures name their seam instead of flapping.
 
