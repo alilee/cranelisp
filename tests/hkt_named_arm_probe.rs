@@ -1,22 +1,23 @@
-// hkt_named_arm_probe.rs — Track E repro-gated probe (s114-test-plan §6; FIXME
-// 0590 resolver-mirror convergence). 0590 names a latent-defect SUSPICION: the
-// `resolve_type_expr_hkt` / `resolve_type_expr_hkt_impl` resolvers'
-// `Named` arms "never error at all — mint on double miss", so an UNKNOWN named
-// type reaching an HKT trait-sig / impl-method type expression could be silently
-// fabricated as a `Named` instead of rejected.
+// hkt_named_arm_probe.rs — born-green fence over the S110 resolver convergence
+// (audit S114 R-1 rider, FIXME 0724; corrected S115 W1).
 //
-// PROBE OUTCOME (/testing, verified 2026-07-20; BD-A3 probe-first template): the
-// suspicion does NOT reproduce e2e through the accessible shapes. An unknown named
-// type in an HKT trait method signature — `:(Bogus a)` / `(Bogus b)` in a
-// `(deftrait (Functor f) …)` sig — is REJECTED with a located `unknown type
-// `Bogus`` diagnostic. The `_hkt` `Named` never-error arm is MASKED by the
-// `form.rs::check_type_expr` pre-walk (which errors first), so no silently-wrong
-// `Named` fallback is observable from source. Pinned as a BORN-GREEN fence: if the
-// 0590 convergence (or any refactor) removes the pre-walk guard, the never-error
-// arm would surface and flip this cell RED. Reported to /qa: the `_hkt`/`_hkt_impl`
-// `Named`-arm defect, if real, is not e2e-reachable via these shapes — a UNIT-tier
-// concern for the 0590 /design deployment (the pre-walk is the only barrier).
-// Free-standing.
+// NARRATIVE CORRECTION (S115 W1; audit `cranelisp-typecheck-s114.md` §2.2a): the
+// earlier comment claimed the observed reject was a never-error `_hkt` `Named` arm
+// "MASKED by a `form.rs::check_type_expr` pre-walk (which errors first)". That is
+// FALSE — there is NO pre-walk and NO surviving never-error arm. The former mirror
+// resolvers (`resolve_type_expr_hkt` / `resolve_type_expr_hkt_impl`) and their
+// never-error `Named`-fabrication arms were DELETED in S110 (`5ed07d60`), when the
+// four-mirror `TypeExpr` resolver family converged onto the ONE resolver
+// (`TypeExprCtx` / `resolve_named`, `crates/cranelisp-typecheck/src/resolve.rs`).
+// `resolve_named` ERRORS on an unknown name; there is no fabrication path to mask.
+// (FIXME 0590 was verified against that S110 evidence and DELETED at S115 Phase 1.)
+//
+// WHAT THIS FILE FENCES: an unknown named type in HKT position produces a LOCATED
+// `unknown type` error via the ONE converged resolver — the guarantee the S110
+// convergence provides. The test is KEPT: if any future refactor reintroduces a
+// never-error / mint-on-miss arm at the HKT resolution seam, an unknown named type
+// would be silently fabricated as a `Named` and this cell would flip RED. The
+// narrative changed; the assertions did not. Free-standing.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -32,10 +33,10 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 }
 
 // Born-green fence: an unknown named type in an HKT trait method signature MUST be
-// rejected as an `unknown type`, never silently fabricated as a `Named` by the
-// `_hkt` resolver's never-error arm. `(deftrait (Functor f) (fmap [… :(Bogus a) x]
-// (f b)))` uses the unknown `Bogus` in an HKT param type position. Guards the 0590
-// convergence against exposing the never-error arm.
+// rejected as an `unknown type`, never silently fabricated as a `Named`.
+// `(deftrait (Functor f) (fmap [… :(Bogus a) x] (f b)))` uses the unknown `Bogus`
+// in an HKT param type position. Guards the S110 converged resolver (`resolve_named`)
+// against any future refactor reintroducing a never-error / mint-on-miss arm.
 // spec: spec/07-traits.md §7.3.5 — an unknown named type in a (higher-kinded) trait
 // signature/impl-target is a located `unknown type` error, not a minted `Named`.
 #[test]
@@ -48,8 +49,8 @@ fn hkt_sig_unknown_named_type_rejected_not_silently_minted() {
     assert!(
         out.status.code() != Some(0) && c.contains("unknown type"),
         "an unknown named type `Bogus` in an HKT trait method signature MUST be a \
-         located `unknown type` error — NOT silently fabricated as a `Named` by the \
-         `_hkt` resolver's never-error arm (FIXME 0590); got exit {:?}:\n{c}",
+         located `unknown type` error — NOT silently fabricated as a `Named` (the \
+         S110 converged `resolve_named` errors on unknown names); got exit {:?}:\n{c}",
         out.status.code()
     );
 }

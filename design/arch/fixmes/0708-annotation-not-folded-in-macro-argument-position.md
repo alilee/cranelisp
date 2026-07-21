@@ -217,3 +217,19 @@ folded-`Sexp` form (a §9 + likely design consequence); if the user rules **B**,
 as-built layering stands but §1.4.5/§2.3.8's "never standalone / every position"
 wording is corrected to built-AST scope and the opaque diagnostic is replaced by a
 located one.
+
+---
+
+## /arch contract pointer (S115, 2026-07-21 — post-ruling)
+
+**USER RULED Reading A-structural** (recorded `sprints/SPRINT.md` §Notes,
+2026-07-21). The load-bearing sub-question — the `Sexp` shape of the folded
+annotation a macro observes — is answered by the binding cross-crate contract
+**`design/arch/annotated-sexp-node.md`**: `Sexp::Annotated { annotation:
+Box<Sexp>, subject: Box<Sexp>, span }` (raw-Sexp annotation half, colon
+stripped), with the `macros/Sexp` ADT gaining `(SexpAnnotated [:Sexp stype
+:Sexp sform])` (tag 7, appended) as the macro-observable form. Fold semantics
+(quote/quasiquote/nesting/errors), consumer census, retirement list,
+`CACHE_SCHEMA_VERSION` window, and the S116 wave staging are all pinned there.
+This FIXME retires with the S116 implementation (the W3 flip wave); the S115
+W1-rider RED pin (`(def x :Int 5)` succeeds) is the flip trigger.

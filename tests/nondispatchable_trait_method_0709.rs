@@ -94,3 +94,30 @@ fn return_dispatch_self_method_control_stays_accepted_green() {
         );
     }
 }
+
+// (iv) GREEN over-reach control (S115 W1 delta) — a bare-PARAM method with a
+// CONCRETE return `(size [x] Int)` SATISFIES the occurrence rule (the unannotated
+// param `x` defaults to the implementing type — an occurrence via parameter), so it
+// MUST stay accepted. This guards the design's explicit boundary (traits.md §2 /
+// spec §7.1.1): "Do NOT reject on concrete return alone; reject only on the
+// CONJUNCTION no-param-occurrence ∧ no-self-return." The two RED cells above assert
+// the reject FIRES on the malformed no-occurrence form; this cell asserts it does
+// NOT over-reach to a bare-param-with-concrete-return method. Born-green today (no
+// occurrence check exists) and MUST STAY green through the W4 fix.
+// spec: spec/07-traits.md §7.1.1 — a bare-param method satisfies the occurrence rule
+// even with a concrete return; the reject must not fire on concrete-return alone.
+#[test]
+fn bare_param_concrete_return_method_control_stays_accepted_green() {
+    let combined = repl_prims("(deftrait Sizeable (size [x] Int))\n");
+    assert!(
+        !combined.to_lowercase().contains("error"),
+        "`(deftrait Sizeable (size [x] Int))` has a bare param `x` (= implementing \
+         type, an occurrence) and MUST stay accepted — the occurrence-rule reject \
+         MUST NOT over-reach to a concrete-return-with-param method. Got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("no occurrence"),
+        "the bare-param concrete-return method MUST NOT surface the no-occurrence \
+         reject (occurrence is carried by the bare param). Got:\n{combined}"
+    );
+}
