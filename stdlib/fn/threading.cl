@@ -25,3 +25,8 @@
     (match form
       [(macros/SexpList items) `(->> ~(macros/SexpList (macros/sconcat items (macros/SCons x macros/SNil))) ~@rest)
        _ `(->> ~(macros/SexpList (macros/SCons form (macros/SCons x macros/SNil))) ~@rest)])))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; Backing file `fn/threading/test.cl` (module `fn.threading.test`).
+
+(mod- test)

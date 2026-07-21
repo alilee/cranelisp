@@ -30,16 +30,33 @@
 
 ;; ── derive-Eq macro ────────────────────────────────────
 
+;; CONFORMANCE (S115): a derived impl must supply EVERY method the trait
+;; declares, or the `impl` is rejected ("impl Eq for T: missing required method
+;; !="). `Eq` declares `=` and `!=`; `Ord` declares `<`, `>`, `<=`, `>=`. The
+;; pre-S115 macros emitted only `=` (Eq) and `<`/`>` (Ord), so EVERY use of
+;; `derive-Eq`/`derive-Ord` failed conformance. The derived companions are
+;; expressed with `if`, not `not`, because the expansion lands in the CONSUMER's
+;; module, where the raw primitive `not` is not in scope (the S86 prelude
+;; de-leak). Guarded by `derive/test.cl`.
+
 (defmacro derive-Eq "Derive Eq trait implementation" [dt]
   `(impl Eq ~(build-impl-target (dt-name dt) (dt-params dt) "Eq" dt)
-     (defn = [a b] (match a ~(SexpBracket (build-eq-arms (dt-constructors dt)))))))
+     (defn = [a b] (match a ~(SexpBracket (build-eq-arms (dt-constructors dt)))))
+     (defn != [a b] (if (= a b) false true))))
 
 ;; ── derive-Ord macro ───────────────────────────────────
+;;
+;; Only `<` is derived structurally; the other three comparisons are expressed
+;; in terms of it, so they cannot disagree with it (`>` = b<a, `<=` = ¬(b<a),
+;; `>=` = ¬(a<b)). Using `<` alone — never `=` — keeps `derive-Ord` independent
+;; of whether `Eq` was also derived for the type.
 
 (defmacro derive-Ord "Derive Ord trait implementation" [dt]
   `(impl Ord ~(build-impl-target (dt-name dt) (dt-params dt) "Ord" dt)
      (defn < [a b] (match a ~(SexpBracket (build-ord-lt-arms (dt-constructors dt)))))
-     (defn > [a b] (< b a))))
+     (defn > [a b] (< b a))
+     (defn <= [a b] (if (< b a) false true))
+     (defn >= [a b] (if (< a b) false true))))
 
 ;; ── derive-Display macro ───────────────────────────────
 
@@ -62,13 +79,21 @@
     (SexpList (SCons (SexpSym "begin") (SCons dt (sreverse calls))))))
 
 ;; ── Self-tests — home is a SEPARATE consumer module ────
-;; The derive macros cannot be exercised from an in-module `(mod test)`: a
+;; The derive macros cannot be exercised from an in-module `(mod test)` BODY: a
 ;; `defmacro` is available only to the forms that FOLLOW it in the same module
 ;; (§9.3.4 defmacro-before-use), and a `(derive …)` call needs its own type
 ;; (`(deftype …)`) plus an `(impl …)` expansion that references the derived
 ;; methods — all of which belong to a DOWNSTREAM module that imports these
 ;; macros and derives on its own ADT. That downstream module is the correct
 ;; test home (spec §9.3.4). Recorded in plan-stdlib.md §26.4.
+;;
+;; BUILT S115: `derive/test.cl` (module `derive.test`) is that consumer — a
+;; separate module that imports these macros from `super` and derives against
+;; its own four ADTs. It is the standing guard for the derive surface; the two
+;; S115 conformance fixes above (`!=` for Eq, `<=`/`>=` for Ord) are pinned
+;; there, and its header records the FIXME-0815 / FIXME-0816 boundaries.
+
+(mod- test)
 ;;
 ;; (The §9.3.4 expansion-time-helper requirement is satisfied by the sibling
 ;; `derive.helpers` dependency module — see the header. The derive macros'

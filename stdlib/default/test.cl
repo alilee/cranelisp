@@ -18,10 +18,31 @@
 ;; correctly, so this method-only import is now the durable guard for that
 ;; path. Do NOT re-add `Default` to this import — it would defeat the guard.
 ;;
-;; (0672, adjacent open defect: a nullary return-dispatch to a type with NO
-;; impl still leaks `undefined function` instead of a clean reject. The four
-;; impls cover Int/Float/Bool/String, so these tests never hit it; do NOT add a
-;; no-impl negative cell until 0672 is fixed.)
+;; 0672 RETIRED (verified S115 6b). The deferral above read: "a nullary
+;; return-dispatch to a type with NO impl still leaks `undefined function`
+;; instead of a clean reject … do NOT add a no-impl negative cell until 0672 is
+;; fixed." This sprint's 0709 work fixed it — the no-impl case now rejects
+;; cleanly at typecheck:
+;;
+;;   (deftype Widget W)
+;;   (let [x :Widget (default)] x)
+;;   ⇒ error: no impl of trait default/Default for type user/Widget
+;;
+;; Neither owed cell can live in THIS module, for two independent structural
+;; reasons — both worth stating so nobody re-opens the question:
+;;
+;;   1. The no-impl reject is a COMPILE-TIME error. A `test-*` function that
+;;      must fail to compile would take the whole module with it. Its guard is
+;;      a reject test in `tests/`, `/testing`'s cell, asserting the message
+;;      above.
+;;   2. The positive companion — dispatching `(default)` by return type to a
+;;      USER-DEFINED type, the same non-primitive path the no-impl case travels
+;;      — needs an `(impl Default …)`, and `impl` requires the trait in scope
+;;      by BARE name: `(impl default/Default Slot …)` is rejected with
+;;      "unknown trait: default/Default". Importing `Default` here is exactly
+;;      what the D2 guard above forbids. The two are mutually exclusive in one
+;;      module; the user-type cell therefore belongs in a consumer module or in
+;;      `tests/`, not here. (The qualified-trait-name gap is FIXME 0836.)
 ;;
 ;; HARNESS-FREE: tests return `(Option String)` directly (None = pass) via
 ;; inline `if`, avoiding `testing.assertions` (whose `assert-eq` carries an

@@ -29,11 +29,6 @@
 (defn- slength "Count elements in an SList" [xs]
   (sfold (fn [acc _] (add-i64 acc 1)) 0 xs))
 
-(defn- snth "Get nth element of an SList (0-indexed)" [:Int n xs]
-  (match xs
-    [SNil (SexpSym "error-snth-out-of-bounds")
-     (SCons h t) (if (eq-i64 n 0) h (snth (sub-i64 n 1) t))]))
-
 (defn- smap "Map a function over an SList" [f xs]
   (sreverse (sfold (fn [acc x] (SCons (f x) acc)) SNil xs)))
 
@@ -165,17 +160,43 @@
        [(SCons y yt) (szip-rev-acc xt yt (SCons (SCons x (SCons y SNil)) acc))
         _ acc])]))
 
+;; ARITY CEILING (S115) — read before assuming a derive bug is in this file.
+;;
+;; These builders are correct but cannot RUN past a small arity, because the
+;; SList/Sexp values they allocate corrupt the heap (FIXME 0835 — glibc
+;; `free(): chunks in smallbin corrupted` from ~6 SList cells, reproducible in
+;; ORDINARY code with no macro involved). The observable derive symptoms:
+;;
+;;   - any constructor with 2+ FIELDS → the compiler process dies silently
+;;     (no diagnostic, REPL exits) for all three derive macros; 1 field is green
+;;   - `derive-Ord` on a nullary enum with 3+ CONSTRUCTORS → macro-expansion
+;;     "runtime panic: match failed"; 1 and 2 constructors are green
+;;
+;; Both were confirmed NOT to be defects in the generated code: hand-writing the
+;; exact impl these builders emit — the 2-field `Eq` and the 3-arm nested-match
+;; `Ord` — compiles and evaluates correctly. Only BUILDING it fails.
+;;
+;; So do not "fix" these builders by reshaping them. Two reshapes were tried and
+;; neither moved the ceiling (replacing the `snth` index walk with a tail walk;
+;; hoisting every quasiquote out of its enclosing closure into a named `defn-`).
+;; Both are RETAINED below because they are better code, not because they cured
+;; anything. `derive/test.cl` covers exactly the arities that work and says so.
+
+;; (Retained from the S115 pass: quasiquote-bearing fold steps are named
+;; `defn-`s and the closure only calls them.)
+
+(defn- eq-chain-step "One (a b) pair of the Eq field-equality chain" [inner pair]
+  (match pair
+    [(SCons a rest)
+     (match rest
+       [(SCons b _) `(if (= ~a ~b) ~inner false)
+        _ inner])
+     _ inner]))
+
 (defn- build-eq-chain "Build (if (= a0 b0) (if (= a1 b1) ... true) false) from two SLists" [as bs]
-  (let [rev-pairs (szip-rev-acc as bs SNil)]
-    (sfold (fn [inner pair]
-      (match pair
-        [(SCons a rest)
-         (match rest
-           [(SCons b _) `(if (= ~a ~b) ~inner false)
-            _ inner])
-         _ inner]))
-      `true
-      rev-pairs)))
+  (sfold (fn [inner pair] (eq-chain-step inner pair))
+         `true
+         (szip-rev-acc as bs SNil)))
 
 (defn- build-eq-nullary-arm "Build match arm pair for nullary ctor in Eq" [ctor]
   (let [s (SexpSym (ctor-name ctor))]
@@ -248,37 +269,41 @@
 
 ;; ── Ord helpers ────────────────────────────────────────
 
-(defn- build-later-arms "Build SList of (name true) pairs for later constructors" [all-names :Int len :Int j lacc]
-  (if (eq-i64 j len) lacc
-    (build-later-arms all-names len (add-i64 j 1)
-      (macros/sconcat lacc (SCons (snth j all-names) (SCons `true SNil))))))
+;; The "later constructors" of a ctor are exactly the TAIL of the ctor list at
+;; that point — walk it directly. (Pre-S115 this indexed into a materialised
+;; name list with `snth i` for i in [idx+1, len), an O(n²) walk with an
+;; out-of-bounds sentinel arm; the tail is already in hand at every call site.)
+(defn- later-arm "The (name true) arm pair for one later constructor" [c]
+  (SCons (SexpSym (ctor-name c)) (SCons `true SNil)))
 
-(defn- build-ord-enum-lt-go "Accumulator for building enum < arms" [all-names :Int len remaining :Int idx acc]
+(defn- build-later-arms "Build (name true) arm pairs for the constructors AFTER the current one" [later-ctors]
+  (sfold (fn [acc c] (macros/sconcat acc (later-arm c))) SNil later-ctors))
+
+(defn- build-ord-enum-lt-go "Accumulator for building enum < arms" [remaining acc]
   (match remaining
     [SNil acc
      (SCons ctor rest)
      (let [name-sym (SexpSym (ctor-name ctor))
-           later (build-later-arms all-names len (add-i64 idx 1) SNil)
+           later (build-later-arms rest)
            inner-arms (macros/sconcat later (SCons (SexpSym "_") (SCons `false SNil)))
            arm-pair (SCons name-sym (SCons `(match b ~(SexpBracket inner-arms)) SNil))]
-       (build-ord-enum-lt-go all-names len rest (add-i64 idx 1) (macros/sconcat acc arm-pair)))]))
+       (build-ord-enum-lt-go rest (macros/sconcat acc arm-pair)))]))
 
 (defn- build-ord-enum-lt-arms "Build < arms for enum: each ctor is less than later ones" [ctors]
-  (let [all-names (smap (fn [c] (SexpSym (ctor-name c))) ctors)
-        len (slength all-names)]
-    (build-ord-enum-lt-go all-names len ctors 0 SNil)))
+  (build-ord-enum-lt-go ctors SNil))
+
+(defn- ord-chain-step "One (a b) pair of the lexicographic < chain" [inner pair]
+  (match pair
+    [(SCons a rest)
+     (match rest
+       [(SCons b _) `(if (< ~a ~b) true (if (= ~a ~b) ~inner false))
+        _ inner])
+     _ inner]))
 
 (defn- build-ord-lexico-chain "Build lexicographic < comparison from two binding lists" [as bs]
-  (let [rev-pairs (szip-rev-acc as bs SNil)]
-    (sfold (fn [inner pair]
-      (match pair
-        [(SCons a rest)
-         (match rest
-           [(SCons b _) `(if (< ~a ~b) true (if (= ~a ~b) ~inner false))
-            _ inner])
-         _ inner]))
-      `false
-      rev-pairs)))
+  (sfold (fn [inner pair] (ord-chain-step inner pair))
+         `false
+         (szip-rev-acc as bs SNil)))
 
 (defn- build-ord-data-lt-arms "Build < arms for data ctor with fields" [ctor]
   (let [name (ctor-name ctor)
@@ -290,16 +315,16 @@
         field-lt (build-ord-lexico-chain abinds bbinds)]
     (SCons outer-pat (SCons `(match b [~inner-pat ~field-lt _ false]) SNil))))
 
-(defn- build-ord-sum-lt-go "Accumulator for building sum type < arms" [all-names :Int len remaining :Int idx acc]
+(defn- build-ord-sum-lt-go "Accumulator for building sum type < arms" [remaining acc]
   (match remaining
     [SNil acc
      (SCons ctor rest)
      (if (ctor-nullary? ctor)
        (let [name-sym (SexpSym (ctor-name ctor))
-             later (build-later-arms all-names len (add-i64 idx 1) SNil)
+             later (build-later-arms rest)
              inner-arms (macros/sconcat later (SCons (SexpSym "_") (SCons `false SNil)))
              arm-pair (SCons name-sym (SCons `(match b ~(SexpBracket inner-arms)) SNil))]
-         (build-ord-sum-lt-go all-names len rest (add-i64 idx 1) (macros/sconcat acc arm-pair)))
+         (build-ord-sum-lt-go rest (macros/sconcat acc arm-pair)))
        (let [name (ctor-name ctor)
              n (ctor-field-count ctor)
              abinds (make-bindings "__da" n)
@@ -307,16 +332,14 @@
              outer-pat (SexpList (SCons (SexpSym name) abinds))
              inner-pat (SexpList (SCons (SexpSym name) bbinds))
              field-lt (build-ord-lexico-chain abinds bbinds)
-             later (build-later-arms all-names len (add-i64 idx 1) SNil)
+             later (build-later-arms rest)
              inner-arms (macros/sconcat (SCons inner-pat (SCons field-lt SNil))
                           (macros/sconcat later (SCons (SexpSym "_") (SCons `false SNil))))
              arm-pair (SCons outer-pat (SCons `(match b ~(SexpBracket inner-arms)) SNil))]
-         (build-ord-sum-lt-go all-names len rest (add-i64 idx 1) (macros/sconcat acc arm-pair))))]))
+         (build-ord-sum-lt-go rest (macros/sconcat acc arm-pair))))]))
 
 (defn- build-ord-sum-lt-arms "Build < arms for sum type" [ctors]
-  (let [all-names (smap (fn [c] (SexpSym (ctor-name c))) ctors)
-        len (slength all-names)]
-    (build-ord-sum-lt-go all-names len ctors 0 SNil)))
+  (build-ord-sum-lt-go ctors SNil))
 
 (defn- all-nullary? "Check if all constructors are nullary" [ctors]
   (match ctors
@@ -343,19 +366,20 @@
   (let [name (ctor-name ctor)]
     (SCons (SexpSym name) (SCons (SexpStr name) SNil))))
 
+(defn- show-field-step "Prepend one space-separated (show b) to the accumulated tail" [acc b]
+  (let [part `(str-concat ~(SexpStr " ") (show ~b))]
+    (match acc
+      [(SexpStr _) part
+       _ `(str-concat ~part ~acc)])))
+
 (defn- build-show-fields "Build str-concat chain for showing fields" [binds]
   (match binds
     [SNil (SexpStr "")
      (SCons first rest)
      (let [first-show `(show ~first)
-           rev-rest (sreverse rest)
-           rest-expr (sfold (fn [acc b]
-             (let [part `(str-concat ~(SexpStr " ") (show ~b))]
-               (match acc
-                 [(SexpStr _) part
-                  _ `(str-concat ~part ~acc)])))
-             (SexpStr "")
-             rev-rest)]
+           rest-expr (sfold (fn [acc b] (show-field-step acc b))
+                            (SexpStr "")
+                            (sreverse rest))]
        (match rest-expr
          [(SexpStr _) first-show
           _ `(str-concat ~first-show ~rest-expr)]))]))

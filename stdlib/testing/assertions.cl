@@ -26,3 +26,8 @@
 (defn assert-false "Assert a boolean is false"
   [:Bool x] :(Option String)
   (if x (Some "expected false but got true") None))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; Backing file `testing/assertions/test.cl` (module `testing.assertions.test`).
+
+(mod- test)

@@ -73,12 +73,20 @@
 ;; primitive. They collapse the exemplar's N-way cond/if char-to-int ladders
 ;; (form.cl parse-digit-char, grid.cl make-grid-helper).
 ;;
-;; NAMING NOTE: the C.1 gap proposed `char->digit`/`digit->char`, but a `defn`
-;; NAME containing `->` does not parse on the current binary (the reader
-;; treats `->` as the threading macro head: `(defn char->digit "doc" […])`
-;; ⇒ `parse error … defn: expected params [...]`). The `-to-` spelling is the
-;; stdlib choice that avoids the collision; the verb is otherwise identical.
-;; Defect handoff filed for the `->`-in-defn-name parse failure (plan §26.4).
+;; NAMING NOTE (record updated S115 6b). The C.1 gap proposed
+;; `char->digit`/`digit->char`. These shipped as `-to-` because at S87 a `defn`
+;; NAME containing `->` did not parse — the reader treated `->` as the
+;; threading-macro head and `(defn char->digit "doc" […])` failed with
+;; `parse error … defn: expected params [...]`. **That parse failure is FIXED**
+;; (verified: `(defn char->digit "doc" [:String ch] :Int 1)` now defines
+;; `:(Fn [primitives/String] primitives/Int) user/char->digit` and calls
+;; correctly), so the constraint that forced the spelling is retired.
+;;
+;; The NAMES stay `-to-` regardless. They have been the public spelling since
+;; S87 and are used by the exemplar; renaming now would break callers to buy
+;; only a cosmetic match with a proposal that was never normative, and Clojure
+;; itself is not consistent here (`int`/`char`, not `char->int`). Recorded so
+;; the next reader does not re-litigate it from the stale blocker.
 
 (defn char-to-digit "Decimal digit char 0-9 to its Int value, or -1 if not a digit"
   [:String ch] :Int

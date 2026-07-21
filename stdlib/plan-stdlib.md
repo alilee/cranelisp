@@ -1658,24 +1658,30 @@ Authoring the self-tests + gaps surfaced several **language/compiler defects**
 owning skill (CLAUDE.md §Usability Findings and Defects). The stdlib-side
 record (a correct `(mod test)` that can't go green, or a workaround) is noted.
 
-1. **D-either (discover-tests SIGBUS on two-param ADT).** Running
-   `collections.either.test` through the discover-tests → `run-one` path
-   SIGBUSes on `test-is-right` — the `(Either String Int)` `(Right 1)` shape
-   (heap-ADT, String-then-Int field order). The same assertion PASSES when
-   called directly, and the other 5 either tests pass individually through the
-   runner; only the String-first two-param Either shape crashes in the
-   discover-tests marshaling/GOT path. → **/qa narrow repro → /backend.** The
-   `collections/either/test.cl` self-tests are kept as the durable record
-   (correct code; the crash is the compiler's). It does NOT block the prelude
-   load or `cargo nextest` (it only crashes when run through the in-language
-   runner).
+1. **D-either (discover-tests SIGBUS on two-param ADT). — RETIRED S115 6b.**
+   The S87 record: running `collections.either.test` through the discover-tests
+   → `run-one` path SIGBUSed on `test-is-right`, the `(Either String Int)`
+   `(Right 1)` shape (heap-ADT, String-then-Int field order), while the same
+   assertion passed when called directly. **Re-verified at S115 6b: the module
+   runs 6 passed / 0 failed / 0 panicked through that path, reproducibly.** The
+   note is retired from `collections/either/test.cl`; `test-is-right` stays as
+   the standing guard for the shape that used to crash.
 
-2. **D-name (`->` in a `defn` name fails to parse).** `(defn char->digit "doc"
-   [..] ..)` fails with `parse error … defn: expected params [...] or variant`
-   — the reader treats the `->` in the symbol as the threading-macro head.
-   Worked around by shipping `char-to-digit`/`digit-to-char`. → **/qa repro →
-   /frontend** (reader/symbol tokenisation; a `defn` name SHOULD be an opaque
-   symbol regardless of embedded `->`).
+   The path itself is NOT exonerated. FIXME 0835 shows the same
+   discover-tests → `run-one` path aborting in glibc on a **two**-level nested
+   heap ADT (`SCons` of `SCons` of `SexpSym`); `(Either String Int)` is one
+   level. The S87 diagnosis was pointed at the right seam and the wrong depth.
+
+2. **D-name (`->` in a `defn` name fails to parse). — RETIRED S115 6b.**
+   The S87 record: `(defn char->digit "doc" [..] ..)` failed with `parse error
+   … defn: expected params [...] or variant`, the reader treating the `->` in
+   the symbol as the threading-macro head. **Re-verified at S115 6b: it parses.**
+   `(defn char->digit "doc" [:String ch] :Int 1)` now defines
+   `:(Fn [primitives/String] primitives/Int) user/char->digit` and calls
+   correctly. The shipped names stay `char-to-digit`/`digit-to-char` — they have
+   been public since S87 and are used by the exemplar, so renaming would break
+   callers for a cosmetic match with a never-normative proposal. Recorded in
+   `text/string.cl` so it is not re-litigated from the stale blocker.
 
 3. **D-default (nullary return-type-polymorphic trait method → codegen).**
    `:Int (default)` typechecks but fails `codegen error … undefined function:
@@ -1685,14 +1691,21 @@ record (a correct `(mod test)` that can't go green, or a workaround) is noted.
    /typecheck/backend.** Minimal: `(deftrait T (z [] self)) (impl T Int (defn
    z [] 0)) (:Int (z))`.
 
-4. **D-derive (same-module macro in its own `(mod test)`).** A `(derive …)`
-   call inside derive.cl's own `(mod test)` fails at expansion (`unexpected
-   quasiquote form — should have been expanded`) — the `derive`/`derive-*`
-   macros are defined in the same module and are not available to expand its
-   own submodule forms (spec §9.3.4 same-module-macro rejection). derive's
-   self-test is therefore deferred to a consumer-side test (held — see
-   `derive.cl`). → tracked as a known limitation, not a fresh defect (it is
-   the documented §9.3.4 behaviour).
+4. **D-derive (same-module macro in its own `(mod test)`). — CONSUMER MODULE
+   BUILT S115 6b.** The limitation stands and is the documented §9.3.4
+   behaviour: a `(derive …)` call inside derive.cl's own submodule forms fails
+   at expansion, because the `derive`/`derive-*` macros are defined in the same
+   module. The consumer-side test this row deferred in S87 — and that nothing
+   built for three sprints — now exists: **`stdlib/derive/test.cl`** (module
+   `derive.test`), a separate module that imports the macros from `super` and
+   derives against its own four ADTs. 28 tests green.
+
+   Building it immediately surfaced what its absence had been hiding: two
+   conformance breaks that made `derive-Eq`/`derive-Ord` fail at EVERY use
+   (`derive-Eq` never emitted `!=`, `derive-Ord` never emitted `<=`/`>=` — both
+   fixed S115 6b, both pinned by that module), plus FIXMEs 0815/0816/0835. This
+   is the §26.1 discipline's clearest single data point: the module was
+   declared delivered at S87 and was non-functional the whole time.
 
 5. **D-regen-strips-`(mod test)` + in-place-stdlib test isolation.** The REPL
    source-regeneration path strips an INLINE `(mod test …)` body to a bare

@@ -4,16 +4,16 @@
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
 ;; `(mod- test)`. Exercises the Either eliminators via the in-language harness.
 ;;
-;; DEFECT (S87 Stage C.2): these tests LOAD and TYPECHECK cleanly and each
-;; PASSES when called directly, but running them through the test-discovery
-;; path (`discover-tests` → `run-one`) SIGBUSes on `test-is-right` — the
-;; `(Either String Int)` `(Right 1)` shape (heap-ADT with String-then-Int
-;; field order) corrupts in the discover-tests marshaling/GOT path. The other
-;; five either tests pass individually through the runner; only the
-;; String-first two-param Either shape crashes. This is a language/backend
-;; defect (not a stdlib bug) — handed off to /qa for a narrow failing repro →
-;; /backend. Recorded in plan-stdlib.md §26.4. The tests are kept as the
-;; durable record (correct code; the crash is the compiler's).
+;; RETIRED RECORD (verified S115 6b). This header carried an S87 Stage-C.2
+;; defect note: running these tests through the discovery path
+;; (`discover-tests` → `run-one`) was said to SIGBUS on `test-is-right` — the
+;; `(Either String Int)` `(Right 1)` shape, a heap-ADT with String-then-Int
+;; field order — while each test passed when called directly. That crash is
+;; GONE: the full module runs 6 passed / 0 failed / 0 panicked through the
+;; discovery path, reproducibly. The note is retired rather than left standing,
+;; because a stale "this crashes" record on green code teaches the next reader
+;; to distrust a working surface. `test-is-right` below IS the standing guard
+;; for the shape that used to crash — keep it.
 
 (import [super [Either Left Right is-left? is-right? from-left from-right
                 map-left either]])

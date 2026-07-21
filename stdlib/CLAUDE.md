@@ -109,9 +109,16 @@ not write code for `tests/` (owned by `/qa`+`/testing`) or `examples/` (owned by
   when the lib dir is the in-place workspace `stdlib/`, so an inline body is silently
   stripped (a full `cargo nextest run` corrupted the tree this way, S87). Authoring
   the backing file directly is extraction-stable — and `mod-` does not break child-file
-  extraction or in-subtree usage (`super`-import resolution is unchanged). 17 modules
-  currently carry backing self-tests. Test functions use the `test-*` naming
-  convention for `discover-tests`.
+  extraction or in-subtree usage (`super`-import resolution is unchanged). 23 modules
+  currently carry backing self-tests (S115 6b added `control`, `derive`,
+  `fn.threading`, `core.syntax`, `testing.assertions`; 228 tests green). Test
+  functions use the `test-*` naming convention for `discover-tests`.
+- **A module with no self-tests is where the bugs are.** The S115 6a sweep found
+  every stdlib defect in the untested 40% of modules and none in the tested 60%.
+  Do not ship a module without its backing test file. When a compiler defect
+  ceilings the coverage, ship the cases that run AND enumerate the withheld ones
+  in the test file's header (see `core/syntax/test.cl` and `derive/test.cl`), so
+  the gap is a written record with a restore list rather than a silence.
 - **Clojure alignment.** Follow `clojure.core` naming and design where possible.
 - **Trait method params** use `self` syntax (spec §7.1). Primitive names match the
   builtins table exactly (`add-i64`, `str-concat`, …; spec appendix-A).

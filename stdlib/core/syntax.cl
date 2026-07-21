@@ -39,3 +39,8 @@
 (defmacro slist "Construct an SList from elements"
   ([] `macros/SNil)
   ([x &rest] `(macros/SCons ~x (slist ~@rest))))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; Backing file `core/syntax/test.cl` (module `core.syntax.test`).
+
+(mod- test)
