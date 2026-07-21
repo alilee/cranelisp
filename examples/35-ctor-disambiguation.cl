@@ -19,6 +19,26 @@
 ;; The same disambiguation applies to nullary/data variants that collide:
 ;; here two option-like types both export `Some`, and the dotted form keeps
 ;; `Maybe.Some` and `Perhaps.Some` apart in both construction and matching.
+;;
+;; WHERE THE DOT IS NOT ALLOWED — the boundary that makes the rule above
+;; unambiguous. `.` qualifies a REFERENCE (a type, a trait, a
+;; constructor). It is never part of a BINDER — a name you are
+;; introducing. Every one of these is a parse error, uniformly:
+;;
+;;   (defn a.b [x] x)             ;; the function's own name
+;;   (defn f [a.b] a)             ;; a parameter
+;;   (let [a.b 1] ...)            ;; a let binding
+;;   (match t [(T x.y) x.y])      ;; a pattern variable
+;;
+;; and each is reported at the offending name:
+;;
+;;   'a.b' is a dotted name, but a binder must be a bare (unqualified)
+;;   name — write 'b' ('.' is reserved for type/trait qualification)
+;;
+;; Note how this reads against the patterns further down this file. In
+;; `(Maybe.Some x)` the dotted `Maybe.Some` is the constructor being
+;; REFERRED to; `x` is the name being BOUND, and it is bare. That split —
+;; dotted head, bare binder — holds in every pattern in this example.
 
 ;; Two option-like types that share the constructor name `Some`.
 (deftype (Maybe a)   Nothing (Some [:a val]))

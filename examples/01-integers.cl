@@ -1,7 +1,7 @@
 ;; 01-integers.cl -- Integer literals and arithmetic
 ;;
 ;; Cranelisp integers are signed 64-bit values.
-;; Ring 0 uses monomorphic named primitives for arithmetic:
+;; The core language exposes monomorphic named primitives for arithmetic:
 ;;   add-i64, sub-i64, mul-i64, div-i64
 ;;
 ;; The last zero-arg function (main) is the program entry point.

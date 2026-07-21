@@ -7,9 +7,12 @@
 ;; The identity function (defn id [x] x) has type (Fn [a] a) --
 ;; it accepts any type and returns the same type.
 ;;
-;; In the REPL, a polymorphic function can be called at different
-;; types across inputs. In batch mode, each polymorphic function
-;; is used at one concrete type per program.
+;; That is what let-polymorphism BUYS you: the SAME polymorphic
+;; definition can be instantiated at a DIFFERENT type at every call
+;; site, in one program. `id` below is called at Int, at Bool, and at
+;; String, and the compiler instantiates its type variable afresh each
+;; time. This is not a REPL-only convenience — it holds in batch mode
+;; exactly as it does interactively.
 
 ;; The identity function on Int: type inferred as (Fn [a] a),
 ;; instantiated to (Fn [Int] Int) at the call site.
@@ -47,7 +50,24 @@
 (defn use-first [] (first-of 10 20))
 (defn use-second [] (second-of 10 20))
 
-;; Expected: 42 + 10 + 10 + 20 + 7 + 30 = 119
+;; --- One definition, three instantiations ---
+
+;; `id` is a single definition. Here it is used at Bool (in the `if`
+;; condition), at String (fed to `str-len`), and at Int (the branch
+;; value) — three different instantiations of `(Fn [a] a)` inside one
+;; function body, in one batch program. `first-of` is instantiated at
+;; two different type PAIRS in the same expression for good measure.
+;; Contributes 1 on success.
+(defn test-many-instantiations []
+  (if (id true)
+    (if (eq-i64 (str-len (id "abcd")) (id 4))
+      (if (str-eq (first-of "yes" 0) "yes")
+        (if (eq-i64 (first-of 1 false) 1) 1 0)
+        0)
+      0)
+    0))
+
+;; Expected: 42 + 10 + 10 + 20 + 7 + 30 + 1 = 120
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
@@ -57,4 +77,5 @@
         (add-i64 (use-first)
           (add-i64 (use-second)
             (add-i64 (same-pair 7)
-                     (pick-best 10 30 20))))))))
+              (add-i64 (pick-best 10 30 20)
+                       (test-many-instantiations)))))))))

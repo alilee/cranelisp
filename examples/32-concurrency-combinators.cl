@@ -115,8 +115,23 @@
 ;; with the first to finish; all other branches are cancelled. Here the
 ;; middle branch (`fast-work`, 50 ms) wins against two `slow-work` (300 ms)
 ;; branches. `select [a b]` is observationally equivalent to `race a b`.
-;; (`select` takes a Vec literal `[...]`, never a List; the empty `select []`
-;; never completes -- a program must not rely on it.)
+;; (`select` takes a Vec literal `[...]`, never a List.)
+;;
+;; The EMPTY select is a boundary worth knowing. `(select [])` has no
+;; branch that could win, and the runtime does NOT hang and does NOT
+;; synthesise a value: it raises a fatal runtime panic, "select over
+;; empty collection" (spec §10.12.8, §12.7.2). The spec is explicit that
+;; a guaranteed deadlock would be worse than a clean fault, so a hang
+;; here is non-conforming.
+;;
+;; That panic is also NOT catchable. `catch-runtime-error`'s bracket is
+;; TEMPORAL: it observes only panics raised while the thunk is being
+;; evaluated, including the pure CONSTRUCTION of the IO value it returns.
+;; An empty select raises later, when the trampoline RUNS that IO value —
+;; outside the bracket. Wrapping a faulting effect in `(fn [] ...)` only
+;; defers the raise past the bracket; it never brings it inside. This is
+;; the general rule for every effect-run-time error, not a select
+;; special case (§12.7.2, "the bracket is temporal").
 
 (defn test-select-first-wins []
   (bind (select [(slow-work) (fast-work) (slow-work)])

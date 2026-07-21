@@ -148,6 +148,7 @@
   (some-or None 99))                                     ;; -> 99
 
 ;; Expected: 42+42+0+99 + 1+0+0+0+1 + 42+60+0+5 + 42+42+42+42 + 42+99 = 601
+;; The process EXIT CODE is the low byte of that sum: 601 mod 256 = 89.
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).

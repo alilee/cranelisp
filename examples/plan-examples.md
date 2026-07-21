@@ -22,21 +22,27 @@ skill; the authoritative inventory is the on-disk file set itself.
 2. **Cumulative.** An example may use any capability taught by an earlier
    example, and nothing else. The sequence reads as a deliberate arc.
 3. **Free-standing — zero stdlib dependency.** Examples MUST NOT import
-   `stdlib/`. They define helpers inline from compiler primitives and
-   special forms, and resolve names through the tiny, standalone
-   `examples/lib/prelude.cl` (configured via `examples/Cranelisp.toml`
-   `lib-dirs = ["./lib"]`). This validates the *language*, not the library.
-   This is a hard rule from the root `CLAUDE.md` §"Stdlib separation".
-4. **Every example is runnable at all times.** A broken example teaches that
+   `stdlib/`. Everything they use is built from compiler primitives and
+   special forms. This validates the *language*, not the library, and is a
+   hard rule from the root `CLAUDE.md` §"Stdlib separation".
+4. **Shared helpers live in the examples-local library, not inline.**
+   Per the S115 user ruling (§2d), repeated helpers belong in
+   `examples/lib/`, governed by the rule that **a definition may enter the
+   library only after the example that teaches its mechanism**. The library
+   is built from primitives and special forms only, so principle 3 is
+   untouched. (Root `CLAUDE.md`'s "define any needed helpers inline" clause
+   is being amended for `examples/` — FIXME 0823 → `/arch`. `tests/` keeps
+   the inline rule.)
+5. **Every example is runnable at all times.** A broken example teaches that
    the language is broken. Examples are sentinels: they catch real
    regressions by exercising the language end-to-end in compact form.
-5. **Verifiable via exit code.** Every example defines `main` returning an
+6. **Verifiable via exit code.** Every example defines `main` returning an
    Int (wrapped in `Pure`/`IO` where the IO model is in play). The return
    value is the sum of sub-test pass counts (1 per passing sub-test). A
    non-zero, *expected* exit code means every sub-test passed; a drop below
    the expected total signals a regression. The e2e guard
    `tests/examples.rs` pins each file's expected exit code.
-6. **Comments explain the capability**, not the syntax — the code and its
+7. **Comments explain the capability**, not the syntax — the code and its
    results teach the syntax.
 
 ## 2. The Learning Sequence (current on-disk set)
@@ -54,7 +60,7 @@ documented `main` return (sum of sub-test passes); it is the value
 | 04 | `04-functions.cl` | Named functions with `defn`; `if` as an expression | 135 |
 | 05 | `05-recursion.cl` | Self-recursion and tail-call optimisation | 111 |
 | 06 | `06-enums.cl` | Nullary ADTs (`deftype` enums) and `match` | 104 |
-| 07 | `07-polymorphism.cl` | Let-polymorphism and type variables | 119 |
+| 07 | `07-polymorphism.cl` | Let-polymorphism and type variables — **incl. one definition instantiated at three different types in one batch program** (S115 6b: the header previously asserted the opposite) | 120 |
 | 08 | `08-floats.cl` | Float literals and the monomorphic `*-f64` primitives | 10 |
 | 09 | `09-strings.cl` | The `String` type and string operations | 55 |
 | 10 | `10-adts.cl` | Product and sum types with typed fields | 9 |
@@ -72,7 +78,7 @@ documented `main` return (sum of sub-test passes); it is the value
 | 22 | `22-io-hello.cl` | Testable IO via the `test-capture` platform | 99 |
 | 23 | `23-io-sequence.cl` | IO sequencing patterns with explicit `bind` chains | 178 |
 | 24 | `24-io-echo.cl` | Input with `read-line`; read-then-process | 20 |
-| 25 | `25-curry.cl` | Multi-signature dispatch and auto-currying | 118 |
+| 25 | `25-curry.cl` | Auto-currying and partial application — of a named `defn`, of a local **closure value**, and of a **trait operator** (S115 6b). First example to import the examples-local library (`operators`) | 139 |
 | 26 | `26-functor.cl` | The `Functor` trait (higher-kinded `fmap`) | 91 |
 | 27 | `27-lazy-seq.cl` | Lazy sequences (`take`, `filter`, `iterate`) | 183 |
 | 28 | `28-parallel.cl` | Parallel evaluation: automatic sparking of independent `let` bindings (lenient eval) | 67 |
@@ -80,9 +86,9 @@ documented `main` return (sum of sub-test passes); it is the value
 | 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 | 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
-| 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively | 136 |
+| 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively — **and the same three claims hold for trait `impl` blocks** (S115 6b) | 139 |
 | 34 | `34-async-io-leaf.cl` | Poll-shape platform IO leaf: an async effect (`async-read`) that SUSPENDS on the host reactor and RESUMES with its result, vs. the blocking effects of 21–24; independent poll-shape leaves overlap on one reactor thread. Teaches the poll-shape leaf MECHANISM the network "server-with-no-spawn" shape is built on | 4 |
-| 35 | `35-ctor-disambiguation.cl` | Same-named constructors across two in-scope types: the bare ctor name is ambiguous, the dotted `Type.Ctor` form disambiguates in VALUE position, and the dotted prefix in PATTERN position pins the scrutinee type (a cross-type dotted pattern is a compile-time type error). Builds on 06/10 | 100 |
+| 35 | `35-ctor-disambiguation.cl` | Same-named constructors across two in-scope types: the bare ctor name is ambiguous, the dotted `Type.Ctor` form disambiguates in VALUE position, and the dotted prefix in PATTERN position pins the scrutinee type (a cross-type dotted pattern is a compile-time type error). **Plus (S115 6b) the binder-vs-reference boundary: `.` is never part of a BINDER — rejected uniformly at all four binder positions, message quoted.** Builds on 06/10 | 100 |
 | 36 | `36-multi-arity.cl` | Multi-signature `defn` dispatch (§5.1.2): ARITY dispatch (clauses differ by parameter count), TYPE dispatch (same arity, different concrete param types `:Int`/`:Blob`/`:(Vec Int)`), and the arity-overload-for-defaults idiom (a shorter clause supplies a default and delegates to a longer one). The function-level counterpart to the multi-clause `defmacro` of 18/19; distinct from currying (25). Builds on 05/06/10/14/25 | 8 |
 | 37 | `37-method-import/` | Method-import dispatch (§7.11.2): to CALL a trait method you only need the METHOD in scope — the trait itself need not be imported. A submodule declares a trait `Describe` (a unary arg-dispatched `describe` and a nullary return-dispatched `blank`) with impls for two types; the entry module imports the METHODS ONLY (not the trait) and dispatches — unary by argument type, nullary by `:Type` annotation (let-binding and inline forms), same method name reaching two impls. Builds on 15/16. Multi-file. | 4 |
 
@@ -297,6 +303,169 @@ documented `main` return (sum of sub-test passes); it is the value
   (traits) + 16 (multi-file modules). Multi-file, so `tests/examples.rs` drives
   `37-method-import/main.cl` (like `16-modules/main.cl`), not a bare top-level file.
 
+## 2d. The examples-local library (USER RULING, 2026-07-21 — answers 0821)
+
+> **This section supersedes §2c.1 Tier C1 and the conditional S120 row of
+> §2c.5.** FIXME 0821 asked whether `examples/` gets a stdlib-exemption arc
+> or is re-scoped to "the core language, free-standing". The user answered
+> with a third option that neither branch anticipated.
+
+### 2d.1 The ruling
+
+> examples should have its own minimal library which will allow the examples
+> to concentrate their attention. its library should follow from earlier
+> lessons. the intent isn't to teach how to write applications — just to
+> teach the core components of the language so the whole stdlib doesn't need
+> to be available. just needs to be suggestive of what can be done with the
+> language. to learn the stdlib, a learner would go to the stdlib docs, not
+> the language examples.
+
+Four load-bearing constraints, in the order they bind:
+
+1. **An examples-local library** — not `stdlib/`, and not per-file inline
+   re-definition. The third thing.
+2. **It follows from earlier lessons.** A helper enters the library only
+   *after* the example that teaches its mechanism. The library is
+   **cumulative and pedagogically ordered** — its contents are a *function
+   of the sequence*. This is the constraint that makes it something other
+   than "a small stdlib", and it is the one that will be under pressure
+   every time a later example wants a convenience.
+3. **Purpose is the core language, not application-writing.** It exists so
+   an example can concentrate on the construct it is about, and is
+   **suggestive** of what the language can do — deliberately not complete.
+4. **Learner routing is explicit.** The stdlib is learned from the stdlib
+   docs; `examples/` teaches the language. Said in writing where a learner
+   looks: `examples/lib/README.md`.
+
+### 2d.2 The mechanism already existed
+
+`examples/Cranelisp.toml` has always set `lib-dirs = ["./lib"]`, and
+`examples/lib/prelude.cl` has always been on that path — **60 lines
+containing zero definitions**, re-exporting ~30 primitives and nothing
+else. The inline cost recorded all through §2c.4 (three separate `Num`
+declarations; 19 reimplementing `->`; 20 hand-writing 250 lines of derive
+output) was being paid against a library slot that was already wired and
+empty. The ruling turns the pass-through into the artifact it should have
+been.
+
+**Two tiers, and the split is load-bearing:**
+
+- **`lib/prelude.cl` — implicit, and stays definition-free.** It is loaded
+  for *every* example including `01-integers.cl`. Anything defined there is
+  in scope before the lesson that teaches it, which breaks constraint 2 by
+  construction. It remains a name surface: `primitives` re-exports only.
+- **Every other library module — explicit import, by name.** The import
+  line (`(import [operators [Num +]])`) is not overhead; it is the reader's
+  cue that this example is standing on an earlier lesson, and it names
+  which one. It also gives the sequence a *reason* to use the module system
+  before §2c.1's A4 module arc lands.
+
+Verified live: a second module in `examples/lib/` is importable by name
+from any example, resolves through the existing `lib-dirs`, and is **not**
+loaded unless imported (so `15-traits.cl` keeps declaring its own `Num`
+with no conflict).
+
+### 2d.3 Contents — and the lesson that earns each
+
+The library grows in sequence order. A row may not land before its earning
+lesson exists.
+
+| Module | Provides | Earned by | Status |
+|---|---|---|---|
+| `prelude.cl` | `primitives` re-exports; **no definitions, ever** | — (name surface) | shipped |
+| `operators.cl` | `Num` (`+ - * /`), `Eq` (`= !=`), `Ord` (`< > <= >=`), impls for `Int`/`Float`/`Bool`/`String` | **15-traits.cl** — declares all three from scratch, in front of the reader, from `deftrait`/`impl` + the primitives of 01/08 | **shipped S115 6b** |
+| `show.cl` | `Display`/`show` for the primitive types | **17-display.cl** | S116 |
+| `option.cl` | `(Option a)` + `Some`/`None`, and `maybe`-style eliminators written with `match` | **10-adts.cl** (polymorphic sum types) + **11-destructuring.cl** (match binds fields) | S116 |
+| `hof.cl` | `compose`, `flip`, `apply-twice` — function-shaping helpers, written as one-liners | **13-higher-order.cl** | S117 |
+| `thread.cl` | `->` / `->>` | **19-threading.cl** — which builds them from raw `Sexp` constructors and is the only place that mechanism is taught | S117 |
+| `seq.cl` | `map`/`filter`/`fold` over `Vec`, written by explicit recursion | **13-higher-order.cl** + **14-vecs.cl** | S117 |
+| `io.cl` | a `do`-style sequencing macro over `bind` | **18-macros.cl** (defmacro/quasiquote) + **23-io-sequence.cl** (explicit `bind` chains) | S118 |
+
+Each module's header states its earning lesson in one line. Reading a
+library module must always be a **recap**, never a prerequisite.
+
+### 2d.4 What deliberately stays out — and where the line is
+
+The library is **suggestive, not complete**. It must not become a small
+standard library, because a learner who mastered it would have learned a
+vocabulary nobody uses. Excluded, on principle:
+
+- **Anything not yet earned by an example**, however useful. This is the
+  hard line and the one that will be argued with. If a helper is wanted
+  before its lesson exists, the answer is to write the lesson.
+- **Anything justified only by "applications need it."** No config, no
+  error-formatting, no argument parsing, no logging. The ruling is explicit
+  that teaching application-writing is not the intent.
+- **General-purpose collection, string, and formatting breadth.** One or
+  two representative operations per family is the point — enough to be
+  suggestive. `Map`, `Set`, the full `count/get/conj/assoc` verb family, and
+  the eighteen-primitive string surface stay out. They are stdlib topics and
+  the reader is routed to the stdlib docs for them.
+- **Convenience layered on convenience.** A helper must be expressible in
+  terms of a *taught mechanism*, not in terms of other library helpers. Two
+  levels of library-on-library and the library has started teaching itself.
+- **Anything that would hide the construct an example is about.** The
+  library exists to clear away what an example is *not* about. If importing
+  it would remove the very thing under study, write it inline instead.
+
+**Rule of thumb for the boundary:** if a reader would have to read the
+library module to understand the example, the module is on the wrong side
+of the line.
+
+### 2d.5 How the ruling changes S116–S119
+
+Tier C1 **dissolves as a structural exclusion**. It was framed as "the
+free-standing rule permanently excludes the prelude-macro surface"; the
+answer is that the surface can be *rebuilt, in miniature, from lessons* —
+so the damage §2c.4 diagnosed in 19, 20, 23 and 27 is **fixable rather than
+structural**:
+
+- **19-threading** spends ~120 of 224 lines building `->`/`->>` from raw
+  `Sexp`. That stays — it is the lesson. What changes is that the result
+  moves *into* `lib/thread.cl` afterward, so 19 is the last file that has to
+  build it and later examples can thread.
+- **20-adt-traits** hand-writes 250 lines of what `derive` would generate.
+  With `operators` + `show` in the library, the trait *declarations* stop
+  being re-declared and 20 shrinks to what it is actually about:
+  implementing traits for user ADTs.
+- **23-io-sequence** opens by apologising for the absence of `do`. Once 18
+  has taught `defmacro`, a `do`-style sequencing macro is earned, and 23 can
+  teach the *idiom* rather than the plumbing.
+- **27-lazy-seq** is 161 lines of implementing a lazy-sequence library. Same
+  shape as 19, same treatment.
+
+Revised sequencing (replaces the S120 row of §2c.5):
+
+| Sprint | Library work | Alongside |
+|---|---|---|
+| **S115 6b** | seed: `lib/README.md` + `lib/operators.cl`, first consumer `25-curry.cl` | corrections + capability beats (§2c.6) |
+| **S116** | `show.cl`, `option.cl`; retire the duplicate `Num` declarations in 19/20 | A1 (errors), A2 (field accessors) |
+| **S117** | `hof.cl`, `seq.cl`, `thread.cl`; shrink 19 and 27 to their lessons | A4 (modules), A5 (strings) |
+| **S118** | `io.cl` (`do`-style sequencing); rework 23 to the idiom | the boundaries example |
+| **S119** | freeze the library; the §2c.5 reorder | reorder + renumber, with `/testing` |
+
+**Ordering constraint that binds all of this:** every retirement of an
+inline re-declaration changes a file's exit code, so each lands with a
+`/testing` reconciliation FIXME. Batch them per sprint; do not dribble.
+
+### 2d.6 What was executed at S115 6b
+
+Seeded, not half-built. Two files, one consumer:
+
+- **`examples/lib/README.md`** — states the purpose, the earning rule, the
+  exclusion line, the prelude-vs-imported-module split, and the learner
+  routing ("to learn the standard library, read the stdlib docs").
+- **`examples/lib/operators.cl`** — `Num`/`Eq`/`Ord` with the impls
+  `15-traits.cl` builds. Header names the earning lesson.
+- **`25-curry.cl`** imports it for the trait-operator-partial beat, which is
+  a beat 6b owed anyway. That makes the seed *load-bearing on day one*
+  rather than speculative: the example needed `+`, and the alternative was a
+  fourth inline `Num` declaration in a file about currying.
+
+Deliberately **not** done in 6b: retrofitting 15/17/19/20 to import the
+library. That is a de-duplication pass with exit-code churn across four
+files and belongs in S116 with its own reconciliation batch.
+
 ## 2b. S115 Phase-6a assessment record (2026-07-21) — regression replay + rulings
 
 > **Superseded in part by §2c.** The "6b plan" table that closed this section
@@ -463,7 +632,16 @@ Ranked by how central the missing thing is to writing ordinary Cranelisp.
 
 #### Tier C — structurally excluded; needs a ruling, not an example
 
-**C1 is the single biggest structural finding of this assessment.**
+> **C1 IS ANSWERED AND DISSOLVED — see §2d.** The user ruled (2026-07-21)
+> that `examples/` gets **its own minimal, lesson-derived library**: neither
+> a stdlib exemption nor a bare re-scoping, but a third artifact whose
+> contents are a function of the sequence. The exclusion below is therefore
+> **not permanent** — the prelude vocabulary can be rebuilt in miniature
+> from taught mechanisms — and the damage it caused in 19/20/23/27 is
+> fixable rather than structural. The diagnosis below stands as the record
+> of *why* the ruling was needed; the disposition is §2d, not the S120 row.
+
+**C1 was the single biggest structural finding of this assessment.**
 
 **C1 — the free-standing rule permanently excludes the surface a real user
 writes.** Root `CLAUDE.md` §"Stdlib separation" forbids `examples/` from
@@ -492,7 +670,7 @@ accident, and the reader must be told which one they are reading. Filed as
 late-sequence arc get a stdlib exemption, or does the prelude-macro surface
 belong wholly to `/docs` + `/port` (exemplar) with `examples/` explicitly
 re-scoped to "the core language, free-standing"? `/examples` does not rule
-this; it is a cross-skill scope boundary.
+this; it is a cross-skill scope boundary. **Answered 2026-07-21 — §2d.**
 
 **C2** — network poll-shape leaf (FIXME 0463): blocked, unchanged, re-verified.
 **C3** — collection idiom (`List`, `Map`, `Set`, the `count/get/conj/assoc`
@@ -670,7 +848,7 @@ green:
 | **S117** | **A4 (modules)** — grow `16-modules/` into a real arc: visibility (`defn-` + the private-import reject), `export`/re-export, glob and alias import forms, §8.6 shadowing/conflict. **A5 (strings)** — extend 09 to the full primitive surface incl. `parse-int`→`Option` as the fallible-input idiom. | medium-large | Both are self-contained, both are Tier A, neither depends on S116 |
 | **S118** | **The boundaries example** (§2c.3 problem 1) — an example whose *subject* is what the language rejects: §6.6's four pattern limitations, exhaustiveness-as-compile-error, the three S115 rulings, the annotation traps, ambiguity. Runtime half runnable via A1; compile half a curated, *verified* catalogue. Plus Tier B1–B5, B7. | medium | Needs A1's mechanism, so it follows S116 |
 | **S119** | **Reorder + renumber** (§2c.2). Regroup the append-log tail; split 29's prerequisite half forward; retire the duplicated `main` boilerplate in favour of one referenced note; normalise every `main` to the honest pass-count invariant. **Co-planned with `/testing`** — this rewrites `expected_exits()` wholesale. | medium, high-coordination | Must be last: reordering before the content is complete means doing it twice |
-| **S120?** | Conditional on the **C1 ruling** (FIXME 0821). If a stdlib-exemption arc is granted: an idiomatic arc (`do`/`bind!`/`->`/`derive`/`show`/`List`) that finally shares a vocabulary with Appendix B and the exemplar. If not: a scope statement in every entry point saying `examples/` teaches the **core** language and pointing at `user/` + `exemplar/` for the idiom. | unknown | Not `/examples`'s call |
+| ~~S120?~~ | **RESOLVED before it was scheduled.** 0821 is answered: `examples/` gets its own minimal, lesson-derived library (§2d). The library build-out folds into S116–S119 rather than becoming a terminal arc, and the scope statement the "if not" branch asked for is shipped as `examples/lib/README.md`. | — | §2d |
 
 Tier B6, B8–B10 fold into S117/S118 opportunistically. B11 stays blocked on
 the S112 typecheck wrong-reject and is not schedulable.
@@ -680,19 +858,65 @@ failure mode §2c.2 diagnoses. A4 and A5 are *extensions*; A1 and the
 boundaries example are new files that must land in a **regrouped** sequence,
 which is why S119 exists.
 
-### 2c.6 S115 Phase-6b plan (small, deliberately)
+### 2c.6 S115 Phase-6b — EXECUTED (2026-07-21)
 
 Content beats (the S115-capability half, verified by probe at 6a):
 
-| # | Item | File | Exit impact |
-|---|---|---|---|
-| 1 | **Trait default methods (§7.1.5)** — `<=`/`>=` synthesized from `<`/`>`, which is the spec's own worked example and is what 15 currently expands by hand. Plus the [NEG] note: defaults are forbidden on HKT traits | `15-traits.cl` | 58 → +1..2 |
-| 2 | **Impl redefinition** — re-impl replaces; omitting a method reverts it to the trait default; a dependent `defn` rebinds to the new impl | `33-redefinition.cl` | 136 → +3 |
-| 3 | **Auto-curry over a local closure** + trait-operator partial (keep captures scalar — FIXME 0796) | `25-curry.cl` | 118 → +2 |
-| 4 | **Dotted-binder rejection** as a comment beat: `.` qualifies types/traits, never binds | `35-ctor-disambiguation.cl` | none |
+| # | Item | File | Exit | Status |
+|---|---|---|---|---|
+| 1 | **Trait default methods (§7.1.5)** — `<=`/`>=` synthesized from `<`/`>` | `15-traits.cl` | — | **DEFERRED — blocked, see below** |
+| 2 | **Impl redefinition** — re-impl replaces; a dependent dispatch site rebinds; the rebind cascades | `33-redefinition.cl` | 136 → **139** | **DONE** |
+| 3 | **Auto-curry over a local closure** + trait-operator partial (captures kept scalar — FIXME 0796) | `25-curry.cl` | 118 → **139** | **DONE** |
+| 4 | **Dotted-binder rejection** as a comment beat: `.` qualifies types/traits, never binds; message quoted; all four binder positions probed and uniform | `35-ctor-disambiguation.cl` | 100 (unchanged) | **DONE** |
 
-Ordering: **1 → 2 → 3 → 4** (item 2's "reverts to the default" beat only reads
-as a payoff once defaults exist).
+#### Why item 1 was deferred, and what it cost item 2
+
+**FIXME 0825 (→ `/spec`, Blocker, open) is a spec self-contradiction on the
+default-method spelling**, and it is not safe to author a teaching beat
+against an unsettled spelling. `spec/02-grammar.md:200` and §7.1.5 say a
+default method's last element is the *body* (no return type); §7.1
+"Disambiguation" says the element after the parameter bracket is *always*
+the return type. The compiler follows Disambiguation, so **the spec's own
+worked `Ord` example does not compile**. Confirmed live at 6b:
+
+```
+(deftrait Sized (size [x] Int) (tag [x] Int (add-i64 (size x) 1000)))
+→ codegen error: undefined function: size
+```
+
+— i.e. even in the spelling the compiler *accepts*, a default body that
+calls a sibling method does not reach it. So the two spellings a reader
+would try are: one that fails at type resolution, one that fails at
+codegen. Authoring either into the sequence would teach a form that is about
+to change, and the direction is a pending user ruling.
+
+Knock-on: item 2's planned third sub-test — *"omitting a method from a
+re-impl reverts it to the trait default"* — needs a default method, so it
+went with item 1. The impl-redefinition beat shipped with a different, and
+arguably better-matched, third sub-test: the rebind **cascades** through a
+second layer, which is the exact claim the file's plain-`defn` half already
+makes. Item 2's three sub-tests are now the trait-`impl` mirror of the
+file's first three, which reads more deliberately than the original mix.
+
+**Both beats return when 0825 settles** — sequence them together, since
+"reverts to the default" is only a payoff once defaults exist.
+
+Correction beats (§2c.3 / §2c.4) — **all landed**:
+
+| # | Correction | File(s) | Status |
+|---|---|---|---|
+| 5 | Deleted the false *"one concrete type per program"* claim; replaced with what let-polymorphism actually buys, and added a sub-test instantiating one `id` at Bool, String and Int in one body (plus `first-of` at two type pairs) | `07-polymorphism.cl` | **DONE** — exit 119 → **120** |
+| 6 | Deleted *"Field access requires pattern matching"*; replaced with the §5.2.6 generated accessor `Type.field` (probe: `(Point.x (Point 3 4))` → 3) and when to prefer each | `10-adts.cl` | **DONE** |
+| 7 | Deleted the two-instantiation invitation; the comment now states the one-instantiation constraint the code obeys, names FIXME 0483, and tells the reader not to "simplify" into the crash | `14-vecs.cl` | **DONE** |
+| 7a | Corrected *"the empty `select []` never completes"* → §10.12.8/§12.7.2's fatal raise, **plus** the temporal-bracket [NEG] (it is not catchable; IO-wrapping only defers the raise past the bracket) | `32-concurrency-combinators.cl` | **DONE** |
+| 7b | Corrected the lib-dirs rationale to §8.11.4 additive-union; stated the real reason isolation holds (project root is `examples/`; no `examples/stdlib/`) and that `CRANELISP_LIB` therefore *adds* the real stdlib **ahead of** `./lib` in search order and breaks free-standing runs | `Cranelisp.toml` | **DONE** |
+| 8 | Purged retired **Ring 0/Ring 1** framing | `01`, `02`, `06`, `08`, `09`, `10`, `lib/prelude.cl` | **DONE** |
+| 9 | Added the mod-256 exit-byte note wherever the stated total exceeds 255; corrected 14's *"first example whose sum exceeds the exit-code byte"* (05 is first) | `05`, `10`, `12`, `14`, `15`, `18`, `25`, `26`, `28` | **DONE** |
+| 10 | §2 rows (07/25/33/35) and §4 updated; §4 now carries an explicit NOT-COVERED block | this file | **DONE** |
+| 11 | Exit-code reconciliation FIXME to `/testing` | — | **FILED — 0824** |
+
+**FIXME 0822 (self-targeted) is CLOSED by items 5–9** — all six false
+comment-claims and the ring residue are gone.
 
 Correction beats (§2c.3 / §2c.4 — cheap, and a corpus that states falsehoods
 should not survive a sprint once they are known):
@@ -714,14 +938,18 @@ should not survive a sprint once they are known):
 - **0820 → /testing** — e2e row for `examples/16-modules/main.cl` => **47**
   (see §"Next skills"; the stale rationale at `tests/examples.rs:276` is false
   at HEAD).
-- **0821 → /arch** — the C1 scope question: does `examples/` get a designated
-  stdlib-exemption arc, or is it explicitly re-scoped to "the core language,
-  free-standing" with the prelude-macro surface owned by `/docs` + `/port`?
-  This is a cross-skill scope boundary, not an `/examples` call, and it gates
-  whether §2c.5's S120 exists.
-- **0822 → /examples** — tracking row for the four rotted comment-claims and
-  the ring-framing residue (§2c.3 problem 3 / §2c.6 items 5–9). Self-targeted
-  so the wave gate sees it; closes in 6b.
+- **0821 → /arch** — **ANSWERED by the user 2026-07-21 and CLOSED.** The
+  disposition is neither branch the FIXME offered: `examples/` gets its own
+  minimal, lesson-derived library. See §2d.
+- **0822 → /examples** — **CLOSED at 6b.** All six false comment-claims and
+  the ring-framing residue are corrected (§2c.6 items 5–9).
+- **0823 → /arch** — filed by `/sprint` with the ruling: root `CLAUDE.md`
+  §"Stdlib separation"'s "define any needed helpers inline" clause needs
+  amending for `examples/`. The principle's *purpose* is untouched — the
+  library is built only from compiler primitives and special forms, so the
+  language is still validated independently of `stdlib/`. `tests/` keeps the
+  inline rule. Open, `/arch`'s call.
+- **0824 → /testing** — filed at 6b; the three exit-code changes below.
 
 ### 2c.8 Not defects
 
@@ -812,7 +1040,8 @@ no environment variable:
 
 ## 4. Spec feature coverage
 
-> **This table is a WHITELIST, not a coverage claim — read §2c.1 first.**
+> **This table is a WHITELIST, not a coverage claim — read §2c.1 first, and
+> §4a below for the standing NOT-COVERED list.**
 > The line that stood here ("Every major language feature in the spec is
 > exercised by at least one example") was **false**, and its being here is part
 > of why the gaps in §2c.1 went unnoticed: the table only ever grew rows for
@@ -855,7 +1084,34 @@ no environment variable:
 | Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
 | Poll-shape platform IO leaf (async effect suspends/resumes on the reactor; independent leaves overlap) | 34 |
 | `:Type` annotation model (incl. `^`-style whitespace tolerance: `: Int` == `:Int`) | 29 |
-| Redefinition (later `defn` replaces; dependents rebind) | 33 |
+| Redefinition (later `defn` replaces; dependents rebind) — **and impl redefinition: a later `impl` replaces, dispatch sites rebind, cascades** | 33 |
+| Binder-vs-reference boundary (`.` qualifies a reference, never binds — all four binder positions) | 35 |
+| Currying a function VALUE: a local closure, and a trait operator | 25 |
+| Let-polymorphism at multiple instantiations in one batch program | 07 |
+| Generated field accessors `Type.field` (§5.2.6) — **named, not yet demonstrated** | 10 (prose only; beat is S116/A2) |
+| The examples-local library: importing a lesson-derived module by name | 25 (`operators`) |
+
+### 4a. NOT COVERED — the standing gap list
+
+This is the half the whitelist above cannot show. Every row is a
+first-order spec feature with **no example**. Sourced from the §2c.1
+outside-in sweep; kept here so absence is as visible as presence.
+
+| Missing area | Spec | Tier | Scheduled |
+|---|---|---|---|
+| The entire error model — runtime panics, the four panic sources, `catch-runtime-error`/`Result`, the temporal-bracket [NEG], "no `throw`", wrapping-vs-checked arithmetic, `Inf`/`NaN` | §12.7, App A.3 | A1 | S116 |
+| Field accessors `Type.field` as the idiomatic single-field read (a ~10-file style correction, not one example) | §5.2.6 | A2 | S116 |
+| Trait **default methods** | §7.1.5 | A3 | **blocked on FIXME 0825** |
+| Module visibility + the import/export surface: `defn-`/`deftype-`/`mod-`, the private-import reject, `export`/re-export, glob `[*]`, alias/renamed/null import, `super`, §8.6 shadowing & conflict | §8.3–8.7 | A4 | S117 |
+| Twelve of eighteen string primitives, incl. `parse-int`→`Option` as the fallible-input idiom | App A.3, §12.1.2 | A5 | S117 |
+| Pattern matching's negative space (§6.6's four prohibitions) + exhaustiveness as a compile error | §6.5–6.6 | B1 | S118 |
+| Macro hygiene / auto-gensym (18 currently teaches the capture trap as the technique) | §9.8 | B3 | S118 |
+| Docstrings — all six positions, zero occurrences in the corpus | §5.2.5, §5.12, §7.1.2, §9.2.4 | B7 | S118 |
+| The reader surface below the top level: string escapes, comma-whitespace, `'form`, `#(… %1)`, `x#` | §1.2–1.5 | B7a | S118 |
+| `trace` / the `Trace`/`TraceCall` ADT | §2.3, §12.9.5 | B7b | S118 |
+| Detached strands, launch-and-continue, supervision | §10.12.7, §12.7.9 | B6 | unscheduled |
+| Constrained-impl heads `(impl Display (Option :Display a) …)` | §7.3.3 | B11 | **blocked** — S112 TB-24 wrong-reject |
+| Network poll-shape leaf (accept→read→send) | — | C2 | **blocked** — FIXME 0463, no free-standing socket platform |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 
 ## 5. Verification
@@ -878,19 +1134,34 @@ to reconcile that table.
 
 ## Next skills
 
-- `/arch` (S115 Phase 6a) — **FIXME 0821**: the scope boundary question. The
-  free-standing rule permanently excludes `do`/`bind!`/`->`/`->>`/`cond`/`case`/
-  `str`/`def`/`const`/`list`/`vec`/`show`/`List`/**`derive`** from every example
-  (verified: `derive` → `undefined variable`). Either re-scope `examples/` to
-  "the core language, free-standing" **in writing**, or grant a bounded
-  late-arc exemption. This gates §2c.5's conditional S120 row and is the single
-  largest structural finding of the S115 assessment.
-- `/examples` (self, S115 Phase 6b) — **FIXME 0822**: six comment-claims false
-  at HEAD (§2c.3). Closes with the 6b change-set.
-- `/sprint` — the S115 6b plan is now §2c.6, **not** §2b's table. It is
-  deliberately small (4 content beats + 7 corrections, no new files); the
-  substantive work is sequenced across S116–S119 in §2c.5 with an honest size
-  estimate. Please read §2c.0 before scoping 6b.
+- `/testing` (S115 Phase 6b) — **FIXME 0824**: three `expected_exits()` rows
+  in `tests/examples.rs`, all verified `--run` == `--link` on 2026-07-21:
+  `07-polymorphism.cl` **119 → 120**, `25-curry.cl` **118 → 139**,
+  `33-redefinition.cl` **136 → 139**. Lands in the SAME phase commit as the
+  example change-set; `/examples` does not edit `tests/`. No file-set change
+  (no adds, no removes, no renames), so the umbrella's on-disk parity guard
+  is unaffected. The `.cl` files added under `examples/lib/` are library
+  modules, not sequence entries, and must NOT gain rows.
+- `/spec` + user (S115) — **FIXME 0825** is the reason the trait-default-method
+  beat is not in the sequence, and it will stay out until the spelling
+  settles. Two beats are queued behind it (§2c.6): the `15-traits.cl`
+  defaults introduction, and `33-redefinition.cl`'s "omitting a method from
+  a re-impl reverts it to the trait default". A third data point for the
+  ruling, found at 6b: even in the spelling the compiler *accepts*, a default
+  body that calls a sibling trait method fails at codegen with `undefined
+  function: <method>` — see FIXME 0832.
+- `/arch` — **FIXME 0823** (filed by `/sprint`): amend root `CLAUDE.md`
+  §"Stdlib separation"'s inline-helpers clause for `examples/`. §2d is the
+  `/examples`-side record of what the ruling means in practice; the library
+  is built from primitives and special forms only, so the principle's purpose
+  is intact.
+- ~~`/arch` (S115 Phase 6a) — FIXME 0821~~ — **ANSWERED and CLOSED**
+  (user, 2026-07-21). Disposition: §2d.
+- ~~`/examples` (self, S115 Phase 6b) — FIXME 0822~~ — **CLOSED at 6b.**
+- `/sprint` — 6b is executed (§2c.6). One planned beat deferred on a Blocker
+  (0825), one library seed landed (§2d.6), seven corrections landed, three
+  exit codes moved. The substantive sequence work remains S116–S119 (§2c.5,
+  now with the library build-out folded in per §2d.5).
 - `/testing` (S115 Phase 6a) — **FIXME 0820**: add a directory-project e2e row
   for `examples/16-modules/main.cl` => **47** (verified `--run` == `--link`,
   fresh cache, 2026-07-21), modelled on the existing `37-method-import` test,

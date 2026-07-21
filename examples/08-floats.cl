@@ -1,14 +1,15 @@
 ;; 08-floats.cl -- Float literals and arithmetic
 ;;
 ;; Cranelisp floats are IEEE 754 double-precision (64-bit) values.
-;; Ring 0 uses monomorphic named primitives for float operations:
+;; The core language exposes monomorphic named primitives for float
+;; operations:
 ;;   add-f64, sub-f64, mul-f64, div-f64
 ;;   eq-f64, lt-f64, gt-f64, le-f64, ge-f64
 ;;
 ;; Int and Float are separate types. You cannot mix them in the same
 ;; primitive call -- (add-i64 1 1.5) is a type error.
 ;;
-;; Since Ring 0 batch programs return i64, this example uses float
+;; Since a batch program's exit code is an Int, this example uses float
 ;; comparisons to produce Bool results, then converts to Int for output.
 
 ;; Helper: convert Bool to Int for aggregation

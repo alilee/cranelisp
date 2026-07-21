@@ -23,7 +23,10 @@
 ;; higher-order functions like any user-defined function (see the
 ;; "Vec operations as ordinary values" section below).
 ;;
-;; Expected exit code: 81 (sum of sub-test results 593, mod 256).
+;; Expected exit code: 81 — the process exit status is a single byte, so
+;; the sum of sub-test results (593) is reported as its low byte,
+;; 593 mod 256 = 81. (Several earlier examples wrap the same way; 05 is
+;; the first.)
 
 ;; --- Basic operations ---
 
@@ -74,10 +77,15 @@
 ;; ordinary function value, so it can be passed to a higher-order
 ;; function just like a user-defined one (higher-order functions are
 ;; example 13's capability). Each helper below forwards its function
-;; argument to a call. The same generic higher-order function can be
-;; instantiated at several different vec primitives — e.g. `call-get`
-;; works whether you hand it `vec-get`, `vec-set`, or any function of
-;; the matching shape.
+;; argument to a call.
+;;
+;; DELIBERATE SHAPE: there is one helper per operation, and each is
+;; instantiated at exactly ONE vec primitive. Collapsing them into a
+;; single generic helper used at two different vec primitives is the
+;; shape this example carefully avoids: it currently SIGBUSes (open
+;; compiler defect, FIXME 0483). Do not read the three near-identical
+;; helpers as a style choice — they are working around a live bug, and
+;; this comment exists so the reader does not "simplify" into the crash.
 
 (defn call-get [f v i] (f v i))
 (defn call-set [f v i x] (f v i x))

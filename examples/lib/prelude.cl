@@ -3,8 +3,15 @@
 ;; This file is NOT the stdlib prelude. It is a minimal, free-standing
 ;; prelude owned by /examples per root CLAUDE.md §"Stdlib separation":
 ;; examples MUST NOT depend on stdlib/. This prelude only re-exports the
-;; 30 Ring 0/1 primitives that examples use; it does not pull in any
-;; traits, macros, or domain modules.
+;; 30 primitives that examples use; it does not pull in any traits,
+;; macros, or domain modules.
+;;
+;; IT CONTAINS NO DEFINITIONS, deliberately. This file is loaded
+;; IMPLICITLY for every example, including 01-integers.cl, so anything
+;; defined here would be in scope before the lesson that teaches it —
+;; which would break the cumulative rule the examples-local library is
+;; built on. Definitions live in sibling modules that examples import
+;; BY NAME. See examples/lib/README.md.
 ;;
 ;; Activated by examples/Cranelisp.toml (`lib-dirs = ["./lib"]`) — when
 ;; `cargo run -- --run examples/FOO.cl` runs, `project_root` is

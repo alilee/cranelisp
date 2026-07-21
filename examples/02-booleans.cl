@@ -1,7 +1,7 @@
 ;; 02-booleans.cl -- Boolean literals, comparisons, and conditionals
 ;;
 ;; Booleans are true or false. Comparison primitives return Bool.
-;; Ring 0 comparison primitives:
+;; Comparison primitives:
 ;;   eq-i64, lt-i64, gt-i64, le-i64, ge-i64  (Int -> Int -> Bool)
 ;;   not                                      (Bool -> Bool)
 ;;

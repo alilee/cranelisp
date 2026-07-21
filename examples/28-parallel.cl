@@ -119,6 +119,7 @@
 ;; --- Verify all results ---
 ;;
 ;; Expected: 5225 + 2550 + 24 + 231 + 1253 = 9283
+;; The process EXIT CODE is the low byte of that sum: 9283 mod 256 = 67.
 
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must

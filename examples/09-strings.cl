@@ -3,7 +3,9 @@
 ;; Strings are heap-allocated sequences of bytes, managed by reference counting.
 ;; String literals are written in double quotes: "hello"
 ;;
-;; String primitives (Ring 1):
+;; String primitives used here (the `primitives` module exposes more —
+;; `substring`, `split`, `trim`, `parse-int` and friends; those are not
+;; yet taught by this sequence):
 ;;   str-concat    (String -> String -> String)  concatenate two strings
 ;;   str-eq        (String -> String -> Bool)     string equality
 ;;   str-len       (String -> Int)                string length in bytes

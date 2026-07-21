@@ -2,15 +2,30 @@
 #
 # Per root CLAUDE.md §"Stdlib separation", the examples/ directory MUST be
 # free-standing: it cannot depend on stdlib/. This config puts `./lib` on
-# the library search path so `cargo run -- --run examples/FOO.cl` discovers
-# `examples/lib/prelude.cl` — a tiny, standalone prelude that re-exports
-# just the 30 Ring-0/1 primitives the examples use, with zero reference to
-# stdlib/.
+# the library search path, which is how `examples/lib/prelude.cl` — and the
+# rest of the examples-local library alongside it — is discovered when an
+# example is run with `examples/` as the working directory.
 #
-# Spec: 08-modules.md §8.11.4 item 2 — lib-dirs fully replaces the env and
-# default tiers when present, so this config isolates examples from
-# `{project_root}/stdlib/` even though that directory exists at the repo
-# root.
+# WHY THE ISOLATION HOLDS. Not because this key suppresses anything.
+# Spec 08-modules.md §8.11.4 (settled S91) is explicit: the resolved
+# lib-directory set is the additive UNION of all sources — programmatic
+# additions, `CRANELISP_LIB`, this `lib-dirs` key, and the
+# `{project_root}/stdlib/` default. **No source ever replaces or suppresses
+# another.** `lib-dirs` only ever ADDS `./lib` to the set.
+#
+# The examples are isolated from the real standard library for a different
+# and simpler reason: when an example is run from this directory, the
+# project root IS `examples/`, and `examples/stdlib/` does not exist — so
+# the §8.11.4 source-4 default contributes nothing. The repo-root
+# `stdlib/` is never a candidate at all.
+#
+# CONSEQUENCE, and a standing operational trap: setting `CRANELISP_LIB` to
+# the repo's `stdlib/` is NOT overridden by this file. Under union
+# semantics it ADDS the real standard library to the search set — and, per
+# the §8.11.4 search order, ahead of this config's `./lib`. That silently
+# breaks free-standing runs (a different `prelude` wins). Run the examples
+# with NO `CRANELISP_LIB` set, from this directory, exactly as
+# `tests/examples.rs` does.
 #
 # See also: design/stdlib/examples-run-path.md (sprint 60 Workstream F
 # decision record).

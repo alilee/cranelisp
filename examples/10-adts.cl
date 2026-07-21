@@ -1,7 +1,7 @@
 ;; 10-adts.cl -- Algebraic data types with fields
 ;;
-;; Ring 0 introduced enum types (deftype with nullary constructors).
-;; Ring 1 adds data constructors -- variants that carry values.
+;; 06-enums.cl introduced enum types (deftype with nullary constructors).
+;; This example adds data constructors -- variants that carry values.
 ;;
 ;; Product types (all-in-one constructor with named, typed fields):
 ;;   (deftype Point [:Int x :Int y])
@@ -18,7 +18,15 @@
 ;;   Equivalent to polymorphic (deftype (Pair a b) (Pair [:a first :b second])).
 ;;
 ;; Values are heap-allocated and reference-counted. Constructors are
-;; called like functions. Field access requires pattern matching (next example).
+;; called like functions.
+;;
+;; Reading fields. This example reads every field with `match`, because
+;; `match` is what 11-destructuring.cl goes on to teach in full. That is
+;; NOT the only way, and for a single field it is not the idiomatic way:
+;; `deftype` also GENERATES a field accessor per named field, spelled
+;; `Type.field` (spec §5.2.6) -- `(Point.x (Point 3 4))` is `3`. Prefer
+;; the accessor when you want one field; prefer `match` when you are
+;; discriminating between constructors or binding several fields at once.
 
 ;; A product type: a 2D point
 (deftype Point [:Int x :Int y])
@@ -92,6 +100,7 @@
   (sum-pair (Pair 5 15)))
 
 ;; Expected: 7 + 60 + 42 + 99 + 7 + 0 + 30 + 20 = 265
+;; The process EXIT CODE is the low byte of that sum: 265 mod 256 = 9.
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).

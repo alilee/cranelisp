@@ -2,7 +2,9 @@
 ;;
 ;; (deftype Name Variant1 Variant2 ...)
 ;;
-;; Defines a new type with named constructors (no fields in Ring 0).
+;; Defines a new type with named constructors. This example uses only
+;; NULLARY constructors (no fields); constructors that carry values are
+;; introduced in 10-adts.cl.
 ;; Each variant is a distinct value of the type.
 ;;
 ;; (match scrutinee [Pattern1 body1 Pattern2 body2 ...])

@@ -94,6 +94,7 @@
   (if (match (fmap double None) [None true _ false]) 1 0))       ;; -> 1
 
 ;; Expected: 42 + 99 + 42 + 22 + 99 + 42 + 1 = 347
+;; The process EXIT CODE is the low byte of that sum: 347 mod 256 = 91.
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
