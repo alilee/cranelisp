@@ -324,22 +324,23 @@ pub fn insert_cluster(
     // per-entry under inner-DashMap locks (target shape from `facades/int.md`
     // §"Atomicity guarantees").
     // FIXME 0604 chokepoint (prelude-table-write-isolation.md §2.2): route each
-    // committed write through the terminal-table export-closure gate BEFORE
-    // acquiring the mutable guard (the gate reads OTHER tables — it must not run
-    // under a held `get_mut`, DashMap shard re-entrancy). A phantom out-of-
-    // closure public commit is rejected + diagnosed at the seam. The legacy
-    // prelude-only observability rider (`assert_prelude_closure`) stays as a
-    // defense-in-depth tripwire beside it.
+    // committed write through the terminal-table declared-export-closure gate
+    // BEFORE acquiring the mutable guard. `D(target)` is PRECOMPUTED here (a read
+    // of the SEPARATE `declared_exports` map, honoring the /arch precompute-before-
+    // guard directive uniformly). A phantom out-of-closure public commit is
+    // rejected + diagnosed at the seam. The legacy prelude-only observability
+    // rider (`assert_prelude_closure`) stays as a defense-in-depth tripwire.
+    let declared = shared.declared_exports.get(target).map(|d| d.clone());
     for (sym, entry) in &processed.entries {
         crate::imports::assert_prelude_closure(
             &shared.symbol_tables, target, sym.as_ref(), entry,
         );
         crate::imports::check_terminal_closure(
-            &shared.symbol_tables,
             target,
             sym.as_ref(),
             entry,
             cranelisp_types::Span::SYNTHETIC,
+            declared.as_ref(),
         )?;
     }
     if let Some(mut live) = shared.symbol_tables.get_mut(target) {

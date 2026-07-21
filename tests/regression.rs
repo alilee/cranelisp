@@ -3284,11 +3284,14 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 fn shared_state_field_count_at_target_14() {
     // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
     //
-    // Target is 16: 16 − module_sexps − suspend_states (S78 restructure) +
+    // Target is 17: 16 − module_sexps − suspend_states (S78 restructure) +
     // prelude_fallback (S78 Wave 4 §2.7 prelude-outer-scope companion) +
-    // run_mode (S80 Wave 2D D1 REPL-vs-batch carrier). The two cross-thread
-    // parking maps stay deleted; this guards that they do not creep back while
-    // admitting the two legitimate sanctioned field additions.
+    // run_mode (S80 Wave 2D D1 REPL-vs-batch carrier) + declared_exports (S115
+    // W2, FIXME 0604 §2.2 — the declared-export-closure `D(M)` map the corrected
+    // terminal-closure predicate keys on; session-side, unserialized, no
+    // types/schema/public-api impact). The two cross-thread parking maps stay
+    // deleted; this guards that they do not creep back while admitting the
+    // legitimate sanctioned field additions.
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session_v4.rs");
     let text = std::fs::read_to_string(&src)
         .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
@@ -3309,16 +3312,17 @@ fn shared_state_field_count_at_target_14() {
         })
         .count();
     assert_eq!(
-        field_count, 16,
-        "SharedState has {field_count} pub fields; Sprint 80 target is exactly \
-         16 (16 − module_sexps − suspend_states + prelude_fallback + run_mode; \
-         design/int/s77-int-restructure.md §2.3 + S78 Wave 4 §2.7 + S80 Wave 2D \
-         D1 design/arch/d1-introspection-repl-only.md §4). This is the standing \
-         guard that the two cross-thread parking maps \
+        field_count, 17,
+        "SharedState has {field_count} pub fields; target is exactly 17 \
+         (16 − module_sexps − suspend_states + prelude_fallback + run_mode + \
+         declared_exports; design/int/s77-int-restructure.md §2.3 + S78 Wave 4 \
+         §2.7 + S80 Wave 2D D1 design/arch/d1-introspection-repl-only.md §4 + \
+         S115 W2 design/int/prelude-table-write-isolation.md §2.2). This is the \
+         standing guard that the two cross-thread parking maps \
          (module_sexps/suspend_states) do not creep back, while admitting the \
-         two legitimate sanctioned session-side field additions \
-         `prelude_fallback` (S78 Wave 4) and `run_mode` (S80 Wave 2D D1, the \
-         REPL-vs-batch run-mode carrier)."
+         legitimate sanctioned session-side field additions `prelude_fallback` \
+         (S78 Wave 4), `run_mode` (S80 Wave 2D D1), and `declared_exports` \
+         (S115 W2, FIXME 0604)."
     );
 }
 

@@ -1590,6 +1590,7 @@
             platform_dirs: Mutex::new(Vec::new()),
             module_aliases: cranelisp_types::ModuleAliases::default(),
             prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
+            declared_exports: crate::imports::DeclaredExports::default(),
             cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(std::collections::HashMap::new()),
@@ -1692,6 +1693,96 @@
             pool[0].trap_msg.is_none(),
             "frozen supersession, not a trap stub"
         );
+    }
+
+    // spec: design/int/prelude-table-write-isolation.md §2.4 (FIXME 0604) — the
+    // S115 missed-census-row ROUTE: `commit_staging_to_live` gates every staged
+    // PUBLIC write through the terminal declared-export-closure chokepoint. A
+    // phantom public re-export edge (`bit-and → primitives/bit-and`, the live
+    // phantom's shape — primitives GENUINELY provides bit-and, so the old
+    // provider-existence predicate would have passed it) staged into a module
+    // whose recorded `D(module)` does NOT include the name is REJECTED at commit.
+    // Fail-on-revert: delete the `check_terminal_closure` call in the drain loop
+    // and this commit succeeds (the phantom lands live).
+    // defect: class=shared-state-write-race locus=src/worker.rs::commit_staging_to_live found=S115 owner=/dev
+    #[test]
+    fn commit_staging_to_live_rejects_out_of_closure_public_write() {
+        let module = ModuleFullPath::from("prelude");
+        let shared = test_shared_state();
+        // Record D(prelude) as a curated set that does NOT include `bit-and`
+        // (mirrors `stdlib/prelude.cl`'s specific primitive re-export list).
+        let mut d: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        d.insert(Symbol::from("Int"));
+        d.insert(Symbol::from("Bool"));
+        shared.declared_exports.insert(module.clone(), d);
+
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+
+        // Staging carries a phantom PUBLIC re-export edge `bit-and` outside D(prelude).
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.insert(
+            Symbol::from("bit-and"),
+            cranelisp_types::ModuleEntry::Import {
+                source: cranelisp_types::FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("bit-and"),
+                },
+                visibility: cranelisp_types::Visibility::Public,
+            },
+        );
+
+        let err = commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
+            .expect_err("a phantom out-of-closure public commit must be rejected at the gate");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("bit-and"), "diagnostic names the phantom: {msg}");
+        assert!(msg.contains("0604"), "diagnostic attributes to FIXME 0604: {msg}");
+        // Nothing phantom committed to live.
+        let live = symbol_tables.get(&module).unwrap();
+        assert!(
+            live.get("bit-and").is_none(),
+            "the phantom must not reach the live table",
+        );
+    }
+
+    // spec: design/int/prelude-table-write-isolation.md §2.4 — the false-fire
+    // fence at the commit route: a staged public re-export whose name IS in
+    // D(module) commits cleanly (the gate must not reject the legal population).
+    #[test]
+    fn commit_staging_to_live_permits_declared_public_reexport() {
+        let module = ModuleFullPath::from("prelude");
+        let shared = test_shared_state();
+        let mut d: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        d.insert(Symbol::from("Int"));
+        shared.declared_exports.insert(module.clone(), d);
+
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.insert(
+            Symbol::from("Int"),
+            cranelisp_types::ModuleEntry::Import {
+                source: cranelisp_types::FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("Int"),
+                },
+                visibility: cranelisp_types::Visibility::Public,
+            },
+        );
+
+        commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
+            .expect("a declared public re-export (Int ∈ D(prelude)) must commit cleanly");
+        let live = symbol_tables.get(&module).unwrap();
+        assert!(live.get("Int").is_some(), "the declared re-export committed");
     }
 
     // spec: design/int/s102-defect-wave.md §1 item 3 / session-transaction.md

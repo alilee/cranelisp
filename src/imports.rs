@@ -20,12 +20,22 @@
 //! ambiguity detection) mirror the deleted typecheck bodies (recovered from
 //! git `cee8152^`), now operating directly on `SessionSymbolTable` values.
 
+use std::collections::HashSet;
+
 use cranelisp_types::{
     CranelispError, DefKind, ErrorLocation, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, ModuleFullPath, Span, Symbol, TraitName,
     Visibility,
 };
 use cranelisp_typecheck::PreludeFallback;
+
+/// The session-side declared-export closure map (FIXME 0604 §2.2): `M → D(M)`,
+/// where `D(M)` is the union of the names `M`'s own `(export …)` specs bring in.
+/// A **separate** `DashMap` from `symbol_tables` (so a read never re-enters a
+/// `get_mut` shard the caller holds — the deadlock hazard) and **unserialized**,
+/// recomputed per session (modelled on `prelude_fallback`). `check_terminal_closure`
+/// keys on `D(M)`, not on the source-provider heuristic the S114 predicate used.
+pub(crate) type DeclaredExports = dashmap::DashMap<ModuleFullPath, HashSet<Symbol>>;
 
 use crate::code::{Code, SessionSymbolTable};
 
@@ -111,9 +121,10 @@ pub(crate) fn install_imports(
         // delegating to the poison consumer, so a mis-targeted/materialized
         // phantom public write is rejected at the seam and never reaches a live
         // table. `import` edges are Private → the gate is a no-op here (census
-        // legal-skip), but routing uniformly keeps the structural guard greppable.
+        // legal-skip: !is_public short-circuits, so `D(M)` is never consulted —
+        // pass `None`), but routing uniformly keeps the structural guard greppable.
         for (name, entry) in &to_add {
-            check_terminal_closure(symbol_tables, current_module, name.as_ref(), entry, spec.span)?;
+            check_terminal_closure(current_module, name.as_ref(), entry, spec.span, None)?;
         }
         insert_detecting_ambiguity(
             symbol_tables,
@@ -135,10 +146,19 @@ pub(crate) fn install_imports(
 /// `export` populates the inner scope identically to `import` (§8.4.0), so it
 /// runs through the SAME [`insert_detecting_ambiguity`] path (including the
 /// distinct-terminal prelude-overlap poison, §8.6.5).
+///
+/// `declared_exports` (FIXME 0604 §2.2) is the session-side `M → D(M)` map. When
+/// `Some`, the names this seam installs are RECORDED into `D(current_module)` —
+/// the authoritative declared-export set `commit_staging_to_live` later gates
+/// against (recorded from the specs at INSTALL time, before any phantom write
+/// could be injected, so the check is not circular against the entries it
+/// validates). The BACKGROUND index path (isolated private tables, R13) passes
+/// `None` — it must never write live session state.
 pub(crate) fn install_exports(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
     prelude_fallback: &PreludeFallback,
+    declared_exports: Option<&DeclaredExports>,
     specs: &[ExportSpec],
 ) -> Result<(), CranelispError> {
     for spec in specs {
@@ -174,12 +194,22 @@ pub(crate) fn install_exports(
         if !symbol_tables.contains_key(current_module) {
             return Err(missing_current_module(current_module, spec.span));
         }
-        // FIXME 0604 chokepoint: `export` edges are Public — the gate ENFORCES
-        // the terminal-table export-closure invariant here, rejecting a phantom
-        // public re-export whose source lacks the name (the isolation-by-
-        // construction seam; a firing names the seam in production).
+        // FIXME 0604 §2.2: RECORD this module's declared exports `D(M)` from the
+        // names its own `(export …)` specs bring in — the settled surface
+        // `commit_staging_to_live` gates against. Recorded at install time (before
+        // any phantom write), keyed by the destination module.
+        let spec_names: HashSet<Symbol> = to_add.iter().map(|(n, _)| n.clone()).collect();
+        if let Some(de) = declared_exports {
+            de.entry(current_module.clone()).or_default().extend(spec_names.iter().cloned());
+        }
+        // FIXME 0604 chokepoint: `export` edges are Public — the gate routes here
+        // too. `D(M)` for these entries is exactly the names being installed (this
+        // seam DEFINES the declared exports), so every entry passes by
+        // construction; the routing keeps the structural census closed (Principle
+        // 18) — a phantom out-of-closure public write is caught at the LIVE commit
+        // seam (`commit_staging_to_live`), where `D(M)` is already recorded.
         for (name, entry) in &to_add {
-            check_terminal_closure(symbol_tables, current_module, name.as_ref(), entry, spec.span)?;
+            check_terminal_closure(current_module, name.as_ref(), entry, spec.span, Some(&spec_names))?;
         }
         insert_detecting_ambiguity(
             symbol_tables,
@@ -248,9 +278,15 @@ fn prelude_write_is_closure_valid(
 ) -> bool {
     match entry {
         // A re-export / import edge: the SOURCE module must publicly provide the
-        // name. A phantom `bit-and → primitives/bit-and` (bit-and is homed in
-        // num.bits, absent from primitives) fails HERE; a legitimate
-        // `int-to-string → primitives/int-to-string` re-export passes.
+        // name. NOTE (FIXME 0604 falsified-premise rider, /arch Phase-2 §4): this
+        // legacy PRELUDE-ONLY observability rider is provider-existence shaped and
+        // is BLIND to the live phantom by construction — `bit-and` IS a bundled
+        // public primitive (`cranelisp-primitives/src/lib.rs:412`; homed in
+        // num.bits only as a wrapper), so a phantom `bit-and → primitives/bit-and`
+        // names a genuine provider and PASSES here. The authoritative gate is the
+        // DECLARED-EXPORT-CLOSURE `check_terminal_closure` above (keyed on the
+        // destination's `D(M)`, where `bit-and ∉ D(prelude)`); this rider stays as
+        // a debug-only defense-in-depth tripwire, NOT the load-bearing check.
         ModuleEntry::Import { source, .. } => match symbol_tables.get(&source.module) {
             Some(src) => src
                 .get(source.symbol.as_ref())
@@ -280,8 +316,12 @@ fn prelude_write_is_closure_valid(
 // |                                          |         | its writes are already |
 // |                                          |         | vetted by the install- |
 // |                                          |         | seam gate above        |
-// | cluster.rs::insert_cluster (commit gate) | yes     | ROUTE through gate     |
-// | process_form/form_dispatch (defmacro reg)| yes     | ROUTE through gate     |
+// | cluster.rs::insert_cluster (commit gate) | yes     | ROUTE (normally empty) |
+// | worker::commit_staging_to_live (the REAL | yes     | ROUTE through gate     |
+// |   staging→live commit; S115 missed-row)  |         | (D(M) precomputed      |
+// |                                          |         | before the get_mut)    |
+// | process_form/form_dispatch (defmacro reg)| yes     | ROUTE (own-def → Ok,   |
+// |                                          |         | no map read, D=None)   |
 // | Code-install sites (mutate existing)     | no new  | legal-skip (no new     |
 // |                                          | entry   | public table entry)    |
 // | process_form/cache_restore.rs            | yes     | off the recipe path    |
@@ -301,32 +341,45 @@ fn prelude_write_is_closure_valid(
 /// The ONE terminal-table export-closure chokepoint (FIXME 0604, §2.2).
 ///
 /// **Invariant:** a module never accepts a new PUBLIC entry outside its declared
-/// export closure. Promotes the S113 prelude-only PS-R7 `debug_assert!`
+/// export closure `D(M)`. Promotes the S113 prelude-only PS-R7 `debug_assert!`
 /// ([`assert_prelude_closure`]) to an **unconditional, generalized, DIAGNOSED
 /// error** — it fires in EVERY build, for ANY module (not just `prelude`), and a
 /// firing NAMES its caller in production (module, name, source edge), turning the
 /// next phantom occurrence anywhere (`bit-and → primitives/bit-and`, FIXME 0604)
-/// into a located defect instead of another quiet-environment hunt.
+/// into a located defect instead of another quiet-environment hunt. The message
+/// self-identifies as an internal R7 invariant breach (never mistakable for a
+/// user diagnostic — /arch Phase-2 §4 sub-form ruling).
 ///
-/// Keys on the write's SETTLED SOURCE (Principle 26 — read the edge, not a name
-/// heuristic): a public re-export/import edge is closure-valid iff its source
-/// module genuinely PROVIDES the name; a module's own public definition is
-/// exported by §8.4; an unknown/unresolvable source is PERMITTED (the diagnostic
-/// must NEVER false-fire the build). The presence check ([`write_is_closure_valid`]
-/// uses `.is_some()`, not `.is_public()`) is deliberately false-fire-safe across
-/// legitimate **subtree-private** re-exports (`collect_specific` already validated
-/// their visibility) — only the phantom shape, a public edge whose source LACKS
-/// the name entirely, is rejected. Non-public writes are always Ok (isolation is
-/// a PUBLIC-write invariant; a private import is module-local, §8.6.5-poisoned if
-/// ambiguous but never a cross-module phantom).
+/// Keys on the DESTINATION module's DECLARED EXPORTS `D(M)` (Principle 26 — read
+/// the settled `(export …)` surface, NOT the source-provider heuristic the S114
+/// predicate mistook for it). The S114 predicate was **provider-existence** shaped
+/// and BLIND to the live phantom by construction: `bit-and` IS a bundled public
+/// primitive (`cranelisp-primitives/src/lib.rs:412`), so a phantom
+/// `bit-and → primitives/bit-and` names a genuine provider and provider-existence
+/// returned `true` (/qa S114 re-attribution; /arch Phase-2 §4). The distinguishing
+/// fact is that `bit-and` is **outside prelude's declared export closure**
+/// (`stdlib/prelude.cl` re-exports a curated primitive set, not a glob).
+///
+/// - a module's own public definition (a non-`Import` entry) is exported by §8.4
+///   → **Ok with NO map read** (keeps `register_macro_in_module`'s under-guard
+///   gate call safe by construction — a macro/def `Def` never reaches the
+///   `Import` arm);
+/// - a public re-export `Import` edge whose `name ∈ D(M)` → Ok; `name ∉ D(M)`
+///   (the phantom shape) → rejected + diagnosed;
+/// - `declared_exports == None` (D(M) unknown/not-yet-recorded) → PERMIT — a
+///   foreign write racing ahead of `M`'s own export processing is permitted; the
+///   guard catches it once `D(M)` is recorded (the diagnostic must NEVER
+///   false-fire).
+///
+/// Non-public writes are always Ok (isolation is a PUBLIC-write invariant).
 pub(crate) fn check_terminal_closure(
-    symbol_tables: &SessionTables,
     module: &ModuleFullPath,
     name: &str,
     entry: &ModuleEntry<Code>,
     span: Span,
+    declared_exports: Option<&HashSet<Symbol>>,
 ) -> Result<(), CranelispError> {
-    if !entry.is_public() || write_is_closure_valid(symbol_tables, entry) {
+    if !entry.is_public() || write_is_closure_valid(module, name, entry, declared_exports) {
         return Ok(());
     }
     let source_desc = match entry {
@@ -336,31 +389,48 @@ pub(crate) fn check_terminal_closure(
     if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
         eprintln!(
             "[MODULE_TRACE] 0604 terminal-closure breach: public `{name}` written into \
-             module `{module}` from source `{source_desc}` — outside its export closure"
+             module `{module}` from source `{source_desc}` — outside its declared export closure"
         );
     }
     Err(CranelispError::TypeError {
         message: format!(
             "internal: rejected out-of-closure public binding `{name}` into module \
-             `{module}` (source `{source_desc}`) — not in the module's export closure \
-             (FIXME 0604 terminal-table write isolation)"
+             `{module}` (source `{source_desc}`) — not in the module's declared export \
+             closure (FIXME 0604 terminal-table write isolation / R7 invariant breach)"
         ),
         location: ErrorLocation::from_span(span),
     })
 }
 
-/// Generalized closure-validity predicate for [`check_terminal_closure`]. A
-/// public re-export/import edge is valid iff its source module PROVIDES the name
-/// (any visibility — `collect_specific` already vetted the exporter's right to
-/// re-export it); an unknown source is permitted (never false-fire); a module's
-/// own definition is exported by §8.4.
-fn write_is_closure_valid(symbol_tables: &SessionTables, entry: &ModuleEntry<Code>) -> bool {
+/// Declared-export-closure validity predicate for [`check_terminal_closure`]
+/// (Principle 26 — keyed on the DESTINATION's settled export surface). The
+/// closure invariant is a CROSS-module invariant:
+///
+/// - a module's own definition (non-`Import`) is exported by §8.4 → Ok, NO map
+///   read (own-def arm stays deadlock-safe under a held `get_mut`);
+/// - an **intra-module self-alias** — an `Import` edge whose `source.module` is
+///   the DESTINATION module itself (a bare ctor alias `ZedC → prelude/Zed.ZedC`
+///   to the module's own canonical `Type.Ctor`, a same-module visibility upgrade,
+///   …) — is the module aliasing its OWN entry, exported by §8.4 → Ok, NO D read;
+/// - a **cross-module** public re-export (`source.module ≠ M`) is valid iff its
+///   NAME is in `D(M)`; `name ∉ D(M)` (the phantom `bit-and → primitives/bit-and`
+///   shape — source `primitives` ≠ dest `prelude`) → rejected;
+/// - an unknown `D(M)` (`None`) is permitted (never false-fire).
+fn write_is_closure_valid(
+    module: &ModuleFullPath,
+    name: &str,
+    entry: &ModuleEntry<Code>,
+    declared_exports: Option<&HashSet<Symbol>>,
+) -> bool {
     match entry {
-        ModuleEntry::Import { source, .. } => match symbol_tables.get(&source.module) {
-            Some(src) => src.get(source.symbol.as_ref()).is_some(),
-            None => true, // unknown source module — cannot judge; permit
+        // Intra-module self-alias — the module's OWN entry (§8.4); no D read.
+        ModuleEntry::Import { source, .. } if source.module == *module => true,
+        // Cross-module public re-export — checked against the destination's D(M).
+        ModuleEntry::Import { .. } => match declared_exports {
+            None => true, // D(M) unknown — cannot judge; permit (never false-fire)
+            Some(d) => d.contains(&Symbol::from(name)),
         },
-        _ => true, // the module's own definition (§8.4)
+        _ => true, // the module's own definition (§8.4) — no map read
     }
 }
 

@@ -226,6 +226,17 @@ pub struct SharedState {
     /// — recomputed per session from source, never cached.
     pub prelude_fallback: cranelisp_typecheck::PreludeFallback,
 
+    /// Per-module declared-export closure `D(M)` (FIXME 0604 §2.2 — the S115
+    /// corrected predicate's data source). `M → {names M's own (export …) specs
+    /// bring in}`, recorded by the int-side `install_exports` seam and read by
+    /// `check_terminal_closure` at the live commit gate (`commit_staging_to_live`)
+    /// to reject a phantom PUBLIC re-export whose name is outside `M`'s declared
+    /// export surface. A SEPARATE `DashMap` from `symbol_tables` (so a read never
+    /// re-enters a `get_mut` shard — the deadlock hazard), session-side and
+    /// **unserialized** (recomputed per session; modelled on `prelude_fallback`).
+    /// No `cranelisp-types`/schema/public-api impact.
+    pub declared_exports: crate::imports::DeclaredExports,
+
     // Sprint 67 Cluster B sub-fire 2d: `current_module: Mutex<ModuleFullPath>`
     // was here. Relocated (PIF) to `CompilerSession::current_repl_module` per
     // `design/arch/facades/int.md` L23 + L222. REPL is single-threaded

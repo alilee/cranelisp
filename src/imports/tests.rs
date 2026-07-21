@@ -133,6 +133,7 @@
             &tables,
             &ModuleFullPath::from("prelude"),
             &no_pf(),
+            None,
             &[glob_export("primitives")],
         )
         .unwrap();
@@ -231,6 +232,7 @@
             &tables,
             &ModuleFullPath::from("relay"),
             &no_pf(),
+            None,
             &[specific_export("base", "base-val")],
         )
         .unwrap();
@@ -279,6 +281,7 @@
             &tables,
             &ModuleFullPath::from("relay"),
             &no_pf(),
+            None,
             &[specific_export("base", "base-val")],
         )
         .unwrap();
@@ -326,6 +329,7 @@
             &tables,
             &ModuleFullPath::from("reexp"),
             &no_pf(),
+            None,
             &[specific_export("prim", "Foo")],
         )
         .unwrap();
@@ -703,6 +707,7 @@
             &tables,
             &ModuleFullPath::from("user"),
             &no_pf(),
+            None,
             &[specific_export("base", "measure")],
         )
         .expect_err("an export over a module-local def MUST reject (§8.6.4)");
@@ -789,6 +794,7 @@
             &tables,
             &ModuleFullPath::from("user"),
             &no_pf(),
+            None,
             &[specific_export("base", "helper")],
         )
         .unwrap();
@@ -833,6 +839,7 @@
             &tables,
             &ModuleFullPath::from("user"),
             &no_pf(),
+            None,
             &[specific_export("base", "x")],
         )
         .expect("redundant import+export of the same terminal must NOT collide");
@@ -934,29 +941,116 @@
     // deleting the gate call at a public-insert seam lets the phantom write land.
     // -----------------------------------------------------------------------
 
-    // The phantom `bit-and → primitives/bit-and` into a TERMINAL prelude table
-    // (primitives has NO bit-and) is REJECTED + diagnosed — the chokepoint's core
-    // enforcement.
-    // spec: prelude-table-write-isolation.md §2.2 — export-closure gate.
+    /// A declared-export set `D(M)` that does NOT include `bit-and` (mirrors
+    /// `stdlib/prelude.cl`'s curated specific-primitive re-export list — NOT a
+    /// glob; `bit-and` is in none of prelude's export specs).
+    fn declared_without_bit_and() -> HashSet<Symbol> {
+        [Symbol::from("Int"), Symbol::from("Bool"), Symbol::from("Float"), Symbol::from("String")]
+            .into_iter()
+            .collect()
+    }
+
+    // A public re-export `bit-and → primitives/bit-and` written into a TERMINAL
+    // prelude table whose DECLARED export closure D(prelude) does NOT include the
+    // name is REJECTED + diagnosed — the chokepoint's core enforcement.
+    // S115 (FIXME 0604): the predicate keys on the DESTINATION's declared exports
+    // `D(M)`, not on source-provider existence (the S114 predicate was blind to
+    // the live phantom because `bit-and` IS a bundled primitive — see the
+    // provides-name-but-outside-declared-exports discriminating trigger below).
+    // spec: prelude-table-write-isolation.md §2.2 — declared-export-closure gate.
     #[test]
     fn check_terminal_closure_rejects_out_of_closure_public_write() {
-        let tables = tables();
-        ensure(&tables, "primitives"); // exists, has NO bit-and
-        ensure(&tables, "prelude");
         let entry = public_import_entry("primitives", "bit-and");
+        let d = declared_without_bit_and();
         let res = check_terminal_closure(
-            &tables,
             &ModuleFullPath::from("prelude"),
             "bit-and",
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
         );
-        let err = res.expect_err("phantom out-of-closure public write must be rejected");
+        let err = res.expect_err("out-of-closure public write (bit-and ∉ D(prelude)) must be rejected");
         // Diagnosed: names the breached module + source edge (a located defect,
         // not a quiet-environment hunt).
         let msg = format!("{err:?}");
         assert!(msg.contains("bit-and"), "diagnostic names the name: {msg}");
         assert!(msg.contains("0604"), "diagnostic attributes to FIXME 0604: {msg}");
+    }
+
+    // THE SYNTHESIZED-TRIGGER GUARD (FIXME 0604 §3.1 / tests/plan/s115-test-plan.md
+    // §3.1) — the DISCRIMINATING cell the corrected predicate needs. The source
+    // module `primitives` GENUINELY provides `bit-and` publicly (the live
+    // phantom's exact shape — `cranelisp-primitives/src/lib.rs:412`), so the S114
+    // PROVIDER-EXISTENCE predicate would PASS it. The corrected DECLARED-EXPORT-
+    // CLOSURE predicate rejects it because `bit-and ∉ D(prelude)`. RED against the
+    // old predicate by construction, GREEN with the correction, interleaving-
+    // independent (a direct call against constructed tables, no session, no
+    // threads) — the fail-on-revert guard for the CORRECTION (not just the gate).
+    // spec: prelude-table-write-isolation.md §2.2 — provides-name-but-outside-D(M).
+    // defect: class=shared-state-write-race locus=src/imports.rs::write_is_closure_valid found=S115 owner=/dev
+    #[test]
+    fn check_terminal_closure_rejects_provided_name_outside_declared_exports() {
+        let tables = tables();
+        // primitives REALLY provides bit-and publicly (the phantom's genuine
+        // provider — provider-existence would pass).
+        ensure(&tables, "primitives");
+        tables
+            .get_mut(&ModuleFullPath::from("primitives"))
+            .unwrap()
+            .insert(Symbol::from("bit-and"), primitive_def());
+        // ...but bit-and is OUTSIDE prelude's declared export closure.
+        let entry = public_import_entry("primitives", "bit-and");
+        let d = declared_without_bit_and();
+        let res = check_terminal_closure(
+            &ModuleFullPath::from("prelude"),
+            "bit-and",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
+        );
+        let err = res.expect_err(
+            "a public re-export whose source PROVIDES the name but whose name is \
+             OUTSIDE D(prelude) must be rejected (the discriminating trigger the \
+             old provider-existence predicate could not catch)",
+        );
+        let msg = format!("{err:?}");
+        assert!(msg.contains("bit-and"), "diagnostic names the phantom: {msg}");
+        assert!(msg.contains("0604"), "diagnostic attributes to FIXME 0604: {msg}");
+    }
+
+    // FALSE-FIRE FENCE (FIXME 0604 §3.1 item 2): a public re-export whose name IS
+    // in D(M) passes — the corrected predicate must not reject the legal declared
+    // population. Fail-on-revert of an over-strict correction.
+    // spec: prelude-table-write-isolation.md §2.2 — name ∈ D(M) permits.
+    #[test]
+    fn check_terminal_closure_permits_name_in_declared_exports() {
+        let entry = public_import_entry("primitives", "Int");
+        let d = declared_without_bit_and(); // includes Int
+        let res = check_terminal_closure(
+            &ModuleFullPath::from("prelude"),
+            "Int",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
+        );
+        assert!(res.is_ok(), "a declared re-export (Int ∈ D(prelude)) must pass: {res:?}");
+    }
+
+    // The never-false-fire arm: an UNKNOWN D(M) (`None`, not yet recorded) permits
+    // — a foreign write racing ahead of M's own export processing must never be
+    // rejected on incomplete information (FIXME 0604 §2.2 unknown-permit arm).
+    // spec: prelude-table-write-isolation.md §2.2 — D(M) unknown permits.
+    #[test]
+    fn check_terminal_closure_permits_when_declared_exports_unknown() {
+        let entry = public_import_entry("primitives", "bit-and");
+        let res = check_terminal_closure(
+            &ModuleFullPath::from("prelude"),
+            "bit-and",
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+            None,
+        );
+        assert!(res.is_ok(), "unknown D(M) must permit (never false-fire): {res:?}");
     }
 
     // GENERALIZATION vs the prelude-only rider: the phantom into a NON-prelude
@@ -965,41 +1059,34 @@
     // spec: prelude-table-write-isolation.md §2.2 — any terminal module.
     #[test]
     fn check_terminal_closure_generalizes_beyond_prelude() {
-        let tables = tables();
-        ensure(&tables, "primitives"); // has NO bit-and
-        ensure(&tables, "some.terminal");
+        // A non-prelude terminal module with a recorded D(M) that lacks the name.
         let entry = public_import_entry("primitives", "bit-and");
+        let d: HashSet<Symbol> = [Symbol::from("something-else")].into_iter().collect();
         let res = check_terminal_closure(
-            &tables,
             &ModuleFullPath::from("some.terminal"),
             "bit-and",
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
         );
         assert!(res.is_err(), "the gate generalizes to any module, not just prelude");
     }
 
-    // A legitimate re-export (source genuinely provides the name) PASSES — the
-    // gate must not false-fire the build.
-    // spec: prelude-table-write-isolation.md §2.2 — never false-fire.
+    // A legitimate re-export whose name IS in the module's declared export
+    // closure PASSES — the gate must not false-fire the build.
+    // spec: prelude-table-write-isolation.md §2.2 — declared name permits.
     #[test]
     fn check_terminal_closure_permits_legitimate_reexport() {
-        let tables = tables();
-        ensure(&tables, "primitives");
-        ensure(&tables, "prelude");
-        tables
-            .get_mut(&ModuleFullPath::from("primitives"))
-            .unwrap()
-            .insert("add-i64".into(), primitive_def());
         let entry = public_import_entry("primitives", "add-i64");
+        let d: HashSet<Symbol> = [Symbol::from("add-i64")].into_iter().collect();
         let res = check_terminal_closure(
-            &tables,
             &ModuleFullPath::from("prelude"),
             "add-i64",
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
         );
-        assert!(res.is_ok(), "a genuine re-export must pass: {res:?}");
+        assert!(res.is_ok(), "a declared re-export (add-i64 ∈ D) must pass: {res:?}");
     }
 
     // The module's OWN public definition (a non-`Import` entry) is exported by
@@ -1007,15 +1094,15 @@
     // spec: prelude-table-write-isolation.md §2.2 — own definition.
     #[test]
     fn check_terminal_closure_permits_own_definition() {
-        let tables = tables();
-        ensure(&tables, "prelude");
         let entry = primitive_def(); // public non-Import Def
+        // Own-def arm returns Ok with NO map read — even with an empty D(M).
+        let d: HashSet<Symbol> = HashSet::new();
         let res = check_terminal_closure(
-            &tables,
             &ModuleFullPath::from("prelude"),
             "map",
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
         );
         assert!(res.is_ok(), "own public definition is exported by §8.4: {res:?}");
     }
@@ -1026,9 +1113,6 @@
     // spec: prelude-table-write-isolation.md §2.1 — private-only legal-skip.
     #[test]
     fn check_terminal_closure_noop_for_private_write() {
-        let tables = tables();
-        ensure(&tables, "primitives"); // has NO bit-and
-        ensure(&tables, "user");
         let entry = ModuleEntry::Import {
             source: FQSymbol {
                 module: ModuleFullPath::from("primitives"),
@@ -1036,12 +1120,15 @@
             },
             visibility: Visibility::Private,
         };
+        // Private edge short-circuits on !is_public BEFORE consulting D(M); an
+        // empty D(M) that would otherwise reject a public edge must be a no-op here.
+        let d: HashSet<Symbol> = HashSet::new();
         let res = check_terminal_closure(
-            &tables,
             &ModuleFullPath::from("user"),
             "bit-and",
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            Some(&d),
         );
         assert!(res.is_ok(), "a private import edge is not a public phantom: {res:?}");
     }

@@ -480,6 +480,14 @@ fn commit_staging_to_live(
         }
     });
 
+    // FIXME 0604 §2.4 (the S115 missed-census-row route): precompute D(module)
+    // BEFORE the `get_mut` guard — a read of the SEPARATE `declared_exports` map,
+    // so no session map is read under the guard (the deadlock hazard is honored;
+    // /arch precompute-before-guard directive). `shared == None` (unit tests /
+    // dry-run) or an unrecorded module ⇒ D unknown ⇒ the gate permits (never
+    // false-fires).
+    let declared = shared.and_then(|s| s.declared_exports.get(module).map(|d| d.clone()));
+
     let Some(mut live) = symbol_tables.get_mut(module) else {
         // Live module disappeared between dispatch and commit — drop staging
         // silently. This shouldn't happen under normal Wave-3a-α
@@ -510,6 +518,20 @@ fn commit_staging_to_live(
         } else if let Some(outcome) = commit_slotless_redef(&live, module, &name, &entry, shared) {
             outcomes.push(outcome);
         }
+        // FIXME 0604 §2.4: gate every staged public write through the terminal
+        // declared-export-closure chokepoint. Legitimate staged entries are the
+        // module's OWN defs (own-def arm → Ok, NO map read — safe under the held
+        // `live` guard); a mis-targeted/materialized phantom public re-export
+        // whose name ∉ D(module) is rejected + diagnosed here (isolation by
+        // construction), propagating through the existing `Result`. `MODULE_TRACE`
+        // emits at the seam inside the gate for observability.
+        crate::imports::check_terminal_closure(
+            module,
+            name.as_ref(),
+            &entry,
+            cranelisp_types::Span::SYNTHETIC,
+            declared.as_ref(),
+        )?;
         live.insert(name, entry);
     }
 

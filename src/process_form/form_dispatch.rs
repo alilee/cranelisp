@@ -393,11 +393,14 @@ pub(crate) fn register_macro_in_module(
         // legacy prelude observability rider stays beside it (defense-in-depth).
         crate::imports::assert_prelude_closure(env.symbol_tables, module, name.as_ref(), &entry);
         crate::imports::check_terminal_closure(
-            env.symbol_tables,
             module,
             name.as_ref(),
             &entry,
             cranelisp_types::Span::SYNTHETIC,
+            // A macro `Def` is non-`Import` → the own-def arm returns Ok with NO
+            // map read, so `D(M)` is never consulted (pass `None`) and the gate
+            // stays deadlock-safe under the held `get_mut` guard (§2.2 margin 2).
+            None,
         )?;
         table.insert(name.clone(), entry);
     }

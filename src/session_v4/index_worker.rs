@@ -1186,7 +1186,11 @@ fn index_typecheck_into_private(
 
     crate::imports::install_imports(priv_tables, module, priv_aliases, prelude_fallback, &decls.import_specs)
         .map_err(|e| format!("import install error: {e}"))?;
-    crate::imports::install_exports(priv_tables, module, prelude_fallback, &decls.export_specs)
+    // FIXME 0604 §2.2: the BACKGROUND index typecheck is isolated (R13 — never
+    // writes live session state), so it passes `None` for `declared_exports` — it
+    // records no `D(M)` into the live map. (Its private tables are discarded; the
+    // gate here is a no-op over `D(M) == None`.)
+    crate::imports::install_exports(priv_tables, module, prelude_fallback, None, &decls.export_specs)
         .map_err(|e| format!("export install error: {e}"))?;
 
     // Register `defmacro` entries so user macros are SEARCHABLE (0569). Macro
@@ -1946,6 +1950,7 @@ mod tests {
             platform_dirs: Mutex::new(Vec::new()),
             module_aliases: cranelisp_types::ModuleAliases::default(),
             prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
+            declared_exports: crate::imports::DeclaredExports::default(),
             cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),

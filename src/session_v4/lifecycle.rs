@@ -322,6 +322,9 @@ impl CompilerSession {
             next_type_id,
             module_aliases: cranelisp_types::ModuleAliases::default(),
             prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
+            // FIXME 0604 §2.2: the declared-export closure map starts empty;
+            // populated per session by the `install_exports` seam.
+            declared_exports: crate::imports::DeclaredExports::default(),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35; Arc retention now lives on each Code::Jit /
@@ -736,6 +739,36 @@ impl CompilerSession {
 /// `defn`/`defn-`/`def`/`def-`/`const`/`const-`/`deftype`/`deftrait`/
 /// `defmacro`/`defmacro-`/`impl`. Imports/exports/`mod`/`platform`/expressions
 /// are NOT definitions and are excluded (so an imports-only file suppresses).
+/// FIXME 0707 — the restored-definition count, single-sourced from the restore
+/// record (not a bare re-parse). Counts persisted-definition forms in `source`,
+/// then subtracts the module's `failed` persisted-definition forms (form-granular:
+/// each failed form's verbatim `text` is re-parsed and its persisted-definition
+/// forms subtracted — a degraded startup re-emits the failed forms into the file,
+/// so a bare count over-reports them as "restored"). Returns `None` when the file
+/// is empty OR no definition actually restored (imports-only / all-failed),
+/// preserving the SUPPRESSED-notice contract (§15.2.2 / §6.2).
+fn restored_definition_count(source: &str, failed: &[FailedForm]) -> Option<usize> {
+    if source.trim().is_empty() {
+        return None; // empty backing file — suppress
+    }
+    let forms = cranelisp_frontend::parse(source).ok()?;
+    let total = forms.iter().filter(|f| is_persisted_definition_form(f)).count();
+    let failed_persisted: usize = failed
+        .iter()
+        .map(|f| {
+            cranelisp_frontend::parse(&f.text)
+                .ok()
+                .map(|fs| fs.iter().filter(|x| is_persisted_definition_form(x)).count())
+                .unwrap_or(0)
+        })
+        .sum();
+    let count = total.saturating_sub(failed_persisted);
+    if count == 0 {
+        return None; // no definitions restored — suppress
+    }
+    Some(count)
+}
+
 fn is_persisted_definition_form(form: &cranelisp_types::Sexp) -> bool {
     let cranelisp_types::Sexp::List(children, _) = form else {
         return false;
@@ -1052,14 +1085,13 @@ impl CompilerSession {
     pub fn startup_restore_notice(&self, module: &ModuleFullPath) -> Option<String> {
         let file_path = self.backing_file_path_for(module);
         let source = std::fs::read_to_string(&file_path).ok()?;
-        if source.trim().is_empty() {
-            return None; // empty backing file — suppress
-        }
-        let forms = cranelisp_frontend::parse(&source).ok()?;
-        let count = forms.iter().filter(|f| is_persisted_definition_form(f)).count();
-        if count == 0 {
-            return None; // no definitions (imports-only / expressions) — suppress
-        }
+        // FIXME 0707: count from the RESTORE RECORD, not a bare re-parse. Under a
+        // degraded startup (§18.8) the backing file re-emits the FAILED forms too
+        // (`append_failed_forms`), so a bare re-parse over-counts them as
+        // "restored". Subtract the module's persisted-definition FAILED forms —
+        // the count of definitions the session actually restored (§15.2.2).
+        let failed = self.failed_forms.get(module).map(Vec::as_slice).unwrap_or(&[]);
+        let count = restored_definition_count(&source, failed)?;
         let name = file_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -2639,10 +2671,15 @@ mod degraded_startup_tests {
 
 #[cfg(test)]
 mod restore_notice_tests {
-    use super::is_persisted_definition_form;
+    use super::{is_persisted_definition_form, restored_definition_count};
+    use super::FailedForm;
 
     fn parse_one(src: &str) -> cranelisp_types::Sexp {
         cranelisp_frontend::parse(src).unwrap().remove(0)
+    }
+
+    fn failed_form(text: &str) -> FailedForm {
+        FailedForm { symbol: None, error: "load error".to_string(), text: text.to_string() }
     }
 
     // FIXME 0674 — the startup restore notice counts §15.7 persisted DEFINITION
@@ -2676,5 +2713,55 @@ mod restore_notice_tests {
         ] {
             assert!(!is_persisted_definition_form(&parse_one(src)), "non-def: {src}");
         }
+    }
+
+    // FIXME 0707 — the count is taken from the restore RECORD: a backing file
+    // holding K succeeded + M failed persisted-definition forms (the degraded
+    // startup re-emits the M failed forms into the file, so a bare re-parse sees
+    // K+M) yields `K`, never `K+M`. Fail-on-revert: dropping the failed-form
+    // subtraction makes this return `Some(3)`.
+    // spec: repl/spec.md §15.2.2 — restored-definition count from the record.
+    #[test]
+    fn restored_count_subtracts_failed_persisted_forms() {
+        // 2 green defs + 1 failed def, all present in the (re-emitted) file.
+        let source = "(defn f [] 1)\n(defn g [] 2)\n(defn h [] (bad))\n";
+        let failed = [failed_form("(defn h [] (bad))")];
+        assert_eq!(
+            restored_definition_count(source, &failed),
+            Some(2),
+            "count reflects restored defs (K), not file forms (K+M)",
+        );
+    }
+
+    // No failed forms → all persisted defs count (the ordinary green path).
+    #[test]
+    fn restored_count_all_green_counts_all() {
+        let source = "(defn f [] 1)\n(def x 1)\n";
+        assert_eq!(restored_definition_count(source, &[]), Some(2));
+    }
+
+    // Every persisted def failed → nothing restored → suppress (None), not 0.
+    #[test]
+    fn restored_count_all_failed_suppresses() {
+        let source = "(defn f [] (bad))\n";
+        let failed = [failed_form("(defn f [] (bad))")];
+        assert_eq!(restored_definition_count(source, &failed), None);
+    }
+
+    // A failed form that is NOT a persisted definition (an expression/import) is
+    // not subtracted — it never contributed to the count.
+    #[test]
+    fn restored_count_ignores_non_definition_failed_form() {
+        let source = "(defn f [] 1)\n";
+        let failed = [failed_form("(+ 1 2)")];
+        assert_eq!(restored_definition_count(source, &failed), Some(1));
+    }
+
+    // Empty / imports-only backing file suppresses (None), unchanged contract.
+    #[test]
+    fn restored_count_empty_and_imports_only_suppress() {
+        assert_eq!(restored_definition_count("", &[]), None);
+        assert_eq!(restored_definition_count("   \n", &[]), None);
+        assert_eq!(restored_definition_count("(import [primitives [Int]])\n", &[]), None);
     }
 }

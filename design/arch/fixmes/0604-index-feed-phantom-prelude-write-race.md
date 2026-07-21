@@ -21,6 +21,54 @@ status: open
 
 # Phantom undeclared-PUBLIC `bit-and` entry in prelude's live table (S114: foreground writer, deterministic on this VM; formerly "index-feed write-race")
 
+## /dev(src) S115 W2 change-set LANDED (2026-07-21 — the structural gate; retirement is /qa's call per the re-based plan)
+
+The structural gate landed on its merits (writer-ID desired-not-required). What
+landed:
+
+- **Corrected predicate** (`src/imports.rs::write_is_closure_valid` +
+  `check_terminal_closure`): provider-existence → **declared-export closure**
+  keyed on the DESTINATION `D(M)`. `check_terminal_closure` no longer reads
+  `symbol_tables`; its new param is `declared_exports: Option<&HashSet<Symbol>>`.
+  Arms: own-def (non-`Import`) → Ok, NO map read; **intra-module self-alias**
+  (`Import` whose `source.module == M`, e.g. a bare ctor alias
+  `ZedC → prelude/Zed.ZedC` to the module's own canonical `Type.Ctor`) → Ok, NO
+  D read (it is the module's own entry, §8.4 — this arm was ADDED after the first
+  full-suite run false-fired 6 prelude/trait tests on legitimate self-aliases);
+  cross-module public re-export → valid iff `name ∈ D(M)`; `D(M) == None`
+  (unknown) → permit (never false-fire). The phantom `bit-and → primitives/bit-and`
+  is cross-module (`primitives ≠ prelude`) with `bit-and ∉ D(prelude)` → rejected.
+- **`SharedState.declared_exports: DashMap<ModuleFullPath, HashSet<Symbol>>`**
+  (int-internal, unserialized, `prelude_fallback` model — no types/schema/
+  public-api impact). Populated at the `install_exports` seam from the resolved
+  export-spec names (foreground path threads `ctx.shared_state`; the background
+  index path passes `None`, R13). SharedState field-count guard bumped 16→17.
+- **`commit_staging_to_live` ROUTED** (the S114-missed census row): `D(module)`
+  precomputed BEFORE the `get_mut` guard (a read of the SEPARATE map — deadlock
+  hazard honored), each staged entry gated before `live.insert`; rejection
+  propagates through the existing `Result`. Census table (`src/imports.rs`)
+  updated with the `commit_staging_to_live` row.
+- **MODULE_TRACE + diagnosed error** at the seam (self-identifies as an internal
+  R7 breach naming module/name/source edge; `Span::SYNTHETIC`).
+- **Falsified-comment rider**: the `prelude_write_is_closure_valid` "bit-and …
+  absent from primitives" comment corrected (bit-and IS a bundled primitive; the
+  legacy prelude-only rider stays a debug tripwire). The existing chokepoint unit
+  test's fixture comment corrected in the same file.
+- **Tests** (`src/imports/tests.rs` + `src/worker/tests.rs`): the synthesized
+  provides-name-but-outside-declared-exports trigger (RED under provider-existence,
+  GREEN under the correction — RED-on-revert demonstrated); false-fire fence
+  (name ∈ D permits); unknown-D permit; and the `commit_staging_to_live` routing
+  reject + permit pins. The two GREEN twins
+  (`tests/spec_08_prelude_outer_scope.rs`) stay GREEN.
+- **Behavioural**: deterministic recipe 0/30 fires vs real stdlib (no regression;
+  no false-fire on the real prelude). ONE time-boxed load-amplified attempt: 0
+  fires across 496 concurrent runs (60s) — quiet, abandoned without prejudice.
+
+Retirement of this file is deferred to /qa per the re-based plan (writer
+identification is desired, not required; the landed MODULE_TRACE + diagnosed
+error name any future firing's seam).
+
+
 ## /qa S114 Phase-6b re-base (2026-07-20 — folds /stdlib FIXME 0713, now deleted; AMENDS the pre-W7 plan's step 1)
 
 **The 25/25 determinism EVAPORATED at HEAD.** /stdlib (Phase 6a, FIXME 0713)

@@ -836,7 +836,7 @@ pub(super) fn handle_export(
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
-            crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, std::slice::from_ref(spec))?;
+            crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, ctx.shared_state.map(|s| &s.declared_exports), std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -891,8 +891,10 @@ pub(super) fn handle_export(
         });
     }
 
-    // All source modules loaded — register the re-exports.
-    crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, specs)?;
+    // All source modules loaded — register the re-exports. Record `D(M)` from
+    // these specs into the session-side map (FIXME 0604 §2.2) for the live commit
+    // gate; the background index path uses its own isolated call with `None`.
+    crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, ctx.prelude_fallback, ctx.shared_state.map(|s| &s.declared_exports), specs)?;
     Ok(BlockAction::Continue)
 }
 
