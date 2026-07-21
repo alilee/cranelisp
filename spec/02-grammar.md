@@ -120,7 +120,9 @@ sum_body     = constructor_def+
 
 constructor_def
              = CONSTRUCTOR_NAME                    (* nullary *)
-             | '(' CONSTRUCTOR_NAME docstring? field_list? ')'
+             | '(' CONSTRUCTOR_NAME ( docstring field_list? | field_list ) ')'
+                                                   (* parens require content: a docstring,
+                                                      a field list, or both — §5.2.2 *)
 
 field_list   = '[' field_def* ']'
 
@@ -142,7 +144,13 @@ The **type body** takes one of two forms:
 (deftype (Pair a b) [:a first :b second])
 ```
 
-**Sum type**: One or more constructor definitions define a sum type. Each constructor is either a bare uppercase symbol (nullary/enum variant) or a parenthesized form with an optional docstring and optional field list.
+The field list MAY be empty: `(deftype Unit [])` is the **unit type**, the degenerate zero-field case of this same production (§5.2.1). Note that `type_body` is **not** optional — `(deftype Unit)` is a parse error, and deliberately so (§5.2.1). [S115]
+
+**Sum type**: One or more constructor definitions define a sum type. Each constructor is either a bare uppercase symbol (nullary/enum variant) or a parenthesized form carrying a docstring, a field list, or both.
+
+**Parentheses on a constructor require content. [S115]** The parenthesized arm above admits no empty spelling: `'(' CONSTRUCTOR_NAME ')'` — parens with neither a docstring nor a field list — is a **parse error**, as is `()`. If a constructor is written in brackets it is because it takes parameters and/or carries a docstring; without either, the brackets are illegal and the constructor MUST be written as a bare name (user ruling 2026-07-21). So `(deftype Color (Red) Green Blue)` and `(deftype (Maybe a) (Nothing) (Just [:a val]))` are parse errors; write `Red` and `Nothing` bare. A **documented** nullary keeps its parens, because the docstring is the content: `(deftype Flag (Flag "a documented nullary"))` is legal and is the only spelling for a documented nullary constructor. This confirms, rather than softens, the prose at §5.2.2 — the grammar was the thing out of step.
+
+A second, **non-context-free** restriction rides on top of this one and is stated where it can be checked, at [§5.2.2](05-definitions.md#522-sum-type-multiple-constructors): a **nullary constructor MUST NOT repeat its type's name**, so `(deftype Flag Flag)` is illegal even though the grammar above admits it. A type with one valueless inhabitant is written as the zero-field product `(deftype Unit [])` ([§5.2.1](05-definitions.md#521-product-type-single-constructor)). [S115]
 
 ```clojure
 ;; Enum (all nullary)

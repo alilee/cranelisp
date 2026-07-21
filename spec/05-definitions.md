@@ -195,10 +195,12 @@ type_body      = field_list                    (* product type *)
 field_list     = '[' field_def* ']'
 field_def      = colon_prefix symbol           (* :Type fieldname *)
                | symbol                        (* bare fieldname, type inferred *)
-constructor    = name                          (* nullary *)
-               | '(' name docstring? field_list ')'   (* data constructor *)
-               | '(' name docstring? ')'       (* nullary with docstring *)
+constructor    = name                              (* nullary *)
+               | '(' name docstring field_list? ')' (* documented ctor; fields optional *)
+               | '(' name field_list ')'           (* data constructor *)
 ```
+
+The parenthesized arms require **content** — a docstring, a field list, or both. There is no `'(' name ')'` production: see §5.2.2, *Parentheses on a constructor require content*. [S115]
 
 A type definition introduces an algebraic data type (ADT) into scope. Three shapes are supported: product types, sum types, and enums.
 
@@ -217,6 +219,16 @@ When the type body is a bracketed field list, the type name doubles as the sole 
 - `Point` is both the type name and the constructor: `(Point 3 4)` constructs a value.
 - Fields are alternating `:Type name` pairs within brackets.
 - The constructor behaves as a function: `Point :: (Fn [Int Int] Point)`.
+
+**The zero-field product is the unit type. [S115]** An empty field list is the degenerate case of this same form, and it is how a **unit type** — a type with exactly one value and no data — is written:
+
+```clojure
+(deftype Unit [])
+```
+
+This is not a new construct; it is `field_list` with zero `field_def`s, so it needs no grammar of its own. Its sole constructor is nullary, hence a **value, not a function** (§5.2.7): `Unit :: Unit`, and `(defn mk [x] Unit)` has type `(Fn [a] Unit)`. The name doubles as the constructor exactly as in every other product type.
+
+The alternative spelling `(deftype Unit)` — a bare head with no body at all — is **rejected**, and deliberately so (user ruling 2026-07-21): a `deftype` with no body is the shape of a **truncated declaration**, and the compiler's existing `deftype missing constructors` diagnostic is what catches it. Legalising the bare spelling would convert a caught truncation (`(deftype Color)`, where the author meant `(deftype Color Red Green Blue)`) into a silently-declared unit type. The brackets are cheap and they make the intent explicit.
 
 ### 5.2.2 Sum Type (Multiple Constructors) [Tested tests/spec_05_definitions::data_constructor_arg_from_closure_call_result]
 
@@ -240,6 +252,34 @@ When the type body contains one or more constructor forms, each introduces a dis
 - A constructor name is a **binder** (§5, *Declaration heads are binders*; user ruling 2026-07-19) — it mints a module-level callable, so it MUST be a **bare uppercase** symbol. A qualified **or dotted** spelling (`(deftype Shape (fmt/Circle …))`, `(deftype Shape (Shape.Circle …))`) is a compile-time error, with the diagnostic span on the constructor name: you can define a constructor only into the module that contains the `deftype`, never into another module. This holds in both constructor arms — the nullary bare-name arm and the parenthesized data-constructor arm. (Lowercase constructor names are separately rejected as ill-formed — a lowercase ctor would be callable but unmatchable, since a lowercase pattern symbol binds a variable, §6.2.4.) [S113]
 - A **field name** is likewise a binder — it mints a module-level accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol; a qualified **or dotted** field name (`(deftype T [:Int fmt/r])`, `(deftype T [:Int a.r])`) is a compile-time error, span at the field name. [S113] [S115]
 
+**Parentheses on a constructor require content. [S115]** A constructor written in parens is in parens *because* it takes parameters and/or carries a docstring; with neither, the parens are illegal (user ruling 2026-07-21). `(deftype Flag (Flag))` is a **parse error**, and so is the empty `(deftype Flag ())`. The bare-name spelling above is not a stylistic preference for nullary constructors — it is the **only** spelling, save for the documented case:
+
+```clojure
+(deftype Color Red Green Blue)                    ; legal — bare nullary names
+(deftype Color (Red) Green Blue)                  ; ILLEGAL — empty parens on Red
+(deftype Flag (Flag "a documented nullary"))      ; legal — the docstring is the content
+(deftype (Maybe a) (Nothing) (Just [:a val]))     ; ILLEGAL — write Nothing bare
+(deftype (Maybe a) Nothing (Just [:a val]))       ; legal
+```
+
+A **documented** nullary keeps its parens and has no other spelling — the docstring has nowhere else to go. The §2.2.2 grammar was tightened to match this prose, which is confirmed rather than softened.
+
+One adjacent spelling is **not settled by this ruling**: `(deftype Flag (Flag []))` — parens carrying an *empty* field list. The grammar above admits it (a `field_list` is present, so the parens have content) and the implementation accepts it today, but the ruling addressed empty *parens*, not an empty bracket pair inside them. Treat the grammar as descriptive here, not as a decision; the question is open. [S115]
+
+**A nullary constructor MUST NOT share its type's name. [S115]** `(deftype Flag Flag)` is **illegal**, and so is the parenthesized `(deftype Flag (Flag))` (already illegal under the rule above). A nullary constructor that repeats the type name declares a type whose single value is spelled identically to the type and carries nothing — the unit type, written the long way round. The unit type has a spelling of its own: the zero-field product `(deftype Unit [])` (§5.2.1). (User ruling 2026-07-21.)
+
+The rule bites **only** on a *nullary* constructor sharing the type name. A **product** constructor sharing the type name is legal, normal, and untouched — that is precisely what §5.2.1 defines:
+
+```clojure
+(deftype Point [:Int x :Int y])   ; legal — Point is type and sole constructor
+(deftype Unit [])                 ; legal — the zero-field case of the same form
+(deftype Flag Flag)               ; ILLEGAL — nullary constructor repeating the type name
+```
+
+A nullary constructor sharing the name of some *other* type is unaffected; the rule is about the type being defined.
+
+> **Implementation note (non-normative).** Neither rule in this subsection is live at the time of writing. The implementation at S115 **accepts** `(deftype Flag (Flag))`, `(deftype Color (Red) Green Blue)`, `(deftype (Maybe a) (Nothing) (Just [:a val]))` and `(deftype Flag Flag)`; it already rejects `(deftype Flag ())` (`empty constructor`) and `(deftype Unit)` (`deftype missing constructors`), and already accepts `(deftype Unit [])`. Enforcement of the two rejects is scheduled for **S116**. Until it lands, a program using a now-illegal form will compile — that is a known implementation gap, not a licence.
+
 ### 5.2.3 Enum (All Nullary) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_enum_type, tests/repl_introspection.rs::deftype_display_enum, tests/spec_05_definitions.rs::deftype_enum_construct_and_match, tests/examples.rs::every_example_runs_with_documented_exit]
 
 An enum is a sum type where all constructors are nullary.
@@ -249,6 +289,8 @@ An enum is a sum type where all constructors are nullary.
 ```
 
 This is syntactically a sum type with no field lists. Enum values are represented as bare integer tags at runtime (see [Section 12: Runtime Model](12-runtime.md)).
+
+Each variant is a **bare** name — the empty-paren spelling `(deftype Color (Red) Green Blue)` is a parse error (§5.2.2), and no variant may repeat the type's own name, so `(deftype Flag Flag)` is illegal; a type with one valueless inhabitant is the unit type `(deftype Unit [])` (§5.2.1). [S115]
 
 ### 5.2.4 Shortcut Syntax -- Inferred Type Parameters [Tested tests/spec_05_definitions::deftype_product_shortcut_field_names]
 
@@ -289,6 +331,8 @@ An optional docstring MAY appear after the type head (before the body) and after
   (None "Represents absence")
   (Some "Wraps a present value" [:a val]))
 ```
+
+`(None "Represents absence")` is a **documented nullary** constructor: it keeps its parens because the docstring is the content, and this is its only spelling. Dropping the docstring means dropping the parens too — plain `None` — since parens with neither docstring nor field list are a parse error (§5.2.2). [S115]
 
 ### 5.2.6 Generated Accessors [Tested+Neg tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_field_accessor::bare_alias_resolves_when_field_unique, tests/spec_field_accessor::bare_alias_and_canonical_dispatch_equivalently, tests/spec_field_accessor::bare_alias_ambiguous_canonical_both_work]
 
@@ -336,6 +380,8 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 - **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type.
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
 - Constructor names MUST be capitalized — a **bare uppercase** symbol; a lowercase constructor name is rejected as ill-formed, and a qualified **or dotted** spelling is a compile-time error (§5.2.2). [S115]
+- A nullary constructor is written **bare**; parens on a constructor require a docstring and/or a field list, so `(Flag)` is a parse error while `(Flag "doc")` is legal (§5.2.2). [S115]
+- A **nullary** constructor MUST NOT repeat its type's name (§5.2.2); a **product** constructor sharing the type name is the normal case (§5.2.1), including the zero-field unit type `(deftype Unit [])`. [S115]
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 
 ## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
