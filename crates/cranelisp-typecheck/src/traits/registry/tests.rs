@@ -230,16 +230,20 @@ fn occurrence_rule_accepts_bare_param_method_with_concrete_return() {
     assert!(tc.lookup_trait_decl(&TraitName::from("Sizeable")).is_some());
 }
 
-// spec: spec/07-traits.md §7.1.4 — GREEN boundary (c), the SHIPPED SCOPE fence
-// (FIXME 0770): a method with an ANNOTATED non-`self` parameter and a concrete
-// return (`(convert [:String s] Int)`, §7.1.4's own example) stays ACCEPTED. The
-// shipped rule is the NULLARY corner only; widening it to §7.1.1's broader prose
-// reading would reject this §7.1.4-blessed form and the method-level-type-variable
-// form `(add2 [:a x :a y] :a)` that five spec-traceable e2e cells pin GREEN. This
-// cell is what makes the shipped scope explicit rather than incidental — if the
-// user rules the broader reading, this cell is the one that must be re-decided.
+// spec: spec/07-traits.md §7.1.1 "The occurrence rule is broad, not a nullary
+// corner" [S115] — THE RULED SCOPE fence (was the W4 shipped-scope fence for
+// FIXME 0770; re-decided by the user's 2026-07-21 ruling, widened at S115 W8).
+// The rule is scoped by OCCURRENCE, not by parameter count: `(convert [:String s]
+// Int)` mentions the implementing type nowhere — no bare param, no `:self`
+// annotation, no `self` return — and is REJECTED on exactly the same ground as
+// the nullary `(zed [] Int)`, with the same spec-pinned reason substring. A
+// non-empty parameter list does not rescue it: with no explicit-qualification
+// call syntax in the language, nothing could ever dispatch it, and accepting it
+// only defers the fault to a misleading call-site `no impl of trait …` (0805).
+// This cell is the deliberate record of the scope; a future narrowing must
+// re-decide it, not silently pass.
 #[test]
-fn occurrence_rule_shipped_scope_accepts_annotated_param_with_concrete_return() {
+fn occurrence_rule_rejects_annotated_param_method_with_no_self_occurrence() {
     let mut tc = tf_prims();
     let decl = occurrence_decl(
         "Convertible",
@@ -247,11 +251,84 @@ fn occurrence_rule_shipped_scope_accepts_annotated_param_with_concrete_return() 
         vec![(Symbol::from("s"), named_ty("String"))],
         named_ty("Int"),
     );
-    tc.register_trait_decl_self(&decl).expect(
-        "the shipped occurrence rule is the NULLARY corner only — a parameterised \
-         method keeps an argument position to dispatch on (§7.1.4)",
+    let err = tc.register_trait_decl_self(&decl).expect_err(
+        "the occurrence rule is scoped by OCCURRENCE, not parameter count — an \
+         all-annotated non-`self` signature MUST be rejected at any arity (§7.1.1)",
     );
-    assert!(tc.lookup_trait_decl(&TraitName::from("Convertible")).is_some());
+    assert!(
+        err.message().contains("no occurrence of the implementing type"),
+        "the reject MUST carry the §7.1.1 reason substring at every arity, not \
+         only the nullary one; got: {}",
+        err.message()
+    );
+    // Reject-before-write, exactly as in the nullary column: no trait entry and
+    // no method binding, so the accepted-impl-then-misleading-call-site leak
+    // (0805) is closed at the declaration.
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("Convertible")).is_none(),
+        "a rejected declaration MUST NOT leave a partially-written trait entry"
+    );
+    assert!(
+        tc.symbol_table().get("convert").is_none(),
+        "a rejected declaration MUST NOT register its method binding"
+    );
+}
+
+// spec: spec/07-traits.md §7.1.1 [S115] — the arity column generalises: a
+// TWO-parameter all-annotated signature (`(cvt2 [:String s :Int n] Bool)`, the
+// second live-probe shape in FIXME 0805) is rejected identically. Arity is not
+// the discriminator; occurrence is.
+#[test]
+fn occurrence_rule_rejects_multi_annotated_param_method_at_higher_arity() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl(
+        "Conv2",
+        "cvt2",
+        vec![
+            (Symbol::from("s"), named_ty("String")),
+            (Symbol::from("n"), named_ty("Int")),
+        ],
+        named_ty("Bool"),
+    );
+    let err = tc
+        .register_trait_decl_self(&decl)
+        .expect_err("no occurrence at arity 2 MUST be rejected too");
+    assert!(
+        err.message().contains("no occurrence of the implementing type"),
+        "got: {}",
+        err.message()
+    );
+}
+
+// spec: spec/07-traits.md §7.1.1 [S115] "Method-level type variables are
+// unaffected" — the widened rule bites ONLY on the ABSENCE of the implementing
+// type; it places no restriction on other type variables. A signature mixing a
+// method-level type variable with a bare (implementing-type) parameter stays
+// ACCEPTED. This is the over-reach guard on the widening: the ruling must not
+// take the §7.1.4 method-level-type-variable forms with it.
+#[test]
+fn occurrence_rule_accepts_method_type_vars_when_self_also_occurs() {
+    let mut tc = tf_prims();
+    let decl = occurrence_decl(
+        "Mappable",
+        "map-val",
+        vec![
+            (
+                Symbol::from("f"),
+                cranelisp_types::TypeExpr::FnType(
+                    vec![cranelisp_types::TypeExpr::TypeVar(Symbol::from("a"))],
+                    Box::new(cranelisp_types::TypeExpr::TypeVar(Symbol::from("b"))),
+                ),
+            ),
+            (Symbol::from("x"), cranelisp_types::TypeExpr::SelfType),
+        ],
+        cranelisp_types::TypeExpr::SelfType,
+    );
+    tc.register_trait_decl_self(&decl).expect(
+        "method-level type variables are legal wherever the implementing type \
+         also occurs (§7.1.1 [S115])",
+    );
+    assert!(tc.lookup_trait_decl(&TraitName::from("Mappable")).is_some());
 }
 
 // spec: spec/07-traits.md §7.1.1 — the occurrence may be NESTED: `(Option self)`

@@ -181,37 +181,39 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // expressions, the same signal `build_method_type` substitutes.
         //
         // BOUNDARY (the over-reach guard): reject on the CONJUNCTION
-        // no-param-occurrence ∧ no-self-return, never on "concrete return" alone.
-        // `(size [x] Int)` has an occurrence via its bare param and is ACCEPTED;
-        // `(zed [] self)` has one via its return and is ACCEPTED.
+        // no-param-occurrence ∧ no-self-return, never on "concrete return" alone
+        // and never on "nullary" alone. `(size [x] Int)` has an occurrence via its
+        // bare param and is ACCEPTED; `(zed [] self)` has one via its return and is
+        // ACCEPTED; `(cvt [:String s] Int)` has neither and is REJECTED.
         //
-        // **SCOPE AS SHIPPED — the NULLARY form only (S115 W4; FIXME 0770 to
-        // /spec).** §7.1.1's *prose* is broader than its worked examples: read
-        // literally it also rejects a method whose parameters are all
-        // ANNOTATED with non-`self` types — `(convert [:String s] Int)`, which
-        // §7.1.4 presents as a BLESSED example, and `(add2 [:a x :a y] :a)`,
-        // the method-level-type-variable form §7.1.4 permits and five
-        // spec-traceable e2e cells pin GREEN. Both §7.1.1 worked malformed
-        // examples are NULLARY (`(zed [] Int)`, `(zed [] :a)`), and both its
-        // worked accepted examples carry a parameter or a `self` return, so the
-        // nullary scope satisfies every example on both sides while the broader
-        // reading contradicts §7.1.4. A method with at least one parameter has
-        // an argument position to dispatch on; a NULLARY method with a
-        // non-`self` return has neither a dispatch input nor a dispatch output —
-        // literally nothing. That degenerate corner is the F-D2 check-gate leak
-        // 0709 names, and it is what this rejects. The prose/§7.1.4 conflict is
-        // filed for the user's ruling; widening here is a spec change, not an
-        // implementation choice.
+        // **SCOPE — by OCCURRENCE, not by parameter count (S115 W8; user ruling
+        // 2026-07-21, scribed at §7.1.1 "The occurrence rule is broad, not a
+        // nullary corner").** W4 shipped the narrow nullary-only guard pending
+        // that ruling (FIXME 0770); the ruling widened it, and this is the
+        // widening. A non-empty parameter list does NOT rescue a signature whose
+        // every parameter is annotated with a type other than the implementing
+        // type: `(deftrait Conv (cvt [:String s] Int))` is rejected on exactly
+        // the same ground as `(deftrait Zeroable (zed [] Int))`. Cranelisp has no
+        // explicit-qualification call syntax (no `<Foo as Trait>::method`), so
+        // such a method is undispatchable BY CONSTRUCTION — no argument position
+        // selects the impl, and the §3.3.3 return-ascription escape hatch needs a
+        // `self` return this signature does not have. Accepting it merely defers
+        // the fault to a misleading call-site `no impl of trait T for type X`
+        // (0805) when the impl exists and nothing could ever dispatch.
+        //
+        // METHOD-LEVEL TYPE VARIABLES ARE UNAFFECTED: the rule bites only on the
+        // ABSENCE of the implementing type. `(map-val [:(Fn [a] b) f x] self)` is
+        // well-formed — `x` is bare and the return is `self`.
         for method in &decl.methods {
-            if method.params.is_empty() && !method_mentions_self(method) {
+            if !method_mentions_self(method) {
                 return Err(CranelispError::TypeError {
                     message: format!(
                         "trait `{}` method `{}`: no occurrence of the implementing \
-                         type to dispatch on — a nullary method signature MUST \
-                         return the implementing type (`({} [] self)`), or take a \
-                         parameter of it (a bare name `[x …]` or a `:self` \
-                         annotation)",
-                        decl.name, method.name, method.name,
+                         type to dispatch on — a trait method MUST mention the \
+                         implementing type at least once: either a parameter \
+                         carries it (a bare name `[x …]` or a `:self` annotation), \
+                         or the return type is `self`",
+                        decl.name, method.name,
                     ),
                     location: ErrorLocation::from_span(method.span),
                 });
