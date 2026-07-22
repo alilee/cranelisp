@@ -1,17 +1,14 @@
 use super::*;
 use crate::{
-    DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName, Scheme,
-    Span, Symbol, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName, Scheme, Span,
+    Symbol, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 use std::collections::HashMap;
 
 // ---- Sprint 56 Wave 0 §9.5 — defined_symbols filter predicate ----
 
 /// Build a minimal `ModuleEntry::Def` for test fixtures.
-fn mk_def(
-    kind: DefKind,
-    ast: Option<DefnVariant>,
-) -> ModuleEntry {
+fn mk_def(kind: DefKind, ast: Option<DefnVariant>) -> ModuleEntry {
     ModuleEntry::Def {
         scheme: Scheme {
             type_vars: vec![],
@@ -63,7 +60,9 @@ fn wave0_defined_symbols_filter_is_correct() {
     st.insert(
         Symbol::from("regular"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
             Some(trivial_variant("regular")),
         ),
     );
@@ -71,10 +70,7 @@ fn wave0_defined_symbols_filter_is_correct() {
     // (b) Overloaded base with ast: None — MUST NOT appear.
     st.insert(
         Symbol::from("overloaded_base"),
-        mk_def(
-            DefKind::Overloaded { variants: vec![] },
-            None,
-        ),
+        mk_def(DefKind::Overloaded { variants: vec![] }, None),
     );
 
     // (c) UserFn template with constrained_fn: Some(_) — MUST NOT appear,
@@ -90,7 +86,9 @@ fn wave0_defined_symbols_filter_is_correct() {
     st.insert(
         Symbol::from("template"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(template_cf)) },
+            DefKind::UserFn {
+                fn_state: UserFnState::Constrained(Box::new(template_cf)),
+            },
             Some(trivial_variant("template")),
         ),
     );
@@ -100,10 +98,7 @@ fn wave0_defined_symbols_filter_is_correct() {
         Symbol::from("MyType"),
         ModuleEntry::TypeDef {
             info: TypeDefInfo {
-                name: FQTypeName::new(
-                    ModuleFullPath::from("user"),
-                    TypeName::from("MyType"),
-                ),
+                name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("MyType")),
                 type_params: vec![],
                 constructors: vec![],
             },
@@ -128,7 +123,9 @@ fn wave0_defined_symbols_filter_is_correct() {
     st.insert(
         Symbol::from("add$Int+Int"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
             Some(trivial_variant("add$Int+Int")),
         ),
     );
@@ -205,7 +202,12 @@ fn polymorphic_template_excluded_from_defined_symbols() {
     st.insert(
         Symbol::from("id$Int"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
+            },
             Some(trivial_variant("id$Int")),
         ),
     );
@@ -242,13 +244,22 @@ fn polymorphic_template_excluded_from_defined_symbols() {
 fn callable_got_slot_is_structural() {
     let cf = ConstrainedFn {
         variant: trivial_variant("cmp"),
-        scheme: Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int },
+        scheme: Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        },
     };
 
     // A concrete UserFn carries its slot on the kind's Concrete fn_state.
     let concrete: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 3, mode_summary: None } },
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 3,
+                mode_summary: None,
+            },
+        },
     )
     .build();
     assert_eq!(concrete.callable_got_slot(), Some(3));
@@ -259,7 +270,9 @@ fn callable_got_slot_is_structural() {
     // 0354 era is now unconstructable: Constrained has no got_slot.)
     let template: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(cf)) },
+        DefKind::UserFn {
+            fn_state: UserFnState::Constrained(Box::new(cf)),
+        },
     )
     .build();
     assert!(template.is_constrained_template());
@@ -272,15 +285,16 @@ fn callable_got_slot_is_structural() {
     // The Pass-1 interim NotDetermined fn is also slot-less → None.
     let interim: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
     )
     .build();
     assert_eq!(interim.callable_got_slot(), None);
     assert!(!interim.is_constrained_template());
 
     // Primitive and Constructor carry their (mandatory) slot too.
-    let prim: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(9)).build();
+    let prim: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(9)).build();
     assert_eq!(prim.callable_got_slot(), Some(9));
 
     let ctor: ModuleEntry = ModuleEntry::def(
@@ -321,7 +335,9 @@ fn type_def_info_answers_for_both_type_shapes() {
         visibility: Visibility::Public,
         docstring: None,
     };
-    let info = sum.type_def_info().expect("a TypeDef entry answers as a type");
+    let info = sum
+        .type_def_info()
+        .expect("a TypeDef entry answers as a type");
     assert_eq!(info.name.name, TypeName::from("Rotation"));
 
     // Single-ctor product: the got-slotted ctor `Def` carrying the type facet
@@ -361,11 +377,21 @@ fn type_def_info_none_for_non_type_entries() {
         },
         None,
     );
-    assert!(sum_ctor.type_def_info().is_none(), "an ordinary sum ctor is not its own type");
+    assert!(
+        sum_ctor.type_def_info().is_none(),
+        "an ordinary sum ctor is not its own type"
+    );
 
-    let user_fn: ModuleEntry =
-        mk_def(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, None);
-    assert!(user_fn.type_def_info().is_none(), "a plain Def never answers as a type");
+    let user_fn: ModuleEntry = mk_def(
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
+        None,
+    );
+    assert!(
+        user_fn.type_def_info().is_none(),
+        "a plain Def never answers as a type"
+    );
 
     let import: ModuleEntry = ModuleEntry::Import {
         source: FQSymbol {
@@ -391,7 +417,10 @@ fn wave0_symbol_table_got_present_and_serde_skipped() {
     // base_ptr() is non-null and stable across reads.
     let p1 = st.got.base_ptr();
     let p2 = st.got.base_ptr();
-    assert!(!p1.is_null(), "fresh SymbolTable's GOT base pointer must be non-null");
+    assert!(
+        !p1.is_null(),
+        "fresh SymbolTable's GOT base pointer must be non-null"
+    );
     assert_eq!(p1, p2, "GOT base_ptr() must be stable across reads");
 
     // Slot bookkeeping before and after allocation.
@@ -409,7 +438,9 @@ fn wave0_symbol_table_got_present_and_serde_skipped() {
     st.insert(
         Symbol::from("entry"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
             Some(trivial_variant("entry")),
         ),
     );
@@ -428,8 +459,7 @@ fn wave0_symbol_table_got_present_and_serde_skipped() {
         "serialized form must not contain runtime pointer values: {}",
         json
     );
-    let rt: SymbolTable =
-        serde_json::from_str(&json).expect("SymbolTable must deserialize");
+    let rt: SymbolTable = serde_json::from_str(&json).expect("SymbolTable must deserialize");
 
     // next_got_slot bookkeeping is preserved across the roundtrip.
     assert_eq!(
@@ -465,7 +495,9 @@ fn wave0_symbol_table_got_present_and_serde_skipped() {
 #[test]
 fn module_entry_def_has_code_field_none_by_default() {
     let entry = mk_def(
-        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
         Some(trivial_variant("fresh")),
     );
     match entry {
@@ -498,7 +530,9 @@ fn code_serialise_round_trip_skips_field() {
         visibility: Visibility::Public,
         docstring: None,
         param_names: vec![],
-        kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
+        kind: Box::new(DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        }),
         callees: Vec::new(),
         value_use: false,
         trait_origin: None,
@@ -548,7 +582,9 @@ fn code_serialise_round_trip_skips_field() {
 #[test]
 fn fresh_module_entry_def_has_no_callable_slot() {
     let entry = mk_def(
-        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
         Some(trivial_variant("fresh")),
     );
     assert!(
@@ -584,17 +620,16 @@ fn def_kind_platform_effect_carries_scheduling_class() {
 
     match entry {
         ModuleEntry::Def { kind, .. } => match *kind {
-            DefKind::PlatformEffect { scheduling_class, .. } => {
+            DefKind::PlatformEffect {
+                scheduling_class, ..
+            } => {
                 assert_eq!(
                     scheduling_class,
                     crate::SchedulingClass::Commutative,
                     "scheduling_class must be readable from the variant directly"
                 );
             }
-            other => panic!(
-                "expected DefKind::PlatformEffect {{ .. }}, got {:?}",
-                other
-            ),
+            other => panic!("expected DefKind::PlatformEffect {{ .. }}, got {:?}", other),
         },
         other => panic!("expected ModuleEntry::Def, got {:?}", other),
     }
@@ -649,14 +684,17 @@ fn platform_effect_scheduling_class_round_trips() {
         json
     );
 
-    let rt: ModuleEntry =
-        serde_json::from_str(&json).expect("entry must deserialize");
+    let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
     match rt {
         ModuleEntry::Def { kind, .. } => {
             // scheduling_class (on the variant) MUST round-trip — it is static
             // manifest data, not a runtime pointer.
             match *kind {
-                DefKind::PlatformEffect { scheduling_class, poll_shape, .. } => {
+                DefKind::PlatformEffect {
+                    scheduling_class,
+                    poll_shape,
+                    ..
+                } => {
                     assert_eq!(
                         scheduling_class,
                         crate::SchedulingClass::ResourceSerial,
@@ -670,10 +708,7 @@ fn platform_effect_scheduling_class_round_trips() {
                         "poll_shape inside DefKind::PlatformEffect must survive serde roundtrip"
                     );
                 }
-                other => panic!(
-                    "expected DefKind::PlatformEffect, got {:?}",
-                    other
-                ),
+                other => panic!("expected DefKind::PlatformEffect, got {:?}", other),
             }
         }
         other => panic!("expected ModuleEntry::Def, got {:?}", other),
@@ -695,7 +730,12 @@ fn platform_effect_poll_shape_defaults_to_false_for_pre_s94_cache() {
     let kind: DefKind =
         serde_json::from_str(legacy_json).expect("pre-S94 PlatformEffect must still deserialize");
     match kind {
-        DefKind::PlatformEffect { scheduling_class, poll_shape, got_slot, mode_summary } => {
+        DefKind::PlatformEffect {
+            scheduling_class,
+            poll_shape,
+            got_slot,
+            mode_summary,
+        } => {
             assert_eq!(scheduling_class, crate::SchedulingClass::Commutative);
             assert_eq!(got_slot, 3);
             assert!(
@@ -747,8 +787,7 @@ fn def_kind_primitive_extern_round_trips() {
     );
 
     let json = serde_json::to_string(&entry).expect("entry must serialize");
-    let rt: ModuleEntry =
-        serde_json::from_str(&json).expect("entry must deserialize");
+    let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
     match rt {
         ModuleEntry::Def { kind, .. } => {
             assert!(
@@ -880,7 +919,11 @@ fn symbol_table_no_cross_module_mixing() {
     a.submodules.push(mk_mod("inner", Visibility::Public, 40));
 
     // B is untouched.
-    assert_eq!(b.imports.len(), 0, "B's imports MUST be empty — A's writes do not leak");
+    assert_eq!(
+        b.imports.len(),
+        0,
+        "B's imports MUST be empty — A's writes do not leak"
+    );
     assert_eq!(b.exports.len(), 0, "B's exports MUST be empty");
     assert_eq!(b.platforms.len(), 0, "B's platforms MUST be empty");
     assert_eq!(b.submodules.len(), 0, "B's submodules MUST be empty");
@@ -906,7 +949,8 @@ fn symbol_table_imports_have_corresponding_module_entries_positive() {
     let mut st = SymbolTable::new(ModuleFullPath::from("user"));
 
     // Structural record: import [primitives [foo bar]].
-    st.imports.push(mk_import("primitives", &["foo", "bar"], 10));
+    st.imports
+        .push(mk_import("primitives", &["foo", "bar"], 10));
 
     // Resolved effects: per-symbol Import entries from the same module.
     st.insert(
@@ -1004,10 +1048,22 @@ fn symbol_table_structural_fields_have_no_setter_api() {
     // Constructor returns empty fields, confirming the only mutation path
     // is direct field-access by the writer.
     let st = SymbolTable::new(ModuleFullPath::from("user"));
-    assert!(st.imports.is_empty(), "fresh SymbolTable starts with empty imports");
-    assert!(st.exports.is_empty(), "fresh SymbolTable starts with empty exports");
-    assert!(st.platforms.is_empty(), "fresh SymbolTable starts with empty platforms");
-    assert!(st.submodules.is_empty(), "fresh SymbolTable starts with empty submodules");
+    assert!(
+        st.imports.is_empty(),
+        "fresh SymbolTable starts with empty imports"
+    );
+    assert!(
+        st.exports.is_empty(),
+        "fresh SymbolTable starts with empty exports"
+    );
+    assert!(
+        st.platforms.is_empty(),
+        "fresh SymbolTable starts with empty platforms"
+    );
+    assert!(
+        st.submodules.is_empty(),
+        "fresh SymbolTable starts with empty submodules"
+    );
 }
 
 // spec: design/typecheck/ast-annotation.md §11.3 invariant 6 — serde round-trip
@@ -1020,30 +1076,35 @@ fn symbol_table_serde_round_trip_with_structural_decls() {
     st.schema_version = 1;
 
     // Populate all four structural fields with non-trivial content.
-    st.imports.push(mk_import("primitives", &["foo", "bar"], 10));
+    st.imports
+        .push(mk_import("primitives", &["foo", "bar"], 10));
     st.imports.push(mk_import("user.helper", &["baz"], 30));
 
-    st.exports.push(mk_export("user.module", &["public_fn"], 50));
+    st.exports
+        .push(mk_export("user.module", &["public_fn"], 50));
 
     st.platforms.push(mk_platform("stdio", 70));
     st.platforms.push(mk_platform("test_capture", 90));
 
-    st.submodules.push(mk_mod("public_child", Visibility::Public, 110));
-    st.submodules.push(mk_mod("private_child", Visibility::Private, 130));
+    st.submodules
+        .push(mk_mod("public_child", Visibility::Public, 110));
+    st.submodules
+        .push(mk_mod("private_child", Visibility::Private, 130));
 
     // Also add one Def entry to confirm symbols round-trip alongside.
     st.insert(
         Symbol::from("entry"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+            DefKind::UserFn {
+                fn_state: UserFnState::NotDetermined,
+            },
             Some(trivial_variant("entry")),
         ),
     );
 
     // Round-trip via serde-JSON.
     let json = serde_json::to_string(&st).expect("SymbolTable must serialize");
-    let rt: SymbolTable =
-        serde_json::from_str(&json).expect("SymbolTable must deserialize");
+    let rt: SymbolTable = serde_json::from_str(&json).expect("SymbolTable must deserialize");
 
     // Structural identity on the four new fields.
     assert_eq!(rt.imports.len(), 2, "imports.len() must round-trip");
@@ -1127,10 +1188,22 @@ fn symbol_table_schema_version_defaults_to_zero_for_legacy_cache() {
     // load-bearing for legacy-cache compatibility (the cache loader
     // version-checks BEFORE attempting to use these fields, but the
     // deserialise step must succeed first).
-    assert!(rt.imports.is_empty(), "missing `imports` field defaults to empty Vec");
-    assert!(rt.exports.is_empty(), "missing `exports` field defaults to empty Vec");
-    assert!(rt.platforms.is_empty(), "missing `platforms` field defaults to empty Vec");
-    assert!(rt.submodules.is_empty(), "missing `submodules` field defaults to empty Vec");
+    assert!(
+        rt.imports.is_empty(),
+        "missing `imports` field defaults to empty Vec"
+    );
+    assert!(
+        rt.exports.is_empty(),
+        "missing `exports` field defaults to empty Vec"
+    );
+    assert!(
+        rt.platforms.is_empty(),
+        "missing `platforms` field defaults to empty Vec"
+    );
+    assert!(
+        rt.submodules.is_empty(),
+        "missing `submodules` field defaults to empty Vec"
+    );
 }
 
 // spec: design/typecheck/ast-annotation.md §11.3 invariant 2 — no deduplication
@@ -1265,7 +1338,9 @@ fn module_entry_def_code_field_is_optional_c() {
         visibility: Visibility::Public,
         docstring: None,
         param_names: vec![],
-        kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
+        kind: Box::new(DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        }),
         callees: Vec::new(),
         value_use: false,
         trait_origin: None,
@@ -1278,7 +1353,11 @@ fn module_entry_def_code_field_is_optional_c() {
     // The `code` field carries the synthetic `C = i64` value.
     match &entry {
         ModuleEntry::Def { code, .. } => {
-            assert_eq!(*code, Some(42i64), "code field must hold the constructed Some(42i64)");
+            assert_eq!(
+                *code,
+                Some(42i64),
+                "code field must hold the constructed Some(42i64)"
+            );
         }
         other => panic!("expected ModuleEntry::Def, got {:?}", other),
     }
@@ -1321,7 +1400,11 @@ fn module_entry_def_code_field_is_optional_c() {
 // ---- Tier-1 DefBuilder (ModuleEntry::def) ----
 
 fn mono_scheme(ty: Type) -> Scheme {
-    Scheme { type_vars: vec![], constraints: HashMap::new(), ty }
+    Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty,
+    }
 }
 
 // spec: design/arch/fixmes/0241 — Tier-1 Def constructor: defaults
@@ -1330,26 +1413,60 @@ fn def_builder_defaults() {
     // Use a slot-less kind so the builder's field defaults (not a kind
     // slot) are the subject — the GOT slot now rides on the kind (S83), so
     // there is no flat `got_slot` field to default.
-    let entry: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { fn_state: UserFnState::NotDetermined }).build();
+    let entry: ModuleEntry = ModuleEntry::def(
+        mono_scheme(Type::Int),
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
+    )
+    .build();
     // No callable slot by default (NotDetermined is slot-less).
-    assert_eq!(entry.callable_got_slot(), None, "default builder yields no callable slot");
+    assert_eq!(
+        entry.callable_got_slot(),
+        None,
+        "default builder yields no callable slot"
+    );
     match entry {
         ModuleEntry::Def {
-            scheme, visibility, docstring, param_names, kind, callees, value_use,
-            trait_origin, seq, ast, codegen_view, code,
+            scheme,
+            visibility,
+            docstring,
+            param_names,
+            kind,
+            callees,
+            value_use,
+            trait_origin,
+            seq,
+            ast,
+            codegen_view,
+            code,
         } => {
             assert_eq!(scheme.ty, Type::Int);
-            assert_eq!(visibility, Visibility::Public, "default visibility is Public");
+            assert_eq!(
+                visibility,
+                Visibility::Public,
+                "default visibility is Public"
+            );
             assert!(docstring.is_none());
             assert!(param_names.is_empty());
-            assert!(matches!(*kind, DefKind::UserFn { fn_state: UserFnState::NotDetermined }));
+            assert!(matches!(
+                *kind,
+                DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined
+                }
+            ));
             assert!(callees.is_empty(), "callees defaulted, never settable");
-            assert!(!value_use, "value_use defaulted false, never settable at build");
+            assert!(
+                !value_use,
+                "value_use defaulted false, never settable at build"
+            );
             assert!(trait_origin.is_none());
             assert_eq!(seq, 0);
             assert!(ast.is_none());
-            assert!(codegen_view.is_none(), "codegen_view defaulted, never settable via build()");
+            assert!(
+                codegen_view.is_none(),
+                "codegen_view defaulted, never settable via build()"
+            );
             assert!(code.is_none(), "code defaulted, never settable");
         }
         other => panic!("expected Def, got {:?}", other),
@@ -1365,19 +1482,34 @@ fn def_builder_overrides() {
     // `.got_slot(_)` setter — the slot is part of the `kind` value passed in.
     let entry: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Bool),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None } },
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 7,
+                mode_summary: None,
+            },
+        },
     )
-        .visibility(Visibility::Private)
-        .docstring("doc")
-        .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-        .trait_origin(trait_name.clone())
-        .seq(42)
-        .ast(trivial_variant("f"))
-        .build();
-    assert_eq!(entry.callable_got_slot(), Some(7), "concrete callable slot rides on the kind");
+    .visibility(Visibility::Private)
+    .docstring("doc")
+    .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+    .trait_origin(trait_name.clone())
+    .seq(42)
+    .ast(trivial_variant("f"))
+    .build();
+    assert_eq!(
+        entry.callable_got_slot(),
+        Some(7),
+        "concrete callable slot rides on the kind"
+    );
     match entry {
         ModuleEntry::Def {
-            visibility, docstring, param_names, trait_origin, seq, ast, ..
+            visibility,
+            docstring,
+            param_names,
+            trait_origin,
+            seq,
+            ast,
+            ..
         } => {
             assert_eq!(visibility, Visibility::Private);
             assert_eq!(docstring.as_deref(), Some("doc"));
@@ -1393,8 +1525,7 @@ fn def_builder_overrides() {
 // spec: design/arch/fixmes/0241 — From<DefBuilder> conversion (terminal)
 #[test]
 fn def_builder_from_conversion() {
-    let entry: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).into();
+    let entry: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).into();
     assert!(matches!(entry, ModuleEntry::Def { .. }));
 }
 
@@ -1412,11 +1543,21 @@ fn def_builder_from_conversion() {
 fn inline_primitive_is_slotless_but_callable_target() {
     let inline: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::Primitive { body: PrimitiveBody::Inline, mode_summary: None },
+        DefKind::Primitive {
+            body: PrimitiveBody::Inline,
+            mode_summary: None,
+        },
     )
     .build();
-    assert_eq!(inline.callable_got_slot(), None, "Inline carries no slot by construction");
-    assert!(inline.is_callable_target(), "Inline IS a dispatchable call target (inline emission)");
+    assert_eq!(
+        inline.callable_got_slot(),
+        None,
+        "Inline carries no slot by construction"
+    );
+    assert!(
+        inline.is_callable_target(),
+        "Inline IS a dispatchable call target (inline emission)"
+    );
 
     let ext: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(5)).build();
     assert_eq!(ext.callable_got_slot(), Some(5));
@@ -1430,14 +1571,19 @@ fn inline_primitive_is_slotless_but_callable_target() {
 fn non_callable_kinds_are_not_callable_targets() {
     let template: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
     )
     .build();
     assert!(!template.is_callable_target());
 
     let ext_prim: ModuleEntry =
         ModuleEntry::def(mono_scheme(Type::Int), DefKind::PrimitiveExtern).build();
-    assert!(!ext_prim.is_callable_target(), "PrimitiveExtern dispatches by-name, never a target");
+    assert!(
+        !ext_prim.is_callable_target(),
+        "PrimitiveExtern dispatches by-name, never a target"
+    );
 }
 
 // spec: design/typecheck/ownership-inference.md §13.1 item 6 — uniform
@@ -1447,16 +1593,30 @@ fn non_callable_kinds_are_not_callable_targets() {
 #[test]
 fn mode_summary_accessor_and_mutator_cover_callable_kinds() {
     use crate::{Mode, ModeSummary};
-    let summary = ModeSummary { param_modes: vec![Mode::Borrowed], ..Default::default() };
+    let summary = ModeSummary {
+        param_modes: vec![Mode::Borrowed],
+        ..Default::default()
+    };
 
     // UserFn Concrete: writable, readable.
     let mut concrete: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 1, mode_summary: None } },
+        DefKind::UserFn {
+            fn_state: UserFnState::Concrete {
+                got_slot: 1,
+                mode_summary: None,
+            },
+        },
     )
     .build();
-    assert!(concrete.mode_summary().is_none(), "pre-analysis entry carries no summary");
-    assert!(concrete.set_mode_summary(Some(summary.clone())), "Concrete is a publication target");
+    assert!(
+        concrete.mode_summary().is_none(),
+        "pre-analysis entry carries no summary"
+    );
+    assert!(
+        concrete.set_mode_summary(Some(summary.clone())),
+        "Concrete is a publication target"
+    );
     assert_eq!(concrete.mode_summary(), Some(&summary));
 
     // Primitive: the SAME slot carries declared facts (item 7 — no separate type).
@@ -1468,10 +1628,15 @@ fn mode_summary_accessor_and_mutator_cover_callable_kinds() {
     // Non-callable kind: did-not-write indicator, still None.
     let mut nd: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        DefKind::UserFn {
+            fn_state: UserFnState::NotDetermined,
+        },
     )
     .build();
-    assert!(!nd.set_mode_summary(Some(summary)), "no summary slot on non-callable kinds");
+    assert!(
+        !nd.set_mode_summary(Some(summary)),
+        "no summary slot on non-callable kinds"
+    );
     assert!(nd.mode_summary().is_none());
 }
 
@@ -1482,7 +1647,10 @@ fn mode_summary_accessor_and_mutator_cover_callable_kinds() {
 fn value_use_mark_defaults_false_and_is_pass_written() {
     let mut entry: ModuleEntry =
         ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).build();
-    assert!(!entry.value_use(), "builder default is false (pre-analysis point)");
+    assert!(
+        !entry.value_use(),
+        "builder default is false (pre-analysis point)"
+    );
     assert!(entry.set_value_use(true));
     assert!(entry.value_use());
 
@@ -1515,12 +1683,22 @@ fn primitive_reshape_serde_shape() {
     let v12 = r#"{"Primitive":{"body":{"Extern":{"got_slot":3}}}}"#;
     match serde_json::from_str::<DefKind>(v12).expect("v12 shape deserializes") {
         DefKind::Primitive {
-            body: PrimitiveBody::Extern { got_slot, borrowed_sibling_slot },
+            body:
+                PrimitiveBody::Extern {
+                    got_slot,
+                    borrowed_sibling_slot,
+                },
             mode_summary,
         } => {
             assert_eq!(got_slot, 3);
-            assert!(borrowed_sibling_slot.is_none(), "absent sibling defaults None");
-            assert!(mode_summary.is_none(), "absent declared facts default None (Decision-24)");
+            assert!(
+                borrowed_sibling_slot.is_none(),
+                "absent sibling defaults None"
+            );
+            assert!(
+                mode_summary.is_none(),
+                "absent declared facts default None (Decision-24)"
+            );
         }
         other => panic!("expected Extern Primitive, got {other:?}"),
     }
@@ -1577,9 +1755,152 @@ fn got_slot_exhaustion_diagnostic_names_module_and_capacity() {
     }
     let err = st.allocate_got_slot().expect_err("must be exhausted");
     let text = err.to_string();
-    assert!(text.contains("proj.widget"), "diagnostic names the module: {text}");
+    assert!(
+        text.contains("proj.widget"),
+        "diagnostic names the module: {text}"
+    );
     assert!(
         text.contains(&crate::GOT_TABLE_SIZE.to_string()),
         "diagnostic names the capacity: {text}"
+    );
+}
+
+// spec: design/backend/transitive-drop-glue.md §3.1
+#[test]
+fn drop_glue_names_are_injective_and_linker_safe() {
+    let m = ModuleFullPath::from("user.mod");
+    let n = FQTypeName::new(ModuleFullPath::from("p"), TypeName::from("Vec"));
+    let cases = [
+        drop_glue_symbol_name(&m, &ConcreteType::Int),
+        drop_glue_symbol_name(&m, &ConcreteType::Bool),
+        drop_glue_symbol_name(&m, &ConcreteType::ADT(n.clone(), vec![ConcreteType::Int])),
+        drop_glue_symbol_name(&m, &ConcreteType::ADT(n, vec![ConcreteType::String])),
+        drop_glue_symbol_name(
+            &m,
+            &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Bool)),
+        ),
+        drop_glue_symbol_name(&ModuleFullPath::from("user_mod"), &ConcreteType::Int),
+    ];
+    let unique = cases
+        .iter()
+        .map(AsRef::<str>::as_ref)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), cases.len());
+    assert!(
+        cases
+            .iter()
+            .all(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    );
+}
+
+// spec: design/backend/transitive-drop-glue.md §3.2
+#[test]
+fn drop_glue_name_preserves_nested_concrete_structure() {
+    let node = FQTypeName::new(ModuleFullPath::from("tree"), TypeName::from("Node"));
+    let shallow = ConcreteType::ADT(node.clone(), vec![ConcreteType::String]);
+    let deep = ConcreteType::ADT(
+        node.clone(),
+        vec![ConcreteType::ADT(node, vec![shallow.clone()])],
+    );
+    let m = ModuleFullPath::from("emit");
+    assert_ne!(
+        drop_glue_symbol_name(&m, &shallow),
+        drop_glue_symbol_name(&m, &deep)
+    );
+    assert_eq!(
+        drop_glue_symbol_name(&m, &deep),
+        drop_glue_symbol_name(&m, &deep)
+    );
+}
+
+// spec: design/backend/transitive-drop-glue.md §3.1
+#[test]
+fn drop_glue_name_length_prefixes_identifier_bytes() {
+    let a = ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("a/b"), TypeName::from("C_D")),
+        vec![],
+    );
+    let b = ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("a"), TypeName::from("b/C_D")),
+        vec![],
+    );
+    assert_ne!(
+        drop_glue_symbol_name(&ModuleFullPath::from("μ"), &a),
+        drop_glue_symbol_name(&ModuleFullPath::from("μ"), &b)
+    );
+}
+
+// spec: design/backend/transitive-drop-glue.md §3.1 — Fn arity and the
+// params/result boundary are identity, not concatenated type text.
+#[test]
+fn drop_glue_name_separates_fn_arity_and_result_boundary() {
+    let module = ModuleFullPath::from("emit");
+    let one_param = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Bool));
+    let two_params = ConcreteType::Fn(
+        vec![ConcreteType::Int, ConcreteType::Bool],
+        Box::new(ConcreteType::String),
+    );
+    let nested_result = ConcreteType::Fn(
+        vec![ConcreteType::Int],
+        Box::new(ConcreteType::Fn(
+            vec![ConcreteType::Bool],
+            Box::new(ConcreteType::String),
+        )),
+    );
+
+    assert_ne!(
+        drop_glue_symbol_name(&module, &one_param),
+        drop_glue_symbol_name(
+            &module,
+            &ConcreteType::Fn(
+                vec![ConcreteType::Int, ConcreteType::Bool],
+                Box::new(ConcreteType::Bool),
+            ),
+        ),
+        "Fn parameter arity must distinguish otherwise shared leaves"
+    );
+    assert_ne!(
+        drop_glue_symbol_name(&module, &two_params),
+        drop_glue_symbol_name(&module, &nested_result),
+        "a second parameter cannot collide with a nested result parameter"
+    );
+    assert_eq!(
+        drop_glue_symbol_name(&module, &nested_result),
+        drop_glue_symbol_name(&module, &nested_result),
+        "equal complete function types must retain equal identity"
+    );
+}
+
+// spec: design/backend/transitive-drop-glue.md §3.1 — each nested ADT
+// argument vector carries its own arity boundary.
+#[test]
+fn drop_glue_name_separates_nested_adt_argument_boundaries() {
+    let module = ModuleFullPath::from("emit");
+    let pair = FQTypeName::new(ModuleFullPath::from("data"), TypeName::from("Pair"));
+    let boxed = FQTypeName::new(ModuleFullPath::from("data"), TypeName::from("Box"));
+    let outer_two_args = ConcreteType::ADT(
+        pair.clone(),
+        vec![
+            ConcreteType::ADT(boxed.clone(), vec![ConcreteType::Int]),
+            ConcreteType::Bool,
+        ],
+    );
+    let nested_two_args = ConcreteType::ADT(
+        pair,
+        vec![ConcreteType::ADT(
+            boxed,
+            vec![ConcreteType::Int, ConcreteType::Bool],
+        )],
+    );
+
+    assert_ne!(
+        drop_glue_symbol_name(&module, &outer_two_args),
+        drop_glue_symbol_name(&module, &nested_two_args),
+        "outer and nested ADT argument boundaries must not flatten together"
+    );
+    assert_eq!(
+        drop_glue_symbol_name(&module, &outer_two_args),
+        drop_glue_symbol_name(&module, &outer_two_args),
+        "equal nested ADTs must retain equal identity"
     );
 }

@@ -28,7 +28,8 @@
 //!   Decision 47.
 //! - **AST** ([`Sexp`], [`Expr`], [`Pattern`], [`MatchArm`], [`Defn`],
 //!   [`DefnVariant`], [`FieldDef`], [`ConstructorDef`], [`TraitDecl`],
-//!   [`TraitImpl`], [`TraitMethodSig`], [`TypeExpr`], [`TopLevel`],
+//!   [`TraitImpl`], [`UnresolvedTraitMethodSig`], [`TraitMethodSig`],
+//!   [`TraitMethodKind`], [`TypeExpr`], [`TopLevel`],
 //!   [`Program`], [`Visibility`]) — frontend's structured output;
 //!   annotated in-place by typecheck; lowered by backend.
 //! - **Resolved type system** ([`Type`], [`Scheme`], [`Subst`], [`TypeId`])
@@ -207,16 +208,16 @@
 // 18 (`pub(crate)` defaulting). Crate-root re-exports (further down) are
 // the sole public surface; deep paths (`cranelisp_types::module::SymbolTable`)
 // are no longer reachable for consumers.
-pub(crate) mod span;
-pub(crate) mod newtype;
-pub(crate) mod error;
-pub(crate) mod sexp;
 pub(crate) mod ast;
-pub(crate) mod types;
-pub(crate) mod concrete;
-pub(crate) mod mono_expr;
 pub(crate) mod check;
+pub(crate) mod concrete;
+pub(crate) mod error;
+pub(crate) mod mono_expr;
+pub(crate) mod newtype;
 pub(crate) mod parsed;
+pub(crate) mod sexp;
+pub(crate) mod span;
+pub(crate) mod types;
 // `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
 // pointer-only `cranelisp_types::Code` struct dissolves in favour of the
 // integration layer's `Code` enum at `src/code.rs`, which carries
@@ -226,17 +227,17 @@ pub(crate) mod parsed;
 // DAG-compatible mechanism that lets the integration layer place its
 // `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
 // edge.
-pub(crate) mod module;
 pub(crate) mod adt_build;
-pub(crate) mod ownership;
 pub(crate) mod got;
 pub(crate) mod heap;
-pub(crate) mod pipeline;
-pub(crate) mod marshal;
 pub(crate) mod macro_expander;
+pub(crate) mod marshal;
+pub(crate) mod module;
+pub(crate) mod ownership;
+pub(crate) mod pipeline;
+pub(crate) mod resolve;
 pub(crate) mod scheduling;
 pub(crate) mod view;
-pub(crate) mod resolve;
 
 // Tier-2 test-support symbol-table construction helpers. Feature-gated so
 // they are visible to OTHER crates' test suites (`cranelisp-typecheck`'s unit
@@ -249,18 +250,22 @@ pub(crate) mod resolve;
 pub mod test_support;
 
 // Re-export key types at crate root for convenience.
-pub use span::Span;
+pub use ast::{
+    ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program, TopLevel,
+    TraitDecl, TraitImpl, TraitMethodKind, TraitMethodSig, TypeExpr, UnresolvedTraitMethodSig,
+    Visibility, free_vars_expr,
+};
 pub use error::{
-    CranelispError, ErrorLocation, LineCol, LineColRange, PlatformError,
-    ResolutionGap, Warning, WarningKind,
+    CranelispError, ErrorLocation, LineCol, LineColRange, PlatformError, ResolutionGap, Warning,
+    WarningKind,
 };
 pub use parsed::{DefmacroInfo, MacroClause, ParsedEntry};
 pub use sexp::Sexp;
-pub use ast::{
-    ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program,
-    TopLevel, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility, free_vars_expr,
+pub use span::Span;
+pub use types::{
+    PrimitiveNaming, Scheme, Subst, Type, TypeId, VarNaming, apply, collect_var_ids_ordered,
+    free_vars, max_type_var_id, render_type, type_var_names,
 };
-pub use types::{Scheme, Subst, Type, TypeId, apply, collect_var_ids_ordered, free_vars, max_type_var_id, render_type, PrimitiveNaming, VarNaming, type_var_names};
 // The concrete-only codegen-boundary type (Phase 1 scaffold;
 // design/arch/concrete-boundary-type.md). No `Var`/`TyConApp` variant — a
 // generic is structurally unrepresentable at the typecheck→backend boundary.
@@ -270,12 +275,12 @@ pub use concrete::{ConcreteType, NotConcrete};
 // is structurally unrepresentable on a codegen node. `MonoExpr::from_expr` is the
 // fallible builder; its failure is the unified ambiguity / could-not-mono error.
 // design/arch/concrete-boundary-type.md §2.4.
-pub use mono_expr::{
-    is_strict_type_concrete, ApplyRef, MonoDefnVariant, MonoExpr, MonoMatchArm, VarRef,
-    ViewBuildError,
-};
 pub use check::{
     DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TraitDeclInfo, TypeDefInfo,
+};
+pub use mono_expr::{
+    ApplyRef, MonoDefnVariant, MonoExpr, MonoMatchArm, VarRef, ViewBuildError,
+    is_strict_type_concrete,
 };
 // `ConstructorInfo` retired — see crates/cranelisp-types/src/check.rs for the
 // migration map. `CheckResult` and `ReplSnapshot` relocated to
@@ -294,18 +299,17 @@ pub use scheduling::SchedulingClass;
 // optional (`cranelisp-intrinsics`'s `concurrency-runtime` feature); these ABI
 // *types* are part of every build. See `crates/cranelisp-types/src/scheduling.rs`
 // and `design/arch/effect-concurrency.md` §5/§6/§12.
-pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole};
 pub use module::{
-    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
-    GotExhausted,
-    ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
-    ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec,
-    PrimitiveBody, StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists,
-    for_each_in_module,
-    get_impls_for_type_chain, get_implementing_types_chain, got_data_symbol_name, install_module,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome,
+    ExportSpec, GotExhausted, ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo,
+    MacroParam, ModDecl, ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant,
+    ParametricFn, PlatformSpec, PrimitiveBody, StructuralDeclEntry, SymbolTable, SymbolTables,
+    UserFnState, drop_glue_symbol_name, ensure_module_exists, for_each_in_module,
+    get_implementing_types_chain, get_impls_for_type_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
 };
+pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole};
 // ADT-entry builder (S110 R-2, the registration-mirror cure; Principle 24
 // "Resolve once"): the ONE derivation of the entry set an ADT registration
 // produces — product/sum split, ctor schemes + synthesised `ConstrADT` bodies,
@@ -339,21 +343,20 @@ pub use heap::{VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layou
 // `HeapCategory` relocated to `cranelisp-backend` per S69 Sub 38 — backend-internal
 // codegen classification, not a cross-crate substrate. See `facades/backend.md`
 // §"Heap classification".
-pub use pipeline::{
-    CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult,
-    GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
-};
-pub use view::View;
-pub use resolve::{
-    BindingProvenance, ResolutionScope, Resolved, ResolveError, check_binding_addition,
-    bare_member_name, member_key, reject_def_over_binding, substitute_module_alias,
-};
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{
-    TAG_SNIL, TAG_SCONS,
-    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
-    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
+    TAG_SCONS, TAG_SEXP_ANNOTATED, TAG_SEXP_BOOL, TAG_SEXP_BRACKET, TAG_SEXP_FLOAT, TAG_SEXP_INT,
+    TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM, TAG_SNIL,
 };
+pub use pipeline::{
+    CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult, GOT_TABLE_SIZE,
+    ModuleStrategy, NULLARY_TAG_THRESHOLD,
+};
+pub use resolve::{
+    BindingProvenance, ResolutionScope, ResolveError, Resolved, bare_member_name,
+    check_binding_addition, member_key, reject_def_over_binding, substitute_module_alias,
+};
+pub use view::View;
 
 // String newtypes and fully-qualified name types
 pub use newtype::{

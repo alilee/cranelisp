@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Span;
 
-/// S-expression: the reader's output. 7 variants covering all syntactic forms.
+/// S-expression: the reader's structural output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Sexp {
     /// Symbol: `foo`, `+`, `defn`, `core/map`
@@ -19,6 +19,13 @@ pub enum Sexp {
     List(Vec<Sexp>, Span),
     /// Bracketed list: `[a b c]`, `[:Int x :Int y]`
     Bracket(Vec<Sexp>, Span),
+    /// `:Type <form>` — a read-time annotation fold.
+    Annotated {
+        annotation: Box<Sexp>,
+        subject: Box<Sexp>,
+        /// Span from the colon introducer through the end of `subject`.
+        span: Span,
+    },
     /// Comment: `; some text` — preserved only in comment-preserving reader mode
     Comment(String, Span),
 }
@@ -35,6 +42,7 @@ impl Sexp {
             | Sexp::List(_, s)
             | Sexp::Bracket(_, s)
             | Sexp::Comment(_, s) => *s,
+            Sexp::Annotated { span, .. } => *span,
         }
     }
 
@@ -63,6 +71,13 @@ impl Sexp {
             Sexp::Bracket(children, _) => {
                 let parts: Vec<String> = children.iter().map(|c| c.format_flat()).collect();
                 format!("[{}]", parts.join(" "))
+            }
+            Sexp::Annotated {
+                annotation,
+                subject,
+                ..
+            } => {
+                format!(":{} {}", annotation.format_flat(), subject.format_flat())
             }
             Sexp::Comment(text, _) => {
                 if text.is_empty() {
@@ -146,6 +161,17 @@ impl Sexp {
                 }
                 result.push(']');
                 result
+            }
+            Sexp::Annotated {
+                annotation,
+                subject,
+                ..
+            } => {
+                format!(
+                    ":{} {}",
+                    annotation.format_flat(),
+                    subject.format_indented(indent + 2)
+                )
             }
             _ => flat,
         }

@@ -121,7 +121,7 @@ pub struct Warning {
 Produced by `cranelisp-frontend`, consumed by `cranelisp-frontend` (AST builder) and stored for introspection.
 
 ```rust
-/// S-expression: the reader's output. 8 variants covering all syntactic forms.
+/// S-expression: the reader's structural output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Sexp {
     Symbol(String, Span),
@@ -131,6 +131,16 @@ pub enum Sexp {
     Str(String, Span),
     List(Vec<Sexp>, Span),
     Bracket(Vec<Sexp>, Span),
+    /// `:Type <form>` folded during reading. Both halves remain raw syntax;
+    /// type-expression validation belongs to the AST builder.
+    Annotated {
+        /// The raw annotation form, with the colon introducer stripped.
+        annotation: Box<Sexp>,
+        /// The immediately following form to which the annotation applies.
+        subject: Box<Sexp>,
+        /// Colon-introducer start through subject end.
+        span: Span,
+    },
     Comment(String, Span),
 }
 
@@ -139,7 +149,14 @@ impl Sexp {
 }
 ```
 
-No changes from v1.
+`Sexp::Annotated` is the one Rust carrier for read-time annotation folding.
+Its named, same-typed slots prevent annotation/subject transposition at
+construction sites, and `span()` returns the outer binding span while each
+boxed child retains its own source span. The macro-visible `macros/Sexp` ADT
+appends `SexpAnnotated` at tag 7 (`TAG_SEXP_ANNOTATED`); tags 0–6 remain stable.
+The complete folding, printing, quasiquote, and persistence consequences are
+elaborated in `annotated-sexp-node.md`; that document does not define a second
+carrier.
 
 ---
 

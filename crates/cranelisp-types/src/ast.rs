@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    FQTypeName, ResolvedCall, Span, Symbol, SymbolRef, TraitName, TraitRef, Type, TypeName, TypeRef,
+    FQTypeName, ResolvedCall, Sexp, Span, Symbol, SymbolRef, TraitName, TraitRef, Type, TypeName,
+    TypeRef,
 };
 
 // --- Type Expressions ---
@@ -325,9 +326,9 @@ pub enum Expr {
     /// to a runtime helper, or hybrid). Backend choice; not visible to typecheck
     /// or to downstream readers of the AST.
     ConstrADT {
-        type_name: FQTypeName,    // owning ADT (e.g., core.option/Option)
-        tag: usize,                // discriminant within the ADT
-        fields: Vec<Expr>,         // field value expressions
+        type_name: FQTypeName, // owning ADT (e.g., core.option/Option)
+        tag: usize,            // discriminant within the ADT
+        fields: Vec<Expr>,     // field value expressions
         span: Span,
         #[serde(default)]
         inferred_type: Option<Box<Type>>,
@@ -346,7 +347,12 @@ impl Expr {
     /// annotate pass; tests and passes that need a non-default annotation use
     /// the struct literal directly.
     pub fn var(name: Symbol, span: Span) -> Expr {
-        Expr::Var { name, span, resolved_call: None, inferred_type: None }
+        Expr::Var {
+            name,
+            span,
+            resolved_call: None,
+            inferred_type: None,
+        }
     }
 
     /// Returns the span of this expression.
@@ -540,7 +546,30 @@ pub struct ConstructorDef {
     pub span: Span,
 }
 
-/// Trait method signature.
+/// Frontend-stage trait method with one unclassified trailing form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedTraitMethodSig {
+    pub name: Symbol,
+    pub docstring: Option<String>,
+    pub params: Vec<(Symbol, TypeExpr)>,
+    pub tail: Sexp,
+    pub span: Span,
+    pub hkt_param_index: Option<usize>,
+}
+
+/// The exhaustive required-versus-default classification of a trait method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TraitMethodKind {
+    Required {
+        ret_type: TypeExpr,
+    },
+    Default {
+        body: Expr,
+        result_constraint: Option<TypeExpr>,
+    },
+}
+
+/// Typecheck-classified trait method stored in `TraitDeclInfo`.
 ///
 /// Per spec §5.3 EBNF:
 /// ```text
@@ -570,36 +599,24 @@ pub struct ConstructorDef {
 /// `default_param_names` field eliminates that invariant by construction.
 /// Names belong with the params, not with the default body.
 ///
-/// `default_body: Option<Expr>` carries the parsed AST of the default body
-/// when one is present (S69 Submission 26 — vindication of the prior facade
-/// target against the source's pre-Submission-26 `Option<Sexp>`). Building
-/// the AST at trait-decl time catches structural errors in special forms
-/// (`let`, `if`, `match`, etc.) immediately, rather than per-impl;
-/// name resolution + type-checking remain deferred (per spec §5.4.5, default
-/// bodies are typechecked against each impl's instantiated signature, so the
-/// trait declaration clones the `Expr` into per-impl typecheck context).
-///
 /// `hkt_param_index: Option<usize>` identifies the parameter position that
 /// uses the HKT constructor variable for higher-kinded traits per spec §5.3.2
 /// (e.g., the `f` in `(deftrait (Functor f) (fmap [:(Fn [a] b) f :(f a) x] (f b)))`).
-/// HKT traits forbid default-method implementations (spec §5.3.2), so
-/// `hkt_param_index.is_some() ⇒ default_body.is_none()` is a parser invariant.
+/// HKT traits forbid default methods, so this index implies `Required`.
 ///
 /// `span: Span` per Decision 39 (per-defn source coordinate system for
 /// diagnostics; substance manifested in `design/arch/bounded-contexts.md` §7
 /// and `repl/spec.md` §15.4).
 ///
-/// `ret_type` (not `return_type`) per Principle 7 (single source of truth —
-/// the producer-side naming is canonical).
+/// The former parallel `ret_type` and `default_body` fields are absent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitMethodSig {
     pub name: Symbol,
     pub docstring: Option<String>,
     pub params: Vec<(Symbol, TypeExpr)>,
-    pub ret_type: TypeExpr,
+    pub kind: TraitMethodKind,
     pub span: Span,
     pub hkt_param_index: Option<usize>,
-    pub default_body: Option<Expr>,
 }
 
 /// Trait declaration.
@@ -608,7 +625,7 @@ pub struct TraitDecl {
     pub name: TraitName,
     pub docstring: Option<String>,
     pub type_params: Vec<Symbol>,
-    pub methods: Vec<TraitMethodSig>,
+    pub methods: Vec<UnresolvedTraitMethodSig>,
     pub visibility: Visibility,
     pub span: Span,
 }
@@ -750,7 +767,12 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
             fv
         }
 
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             let mut fv = free_vars_expr(cond, globals);
             fv.extend(free_vars_expr(then_branch, globals));
             fv.extend(free_vars_expr(else_branch, globals));
@@ -763,7 +785,10 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
             // `(Symbol, Option<TypeExpr>)` entry; the optional annotation does
             // not participate in the body's free-variable set.
             let param_set: HashSet<Symbol> = params.iter().map(|(n, _)| n.clone()).collect();
-            body_fv.into_iter().filter(|v| !param_set.contains(v)).collect()
+            body_fv
+                .into_iter()
+                .filter(|v| !param_set.contains(v))
+                .collect()
         }
 
         Expr::Apply { callee, args, .. } => {
@@ -774,7 +799,9 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
             fv
         }
 
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             let mut fv = free_vars_expr(scrutinee, globals);
             for arm in arms {
                 let arm_fv = free_vars_expr(&arm.body, globals);
@@ -828,7 +855,11 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
         // `Bind(launched, λ_. continuation)` for free-variable purposes: the
         // launched effect discards its result (it binds no name visible to the
         // continuation), so the free-var set is the union over both sub-trees.
-        Expr::LaunchContinue { launched, continuation, .. } => {
+        Expr::LaunchContinue {
+            launched,
+            continuation,
+            ..
+        } => {
             let mut fv = free_vars_expr(launched, globals);
             fv.extend(free_vars_expr(continuation, globals));
             fv
@@ -847,4 +878,3 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
         }
     }
 }
-

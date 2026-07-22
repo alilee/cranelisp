@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{
-    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GOT_TABLE_SIZE, GotTable, ModeSummary,
-    ModuleFullPath, ModuleName, MonoDefnVariant, Scheme, SchedulingClass, Sexp, Span, Symbol,
-    TraitDeclInfo, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    ConcreteType, DefnVariant, FQSymbol, FQTraitName, FQTypeName, GOT_TABLE_SIZE, GotTable,
+    LinkerSymbol, ModeSummary, ModuleFullPath, ModuleName, MonoDefnVariant, SchedulingClass,
+    Scheme, Sexp, Span, Symbol, TraitDeclInfo, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- CodeStore / LinkerStore marker traits (Sprint 58 Wave 3a; Decision 32) ---
@@ -399,7 +399,11 @@ impl ModuleAliasEntry {
     /// authoring forms: `Private` for §8.3.4 import-alias, `Public` for
     /// §8.4.4 export-mount.
     pub fn new(target: ModuleFullPath, visibility: Visibility, span: Span) -> Self {
-        ModuleAliasEntry { target, visibility, span }
+        ModuleAliasEntry {
+            target,
+            visibility,
+            span,
+        }
     }
 }
 
@@ -501,7 +505,8 @@ impl SymbolTable<(), ()> {
     ///
     /// Sprint 58 Wave 3b (Decision 35).
     pub fn into_concrete<C: CodeStore, L: LinkerStore>(self) -> SymbolTable<C, L> {
-        let mut symbols: HashMap<Symbol, ModuleEntry<C>> = HashMap::with_capacity(self.symbols.len());
+        let mut symbols: HashMap<Symbol, ModuleEntry<C>> =
+            HashMap::with_capacity(self.symbols.len());
         for (name, entry) in self.symbols {
             symbols.insert(name, entry.into_concrete::<C>());
         }
@@ -530,25 +535,75 @@ impl ModuleEntry<()> {
     pub fn into_concrete<C: CodeStore>(self) -> ModuleEntry<C> {
         match self {
             ModuleEntry::Def {
-                scheme, visibility, docstring, param_names, kind, callees, value_use,
-                trait_origin, seq, ast, codegen_view, code: _,
+                scheme,
+                visibility,
+                docstring,
+                param_names,
+                kind,
+                callees,
+                value_use,
+                trait_origin,
+                seq,
+                ast,
+                codegen_view,
+                code: _,
             } => ModuleEntry::Def {
-                scheme, visibility, docstring, param_names, kind, callees, value_use,
-                trait_origin, seq, ast, codegen_view, code: None,
+                scheme,
+                visibility,
+                docstring,
+                param_names,
+                kind,
+                callees,
+                value_use,
+                trait_origin,
+                seq,
+                ast,
+                codegen_view,
+                code: None,
             },
-            ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility } => {
-                ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
+            ModuleEntry::SpecialForm {
+                scheme,
+                param_names,
+                docstring,
+                description,
+                visibility,
+            } => ModuleEntry::SpecialForm {
+                scheme,
+                param_names,
+                docstring,
+                description,
+                visibility,
+            },
+            ModuleEntry::Import { source, visibility } => {
+                ModuleEntry::Import { source, visibility }
             }
-            ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
-            ModuleEntry::TypeDef { info, visibility, docstring } => {
-                ModuleEntry::TypeDef { info, visibility, docstring }
-            }
-            ModuleEntry::IntrinsicType { ty, visibility, docstring } => {
-                ModuleEntry::IntrinsicType { ty, visibility, docstring }
-            }
-            ModuleEntry::TraitDecl { info, visibility, docstring } => {
-                ModuleEntry::TraitDecl { info, visibility, docstring }
-            }
+            ModuleEntry::TypeDef {
+                info,
+                visibility,
+                docstring,
+            } => ModuleEntry::TypeDef {
+                info,
+                visibility,
+                docstring,
+            },
+            ModuleEntry::IntrinsicType {
+                ty,
+                visibility,
+                docstring,
+            } => ModuleEntry::IntrinsicType {
+                ty,
+                visibility,
+                docstring,
+            },
+            ModuleEntry::TraitDecl {
+                info,
+                visibility,
+                docstring,
+            } => ModuleEntry::TraitDecl {
+                info,
+                visibility,
+                docstring,
+            },
             // ModuleEntry::Constructor variant retired — constructors are now
             // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
             // and synthesised DefnVariant bodies whose body expression is
@@ -566,9 +621,19 @@ impl ModuleEntry<()> {
             // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
             // lives on the platform module's own SymbolTable.dll
             // (see `design/arch/bounded-contexts.md` §7).
-            ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility } => {
-                ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility }
-            }
+            ModuleEntry::TraitImpl {
+                trait_name,
+                impl_type,
+                impl_module,
+                methods,
+                visibility,
+            } => ModuleEntry::TraitImpl {
+                trait_name,
+                impl_type,
+                impl_module,
+                methods,
+                visibility,
+            },
             ModuleEntry::Ambiguous { visibility } => ModuleEntry::Ambiguous { visibility },
         }
     }
@@ -716,11 +781,17 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// slot and codegen normally.
     pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter().filter(|(_, entry)| match entry {
-            ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
+            ModuleEntry::Def {
+                ast: Some(_), kind, ..
+            } => !matches!(
                 kind.as_ref(),
                 DefKind::Overloaded { .. }
-                    | DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
-                    | DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    | DefKind::UserFn {
+                        fn_state: UserFnState::Constrained(_)
+                    }
+                    | DefKind::UserFn {
+                        fn_state: UserFnState::Polymorphic(_)
+                    }
             ),
             _ => false,
         })
@@ -1184,9 +1255,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// uniformity (see `design/arch/bounded-contexts.md` §7);
     /// `Public` is the lossless mark (the sentinel itself never resolves to a
     /// payload, so visibility is informational only).
-    Ambiguous {
-        visibility: Visibility,
-    },
+    Ambiguous { visibility: Visibility },
 }
 
 // SAFETY: `ModuleEntry::Def` carries no raw pointer fields directly —
@@ -1376,16 +1445,20 @@ impl<C: CodeStore> ModuleEntry<C> {
     pub fn callable_got_slot(&self) -> Option<usize> {
         match self {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => {
-                    Some(*got_slot)
-                }
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot, .. },
+                } => Some(*got_slot),
                 // Only the Extern arm has a slot; an Inline primitive answers
                 // `None` BY CONSTRUCTION (S102 FIXME 0476 — no consumer can
                 // dispatch GOT-indirect through a body that cannot exist).
-                DefKind::Primitive { body: PrimitiveBody::Extern { got_slot, .. }, .. } => {
-                    Some(*got_slot)
-                }
-                DefKind::Primitive { body: PrimitiveBody::Inline, .. } => None,
+                DefKind::Primitive {
+                    body: PrimitiveBody::Extern { got_slot, .. },
+                    ..
+                } => Some(*got_slot),
+                DefKind::Primitive {
+                    body: PrimitiveBody::Inline,
+                    ..
+                } => None,
                 DefKind::Constructor { got_slot, .. } => Some(*got_slot),
                 DefKind::PlatformEffect { got_slot, .. } => Some(*got_slot),
                 // NotDetermined / Constrained / Polymorphic user fns, Macro
@@ -1452,7 +1525,9 @@ impl<C: CodeStore> ModuleEntry<C> {
         match self {
             ModuleEntry::TypeDef { info, .. } => Some(info),
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Constructor { type_def: Some(td), .. } => Some(td),
+                DefKind::Constructor {
+                    type_def: Some(td), ..
+                } => Some(td),
                 _ => None,
             },
             _ => None,
@@ -1474,9 +1549,9 @@ impl<C: CodeStore> ModuleEntry<C> {
     pub fn mode_summary(&self) -> Option<&ModeSummary> {
         match self {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::UserFn { fn_state: UserFnState::Concrete { mode_summary, .. } } => {
-                    mode_summary.as_ref()
-                }
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { mode_summary, .. },
+                } => mode_summary.as_ref(),
                 DefKind::Primitive { mode_summary, .. } => mode_summary.as_ref(),
                 DefKind::Constructor { mode_summary, .. } => mode_summary.as_ref(),
                 DefKind::PlatformEffect { mode_summary, .. } => mode_summary.as_ref(),
@@ -1496,7 +1571,9 @@ impl<C: CodeStore> ModuleEntry<C> {
     pub fn set_mode_summary(&mut self, summary: Option<ModeSummary>) -> bool {
         match self {
             ModuleEntry::Def { kind, .. } => match kind.as_mut() {
-                DefKind::UserFn { fn_state: UserFnState::Concrete { mode_summary, .. } } => {
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { mode_summary, .. },
+                } => {
                     *mode_summary = summary;
                     true
                 }
@@ -1863,13 +1940,9 @@ pub enum DefKind {
     /// which has no slot field. The three legal states are exactly the three
     /// `UserFnState` variants; the illegal fourth (constrained + slot) has no
     /// representation. See [`UserFnState`] and BC §7 "Callability is structural".
-    UserFn {
-        fn_state: UserFnState,
-    },
+    UserFn { fn_state: UserFnState },
     /// Multi-sig overloaded function base name (Ring 2).
-    Overloaded {
-        variants: Vec<OverloadVariant>,
-    },
+    Overloaded { variants: Vec<OverloadVariant> },
     /// An ADT constructor (see `design/arch/bounded-contexts.md` §7
     /// "Multi-legged authoring" for the ctor-as-Def shape and rejected alternatives).
     ///
@@ -2093,7 +2166,10 @@ impl DefKind {
     /// other site (typecheck bootstrap seeding, tests) uses this.
     pub fn primitive(got_slot: usize) -> DefKind {
         DefKind::Primitive {
-            body: PrimitiveBody::Extern { got_slot, borrowed_sibling_slot: None },
+            body: PrimitiveBody::Extern {
+                got_slot,
+                borrowed_sibling_slot: None,
+            },
             mode_summary: None,
         }
     }
@@ -2574,6 +2650,54 @@ pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     )
 }
 
+/// Injective module-qualified linker identity for one complete concrete type.
+pub fn drop_glue_symbol_name(module: &ModuleFullPath, ty: &ConcreteType) -> LinkerSymbol {
+    let mut out = String::from("__cranelisp_drop_");
+    encode_component(&mut out, module.as_ref());
+    out.push('_');
+    encode_concrete_type(&mut out, ty);
+    LinkerSymbol::from(out)
+}
+
+fn encode_component(out: &mut String, value: &str) {
+    use std::fmt::Write as _;
+    write!(out, "{}_", value.len()).expect("String write");
+    for byte in value.as_bytes() {
+        write!(out, "{byte:02x}").expect("String write");
+    }
+}
+
+fn encode_arity(out: &mut String, n: usize) {
+    use std::fmt::Write as _;
+    write!(out, "{n}_").expect("String write");
+}
+
+fn encode_concrete_type(out: &mut String, ty: &ConcreteType) {
+    match ty {
+        ConcreteType::Int => out.push('i'),
+        ConcreteType::Bool => out.push('b'),
+        ConcreteType::String => out.push('s'),
+        ConcreteType::Float => out.push('f'),
+        ConcreteType::Fn(params, ret) => {
+            out.push('n');
+            encode_arity(out, params.len());
+            for param in params {
+                encode_concrete_type(out, param);
+            }
+            encode_concrete_type(out, ret);
+        }
+        ConcreteType::ADT(name, args) => {
+            out.push('a');
+            encode_component(out, name.module.as_ref());
+            encode_component(out, name.name.as_ref());
+            encode_arity(out, args.len());
+            for arg in args {
+                encode_concrete_type(out, arg);
+            }
+        }
+    }
+}
+
 /// Install a pre-built `SymbolTable` at `path`. Used by the cache-hit branch
 /// of `CompilerSession::introduce_module` — the cached metadata is decoded
 /// into a `SymbolTable` and installed atomically. Overwrites any existing
@@ -2744,8 +2868,7 @@ where
     C: CodeStore,
     L: LinkerStore,
 {
-    let (terminal, _home) =
-        resolve_terminal_entry_and_home(modules, scope, trait_name.as_ref())?;
+    let (terminal, _home) = resolve_terminal_entry_and_home(modules, scope, trait_name.as_ref())?;
     match terminal {
         ModuleEntry::TraitDecl { info, .. } => Some(info),
         _ => None,
@@ -2791,7 +2914,11 @@ where
             continue;
         }
         for_each_in_module(modules, &trait_home, |_key, entry| {
-            if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+            if let ModuleEntry::TraitImpl {
+                trait_name,
+                impl_type,
+                ..
+            } = entry
                 && &impl_type.name == type_name
                 && !traits.contains(&trait_name.name)
             {
@@ -2826,7 +2953,11 @@ where
         _ => return types,
     };
     for_each_in_module(modules, &trait_home, |_name, entry| {
-        if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
+        if let ModuleEntry::TraitImpl {
+            trait_name: tn,
+            impl_type,
+            ..
+        } = entry
             && &tn.name == trait_name
             && !types.contains(&impl_type.name)
         {

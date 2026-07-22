@@ -338,10 +338,29 @@ final certification.
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| `/arch` | cranelisp-types | Implement `Sexp::Annotated`, `UnresolvedTraitMethodSig`, `TraitMethodKind`, `TraitMethodSig`, and `drop_glue_symbol_name`; bump schema 22→23 once; regenerate the types public baseline and prove frontend/typecheck baselines zero-diff | pending |
-| `/review` | cranelisp-types | Verify exact ruled carriers, injective glue identity, one schema window, no parallel legacy authority, and baseline completeness | pending |
+| `/arch` | cranelisp-types | Implement `Sexp::Annotated`, `UnresolvedTraitMethodSig`, `TraitMethodKind`, `TraitMethodSig`, and `drop_glue_symbol_name`; bump schema 22→23 once; regenerate the types public baseline and prove frontend/typecheck baselines zero-diff | **review findings addressed — ready for re-review**; canonical `Sexp::Annotated`/tag-7 surface reconciled, changed types files rustfmt-clean, and injectivity pins now cover Fn arity, parameter/result boundaries, and nested ADT argument boundaries |
+| `/review` | cranelisp-types | Verify exact ruled carriers, injective glue identity, one schema window, no parallel legacy authority, and baseline completeness | **PASS — checkpoint ready to commit**. Re-review confirms the canonical interface now records the sole named-field `Sexp::Annotated` carrier, exact outer/child span contract, and appended macro tag 7 with tags 0–6 stable; focused rustfmt check passes for every changed types file; injectivity tests now pin function arity, parameter/result nesting, nested ADT argument boundaries, and equal-input controls. Prior passes remain intact: exact unresolved/classified carrier fields and closed sum, no legacy parallel authority in types, serde/span fidelity, one schema bump 22→23, module-qualified complete-type encoding, exact types baseline delta, and frontend/typecheck baseline zero-diff. Runtime/public-api-tool checks remain environment-blocked and are not a static checkpoint blocker. |
 
 **Gate:** `/arch` approves the complete public/interface set; stale schema rejects; no second annotation/method/glue carrier exists.
+
+**Wave-2 dispatch note (2026-07-22):** `/review` may inspect the uncommitted
+types checkpoint now. The implementation is confined to `cranelisp-types`, the
+canonical backend cache-version owner, its exact public baseline, and this row;
+no frontend/typecheck/backend behavior consumer was implemented. Static checks
+confirm one schema literal at 23 and no legacy method fields in the classified
+carrier. `cargo-public-api` and `cargo-nextest` are not installed; `cargo check
+-p cranelisp-types` could not resolve the crates.io index, and `--offline` lacks
+the workspace's `cranelift` package. Runtime/baseline-tool verification remains
+an explicit review-environment gate; no further network retry was made.
+
+**Wave-2 review-response note (2026-07-22):** the blocker and Important
+findings above are addressed without downstream implementation. The canonical
+interface no longer claims the pre-S116 eight-case/no-change `Sexp`; it records
+the sole named-field `Annotated` carrier and appended tag 7. Focused rustfmt,
+offline metadata, and diff-check pass. Glue-name tests now pair inequality
+witnesses with equal-input controls across function arity, parameter/result
+nesting, and outer-versus-nested ADT argument-vector boundaries. Dispatch
+returns to `/review` for the gate verdict.
 
 ### Wave 3 — canonical backend glue foundation
 

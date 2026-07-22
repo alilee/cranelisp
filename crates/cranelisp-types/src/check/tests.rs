@@ -88,11 +88,16 @@ fn method_resolutions_population_semantics() {
     let span_b = Span::new(10, 20);
     mr.resolved_calls.insert(
         span_a,
-        ResolvedCall::BuiltinFn { name: Symbol::from("mul-i64") },
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("mul-i64"),
+        },
     );
     mr.pattern_ctors.insert(
         span_b,
-        FQSymbol { module: ModuleFullPath::from("user"), symbol: Symbol::from("Some") },
+        FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("Some"),
+        },
     );
 
     // Distinct spans land in distinct maps; a resolved-call span is not a
@@ -123,7 +128,85 @@ fn type_def_info_serde_roundtrip_preserves_ctor_order() {
     assert_eq!(rt.type_params.len(), 1);
     // Constructor tag == index, so ORDER is load-bearing (find_constructor_by_tag).
     assert_eq!(
-        rt.constructors.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+        rt.constructors
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
         vec!["Leaf".to_string(), "Node".to_string()]
     );
+}
+
+// spec: §1.4.5 / §7.1
+#[test]
+fn unresolved_annotated_tail_round_trips_exact_spans() {
+    let method = crate::UnresolvedTraitMethodSig {
+        name: Symbol::from("show"),
+        docstring: None,
+        params: vec![],
+        tail: crate::Sexp::Annotated {
+            annotation: Box::new(crate::Sexp::Symbol("Int".into(), Span::new(1, 4))),
+            subject: Box::new(crate::Sexp::Symbol("value".into(), Span::new(5, 10))),
+            span: Span::new(0, 10),
+        },
+        span: Span::new(0, 11),
+        hkt_param_index: None,
+    };
+    let json = serde_json::to_string(&method).unwrap();
+    let rt: crate::UnresolvedTraitMethodSig = serde_json::from_str(&json).unwrap();
+    let crate::Sexp::Annotated {
+        annotation,
+        subject,
+        span,
+    } = rt.tail
+    else {
+        panic!("fold lost")
+    };
+    assert_eq!(
+        (annotation.span(), subject.span(), span),
+        (Span::new(1, 4), Span::new(5, 10), Span::new(0, 10))
+    );
+}
+
+// spec: §7.1
+#[test]
+fn classified_method_closed_sum_round_trips() {
+    let methods = [
+        crate::TraitMethodSig {
+            name: Symbol::from("r"),
+            docstring: None,
+            params: vec![],
+            kind: crate::TraitMethodKind::Required {
+                ret_type: crate::TypeExpr::SelfType,
+            },
+            span: Span::new(0, 1),
+            hkt_param_index: None,
+        },
+        crate::TraitMethodSig {
+            name: Symbol::from("d"),
+            docstring: None,
+            params: vec![],
+            kind: crate::TraitMethodKind::Default {
+                body: crate::Expr::IntLit {
+                    value: 1,
+                    span: Span::new(2, 3),
+                    inferred_type: None,
+                },
+                result_constraint: Some(crate::TypeExpr::SelfType),
+            },
+            span: Span::new(2, 3),
+            hkt_param_index: None,
+        },
+    ];
+    for method in methods {
+        let json = serde_json::to_string(&method).unwrap();
+        let rt: crate::TraitMethodSig = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&rt).unwrap(), json);
+    }
+}
+
+// spec: §7.1
+#[test]
+fn legacy_parallel_trait_method_shape_is_rejected() {
+    let legacy = r#"{"name":"m","docstring":null,"params":[],"ret_type":"SelfType","span":{"start":0,"end":1},"hkt_param_index":null,"default_body":null}"#;
+    assert!(serde_json::from_str::<crate::TraitMethodSig>(legacy).is_err());
 }

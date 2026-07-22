@@ -718,6 +718,10 @@ impl core::marker::UnsafeUnpin for cranelisp_types::SchedulingClass
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::SchedulingClass
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::SchedulingClass
 pub enum cranelisp_types::Sexp
+pub cranelisp_types::Sexp::Annotated
+pub cranelisp_types::Sexp::Annotated::annotation: alloc::boxed::Box<cranelisp_types::Sexp>
+pub cranelisp_types::Sexp::Annotated::span: cranelisp_types::Span
+pub cranelisp_types::Sexp::Annotated::subject: alloc::boxed::Box<cranelisp_types::Sexp>
 pub cranelisp_types::Sexp::Bool(bool, cranelisp_types::Span)
 pub cranelisp_types::Sexp::Bracket(alloc::vec::Vec<cranelisp_types::Sexp>, cranelisp_types::Span)
 pub cranelisp_types::Sexp::Comment(alloc::string::String, cranelisp_types::Span)
@@ -1617,7 +1621,7 @@ impl<C, L> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::SymbolTa
 impl<C, L> core::panic::unwind_safe::UnwindSafe for cranelisp_types::SymbolTable<C, L> where L: core::panic::unwind_safe::UnwindSafe, C: core::panic::unwind_safe::UnwindSafe
 pub struct cranelisp_types::TraitDecl
 pub cranelisp_types::TraitDecl::docstring: core::option::Option<alloc::string::String>
-pub cranelisp_types::TraitDecl::methods: alloc::vec::Vec<cranelisp_types::TraitMethodSig>
+pub cranelisp_types::TraitDecl::methods: alloc::vec::Vec<cranelisp_types::UnresolvedTraitMethodSig>
 pub cranelisp_types::TraitDecl::name: cranelisp_types::TraitName
 pub cranelisp_types::TraitDecl::span: cranelisp_types::Span
 pub cranelisp_types::TraitDecl::type_params: alloc::vec::Vec<cranelisp_types::Symbol>
@@ -1654,13 +1658,25 @@ impl core::marker::Unpin for cranelisp_types::TraitImpl
 impl core::marker::UnsafeUnpin for cranelisp_types::TraitImpl
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitImpl
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitImpl
+pub enum cranelisp_types::TraitMethodKind
+pub cranelisp_types::TraitMethodKind::Default
+pub cranelisp_types::TraitMethodKind::Default::body: cranelisp_types::Expr
+pub cranelisp_types::TraitMethodKind::Default::result_constraint: core::option::Option<cranelisp_types::TypeExpr>
+pub cranelisp_types::TraitMethodKind::Required
+pub cranelisp_types::TraitMethodKind::Required::ret_type: cranelisp_types::TypeExpr
+impl core::marker::Freeze for cranelisp_types::TraitMethodKind
+impl core::marker::Send for cranelisp_types::TraitMethodKind
+impl core::marker::Sync for cranelisp_types::TraitMethodKind
+impl core::marker::Unpin for cranelisp_types::TraitMethodKind
+impl core::marker::UnsafeUnpin for cranelisp_types::TraitMethodKind
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitMethodKind
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitMethodKind
 pub struct cranelisp_types::TraitMethodSig
-pub cranelisp_types::TraitMethodSig::default_body: core::option::Option<cranelisp_types::Expr>
 pub cranelisp_types::TraitMethodSig::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::TraitMethodSig::hkt_param_index: core::option::Option<usize>
+pub cranelisp_types::TraitMethodSig::kind: cranelisp_types::TraitMethodKind
 pub cranelisp_types::TraitMethodSig::name: cranelisp_types::Symbol
 pub cranelisp_types::TraitMethodSig::params: alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::TypeExpr)>
-pub cranelisp_types::TraitMethodSig::ret_type: cranelisp_types::TypeExpr
 pub cranelisp_types::TraitMethodSig::span: cranelisp_types::Span
 impl core::marker::Freeze for cranelisp_types::TraitMethodSig
 impl core::marker::Send for cranelisp_types::TraitMethodSig
@@ -1758,6 +1774,20 @@ impl core::marker::Unpin for cranelisp_types::TypeRef
 impl core::marker::UnsafeUnpin for cranelisp_types::TypeRef
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TypeRef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TypeRef
+pub struct cranelisp_types::UnresolvedTraitMethodSig
+pub cranelisp_types::UnresolvedTraitMethodSig::docstring: core::option::Option<alloc::string::String>
+pub cranelisp_types::UnresolvedTraitMethodSig::hkt_param_index: core::option::Option<usize>
+pub cranelisp_types::UnresolvedTraitMethodSig::name: cranelisp_types::Symbol
+pub cranelisp_types::UnresolvedTraitMethodSig::params: alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::TypeExpr)>
+pub cranelisp_types::UnresolvedTraitMethodSig::span: cranelisp_types::Span
+pub cranelisp_types::UnresolvedTraitMethodSig::tail: cranelisp_types::Sexp
+impl core::marker::Freeze for cranelisp_types::UnresolvedTraitMethodSig
+impl core::marker::Send for cranelisp_types::UnresolvedTraitMethodSig
+impl core::marker::Sync for cranelisp_types::UnresolvedTraitMethodSig
+impl core::marker::Unpin for cranelisp_types::UnresolvedTraitMethodSig
+impl core::marker::UnsafeUnpin for cranelisp_types::UnresolvedTraitMethodSig
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::UnresolvedTraitMethodSig
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::UnresolvedTraitMethodSig
 #[non_exhaustive] pub struct cranelisp_types::ValueLayout
 pub cranelisp_types::ValueLayout::words: usize
 impl core::marker::Freeze for cranelisp_types::ValueLayout
@@ -1796,6 +1826,7 @@ pub const cranelisp_types::GOT_TABLE_SIZE: usize
 pub const cranelisp_types::NULLARY_TAG_THRESHOLD: usize
 pub const cranelisp_types::TAG_SCONS: i64
 pub const cranelisp_types::TAG_SEXP_BOOL: i64
+pub const cranelisp_types::TAG_SEXP_ANNOTATED: i64
 pub const cranelisp_types::TAG_SEXP_BRACKET: i64
 pub const cranelisp_types::TAG_SEXP_FLOAT: i64
 pub const cranelisp_types::TAG_SEXP_INT: i64
@@ -1815,6 +1846,7 @@ pub fn cranelisp_types::bare_member_name(&str) -> &str
 pub fn cranelisp_types::build_adt_entries<C: cranelisp_types::CodeStore>(&cranelisp_types::FQTypeName, &[cranelisp_types::Symbol], &[cranelisp_types::TypeId], core::option::Option<&str>, &[cranelisp_types::AdtCtorSpec], cranelisp_types::Visibility) -> alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::ModuleEntry<C>)>
 pub fn cranelisp_types::check_binding_addition(&cranelisp_types::Symbol, cranelisp_types::BindingProvenance, cranelisp_types::BindingProvenance, &cranelisp_types::FQSymbol, cranelisp_types::Span) -> core::result::Result<(), cranelisp_types::CranelispError>
 pub fn cranelisp_types::collect_var_ids_ordered(&cranelisp_types::Type, &mut alloc::vec::Vec<cranelisp_types::TypeId>)
+pub fn cranelisp_types::drop_glue_symbol_name(&cranelisp_types::ModuleFullPath, &cranelisp_types::ConcreteType) -> cranelisp_types::LinkerSymbol
 pub fn cranelisp_types::ensure_module_exists<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath) -> cranelisp_types::EnsureOutcome where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::for_each_in_module<C, L, F>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, F) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)
 pub fn cranelisp_types::free_vars(&cranelisp_types::Type) -> std::collections::hash::set::HashSet<cranelisp_types::TypeId>

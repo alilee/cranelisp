@@ -39,6 +39,7 @@ fn sexp_tag_values_are_pinned() {
     assert_eq!(TAG_SEXP_SYM, 4);
     assert_eq!(TAG_SEXP_LIST, 5);
     assert_eq!(TAG_SEXP_BRACKET, 6);
+    assert_eq!(TAG_SEXP_ANNOTATED, 7);
 }
 
 // spec: design/arch/fixmes/0498 — SList tags are a dense 0-indexed sequence
@@ -66,6 +67,7 @@ fn sexp_tags_are_dense_and_distinct() {
         TAG_SEXP_SYM,
         TAG_SEXP_LIST,
         TAG_SEXP_BRACKET,
+        TAG_SEXP_ANNOTATED,
     ];
     tags.sort_unstable();
     for (i, tag) in tags.iter().enumerate() {
@@ -85,5 +87,8 @@ fn slist_and_sexp_tag_spaces_are_independent() {
     // Both start at 0 — this is correct: the marshaller knows the static ADT of
     // the value, so tag 0 means SNil in an SList and SexpInt in a Sexp. The
     // guard pins that both remain 0-based (a shift would desync the runtime).
-    assert_eq!(TAG_SNIL, TAG_SEXP_INT, "both ADTs are 0-based by construction");
+    assert_eq!(
+        TAG_SNIL, TAG_SEXP_INT,
+        "both ADTs are 0-based by construction"
+    );
 }

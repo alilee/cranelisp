@@ -163,9 +163,7 @@ pub enum ResolvedCall {
     /// Resolved to a builtin function (inline IR emission).
     /// The name uniquely identifies the Cranelift instruction — e.g. `add-i64` → `iadd`.
     /// No `operand_type` needed: each primitive is monomorphic (name encodes types).
-    BuiltinFn {
-        name: Symbol,
-    },
+    BuiltinFn { name: Symbol },
 }
 
 /// A monomorphised function definition — a thin wrapper over a fully-annotated
@@ -255,8 +253,7 @@ pub struct TypeDefInfo {
 /// per-parser-output. The fix is at the symbol-table layer: the entry stops
 /// embedding the AST node and stops nesting/duplicating the metadata.
 ///
-/// `methods: Vec<TraitMethodSig>` carries the per-method signatures (name,
-/// params, return type, default body, HKT index, span) — the symbol table
+/// `methods: Vec<TraitMethodSig>` carries classified per-method signatures — the symbol table
 /// needs these to resolve trait-method references and typecheck impls against
 /// each declared signature (spec §5.4.5).
 #[derive(Debug, Clone, Serialize, Deserialize)]

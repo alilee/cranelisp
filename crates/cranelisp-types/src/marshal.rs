@@ -73,6 +73,8 @@ pub const TAG_SEXP_LIST: i64 = 5;
 /// Constructor order defined by `register_macros_module()` in
 /// `crates/cranelisp-typecheck/src/builtins.rs`.
 pub const TAG_SEXP_BRACKET: i64 = 6;
+/// SexpAnnotated (tag 7), appended so prior constructor tags remain stable.
+pub const TAG_SEXP_ANNOTATED: i64 = 7;
 
 #[cfg(test)]
 mod tests;

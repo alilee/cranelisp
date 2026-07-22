@@ -352,6 +352,10 @@ pub mod linker;
 /// it). The bump refuses every schema-20 `.o` wholesale. One bump covers the
 /// sprint window (leg (a) rides it; b2 does NOT re-bump).
 ///
+/// **22 → 23 (S116 annotation/method-carrier window).** One invalidation covers
+/// `Sexp::Annotated` and the unresolved/classified method reshape. The pure
+/// drop-glue naming function adds no serialized state or second bump.
+///
 /// **21 → 22 (S114 carrier flip + B-2 escape-fact window —
 /// `design/arch/typed-resolution-carrier.md` §4; ONE window, F7).** Two
 /// bump-worthy changes share this single invalidation event:
@@ -368,7 +372,7 @@ pub mod linker;
 /// would reproduce the COW-var-pattern UAF on a warm run — the fact's MEANING
 /// was corrected, so pre-fix caches must not be trusted. Per the S111 0621
 /// precedent both ride ONE bump; no second invalidation event this sprint.
-pub const CACHE_SCHEMA_VERSION: u32 = 22;
+pub const CACHE_SCHEMA_VERSION: u32 = 23;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
