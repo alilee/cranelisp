@@ -1960,10 +1960,10 @@ fn def3_heap_element_vec_no_vecset_rc_balanced_control() {
 // cell. `take-nth k` forces exactly k tail thunks.
 const LAZY_STREAM_PROGRAM: &str = "\
 (import [primitives [*]])
-(deftype Stream (SNil) (SCons [:Int h :(Fn [] Stream) tailf]))
+(deftype Stream SNil (SCons [:Int h :(Fn [] Stream) tailf]))
 (defn from [n] (SCons n (fn [] (from (add-i64 n 1)))))
 (defn take-nth [k s]
-  (match s [(SNil) 0
+  (match s [SNil 0
             (SCons h tf) (if (eq-i64 k 0) h (take-nth (sub-i64 k 1) (tf)))]))
 (defn main [] (Pure (take-nth 5 (from 37))))
 ";
@@ -1993,9 +1993,9 @@ fn lazy_stream_take_from_infinite_terminates_with_demanded_element() {
 fn lazy_stream_construction_does_not_force_tail() {
     let src = "\
 (import [primitives [*]])
-(deftype Stream (SNil) (SCons [:Int h :(Fn [] Stream) tailf]))
+(deftype Stream SNil (SCons [:Int h :(Fn [] Stream) tailf]))
 (defn from [n] (SCons n (fn [] (from (add-i64 n 1)))))
-(defn head [s] (match s [(SNil) 0 (SCons h tf) h]))
+(defn head [s] (match s [SNil 0 (SCons h tf) h]))
 (defn main [] (Pure (head (from 37))))
 ";
     Cranelisp::new()

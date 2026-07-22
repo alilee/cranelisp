@@ -195,7 +195,7 @@ fn deftrait_display_shows_classification() {
 #[test]
 fn default_method_used_when_not_overridden() {
     repl_prims(
-        "(deftrait Greetable (greet [self] Int) (wave [x] Int (add-i64 (greet x) 10)))\n\
+        "(deftrait Greetable (greet [self] Int) (wave [x] (add-i64 (greet x) 10)))\n\
          (impl Greetable Int (defn greet [x] x))\n\
          (wave 5)\n",
     )
@@ -207,7 +207,7 @@ fn default_method_used_when_not_overridden() {
 #[test]
 fn default_method_overridden_by_impl() {
     repl_prims(
-        "(deftrait Greetable (greet [self] Int) (wave [x] Int (add-i64 (greet x) 10)))\n\
+        "(deftrait Greetable (greet [self] Int) (wave [x] (add-i64 (greet x) 10)))\n\
          (impl Greetable Int (defn greet [x] x) (defn wave [x] (mul-i64 x 100)))\n\
          (wave 5)\n",
     )
@@ -238,7 +238,7 @@ fn impl_missing_required_method_neg() {
 #[test]
 fn default_method_used_on_adt_impl() {
     repl_prims(
-        "(deftrait Countable (count [self] Int) (count-plus-one [x] Int (add-i64 (count x) 1)))\n\
+        "(deftrait Countable (count [self] Int) (count-plus-one [x] (add-i64 (count x) 1)))\n\
          (deftype Color Red Green Blue)\n\
          (impl Countable Color (defn count [c] (match c [Red 1 Green 2 Blue 3])))\n\
          (count-plus-one Green)\n",
@@ -253,7 +253,7 @@ fn default_method_used_on_adt_impl() {
 #[test]
 fn default_method_with_primitive_only_body() {
     repl_prims(
-        "(deftrait Simple (val [self] Int) (val-plus [x] Int (add-i64 (val x) 1)))\n\
+        "(deftrait Simple (val [self] Int) (val-plus [x] (add-i64 (val x) 1)))\n\
          (impl Simple Int (defn val [x] x))\n\
          (val 5)\n\
          (val-plus 5)\n",
@@ -1657,7 +1657,7 @@ fn default_method_body_resolves_in_trait_defining_module() {
             "(import [primitives [*]])\n\
              (deftrait Foo\n\
             \x20 (req [a] Int)\n\
-            \x20 (bar [a b] Int (add-i64 a b)))",
+            \x20 (bar [a b] (add-i64 a b)))",
         )
         // The impl module: does NOT have `add-i64` in scope. Omits `bar`, so the
         // default body is synthesized and checked here.

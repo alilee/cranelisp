@@ -532,7 +532,7 @@ fn deftype_ctor_nameless_type_field_rejected_neg() {
 #[test]
 fn deftype_sum_bracketed_field_still_constructs() {
     let out = repl_prims(
-        "(deftype Rotation (L [:Int n]) (R [:Int n]))\n\
+        "(deftype Rotation (L [:Int n]) (R [:Int r]))\n\
          L\n\
          (L 5)\n",
     );
