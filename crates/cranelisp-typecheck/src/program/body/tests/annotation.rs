@@ -503,22 +503,9 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // Register Double trait: (deftrait Double (double [self] self))
-    let double_decl = TraitDecl {
-        name: TraitName::from("Double"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("double"),
-            docstring: None,
-            params: vec![(Symbol::from("x"), TypeExpr::SelfType)],
-            ret_type: TypeExpr::SelfType,
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let double_decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Double (double [x] self))",
+    );
     let decl_form = TopLevel::TraitDecl(double_decl);
     let result = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);

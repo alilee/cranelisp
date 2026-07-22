@@ -1179,28 +1179,9 @@
     // =====================================================================
 
     fn collide_trait_decl(method: &str) -> cranelisp_types::TraitDecl {
-        use cranelisp_types::{TraitDecl, TraitMethodSig};
-        TraitDecl {
-            name: TraitName::from("HasV"),
-            // Conventional (kind-`*`) trait: bare head + empty `type_params` +
-            // `self` (S112 settled model — a never-applied head variable is a
-            // declaration-time reject).
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from(method),
-                docstring: None,
-                params: vec![(Symbol::from("x"), cranelisp_types::TypeExpr::SelfType)],
-                ret_type: cranelisp_types::TypeExpr::Named(
-                    cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
-                ),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            docstring: None,
-            span: Span::SYNTHETIC,
-        }
+        crate::traits::test_helpers::parse_trait_decl(&format!(
+            "(deftrait HasV ({method} [x] Int))"
+        ))
     }
 
     fn collide_impl(target: &str, method: &str) -> cranelisp_types::TraitImpl {

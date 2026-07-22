@@ -633,32 +633,16 @@
     // lookups. See `design/typecheck/implementation-slice-s66.md §5`.
 
     use cranelisp_types::{
-        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitMethodSig,
+        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl,
         TraitName, TypeExpr, TypeName,
     };
 
     /// Make a unary trait `T` over type parameter `a` with one method `op`
     /// (`(Fn [a a] a)`). Used by Pattern B / chain-follow tests below.
     fn make_unary_trait_decl(name: &str, method: &str) -> TraitDecl {
-        TraitDecl {
-            name: TraitName::from(name),
-            docstring: None,
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from(method),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::SelfType),
-                    (Symbol::from("rhs"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::SelfType,
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }
+        crate::traits::test_helpers::parse_trait_decl(&format!(
+            "(deftrait {name} ({method} [lhs rhs] self))"
+        ))
     }
 
     /// Make a concrete `(impl T Int (defn op [lhs rhs] (add-i64 lhs rhs)))`.

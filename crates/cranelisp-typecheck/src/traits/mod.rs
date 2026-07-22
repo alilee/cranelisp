@@ -86,4 +86,4 @@ pub(crate) fn mangle_trait_method(
 // the code it exercises. Their shared fixtures + assertion helpers live in
 // `test_helpers` so no test is duplicated (Principle 23).
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;

@@ -16,7 +16,7 @@ use super::*;
 pub(crate) use crate::checker::TestFixture;
 pub(crate) use cranelisp_types::{CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName,
     ModuleEntry, ModuleFullPath, MonoDefnVariant, MonoExpr, Symbol,
-    TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
+    TraitDecl, TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
 };
 
 /// Seed glob-import edges from `source` into the fixture's CURRENT module,
@@ -184,27 +184,9 @@ pub(crate) fn walk_inferred_types(expr: &Expr, any_typed: &mut bool, all_resolve
 /// Register a minimal Num trait with `+` method, plus an impl for Int,
 /// so tests using `(+ x y)` work after Decision 17 elimination.
 pub(crate) fn register_num_trait_inline(tc: &mut TestFixture) {
-    let num_decl = TraitDecl {
-        name: TraitName::from("Num"),
-        docstring: None,
-        // Conventional (kind-`*`) trait, `self`-based (S112 settled model —
-        // the `Num self` constraint rides `self`).
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("+"),
-            docstring: None,
-            params: vec![
-                (Symbol::from("lhs"), TypeExpr::SelfType),
-                (Symbol::from("rhs"), TypeExpr::SelfType),
-            ],
-            ret_type: TypeExpr::SelfType,
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let num_decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Num (+ [lhs rhs] self))",
+    );
     tc.register_trait_decl_self(&num_decl).unwrap();
 
     // impl Num for Int: + → add-i64
@@ -759,25 +741,9 @@ pub(crate) fn make_add_multi_sig_int_float() -> Defn {
 /// primitive (`(Fn [Int Int] Int)`); applying it to `self` twice keeps the
 /// impl body trivially `(Fn [Int] Int)`-typed.
 pub(crate) fn register_int_returning_trait(tc: &mut TestFixture, name: &str, method: &str) {
-    let decl = TraitDecl {
-        name: TraitName::from(name),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from(method),
-            docstring: None,
-            params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                None,
-                TypeName::from("Int"),
-            )),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(&format!(
+        "(deftrait {name} ({method} [self] Int))"
+    ));
     tc.register_trait_decl_self(&decl).unwrap();
 
     let impl_ = TraitImpl {
@@ -823,25 +789,9 @@ pub(crate) fn is_vec(t: &Type) -> bool {
 /// `Self`-typed parameter and `Bool` return) in the fixture's current
 /// module, so a `Bounds([..])` param annotation can resolve it.
 pub(crate) fn register_marker_trait(tc: &mut TestFixture, name: &str, method: &str) {
-    let decl = TraitDecl {
-        name: TraitName::from(name),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from(method),
-            docstring: None,
-            params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                None,
-                TypeName::from("Bool"),
-            )),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(&format!(
+        "(deftrait {name} ({method} [self] Bool))"
+    ));
     tc.register_trait_decl_self(&decl).unwrap();
     tc.clear_transient_state();
 }

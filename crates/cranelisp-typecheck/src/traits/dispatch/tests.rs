@@ -5,7 +5,7 @@
 
 use cranelisp_types::{
     CranelispError, Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, TraitDecl, TraitImpl,
-    TraitMethodSig, TraitName, Type, TypeExpr, TypeName, Visibility,
+    TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
 use super::*;
@@ -390,25 +390,7 @@ fn test_is_trait_method() {
 fn test_try_resolve_with_inline_trait() {
     let mut tc = tc_with_prims();
     // Register Num trait inline (as prelude would)
-    let num_decl = TraitDecl {
-        name: TraitName::from("Num"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("+"),
-            docstring: None,
-            params: vec![
-                (Symbol::from("lhs"), TypeExpr::SelfType),
-                (Symbol::from("rhs"), TypeExpr::SelfType),
-            ],
-            ret_type: TypeExpr::SelfType,
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let num_decl = parse_trait_decl("(deftrait Num (+ [lhs rhs] self))");
     tc.register_trait_decl_self(&num_decl).unwrap();
 
     // Register impl Num for Int

@@ -349,25 +349,9 @@ fn callees_records_impl_method_body_reference() {
     );
 
     // (deftrait Sizey [a] (defn bump [self] Int))
-    let decl = TraitDecl {
-        name: TraitName::from("Sizey"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("bump"),
-            docstring: None,
-            params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                None,
-                TypeName::from("Int"),
-            )),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Sizey (bump [self] Int))",
+    );
     tc.register_trait_decl_self(&decl).unwrap();
 
     // (impl Sizey Int (defn bump [a] (helper a))) — the body calls the
@@ -428,43 +412,9 @@ fn callees_records_default_method_body_reference() {
     // (deftrait Doubly [a]
     //   (defn req [self] Self)
     //   (defn dbl [a] Int (dhelper a)))   ; default body calls dhelper
-    let default_body = Expr::Apply {
-        callee: Box::new(Expr::var(Symbol::from("dhelper"), Span::new(920, 927))),
-        args: vec![Expr::var(Symbol::from("a"), Span::new(928, 929))],
-        span: Span::new(919, 930),
-        resolved_call: None,
-        inferred_type: None,
-    };
-    let decl = TraitDecl {
-        name: TraitName::from("Doubly"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![
-            TraitMethodSig {
-                name: Symbol::from("req"),
-                docstring: None,
-                params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-                ret_type: TypeExpr::SelfType,
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            },
-            TraitMethodSig {
-                name: Symbol::from("dbl"),
-                docstring: None,
-                params: vec![(Symbol::from("a"), TypeExpr::SelfType)],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                    None,
-                    TypeName::from("Int"),
-                )),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: Some(default_body),
-            },
-        ],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Doubly (req [self] self) (dbl [a] :Int (dhelper a)))",
+    );
     tc.register_trait_decl_self(&decl).unwrap();
 
     // (impl Doubly Int (defn req [a] a)) — omits `dbl`, forcing default

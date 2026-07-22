@@ -213,14 +213,13 @@ fn occurrence_decl(
         name: TraitName::from(trait_name),
         docstring: None,
         type_params: vec![],
-        methods: vec![cranelisp_types::TraitMethodSig {
+        methods: vec![cranelisp_types::UnresolvedTraitMethodSig {
             name: Symbol::from(method),
             docstring: None,
             params,
-            ret_type,
+            tail: type_expr_sexp(ret_type),
             span: cranelisp_types::Span::SYNTHETIC,
             hkt_param_index: None,
-            default_body: None,
         }],
         visibility: cranelisp_types::Visibility::Public,
         span: cranelisp_types::Span::SYNTHETIC,
@@ -501,7 +500,7 @@ fn test_no_operators_at_startup() {
 // declaration-time reject (spec §7.1/§7.2.1; `design/typecheck/hkt.md` §5.1).
 // ---------------------------------------------------------------------------
 
-use cranelisp_types::{Span, TraitDecl, TraitMethodSig, TypeExpr, TypeRef};
+use cranelisp_types::{Span, TraitDecl, TypeExpr, TypeRef};
 
 /// `(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))` — a
 /// genuinely higher-kinded trait: the con_var `f` is APPLIED in the method sig.
@@ -510,7 +509,7 @@ fn functor_decl() -> TraitDecl {
         name: TraitName::from("Functor"),
         docstring: None,
         type_params: vec![Symbol::from("f")],
-        methods: vec![TraitMethodSig {
+        methods: vec![cranelisp_types::UnresolvedTraitMethodSig {
             name: Symbol::from("fmap"),
             docstring: None,
             params: vec![
@@ -529,13 +528,12 @@ fn functor_decl() -> TraitDecl {
                     ),
                 ),
             ],
-            ret_type: TypeExpr::Applied(
+            tail: type_expr_sexp(TypeExpr::Applied(
                 TypeRef::new(None, TypeName::from("f")),
                 vec![TypeExpr::TypeVar(Symbol::from("b"))],
-            ),
+            )),
             span: Span::SYNTHETIC,
             hkt_param_index: None,
-            default_body: None,
         }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,
@@ -554,14 +552,13 @@ fn deftrait_never_applied_head_var_rejected_at_declaration() {
         name: TraitName::from("Zeroable"),
         docstring: None,
         type_params: vec![Symbol::from("a")],
-        methods: vec![TraitMethodSig {
+        methods: vec![cranelisp_types::UnresolvedTraitMethodSig {
             name: Symbol::from("zed"),
             docstring: None,
             params: vec![],
-            ret_type: TypeExpr::TypeVar(Symbol::from("a")), // bare `a`, never applied
+            tail: type_expr_sexp(TypeExpr::TypeVar(Symbol::from("a"))), // bare `a`, never applied
             span: Span::SYNTHETIC,
             hkt_param_index: None,
-            default_body: None,
         }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,

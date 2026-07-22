@@ -997,22 +997,7 @@ fn find_trait_method_decl_home_hop_finds_self_returning_method_d2() {
     tc.set_current_module(zlib.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     // Trait `Zero` with a nullary Self-returning method `z` (`(z [] self)`).
-    let decl = TraitDecl {
-        name: TraitName::from("Zero"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("z"),
-            docstring: None,
-            params: vec![],
-            ret_type: TypeExpr::SelfType,
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Zero (z [] self))");
     tc.register_trait_decl_self(&decl).unwrap();
     tc.clear_transient_state();
     // user imports ONLY the method `z` — NOT the trait `Zero`.

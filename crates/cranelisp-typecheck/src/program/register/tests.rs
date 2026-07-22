@@ -590,25 +590,9 @@ fn test_check_form_trait_decl_register() {
     let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
-    let decl = TraitDecl {
-        name: TraitName::from("Eq"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("eq"),
-            docstring: None,
-            params: vec![
-                (Symbol::from("lhs"), TypeExpr::SelfType),
-                (Symbol::from("rhs"), TypeExpr::SelfType),
-            ],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Eq (eq [lhs rhs] Bool))",
+    );
     let form = TopLevel::TraitDecl(decl);
     let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
 
@@ -627,25 +611,9 @@ fn test_check_form_trait_impl_register() {
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // Register a new trait (Eq) then impl it for Int
-    let decl = TraitDecl {
-        name: TraitName::from("Eq"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("eq"),
-            docstring: None,
-            params: vec![
-                (Symbol::from("a"), TypeExpr::SelfType),
-                (Symbol::from("b"), TypeExpr::SelfType),
-            ],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Eq (eq [a b] Bool))",
+    );
     let decl_form = TopLevel::TraitDecl(decl);
     let _ = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
 

@@ -4,7 +4,7 @@
 //! of the code it exercises, per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig,
+    Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl,
     TraitName, TypeExpr, TypeName, Visibility,
 };
 
@@ -14,25 +14,7 @@ use crate::traits::test_helpers::*;
 /// bare head, empty `type_params`, both params + return `self` (S112 settled
 /// kind-`*` model).
 fn unary_trait_decl(name: &str, method: &str) -> TraitDecl {
-    TraitDecl {
-        name: TraitName::from(name),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from(method),
-            docstring: None,
-            params: vec![
-                (Symbol::from("lhs"), TypeExpr::SelfType),
-                (Symbol::from("rhs"), TypeExpr::SelfType),
-            ],
-            ret_type: TypeExpr::SelfType,
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    }
+    parse_trait_decl(&format!("(deftrait {name} ({method} [lhs rhs] self))"))
 }
 
 /// Build `(impl <trait> Int (defn <method> [lhs rhs] (add-i64 lhs rhs)))`.
@@ -64,6 +46,62 @@ fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
         }],
         span: Span::SYNTHETIC,
     }
+}
+
+// spec: 07-traits §7.3 — impl methods must match the declaration's arity.
+#[test]
+fn impl_method_too_few_parameters_rejected_before_enrollment() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&unary_trait_decl("ArityLow", "op"))
+        .unwrap();
+    let mut impl_ = int_op_impl("ArityLow", "op");
+    impl_.methods[0].variants[0].params.pop();
+
+    let err = tc.register_trait_impl_self(&impl_).unwrap_err();
+    assert!(err.message().contains("has 1 parameter"), "{err:?}");
+    assert!(!tc.has_impl(&TraitName::from("ArityLow"), &TypeName::from("Int")));
+}
+
+// spec: 07-traits §7.3 — extra binders are never silently dropped.
+#[test]
+fn impl_method_too_many_parameters_rejected_before_enrollment() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&unary_trait_decl("ArityHigh", "op"))
+        .unwrap();
+    let mut impl_ = int_op_impl("ArityHigh", "op");
+    impl_.methods[0].variants[0]
+        .params
+        .push((Symbol::from("extra"), None));
+
+    let err = tc.register_trait_impl_self(&impl_).unwrap_err();
+    assert!(err.message().contains("has 3 parameters"), "{err:?}");
+    assert!(!tc.has_impl(&TraitName::from("ArityHigh"), &TypeName::from("Int")));
+}
+
+// spec: 07-traits §7.3 — a bad later sibling publishes neither the impl nor
+// an earlier method definition; re-impl uses the same replacement transaction.
+#[test]
+fn multi_method_failure_rolls_back_earlier_method_write() {
+    let mut tc = tf_prims();
+    let decl = parse_trait_decl(
+        "(deftrait AtomicPair (first [a b] self) (second [a b] self))",
+    );
+    tc.register_trait_decl_self(&decl).unwrap();
+
+    let mut impl_ = int_op_impl("AtomicPair", "first");
+    let mut second = impl_.methods[0].clone();
+    second.name = Symbol::from("second");
+    second.variants[0].params.pop();
+    impl_.methods.push(second);
+
+    tc.register_trait_impl_self(&impl_).unwrap_err();
+    assert!(!tc.has_impl(&TraitName::from("AtomicPair"), &TypeName::from("Int")));
+    assert!(
+        tc.symbol_table()
+            .get("AtomicPair.first$primitives/Int")
+            .is_none(),
+        "the earlier sibling method must be rolled back"
+    );
 }
 
 // spec: 07-traits §7.3 + 08-modules §8.6.2 — an `(impl <trait> <type> …)` form
@@ -262,62 +300,9 @@ fn test_generate_default_methods_produces_real_bodies() {
     let mut tc = tf_prims();
 
     // Register Eq trait inline (as prelude would)
-    let eq_decl = TraitDecl {
-        name: TraitName::from("Eq"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![
-            TraitMethodSig {
-                name: Symbol::from("="),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("x"), TypeExpr::SelfType),
-                    (Symbol::from("y"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                    None,
-                    TypeName::from("Bool"),
-                )),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            },
-            TraitMethodSig {
-                name: Symbol::from("!="),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("x"), TypeExpr::SelfType),
-                    (Symbol::from("y"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                    None,
-                    TypeName::from("Bool"),
-                )),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                // Default body: (not (= x y)) — parsed Expr per S69 Submission 26
-                // (default_body is now Option<Expr>, was Option<Sexp>).
-                default_body: Some(Expr::Apply {
-                    callee: Box::new(Expr::var(Symbol::from("not"), Span::SYNTHETIC)),
-                    args: vec![Expr::Apply {
-                        callee: Box::new(Expr::var(Symbol::from("="), Span::SYNTHETIC)),
-                        args: vec![
-                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
-                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    }],
-                    span: Span::SYNTHETIC,
-                    resolved_call: None,
-                    inferred_type: None,
-                }),
-            },
-        ],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let eq_decl = parse_trait_decl(
+        "(deftrait Eq (= [x y] Bool) (!= [x y] (not (= x y))))",
+    );
     tc.register_trait_decl_self(&eq_decl).unwrap();
 
     let impl_ = TraitImpl {
@@ -376,40 +361,7 @@ use cranelisp_types::TraitRef;
 
 /// `(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))`.
 fn functor_decl() -> TraitDecl {
-    TraitDecl {
-        name: TraitName::from("Functor"),
-        docstring: None,
-        type_params: vec![Symbol::from("f")],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("fmap"),
-            docstring: None,
-            params: vec![
-                (
-                    Symbol::from("func"),
-                    TypeExpr::FnType(
-                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
-                        Box::new(TypeExpr::TypeVar(Symbol::from("b"))),
-                    ),
-                ),
-                (
-                    Symbol::from("x"),
-                    TypeExpr::Applied(
-                        cranelisp_types::TypeRef::new(None, TypeName::from("f")),
-                        vec![TypeExpr::TypeVar(Symbol::from("a"))],
-                    ),
-                ),
-            ],
-            ret_type: TypeExpr::Applied(
-                cranelisp_types::TypeRef::new(None, TypeName::from("f")),
-                vec![TypeExpr::TypeVar(Symbol::from("b"))],
-            ),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    }
+    parse_trait_decl("(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))")
 }
 
 /// Register `(deftype (Option a) None (Some [:a val]))` in the fixture's module.
@@ -747,22 +699,7 @@ fn conventional_impl_under_applied_constructor_rejected() {
 /// Build a conventional `(deftrait <name> (shw [self] Int))` decl — bare head,
 /// empty `type_params`; a kind-`*` trait whose impl target is a plain type.
 fn disp_decl(name: &str) -> TraitDecl {
-    TraitDecl {
-        name: TraitName::from(name),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![TraitMethodSig {
-            name: Symbol::from("shw"),
-            docstring: None,
-            params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-            ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_body: None,
-        }],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    }
+    parse_trait_decl(&format!("(deftrait {name} (shw [self] Int))"))
 }
 
 /// Build a conventional-trait impl `(impl <trait> <target> (defn shw [w] 5))`.

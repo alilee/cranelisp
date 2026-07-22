@@ -1843,28 +1843,12 @@
     /// Set up Num trait with + method (impl for Int, Float only)
     /// and Ord trait with < method (impl for Int, Float only).
     fn register_num_and_ord_traits(tc: &mut TestFixture) {
-        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
+        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitName, TypeExpr, Defn};
 
         // Num trait: + :: (Fn [a a] a)
-        let num_decl = TraitDecl {
-            name: TraitName::from("Num"),
-            docstring: None,
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("+"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::SelfType),
-                    (Symbol::from("rhs"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::SelfType,
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
+        let num_decl = crate::traits::test_helpers::parse_trait_decl(
+            "(deftrait Num (+ [lhs rhs] self))",
+        );
         tc.register_trait_decl_self(&num_decl).unwrap();
 
         // impl Num for Int
@@ -1932,25 +1916,9 @@
         tc.register_trait_impl_self(&float_impl).unwrap();
 
         // Ord trait: < :: (Fn [a a] Bool)
-        let ord_decl = TraitDecl {
-            name: TraitName::from("Ord"),
-            docstring: None,
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("<"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::SelfType),
-                    (Symbol::from("rhs"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
+        let ord_decl = crate::traits::test_helpers::parse_trait_decl(
+            "(deftrait Ord (< [lhs rhs] Bool))",
+        );
         tc.register_trait_decl_self(&ord_decl).unwrap();
 
         // impl Ord for Int
@@ -2212,28 +2180,12 @@
     /// Register Eq (Int + String impls) and Display (Int impl) so the
     /// value-position §7.6 tests can resolve `=` / `show` as values.
     fn register_eq_and_display_traits(tc: &mut TestFixture) {
-        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
+        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitName, TypeExpr, Defn};
 
         // Eq trait: = :: (Fn [a a] Bool)
-        let eq_decl = TraitDecl {
-            name: TraitName::from("Eq"),
-            docstring: None,
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("="),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::SelfType),
-                    (Symbol::from("rhs"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
+        let eq_decl = crate::traits::test_helpers::parse_trait_decl(
+            "(deftrait Eq (= [lhs rhs] Bool))",
+        );
         tc.register_trait_decl_self(&eq_decl).unwrap();
 
         // = impl bodies dispatch to a primitive (eq-i64 / str-eq); the actual
@@ -2272,22 +2224,9 @@
         tc.register_trait_impl_self(&mk_eq_impl("String", "str-eq")).unwrap();
 
         // Display trait: show :: (Fn [a] String)
-        let display_decl = TraitDecl {
-            name: TraitName::from("Display"),
-            docstring: None,
-            type_params: vec![],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("show"),
-                docstring: None,
-                params: vec![(Symbol::from("x"), TypeExpr::SelfType)],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
+        let display_decl = crate::traits::test_helpers::parse_trait_decl(
+            "(deftrait Display (show [x] String))",
+        );
         tc.register_trait_decl_self(&display_decl).unwrap();
         let show_int_impl = TraitImpl {
             head_con_var: None,

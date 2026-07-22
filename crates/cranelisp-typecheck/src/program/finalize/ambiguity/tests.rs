@@ -329,52 +329,9 @@ fn default_method_body_resolves_in_trait_defining_module() {
     tc.set_current_module(trait_mod.clone());
     seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
 
-    let default_bar_body = Expr::Apply {
-        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
-        args: vec![
-            Expr::var(Symbol::from("a"), Span::SYNTHETIC),
-            Expr::var(Symbol::from("b"), Span::SYNTHETIC),
-        ],
-        span: Span::SYNTHETIC,
-        resolved_call: None,
-        inferred_type: None,
-    };
-    let decl = TraitDecl {
-        name: TraitName::from("Foo"),
-        docstring: None,
-        type_params: vec![],
-        methods: vec![
-            // Required method: (req [self] Self) — must be supplied by the impl.
-            TraitMethodSig {
-                name: Symbol::from("req"),
-                docstring: None,
-                params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
-                ret_type: TypeExpr::SelfType,
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            },
-            // Default method: (bar [a b] Int (add-i64 a b)) — body uses a
-            // bare primitive in scope ONLY in `trait_mod`.
-            TraitMethodSig {
-                name: Symbol::from("bar"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("a"), TypeExpr::SelfType),
-                    (Symbol::from("b"), TypeExpr::SelfType),
-                ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
-                    None,
-                    TypeName::from("Int"),
-                )),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: Some(default_bar_body),
-            },
-        ],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    };
+    let decl = crate::traits::test_helpers::parse_trait_decl(
+        "(deftrait Foo (req [self] self) (bar [a b] :Int (add-i64 a b)))",
+    );
     tc.register_trait_decl_self(&decl)
         .expect("`Foo` declares in its defining module");
 

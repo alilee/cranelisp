@@ -10,9 +10,43 @@ use crate::builtins::FixtureBuilder;
 use crate::checker::TestFixture;
 use cranelisp_types::{
     Defn, DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleEntry,
-    ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName,
-    TypeExpr, TypeName, Visibility,
+    ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl, TraitName,
+    TypeExpr, TypeName, UnresolvedTraitMethodSig, Visibility,
 };
+
+pub(crate) fn parse_trait_decl(source: &str) -> TraitDecl {
+    let sexps = cranelisp_frontend::parse(source).expect("trait source parses");
+    match cranelisp_frontend::build_form(&sexps[0])
+        .expect("trait source builds")
+        .remove(0)
+    {
+        cranelisp_types::ParsedEntry::TraitDecl { decl } => decl,
+        other => panic!("expected trait declaration, got {other:?}"),
+    }
+}
+
+pub(crate) fn type_expr_sexp(ty: TypeExpr) -> cranelisp_types::Sexp {
+    use cranelisp_types::Sexp;
+    match ty {
+        TypeExpr::SelfType => Sexp::Symbol("self".to_string(), Span::SYNTHETIC),
+        TypeExpr::Named(name) => Sexp::Symbol(name.to_string(), Span::SYNTHETIC),
+        TypeExpr::TypeVar(name) => Sexp::Symbol(name.to_string(), Span::SYNTHETIC),
+        TypeExpr::Applied(name, args) => {
+            let mut items = vec![Sexp::Symbol(name.to_string(), Span::SYNTHETIC)];
+            items.extend(args.into_iter().map(type_expr_sexp));
+            Sexp::List(items, Span::SYNTHETIC)
+        }
+        TypeExpr::FnType(params, ret) => Sexp::List(
+            vec![
+                Sexp::Symbol("Fn".to_string(), Span::SYNTHETIC),
+                Sexp::Bracket(params.into_iter().map(type_expr_sexp).collect(), Span::SYNTHETIC),
+                type_expr_sexp(*ret),
+            ],
+            Span::SYNTHETIC,
+        ),
+        TypeExpr::Bounds(_) => panic!("trait test fixture cannot spell a bounds tail"),
+    }
+}
 
 /// Empty fixture (FIXME 0243 narrowing). For the startup-negative tests
 /// that assert NOTHING is registered (no traits / no impls / no operators)
@@ -89,17 +123,16 @@ pub(crate) fn make_test_trait_decl() -> TraitDecl {
         // `type_params: ["a"]` + bare-`a` form is now a declaration-time reject).
         type_params: vec![],
         methods: vec![
-            TraitMethodSig {
+            UnresolvedTraitMethodSig {
                 name: Symbol::from("test-op"),
                 docstring: None,
                 params: vec![
                     (Symbol::from("lhs"), TypeExpr::SelfType),
                     (Symbol::from("rhs"), TypeExpr::SelfType),
                 ],
-                ret_type: TypeExpr::SelfType,
+                tail: type_expr_sexp(TypeExpr::SelfType),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_body: None,
             },
         ],
         visibility: Visibility::Public,
@@ -115,14 +148,13 @@ pub(crate) fn make_nullary_return_poly_trait_decl() -> TraitDecl {
         name: TraitName::from("NullaryRP"),
         docstring: None,
         type_params: vec![],
-        methods: vec![TraitMethodSig {
+        methods: vec![UnresolvedTraitMethodSig {
             name: Symbol::from("z"),
             docstring: None,
             params: vec![],
-            ret_type: TypeExpr::SelfType,
+            tail: type_expr_sexp(TypeExpr::SelfType),
             span: Span::SYNTHETIC,
             hkt_param_index: None,
-            default_body: None,
         }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,
@@ -198,17 +230,16 @@ pub(crate) fn register_num_for_int(tc: &mut TestFixture) {
         // for constrained-fn detection (S112 settled model requires `SelfType`,
         // not merely empty `type_params`).
         type_params: vec![],
-        methods: vec![TraitMethodSig {
+        methods: vec![UnresolvedTraitMethodSig {
             name: Symbol::from("+"),
             docstring: None,
             params: vec![
                 (Symbol::from("lhs"), TypeExpr::SelfType),
                 (Symbol::from("rhs"), TypeExpr::SelfType),
             ],
-            ret_type: TypeExpr::SelfType,
+            tail: type_expr_sexp(TypeExpr::SelfType),
             span: Span::SYNTHETIC,
             hkt_param_index: None,
-            default_body: None,
         }],
         visibility: Visibility::Public,
         span: Span::SYNTHETIC,

@@ -385,27 +385,52 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         );
 
+        // Method checking writes each settled mangled `Def` at its normal
+        // seam. Snapshot the complete method grain so a later sibling failure
+        // can restore the prior enrollment (or remove first-impl writes).
+        // This covers first impl and re-impl with the same transaction path.
+        let writer_module = state.current_module.clone();
+        let method_symbols: Vec<Symbol> = decl
+            .methods
+            .iter()
+            .map(|method| {
+                Symbol::from(
+                    mangle_trait_method(decl.name.as_ref(), method.name.as_ref(), &fq_impl_type)
+                        .as_str(),
+                )
+            })
+            .collect();
+        let prior_method_entries: Vec<(Symbol, Option<ModuleEntry<C>>)> = {
+            let table = self.current_symbol_table(state);
+            let view = table.view();
+            method_symbols
+                .iter()
+                .map(|name| (name.clone(), view.lookup(name).cloned()))
+                .collect()
+        };
+
         // Type-check each impl method body and generate mangled-name Defns.
         // check_impl_method returns the annotated defn (already written to
         // ModuleEntry::Def.ast under the mangled name).
-        let mut all_defns = Vec::with_capacity(default_defns.len() + impl_.methods.len());
+        let checked = (|| -> Result<Vec<Defn>, CranelispError> {
+            let mut all_defns = Vec::with_capacity(default_defns.len() + impl_.methods.len());
 
-        // Default methods: each defn's name is already mangled (e.g.,
-        // "Countable.count-plus$Int"). Type-check with the corresponding
-        // trait method sig so the body is inferred with concrete Self, and
-        // the result is written to ModuleEntry::Def.ast. This prevents
-        // Pass 2's check_form_body_single_defn from re-inferring with fresh
-        // vars and spuriously marking the method as a constrained_fn
-        // (→ null GOT slot → SIGSEGV on dispatch).
-        for default_defn in &default_defns {
-            // Recover the unmangled method name from the mangled form.
-            // Expected format: "{trait_name}.{method_name}${home}/{target_type}"
-            // (the `$Type` suffix is FQ per `mangle_trait_method`, so the strip
-            // suffix is `${fq_impl_type}`, not the bare target head).
-            let mangled = default_defn.name.as_ref();
-            let prefix = format!("{}.", decl.name);
-            let suffix = format!("${}", fq_impl_type);
-            let method_name = mangled
+            // Default methods: each defn's name is already mangled (e.g.,
+            // "Countable.count-plus$Int"). Type-check with the corresponding
+            // trait method sig so the body is inferred with concrete Self, and
+            // the result is written to ModuleEntry::Def.ast. This prevents
+            // Pass 2's check_form_body_single_defn from re-inferring with fresh
+            // vars and spuriously marking the method as a constrained_fn
+            // (→ null GOT slot → SIGSEGV on dispatch).
+            for default_defn in &default_defns {
+                // Recover the unmangled method name from the mangled form.
+                // Expected format: "{trait_name}.{method_name}${home}/{target_type}"
+                // (the `$Type` suffix is FQ per `mangle_trait_method`, so the strip
+                // suffix is `${fq_impl_type}`, not the bare target head).
+                let mangled = default_defn.name.as_ref();
+                let prefix = format!("{}.", decl.name);
+                let suffix = format!("${}", fq_impl_type);
+                let method_name = mangled
                 .strip_prefix(&prefix)
                 .and_then(|s| s.strip_suffix(&suffix))
                 .ok_or_else(|| CranelispError::TypeError {
@@ -415,37 +440,56 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     ),
                     location: ErrorLocation::from_span(default_defn.span),
                 })?;
-            let method_sig = decl
-                .methods
-                .iter()
-                .find(|m| m.name.as_ref() == method_name)
-                .ok_or_else(|| CranelispError::TypeError {
-                    message: format!(
-                        "internal: trait {} has no method named {}",
-                        decl.name, method_name
-                    ),
-                    location: ErrorLocation::from_span(default_defn.span),
-                })?;
-            let annotated = self.check_impl_method_with_sig(
-                state,
-                &decl,
-                impl_,
-                default_defn,
-                method_sig,
-                true,
-                // D1 (S86): a synthesized default-method body resolves its free
-                // names in the trait's DEFINING module, not the impl writer's.
-                Some(&trait_home),
-                &fq_impl_type,
-            )?;
-            all_defns.push(annotated);
-        }
+                let method_sig = decl
+                    .methods
+                    .iter()
+                    .find(|m| m.name.as_ref() == method_name)
+                    .ok_or_else(|| CranelispError::TypeError {
+                        message: format!(
+                            "internal: trait {} has no method named {}",
+                            decl.name, method_name
+                        ),
+                        location: ErrorLocation::from_span(default_defn.span),
+                    })?;
+                let annotated = self.check_impl_method_with_sig(
+                    state,
+                    &decl,
+                    impl_,
+                    default_defn,
+                    method_sig,
+                    true,
+                    // D1 (S86): a synthesized default-method body resolves its free
+                    // names in the trait's DEFINING module, not the impl writer's.
+                    Some(&trait_home),
+                    &fq_impl_type,
+                )?;
+                all_defns.push(annotated);
+            }
 
-        for method_defn in &impl_.methods {
-            let annotated =
-                self.check_impl_method(state, &decl, impl_, method_defn, &fq_impl_type)?;
-            all_defns.push(annotated);
-        }
+            for method_defn in &impl_.methods {
+                let annotated =
+                    self.check_impl_method(state, &decl, impl_, method_defn, &fq_impl_type)?;
+                all_defns.push(annotated);
+            }
+
+            Ok(all_defns)
+        })();
+
+        let all_defns = match checked {
+            Ok(defns) => defns,
+            Err(err) => {
+                debug_assert_eq!(state.current_module, writer_module);
+                let mut table = self.current_symbol_table_mut(state);
+                for (name, prior) in prior_method_entries {
+                    if let Some(entry) = prior {
+                        table.insert(name, entry);
+                    } else {
+                        table.symbols.remove(&name);
+                    }
+                }
+                return Err(err);
+            }
+        };
 
         self.symbol_table_mut_in(&trait_home)
             .insert(pending_impl_entry.0, pending_impl_entry.1);
