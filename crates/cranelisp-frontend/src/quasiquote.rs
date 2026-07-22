@@ -103,6 +103,15 @@ fn make_sexp_container(ctor: &str, items_sexp: Sexp) -> Sexp {
     synth::list(vec![synth::sym(ctor), items_sexp])
 }
 
+/// Build `(macros/SexpAnnotated annotation subject)`.
+fn make_sexp_annotated(annotation: Sexp, subject: Sexp) -> Sexp {
+    synth::list(vec![
+        synth::sym("macros/SexpAnnotated"),
+        annotation,
+        subject,
+    ])
+}
+
 /// Build nested `(macros/SCons e0 (macros/SCons e1 ... macros/SNil))`.
 fn make_slist(elements: Vec<Sexp>) -> Sexp {
     elements
@@ -175,6 +184,15 @@ pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, *span))
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            span,
+        } => Ok(Sexp::Annotated {
+            annotation: Box::new(expand_quasiquotes(annotation)?),
+            subject: Box::new(expand_quasiquotes(subject)?),
+            span: *span,
+        }),
         Sexp::Comment(_, _) => Ok(sexp.clone()),
         other => Ok(other.clone()),
     }
@@ -206,6 +224,14 @@ pub fn expand_quote_template(template: &Sexp) -> Sexp {
             let expanded: Vec<Sexp> = children.iter().map(expand_quote_template).collect();
             make_sexp_container("macros/SexpBracket", make_slist(expanded))
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => make_sexp_annotated(
+            expand_quote_template(annotation),
+            expand_quote_template(subject),
+        ),
         // Comments are not meaningful in quoted forms; pass through as-is.
         Sexp::Comment(_, _) => template.clone(),
     }
@@ -253,6 +279,15 @@ fn expand_qq_template(
         Sexp::Bracket(children, span) => {
             expand_qq_list(children, depth, *span, "macros/SexpBracket", gensym_map)
         }
+
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => Ok(make_sexp_annotated(
+            expand_qq_template(annotation, depth, gensym_map)?,
+            expand_qq_template(subject, depth, gensym_map)?,
+        )),
 
         // Comments are not meaningful in quasiquoted forms; pass through as-is.
         Sexp::Comment(_, _) => Ok(template.clone()),

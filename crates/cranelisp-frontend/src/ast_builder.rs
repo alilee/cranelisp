@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
     ModuleFullPath, ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel,
-    TraitDecl, TraitImpl, TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName,
-    TypeRef, Visibility,
+    TraitDecl, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
+    UnresolvedTraitMethodSig, Visibility,
 };
 
 // `(trace ...)` build is mode-agnostic and works in ALL build modes including
@@ -426,14 +426,12 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
     }
 }
 
-/// Build a sequence of top-level forms, performing `:Type` annotation pairing
-/// across the sequence.
+/// Build a sequence of top-level forms, consuming reader-folded annotations.
 ///
 /// This is the **form-sequence boundary** (S81, BC §1 invariant 9): the
-/// single seam where the `:Type`-binds-the-following-form pairing is applied
-/// at the TOP LEVEL. A leading `:Type` sexp (a `colon_prefix` atom, or the
-/// bare `:` followed by a compound type form) pairs with the immediately
-/// following form into an `Expr::Annotate`, surfaced as a `TopLevel::Expr`.
+/// top-level consumer of `Sexp::Annotated`. The reader has already folded the
+/// annotation and subject into one node, which builds as an `Expr::Annotate`
+/// surfaced through `TopLevel::Expr`.
 /// Every other sexp is delegated per-form:
 /// - a top-level form (`defn`/`deftype`/`deftrait`/`impl`/`defmacro` and their
 ///   `-` variants) goes through [`build_form`], each resulting `ParsedEntry`
@@ -443,9 +441,6 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
 ///   orchestrator's prior `build_program_compat` behaviour);
 /// - any other sexp is a bare expression, built via [`build_expr`] and wrapped
 ///   as `TopLevel::Expr`.
-///
-/// A trailing `:Type` with no following form is a parse error
-/// (`annotation missing expression`).
 ///
 /// # Caller contract
 ///
@@ -457,15 +452,14 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
 /// calling `build_forms`.
 ///
 /// This is the entry the orchestrator (`int`) calls in place of driving a
-/// per-sexp `build_form`/`build_expr` loop itself, so that top-level `:Type`
-/// pairing lives ENTIRELY in the frontend — the single owning seam (BC §1
-/// invariant 9; Principle 7).
+/// per-sexp `build_form`/`build_expr` loop itself. Annotation folding remains
+/// single-sourced in the reader (BC §1 invariant 9; Principle 7).
 pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
     // Desugar the reader-quote family over the whole slice ONCE, up front —
-    // before `:Type` pairing and per-form dispatch (spec §9.4.4;
+    // before annotated-node consumption and per-form dispatch (spec §9.4.4;
     // `design/frontend/quasiquote-fold.md` §1.1). `expand_quasiquotes`
     // preserves structure (each slice element maps to exactly one element, and
-    // a leading `:Type` annotation atom is untouched), so desugar-then-pair is
+    // an `Sexp::Annotated` remains one node), so desugar-then-build is
     // order-safe (BC §1 invariant 9). Dispatch below runs on the desugared vec
     // and calls `build_form_inner` (already desugared — no redundant re-walk).
     let desugared: Vec<Sexp> = sexps
@@ -476,19 +470,8 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
     let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
     let mut i = 0;
     while i < sexps.len() {
-        // A leading `:Type` pairs with the FOLLOWING form (BC §1 invariant 9).
-        // `build_one_expr_at` performs the pairing over the sexp slice; when
-        // `sexps[i]` is not an annotation it builds exactly like `build_expr`,
-        // so the non-annotated path below handles the per-form dispatch that
-        // `build_one_expr_at`'s plain-`build_expr` arm cannot (it has no
-        // knowledge of top-level forms).
-        if try_consume_annotation(sexps, i)?.is_some() {
-            let (expr, consumed) = build_one_expr_at(sexps, i)?;
-            out.push(TopLevel::Expr(expr));
-            i += consumed;
-            continue;
-        }
-
+        // The reader has already folded an annotation with its subject. The
+        // non-annotated path below retains per-form top-level dispatch.
         let sexp = &sexps[i];
         if matches!(sexp, Sexp::Comment(_, _)) {
             i += 1;
@@ -681,8 +664,7 @@ fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     // The clause body may carry a `:Type body` ascription (BC §1 invariant 9;
     // spec §2.3.8 — `:Type` binds the immediately-following form in ALL
     // positions, so a multi-arity clause body parses like the single-arity
-    // body, FV-6). Route it through the annotation-pairing primitive rather
-    // than a raw `build_expr` (0591 AP-1).
+    // body, FV-6). Consume the reader-folded node through the shared helper.
     let (body, consumed) = build_one_expr_at(children, 1)?;
     if 1 + consumed != children.len() {
         return Err(parse_err("defn variant requires params and body", span));
@@ -720,6 +702,7 @@ pub(crate) fn parse_deftype(
     }
 
     // Detect product vs sum: Bracket -> product shorthand, otherwise constructors
+    let is_product = matches!(&children[next], Sexp::Bracket(..));
     let (resolved_params, constructors) = match &children[next] {
         Sexp::Bracket(..) => {
             let fields = build_field_list(&children[next])?;
@@ -732,13 +715,44 @@ pub(crate) fn parse_deftype(
             desugar_type_def(type_name.as_ref(), &type_params, &[ctor])
         }
         _ => {
-            let ctors = children[next..]
-                .iter()
-                .map(build_constructor_def)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut seen = HashSet::new();
+            let mut ctors = Vec::new();
+            for form in &children[next..] {
+                let ctor = build_constructor_def(form)?;
+                if !seen.insert(ctor.name.clone()) {
+                    let duplicate_span = match form {
+                        Sexp::Symbol(_, span) => *span,
+                        Sexp::List(items, _) => items[0].span(),
+                        _ => form.span(),
+                    };
+                    return Err(parse_err(
+                        &format!("duplicate constructor name '{}'", ctor.name),
+                        duplicate_span,
+                    ));
+                }
+                ctors.push(ctor);
+            }
             desugar_type_def(type_name.as_ref(), &type_params, &ctors)
         }
     };
+
+    let mut field_names = HashSet::new();
+    for ctor in &constructors {
+        if !is_product && ctor.name.as_ref() == type_name.as_ref() {
+            return Err(parse_err(
+                "a sum constructor must have a name distinct from its type",
+                ctor.span,
+            ));
+        }
+        for field in &ctor.fields {
+            if !field_names.insert(field.name.clone()) {
+                return Err(parse_err(
+                    &format!("duplicate field name '{}' in deftype", field.name),
+                    field.span,
+                ));
+            }
+        }
+    }
 
     // ParsedEntry::TypeDef carries type_params as `Vec<Symbol>` per the
     // canonical types-crate shape (S70 Phase 3 step 2A); pass through.
@@ -888,10 +902,23 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
             }
             let (docstring, next) = extract_optional_docstring(children, 1);
 
+            if next == children.len() && docstring.is_none() {
+                return Err(parse_err(
+                    "parenthesized nullary constructor is invalid; write the bare constructor name",
+                    *span,
+                ));
+            }
+
             let fields = if next < children.len() {
                 match &children[next] {
                     Sexp::Bracket(..) => {
                         let fields = build_field_list(&children[next])?;
+                        if fields.is_empty() {
+                            return Err(parse_err(
+                                "fielded constructor requires a non-empty field list; write a bare name for a nullary constructor",
+                                children[next].span(),
+                            ));
+                        }
                         // A constructor is `( name docstring? field_list )` —
                         // NOTHING follows the field bracket (spec §5.2 grammar).
                         // A form after a VALID `[:Type name]` bracket was silently
@@ -946,18 +973,15 @@ fn build_constructor_def(sexp: &Sexp) -> Result<ConstructorDef, CranelispError> 
 fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
     let (items, _) = expect_bracket(sexp)?;
     let mut fields = Vec::new();
-    let mut i = 0;
-
-    while i < items.len() {
-        if let Some((te, consumed)) = try_consume_annotation(items, i)? {
-            let name_pos = i + consumed;
-            if name_pos >= items.len() {
-                return Err(parse_err(
-                    "field type annotation missing field name",
-                    items[i].span(),
-                ));
-            }
-            let (name, name_span) = expect_symbol(&items[name_pos])?;
+    for item in items {
+        if let Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } = item
+        {
+            let te = build_type_expr(annotation)?;
+            let (name, name_span) = expect_symbol(subject)?;
             // A field name is a binder — it mints a module-level `Type.field`
             // accessor (spec §5.2.6, user ruling 2026-07-19) — so a qualified
             // field name `(deftype T [:Int fmt/r])` is a compile-time error, span
@@ -968,10 +992,9 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
                 type_expr: te,
                 span: name_span,
             });
-            i = name_pos + 1;
         } else {
             // Bare name -- shortcut syntax (fresh type var)
-            let (name, name_span) = expect_symbol(&items[i])?;
+            let (name, name_span) = expect_symbol(item)?;
             // Field name is a binder (spec §5.2.6) — qualified rejects here too.
             reject_qualified_binder_head(name, name_span)?;
             fields.push(FieldDef {
@@ -979,7 +1002,6 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
                 type_expr: TypeExpr::TypeVar("".into()),
                 span: name_span,
             });
-            i += 1;
         }
     }
 
@@ -1089,10 +1111,9 @@ pub(crate) fn parse_deftrait(
         return Err(parse_err("deftrait requires at least one method signature", span));
     }
 
-    let is_hkt = hkt_param_name.is_some();
     let methods = children[next..]
         .iter()
-        .map(|s| build_method_sig(s, is_hkt, &hkt_param_name))
+        .map(|s| build_method_sig(s, &hkt_param_name))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ParsedEntry::TraitDecl {
@@ -1234,16 +1255,18 @@ fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbo
 
 /// Parse a method signature within a deftrait.
 ///
-/// Without default: `(method_name "doc"? [type_expr+] ret_type)`
-/// With default:    `(method_name "doc"? [param_name+] ret_type body)`
+/// Settled syntax: `(method_name "doc"? [param_name+] tail)`.
+///
+/// `tail` stays raw here. Typecheck alone decides whether it is a required
+/// return type or a default body, so frontend has no parallel classification
+/// path to drift from that authoritative judgment.
 fn build_method_sig(
     sexp: &Sexp,
-    is_hkt: bool,
     hkt_param_name: &Option<Symbol>,
-) -> Result<TraitMethodSig, CranelispError> {
+) -> Result<UnresolvedTraitMethodSig, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.len() < 3 {
-        return Err(parse_err("method signature requires name, params, and return type", span));
+        return Err(parse_err("method signature requires name, params, and one trailing form", span));
     }
 
     let (name, name_span) = expect_symbol(&children[0])?;
@@ -1253,18 +1276,14 @@ fn build_method_sig(
     let (docstring, next) = extract_optional_docstring(children, 1);
 
     expect_bracket(&children[next])?;
-    let ret_pos = next + 1;
-    if ret_pos >= children.len() {
-        return Err(parse_err("method signature missing return type", span));
+    let tail_pos = next + 1;
+    if tail_pos >= children.len() {
+        return Err(parse_err("method signature missing trailing form", span));
     }
-    let ret_type = build_ret_type(&children[ret_pos])?;
-
-    let has_default_body = ret_pos + 1 < children.len();
-
-    if has_default_body && is_hkt {
+    if tail_pos + 1 != children.len() {
         return Err(parse_err(
-            "default method implementations are not supported on higher-kinded traits",
-            span,
+            "method signature accepts exactly one trailing type or default body",
+            children[tail_pos + 1].span(),
         ));
     }
 
@@ -1295,26 +1314,13 @@ fn build_method_sig(
         None
     };
 
-    let default_body = if has_default_body {
-        // Default body lowered to Expr per S69 Sub 26 — building the AST at
-        // trait-decl time catches structural errors in special forms (`let`,
-        // `if`, `match`, …) immediately, rather than per-impl. The default body
-        // is a single-body operand position: `:Type body` ascription valid
-        // (spec §2.3.8), a trailing form after it rejected located (BD-A1/A2).
-        // ONE seam.
-        Some(build_body_to_end(children, ret_pos + 1, "trait default method body")?)
-    } else {
-        None
-    };
-
-    Ok(TraitMethodSig {
+    Ok(UnresolvedTraitMethodSig {
         name: name.into(),
         docstring,
         params,
-        ret_type,
+        tail: children[tail_pos].clone(),
         span,
         hkt_param_index,
-        default_body,
     })
 }
 
@@ -1428,18 +1434,13 @@ fn build_impl_target(
             let mut i = 1;
 
             while i < children.len() {
-                if let Sexp::Symbol(s, _) = &children[i] {
-                    if s.starts_with(':') && s.len() > 1 {
-                        // Constraint annotation: `:TraitName` followed by type var
-                        let constraint_name = &s[1..];
-                        i += 1;
-                        if i >= children.len() {
-                            return Err(parse_err(
-                                "constraint annotation missing type variable",
-                                children[i - 1].span(),
-                            ));
-                        }
-                        let (var_name, var_span) = expect_symbol(&children[i])?;
+                match &children[i] {
+                    Sexp::Annotated {
+                        annotation,
+                        subject,
+                        ..
+                    } => {
+                        let (var_name, var_span) = expect_symbol(subject)?;
                         // The constrained type variable in `(Type :Constraint var)`
                         // is a type-var BINDER (the constraint binds to it), so a
                         // qualified spelling (`:Eq mod/a`) is a qualified binder —
@@ -1457,10 +1458,11 @@ fn build_impl_target(
                         // trait-name and target sites.
                         type_constraints.push((
                             Symbol::from(var_name),
-                            trait_ref_from_name(constraint_name),
+                            type_expr_to_trait_ref(build_type_expr(annotation)?),
                         ));
                         i += 1;
-                    } else {
+                    }
+                    Sexp::Symbol(s, _) => {
                         // Bare type arg — uppercase becomes Named, lowercase TypeVar.
                         // §8.5: a qualified uppercase arg (`(Option primitives/Int)`)
                         // is canonical — split through the shared splitter. A
@@ -1477,11 +1479,12 @@ fn build_impl_target(
                         type_args.push(arg);
                         i += 1;
                     }
-                } else {
-                    return Err(parse_err(
-                        "expected symbol in impl target",
-                        children[i].span(),
-                    ));
+                    other => {
+                        return Err(parse_err(
+                            "expected symbol in impl target",
+                            other.span(),
+                        ));
+                    }
                 }
             }
 
@@ -1558,6 +1561,16 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
 /// check is needed.
 pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
+        Sexp::Annotated {
+            annotation,
+            subject,
+            span,
+        } => Ok(Expr::Annotate {
+            annotation: build_type_expr(annotation)?,
+            expr: Box::new(build_expr(subject)?),
+            span: *span,
+            inferred_type: None,
+        }),
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
             span: *span,
@@ -1579,16 +1592,8 @@ pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
             inferred_type: None,
         }),
         Sexp::Symbol(name, span) => {
-            // A `colon_prefix` token (`:Int`, `:a`, `:Num`) is an annotation
-            // introducer, never a standalone variable reference (spec §1.4.5
-            // normative note; §2.3.8; BC §1 invariant 9). A bare `:Type` with
-            // no following form to bind is a parse error. A bare `:` (the
-            // field separator) is not an annotation introducer here — it is
-            // only meaningful in binding/field positions, so it also has
-            // nothing to bind in expression position.
-            if name.starts_with(':') && name.len() > 1 {
-                return Err(parse_err("annotation missing expression", *span));
-            }
+            // Colon annotations cannot reach this arm: the reader represents
+            // them structurally as `Sexp::Annotated`.
             reject_non_ring0_symbol(name, *span)?;
             Ok(Expr::Var {
                 name: name.as_str().into(),
@@ -1722,8 +1727,8 @@ fn build_apply(
     // reader binds `:Type` to the next form, yielding a one-element list whose
     // sole element is that `Annotate`; the list is then the ordinary
     // application of that one annotated element. We therefore build the head
-    // element through the same annotation-pairing primitive (`build_one_expr_at`)
-    // used for arguments — when the head is not an annotation it builds exactly
+    // element through the same annotated-node helper (`build_one_expr_at`)
+    // used for arguments — when the head is not annotated it builds exactly
     // like `build_expr`, so the common `(f arg ...)` shape is unchanged.
     let (callee, consumed) = build_one_expr_at(children, 0)?;
     let args = build_args_with_annotations(&children[consumed..])?;
@@ -1798,7 +1803,7 @@ fn build_if(
     // (if cond then else) — each of the three operands may carry a `:Type form`
     // ascription (spec §2.3.8 — `:Type` binds the immediately-following form in
     // ALL positions, an `if` branch included). Consume each through the
-    // annotation-pairing primitive (0591 AP-4) rather than a positional
+    // annotated-node consumer (0591 AP-4) rather than a positional
     // `children[n]` that a leading annotation would offset.
     let arity_err = || parse_err("if requires condition, then, and else branches", span);
     let mut pos = 1;
@@ -1861,7 +1866,7 @@ fn build_fn(
     let params = build_annotated_params(&children[1])?;
     // The body may carry a `:Type body` ascription (spec §2.3.8 — `:Type` binds
     // the immediately-following form in ALL positions; the `fn` body is not
-    // special). Route it through the annotation-pairing primitive (0591 AP-2).
+    // special). Route it through the annotated-node consumer (0591 AP-2).
     let (body, consumed) = build_one_expr_at(children, 2)?;
     if 2 + consumed != children.len() {
         return Err(parse_err(
@@ -1891,7 +1896,7 @@ fn build_match(
     // The scrutinee may carry a `:Type form` annotation (BC §1 invariant 9;
     // spec §2.3.8 — `:Type` is reader-macro-like, binding the immediately
     // following form in ALL positions, including a match scrutinee). Consume
-    // it through the same annotation-pairing primitive (`build_one_expr_at`)
+    // it through the same annotated-node consumer (`build_one_expr_at`)
     // used for call arguments and vec literals so the annotated scrutinee
     // groups into ONE `Expr::Annotate` rather than presenting as extra
     // children that defeat a positional arity guard (FIXME 0389).
@@ -1934,7 +1939,7 @@ fn build_match_arms(
             return Err(parse_err("match arm missing body", pat_span));
         }
         // The arm body may carry a `:Type body` ascription (spec §2.3.8) — one
-        // or two tokens. Route it through the annotation-pairing primitive so
+        // represented as one node. Route it through the shared consumer so
         // the body groups into ONE `Expr::Annotate` (0591 AP-3).
         let (body, consumed) = build_one_expr_at(items, i)?;
         let body_end = items[i + consumed - 1].span().end;
@@ -2025,54 +2030,6 @@ fn build_vec_lit(
 // Annotation-aware expression building
 // ---------------------------------------------------------------------------
 
-/// Try to consume a type annotation starting at `items[pos]`.
-///
-/// Returns `Ok(Some((TypeExpr, items_consumed)))` when `items[pos]` is an
-/// annotation introducer, `Ok(None)` when it is not, and `Err` when it IS an
-/// introducer (a bare `:`) but the form it binds is not a type expression.
-///
-/// A bare `:` token is **only ever** an annotation introducer (never a `Var`;
-/// crate `CLAUDE.md` §`:Type`), so the form it binds MUST parse as a type
-/// expression. The bare-`:` arm therefore raises a LOCATED reject naming the fix
-/// rather than swallowing a `build_type_expr` failure and letting `:` fall
-/// through to `Expr::Var{ name: ":" }` (the opaque "unresolved symbol `:`"
-/// degradation — RA-N5, spec §2.3.8).
-fn try_consume_annotation(
-    items: &[Sexp],
-    pos: usize,
-) -> Result<Option<(TypeExpr, usize)>, CranelispError> {
-    if pos >= items.len() {
-        return Ok(None);
-    }
-    match &items[pos] {
-        // `:Int`, `:a`, `:Num` -- simple colon-prefixed symbol
-        Sexp::Symbol(s, _) if s.starts_with(':') && s.len() > 1 => {
-            let name = &s[1..];
-            let te = parse_annotation_name(name);
-            Ok(Some((te, 1)))
-        }
-        // `:` followed by `(Fn [...] ret)` or `(Option a)` etc -- compound annotation
-        Sexp::Symbol(s, sp) if s == ":" => {
-            if pos + 1 >= items.len() {
-                // Trailing bare `:` with nothing to bind — not an annotation here;
-                // downstream `build_expr` reports "annotation missing expression".
-                return Ok(None);
-            }
-            match build_type_expr(&items[pos + 1]) {
-                Ok(te) => Ok(Some((te, 2))),
-                Err(_) => Err(parse_err(
-                    &format!(
-                        "the form bound by `:` must be a type expression; found `{}`",
-                        items[pos + 1].format_flat()
-                    ),
-                    *sp,
-                )),
-            }
-        }
-        _ => Ok(None),
-    }
-}
-
 /// Split an as-written type name `module/Name` into its `(module, name)`
 /// parts for a `TypeRef`, mirroring the trait-ref split in
 /// [`type_expr_to_trait_ref`] and `split_qualified` in
@@ -2106,53 +2063,20 @@ fn trait_ref_from_name(name: &str) -> TraitRef {
     }
 }
 
-fn parse_annotation_name(name: &str) -> TypeExpr {
-    if name == "self" {
-        TypeExpr::SelfType
-    } else if is_uppercase_start(name) || name.contains('/') {
-        // A qualified-lowercase annotation (`user/int`) is NOT a bare type var
-        // (spec §3.3 — a type var is a bare lowercase identifier), so route it
-        // through the §8.5 splitter (which peels the module) rather than minting
-        // a `TypeVar` that carries the slash: a `TypeVar` must NEVER carry a `/`
-        // (Principle 18, FIXME 0589). The unknown-type error then names the
-        // module. `Named` above already covers the uppercase (`mod/Type`) case;
-        // this arm adds the qualified-lowercase case.
-        TypeExpr::Named(type_ref_from_name(name))
-    } else {
-        TypeExpr::TypeVar(name.into())
-    }
-}
-
-/// Build one expression from a slice at `pos`, consuming annotation if present.
-/// Returns `(expr, items_consumed)`.
+/// Build one expression from a slice at `pos`.
+///
+/// An annotation is already one recursive `Sexp::Annotated` node, so every
+/// expression position consumes exactly one item.
 fn build_one_expr_at(
     items: &[Sexp],
     pos: usize,
 ) -> Result<(Expr, usize), CranelispError> {
-    if let Some((annotation, consumed)) = try_consume_annotation(items, pos)? {
-        let expr_pos = pos + consumed;
-        if expr_pos >= items.len() {
-            return Err(parse_err("annotation missing expression", items[pos].span()));
-        }
-        let inner = build_expr(&items[expr_pos])?;
-        let span = Span::new(items[pos].span().start, items[expr_pos].span().end);
-        Ok((
-            Expr::Annotate {
-                annotation,
-                expr: Box::new(inner),
-                span,
-                inferred_type: None,
-            },
-            consumed + 1,
-        ))
-    } else {
-        let expr = build_expr(&items[pos])?;
-        Ok((expr, 1))
-    }
+    let expr = build_expr(&items[pos])?;
+    Ok((expr, 1))
 }
 
 /// Build the single trailing body-expression at `children[pos..]`, routing it
-/// through the annotation-pairing primitive (so `:Type body` ascription works —
+/// through the annotated-node consumer (so `:Type body` ascription works —
 /// spec §2.3.8) and rejecting any form left after it (so `(form … body junk)` is
 /// a LOCATED error, not a silent drop).
 ///
@@ -2178,7 +2102,7 @@ fn build_body_to_end(children: &[Sexp], pos: usize, ctx: &str) -> Result<Expr, C
     Ok(expr)
 }
 
-/// Build argument list, handling inline annotations (`:Type expr` -> `Annotate`).
+/// Build arguments, including reader-folded `Sexp::Annotated` operands.
 fn build_args_with_annotations(
     items: &[Sexp],
 ) -> Result<Vec<Expr>, CranelispError> {
@@ -2207,29 +2131,16 @@ fn build_annotated_params(
 ) -> Result<Vec<(Symbol, Option<TypeExpr>)>, CranelispError> {
     let (items, _) = expect_bracket(sexp)?;
     let mut params: Vec<(Symbol, Option<TypeExpr>)> = Vec::new();
-    let mut i = 0;
-
-    while i < items.len() {
-        if let Some((te, consumed)) = try_consume_annotation(items, i)? {
+    for item in items {
+        if matches!(item, Sexp::Annotated { .. }) {
             // Accumulate the RUN of consecutive annotations preceding the binder
             // name. A `:Type`/`:Trait` annotation is reader-macro-like — it binds
             // the immediately-following form (FIXME 0341,
             // `memory/annotation-reader-macro-binds-following-form.md`), so a run
             // of stacked annotations all attach to the one binder that terminates
             // the run. The single-annotation case is the run-of-length-1.
-            let mut run: Vec<TypeExpr> = vec![te];
-            let mut name_pos = i + consumed;
-            while let Some((te, consumed)) = try_consume_annotation(items, name_pos)? {
-                run.push(te);
-                name_pos += consumed;
-            }
-            if name_pos >= items.len() {
-                return Err(parse_err(
-                    "annotation missing parameter name",
-                    items[i].span(),
-                ));
-            }
-            let (name, name_span) = expect_symbol(&items[name_pos])?;
+            let (run, subject) = peel_annotation_run(item)?;
+            let (name, name_span) = expect_symbol(subject)?;
             reject_reserved_binder_name(name, name_span)?;
             // A `defn`/`fn`/`defmacro` param is a value-level binder (spec §5
             // binder-positions table) — a qualified spelling `[a/b]` is a
@@ -2240,13 +2151,11 @@ fn build_annotated_params(
             // on the user's WRITTEN qualified spelling). Re-landed S114 W-D2.
             reject_qualified_binder_head(name, name_span)?;
             params.push((name.into(), Some(annotation_run_carrier(run))));
-            i = name_pos + 1;
         } else {
-            let (name, name_span) = expect_symbol(&items[i])?;
+            let (name, name_span) = expect_symbol(item)?;
             reject_reserved_binder_name(name, name_span)?;
             reject_qualified_binder_head(name, name_span)?;
             params.push((name.into(), None));
-            i += 1;
         }
     }
 
@@ -2266,6 +2175,20 @@ fn build_annotated_params(
     }
 
     Ok(params)
+}
+
+fn peel_annotation_run(mut sexp: &Sexp) -> Result<(Vec<TypeExpr>, &Sexp), CranelispError> {
+    let mut run = Vec::new();
+    while let Sexp::Annotated {
+        annotation,
+        subject,
+        ..
+    } = sexp
+    {
+        run.push(build_type_expr(annotation)?);
+        sexp = subject;
+    }
+    Ok((run, sexp))
 }
 
 /// Choose the carrier `TypeExpr` for an accumulated run of param annotations
@@ -2296,9 +2219,9 @@ fn annotation_run_carrier(mut run: Vec<TypeExpr>) -> TypeExpr {
 ///
 /// **No re-split here (P7).** Every name reaching this function is ALREADY
 /// module-split: `Named`/`Applied` names come from the §8.5 splitter
-/// (`type_ref_from_name`), and `parse_annotation_name` — the sole producer of a
-/// run element's `TypeVar` (`try_consume_annotation`'s simple-`:Name` arm) —
-/// never mints a slash-carrying `TypeVar` since FIXME 0589 (S113). The prior
+/// (`type_ref_from_name`), and `build_type_expr` — the sole producer of a
+/// run element's `TypeVar` — never mints a slash-carrying `TypeVar` since
+/// FIXME 0589 (S113). The prior
 /// hand-rolled `rsplit_once('/')` here was a THIRD splitter copy that existed
 /// only to compensate for 0589's slash-carrying `TypeVar`; that input is now
 /// impossible, so the copy is retired and the invariant is enforced structurally
@@ -2322,7 +2245,7 @@ fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
     debug_assert!(
         split_qualified_name(name).is_none(),
         "type_expr_to_trait_ref received a splittable qualified name `{name}` — the \
-         §8.5 split must happen upstream (type_ref_from_name / parse_annotation_name), \
+         §8.5 split must happen upstream (type_ref_from_name / build_type_expr), \
          never be re-derived here (P7/FIXME 0589)"
     );
     TraitRef::new(module.map(ModuleFullPath::from), TraitName::from(name))
@@ -2332,41 +2255,16 @@ fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
 // Type expression builders
 // ---------------------------------------------------------------------------
 
-/// Build a method-signature return type. A return type is a type expression
-/// (spec/07-traits.md §7.1 — `self`, a named type, an applied type, or a type
-/// variable), written either bare (`Int`) or with the annotation colon
-/// (`:Int`, `:primitives/Int`).
-///
-/// For a colon-prefixed **named** return type (`:Int`, `:primitives/Int` —
-/// uppercase after any final `/`), strip the annotation colon and route the
-/// remaining name through `parse_annotation_name` so a qualified return type is
-/// canonicalised through the §8.5 splitter — exactly as the param-annotation
-/// path already does — rather than reaching `type_ref_from_name` with the colon
-/// still attached (which would make the module side `:primitives` and yield
-/// "unknown type"). The colon-prefixed **type-variable** form (`:a`) is left to
-/// `build_type_expr` unchanged: it stays a `TypeExpr::TypeVar` carrying the
-/// as-written token, preserving the established return-type-var display. Compound
-/// annotation forms (`(Fn …)`, `(Option self)`) and bare type expressions also
-/// fall through to `build_type_expr`.
-fn build_ret_type(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
-    if let Sexp::Symbol(s, _) = sexp
-        && let Some(rest) = s.strip_prefix(':')
-        && !rest.is_empty()
-        && is_uppercase_start(rest)
-    {
-        return Ok(parse_annotation_name(rest));
-    }
-    build_type_expr(sexp)
-}
-
+/// Build one raw type-expression form. Annotation introducers have already
+/// become `Sexp::Annotated`; such a node is deliberately invalid in a
+/// type-expression slot instead of being reinterpreted here.
 fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) => {
             if name == "self" {
                 Ok(TypeExpr::SelfType)
             } else if is_uppercase_start(name) || name.contains('/') {
-                // The SECOND type-var decision point (mirror of
-                // `parse_annotation_name`, FIXME 0589): a qualified-lowercase
+                // The type-var decision point (FIXME 0589): a qualified-lowercase
                 // type-arg (`mod/x` in `(Option mod/x)` / `(Fn [mod/x] …)`) is
                 // NOT a bare type var (spec §3.3), so route it through the §8.5
                 // splitter (`Named`) — a `TypeVar` must never carry a `/`

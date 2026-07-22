@@ -1,5 +1,9 @@
     use super::*;
 
+    fn build_name_type(name: &str) -> TypeExpr {
+        build_type_expr(&Sexp::Symbol(name.into(), Span::SYNTHETIC)).unwrap()
+    }
+
     use cranelisp_types::TopLevel;
 
     /// Test-only adapter: builds a synthetic batch program from one or more
@@ -1486,8 +1490,7 @@
                 assert_eq!(decl.methods[0].name, "show");
                 assert_eq!(decl.methods[0].params.len(), 1);
                 assert!(matches!(&decl.methods[0].params[0].1, TypeExpr::SelfType));
-                assert!(matches!(&decl.methods[0].ret_type, TypeExpr::Named(n) if n.name.as_ref() == "String"));
-                assert!(decl.methods[0].default_body.is_none());
+                assert!(matches!(&decl.methods[0].tail, Sexp::Symbol(n, _) if n == "String"));
             }
             other => panic!("expected TraitDecl, got {other:?}"),
         }
@@ -1556,22 +1559,97 @@
         // S70 cascade row #9 — `[self self]` pre-cascade input rewritten to spec
         // conformant `[a b]` (bare params default to SelfType per spec §5.3.1).
         let prog = parse_and_build_program(
-            "(deftrait Ord (< [a b] Bool) (<= [x y] Bool (if (< x y) true (= x y))))",
+            "(deftrait Ord (< [a b] Bool) (<= [x y] (if (< x y) true (= x y))))",
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitDecl(decl) => {
                 assert_eq!(decl.methods.len(), 2);
-                assert!(decl.methods[0].default_body.is_none());
                 // Names live with params now (S69 Sub 26) — verify the no-default
                 // method has its two self-typed params.
                 assert_eq!(decl.methods[0].params.len(), 2);
-                assert!(decl.methods[1].default_body.is_some());
+                assert!(matches!(decl.methods[1].tail, Sexp::List(..)));
                 assert_eq!(decl.methods[1].params.len(), 2);
                 assert_eq!(decl.methods[1].params[0].0, "x");
                 assert_eq!(decl.methods[1].params[1].0, "y");
             }
             other => panic!("expected TraitDecl, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn trait_method_preserves_exactly_one_unclassified_tail() {
+        let prog = parse_and_build_program(
+            "(deftrait T (required [x] Int) (default [x] (f x)) (pinned [x] :Int x))",
+        )
+        .unwrap();
+        let TopLevel::TraitDecl(decl) = &prog[0] else {
+            panic!()
+        };
+        assert!(matches!(decl.methods[0].tail, Sexp::Symbol(ref s, _) if s == "Int"));
+        assert!(matches!(decl.methods[1].tail, Sexp::List(..)));
+        assert!(matches!(decl.methods[2].tail, Sexp::Annotated { .. }));
+        let err = parse_and_build_program("(deftrait T (old [x] Int x))").unwrap_err();
+        assert!(err.message().contains("exactly one trailing"));
+    }
+
+    #[test]
+    fn deftype_uniqueness_and_constructor_spellings_are_enforced() {
+        assert!(parse_and_build_program("(deftype T A (B \"doc\") (C [:Int c]))").is_ok());
+        for src in [
+            "(deftype T (A))",
+            "(deftype T (A []))",
+            "(deftype T T)",
+            "(deftype T A (A \"doc\"))",
+            "(deftype T (A [:Int x]) (B [:Int x]))",
+        ] {
+            assert!(parse_and_build_program(src).is_err(), "must reject: {src}");
+        }
+    }
+
+    #[test]
+    fn deftype_duplicate_diagnostics_locate_the_second_binder() {
+        let ctor_err = parse_and_build_program("(deftype T A (A \"again\"))").unwrap_err();
+        assert_eq!(ctor_err.span(), Span::new(14, 15));
+
+        let field_err =
+            parse_and_build_program("(deftype T (A [:Int x]) (B [:Bool x]))").unwrap_err();
+        assert_eq!(field_err.span(), Span::new(34, 35));
+
+        // Uniqueness state is definition-local, not global.
+        assert!(parse_and_build_program("(deftype A X) (deftype B X)").is_ok());
+    }
+
+    #[test]
+    fn annotated_nodes_build_in_nested_and_operand_positions() {
+        let direct = Sexp::Annotated {
+            annotation: Box::new(Sexp::Symbol("Int".into(), Span::new(1, 4))),
+            subject: Box::new(Sexp::Int(7, Span::new(5, 6))),
+            span: Span::new(0, 6),
+        };
+        assert!(matches!(
+            build_expr(&direct).unwrap(),
+            Expr::Annotate { .. }
+        ));
+        assert!(matches!(
+            parse_and_build_expr("(f :core.types/Int 1 [:Int 2])").unwrap(),
+            Expr::Apply { .. }
+        ));
+
+        let malformed = Sexp::Annotated {
+            annotation: Box::new(Sexp::Int(1, Span::new(1, 2))),
+            subject: Box::new(Sexp::Int(2, Span::new(3, 4))),
+            span: Span::new(0, 4),
+        };
+        assert!(build_expr(&malformed)
+            .unwrap_err()
+            .message()
+            .contains("invalid type expression"));
+    }
+
+    #[test]
+    fn nullary_constructor_pattern_is_bare_only() {
+        assert!(parse_and_build_expr("(match x [None 0])").is_ok());
+        assert!(parse_and_build_expr("(match x [(None) 0])").is_err());
     }
 
     // spec: 02-grammar §2.6 — deftrait- private trait declaration
@@ -1591,10 +1669,13 @@
     // spec: 02-grammar §2.2.3 — HKT traits reject default method implementations
     #[test]
     fn test_build_deftrait_hkt_default_rejected() {
-        let err = parse_and_build_program(
-            "(deftrait (Functor f) (fmap [x] (f Int) x))",
-        ).unwrap_err();
-        assert!(err.message().contains("default method implementations are not supported on higher-kinded traits"));
+        // Frontend preserves one raw tail and does not classify it. The HKT
+        // default-method restriction is enforced by typecheck after classification.
+        let prog = parse_and_build_program("(deftrait (Functor f) (fmap [x] (f x)))").unwrap();
+        let TopLevel::TraitDecl(decl) = &prog[0] else {
+            panic!()
+        };
+        assert!(matches!(decl.methods[0].tail, Sexp::List(..)));
     }
 
     // -- impl --
@@ -2117,7 +2198,7 @@
     #[test]
     fn build_deftrait_method_qualified_type_refs_split() {
         let decl = match parse_and_build_repl(
-            "(deftrait Scaler (scale [:primitives/Int x] :primitives/Int))",
+            "(deftrait Scaler (scale [:primitives/Int x] primitives/Int))",
         ).unwrap() {
             TopLevel::TraitDecl(decl) => decl,
             other => panic!("expected TraitDecl, got {other:?}"),
@@ -2134,13 +2215,7 @@
             other => panic!("expected Named param type, got {other:?}"),
         }
         // Return type ref split.
-        match &sig.ret_type {
-            TypeExpr::Named(n) => {
-                assert_eq!(n.module.as_deref(), Some("primitives"));
-                assert_eq!(n.name.as_ref(), "Int");
-            }
-            other => panic!("expected Named ret type, got {other:?}"),
-        }
+        assert!(matches!(&sig.tail, Sexp::Symbol(n, _) if n == "primitives/Int"));
     }
 
     // -- S113 qualified binder-head rejection (reject_qualified_binder_head) --
@@ -2509,12 +2584,12 @@
     #[test]
     fn type_expr_to_trait_ref_trusts_upstream_split_no_resplit() {
         // Direct: a qualified-uppercase annotation is split upstream by
-        // `parse_annotation_name` (`Named`), and the reshape preserves the module.
-        let tr = type_expr_to_trait_ref(parse_annotation_name("fmt/Eq"));
+        // `build_type_expr` (`Named`), and the reshape preserves the module.
+        let tr = type_expr_to_trait_ref(build_name_type("fmt/Eq"));
         assert_eq!(tr.module.as_deref(), Some("fmt"));
         assert_eq!(tr.name.as_ref(), "Eq");
         // A bare bound stays module-less.
-        let bare = type_expr_to_trait_ref(parse_annotation_name("Display"));
+        let bare = type_expr_to_trait_ref(build_name_type("Display"));
         assert_eq!(bare.module, None);
         assert_eq!(bare.name.as_ref(), "Display");
         // Integration: a stacked run `:fmt/Eq :Display a` on a param folds into
@@ -3526,7 +3601,7 @@
     // type-expression position (`build_type_expr`, e.g. a `(Fn […])`/`(Option …)`
     // type-arg) is NOT a bare type var (spec §3.3); it routes to `Named` with the
     // module split off, never a `TypeVar` carrying the slash (Principle 18). The
-    // sibling of `parse_annotation_name`'s routing — both type-var decision points
+    // sibling of `build_type_expr`'s routing — both type-var decision points
     // now enforce the invariant.
     #[test]
     fn parse_type_expr_qualified_lowercase_routes_to_named_not_typevar() {
@@ -3601,8 +3676,8 @@
     // `TypeRef { module: None, name: "t/Box" }` (whose empty from-module is the
     // tell of the original `unknown type 't/Box' (from module '')` defect).
     #[test]
-    fn parse_annotation_name_splits_module_qualifier() {
-        match parse_annotation_name("t/Box") {
+    fn annotation_name_splits_module_qualifier() {
+        match build_name_type("t/Box") {
             TypeExpr::Named(r) => {
                 assert_eq!(r.module.as_deref(), Some("t"));
                 assert_eq!(r.name.as_ref(), "Box");
@@ -3613,8 +3688,8 @@
 
     // FIXME 0362 — a bare (unqualified) type name stays `module: None`.
     #[test]
-    fn parse_annotation_name_bare_stays_unqualified() {
-        match parse_annotation_name("Box") {
+    fn annotation_name_bare_stays_unqualified() {
+        match build_name_type("Box") {
             TypeExpr::Named(r) => {
                 assert_eq!(r.module, None);
                 assert_eq!(r.name.as_ref(), "Box");
@@ -3626,8 +3701,8 @@
     // FIXME 0362 — a deep-qualified type name `a.b/Box` splits at the LAST `/`
     // (module = `a.b`, name = `Box`), matching the trait-ref precedent.
     #[test]
-    fn parse_annotation_name_deep_qualified_splits_at_last_slash() {
-        match parse_annotation_name("a.b/Box") {
+    fn annotation_name_deep_qualified_splits_at_last_slash() {
+        match build_name_type("a.b/Box") {
             TypeExpr::Named(r) => {
                 assert_eq!(r.module.as_deref(), Some("a.b"));
                 assert_eq!(r.name.as_ref(), "Box");
@@ -3642,8 +3717,8 @@
     // error names the module, NEVER to a `TypeVar` carrying the slash
     // (Principle 18 — a `TypeVar` must never carry a `/`).
     #[test]
-    fn parse_annotation_name_qualified_lowercase_routes_to_named_not_typevar() {
-        match parse_annotation_name("user/int") {
+    fn annotation_name_qualified_lowercase_routes_to_named_not_typevar() {
+        match build_name_type("user/int") {
             TypeExpr::Named(r) => {
                 assert_eq!(r.module.as_deref(), Some("user"));
                 assert_eq!(r.name.as_ref(), "int");
@@ -3651,7 +3726,7 @@
             other => panic!("expected Named (module split off), got {other:?}"),
         }
         // A deep-qualified lowercase name splits at the LAST slash too.
-        match parse_annotation_name("a.b/int") {
+        match build_name_type("a.b/int") {
             TypeExpr::Named(r) => {
                 assert_eq!(r.module.as_deref(), Some("a.b"));
                 assert_eq!(r.name.as_ref(), "int");
@@ -3659,7 +3734,7 @@
             other => panic!("expected Named, got {other:?}"),
         }
         // Control: a BARE lowercase name still mints a `TypeVar` (no slash).
-        match parse_annotation_name("a") {
+        match build_name_type("a") {
             TypeExpr::TypeVar(v) => assert_eq!(v.as_ref(), "a"),
             other => panic!("expected TypeVar for a bare lowercase name, got {other:?}"),
         }
@@ -3852,7 +3927,7 @@
         // (BD-A1); a trailing form after it is rejected (BD-A2).
         #[test]
         fn trait_default_body_ascription_and_trailing() {
-            assert!(parse_and_build_program("(deftrait T (m [x] :Int :Int x))").is_ok());
+            assert!(parse_and_build_program("(deftrait T (m [x] :Int x))").is_ok());
             let e = parse_and_build_program("(deftrait T (show [x] Int 999 888))")
                 .expect_err("a trailing form after a method sig is rejected");
             assert!(
@@ -3928,8 +4003,8 @@
         // `type_expr_to_trait_ref`).
         #[test]
         fn qualified_lowercase_annotation_is_named_not_typevar() {
-            assert!(matches!(parse_annotation_name("user/int"), TypeExpr::Named(_)));
-            assert!(matches!(parse_annotation_name("int"), TypeExpr::TypeVar(_)));
+            assert!(matches!(build_name_type("user/int"), TypeExpr::Named(_)));
+            assert!(matches!(build_name_type("int"), TypeExpr::TypeVar(_)));
             // A stacked-bounds run of qualified names reshapes without tripping
             // the `type_expr_to_trait_ref` splitter-dual debug_assert.
             assert!(parse_and_build_program("(defn f [:m/Foo :Bar a] a)").is_ok());

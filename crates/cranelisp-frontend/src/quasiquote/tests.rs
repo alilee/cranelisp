@@ -212,6 +212,39 @@
         assert!(contains_symbol(&result, "macros/SNil"));
     }
 
+    #[test]
+    fn quote_and_quasiquote_preserve_annotated_node_shape() {
+        for source in ["':Int 5", "`:Int 5"] {
+            let result = expand_quasiquotes(&parse_one(source)).unwrap();
+            assert!(
+                contains_symbol(&result, "macros/SexpAnnotated"),
+                "{source}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_half_splice_is_rejected_in_quasiquote() {
+        let err = expand_quasiquotes(&parse_one("`:~@xs value"))
+            .expect_err("splice cannot stand as one annotation half");
+        assert!(err.message().contains("unquote-splicing"));
+    }
+
+    #[test]
+    fn annotation_subject_splice_is_rejected_in_quasiquote() {
+        let err = expand_quasiquotes(&parse_one("`:Int ~@xs"))
+            .expect_err("splice cannot stand as the annotated subject");
+        assert!(err.message().contains("unquote-splicing"));
+    }
+
+    #[test]
+    fn unquote_is_processed_in_both_annotated_halves() {
+        for source in ["`:~ty value", "`:Int ~value"] {
+            let expanded = expand_quasiquotes(&parse_one(source)).unwrap();
+            assert!(contains_symbol(&expanded, "macros/SexpAnnotated"));
+        }
+    }
+
     // -- Helpers for tests --
 
     fn collect_auto_gensyms(sexp: &Sexp, out: &mut Vec<String>) {

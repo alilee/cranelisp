@@ -328,19 +328,121 @@
     // spec: 01-lexical §1.4.5 — colon-prefixed type annotation
     #[test]
     fn test_parse_colon_prefix() {
-        assert_symbol(&parse_one(":Int"), ":Int");
+        let Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } = parse_one(":Int 1")
+        else {
+            panic!()
+        };
+        assert_symbol(&annotation, "Int");
+        assert_int(&subject, 1);
+    }
+
+    #[test]
+    fn annotation_fold_is_recursive_and_stacks() {
+        let sexp = parse_one("(f [:Int x] :A :B y)");
+        let Sexp::List(children, _) = sexp else {
+            panic!()
+        };
+        assert!(
+            matches!(&children[1], Sexp::Bracket(xs, _) if matches!(xs[0], Sexp::Annotated { .. }))
+        );
+        assert!(
+            matches!(&children[2], Sexp::Annotated { subject, .. } if matches!(subject.as_ref(), Sexp::Annotated { .. }))
+        );
+    }
+
+    #[test]
+    fn annotation_fold_rejects_dangling_delimiters_at_introducer() {
+        for src in [":Int", "(:Int)", "[:Int]"] {
+            let err = parse(src).expect_err("dangling annotation must reject");
+            assert!(
+                err.message().contains("annotation missing expression"),
+                "{src}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_fold_handles_compound_spaced_quoted_and_full_span_forms() {
+        let folded = parse_one(": (Fn [Int] Bool) 'x");
+        let Sexp::Annotated {
+            annotation,
+            subject,
+            span,
+        } = folded
+        else {
+            panic!()
+        };
+        assert!(matches!(annotation.as_ref(), Sexp::List(..)));
+        assert!(
+            matches!(subject.as_ref(), Sexp::List(items, _) if matches!(&items[0], Sexp::Symbol(s, _) if s == "quote"))
+        );
+        assert_eq!(span, Span::new(0, 20));
+    }
+
+    #[test]
+    fn annotation_fold_hoists_intervening_comments_before_the_node() {
+        let forms = parse_preserving_comments(
+            ": ; before type\n Int  \t; before subject\n ; still before subject\n value",
+        )
+        .unwrap();
+        assert_eq!(forms.len(), 4);
+        assert!(matches!(&forms[0], Sexp::Comment(text, _) if text == "before type"));
+        assert!(matches!(&forms[1], Sexp::Comment(text, _) if text == "before subject"));
+        assert!(matches!(&forms[2], Sexp::Comment(text, _) if text == "still before subject"));
+        assert!(matches!(&forms[3], Sexp::Annotated { annotation, subject, .. }
+            if matches!(annotation.as_ref(), Sexp::Symbol(s, _) if s == "Int")
+            && matches!(subject.as_ref(), Sexp::Symbol(s, _) if s == "value")));
+
+        // The compilation reader discards the same comments but preserves the
+        // annotation/subject fold.
+        let plain = parse(":Int ; ignored\n value").unwrap();
+        assert_eq!(plain.len(), 1);
+        assert!(matches!(&plain[0], Sexp::Annotated { .. }));
+    }
+
+    #[test]
+    fn annotation_comment_hoist_preserves_enclosing_list_order() {
+        let Sexp::List(items, _) = parse_preserving_comments(
+            "(before :Int ; attached\n value after)",
+        )
+        .unwrap()
+        .remove(0)
+        else {
+            panic!()
+        };
+        assert!(matches!(&items[0], Sexp::Symbol(s, _) if s == "before"));
+        assert!(matches!(&items[1], Sexp::Comment(text, _) if text == "attached"));
+        assert!(matches!(&items[2], Sexp::Annotated { .. }));
+        assert!(matches!(&items[3], Sexp::Symbol(s, _) if s == "after"));
+    }
+
+    #[test]
+    fn annotation_comments_do_not_hide_a_dangling_subject_error() {
+        for (src, start) in [
+            (":Int ; only comment", 0),
+            ("(:Int ; only comment\n)", 1),
+            ("[:Int ; only comment\n]", 1),
+        ] {
+            let err = parse_preserving_comments(src).expect_err("annotation still needs a subject");
+            assert!(err.message().contains("annotation missing expression"), "{src}: {err}");
+            assert_eq!(err.span().start, start);
+        }
     }
 
     // spec: 01-lexical §1.4.5 — colon-prefixed type variable
     #[test]
     fn test_parse_colon_type_var() {
-        assert_symbol(&parse_one(":a"), ":a");
+        assert!(parse(":a").is_err());
     }
 
     // spec: 01-lexical §1.4.5 — bare colon (field separator)
     #[test]
     fn test_parse_bare_colon() {
-        assert_symbol(&parse_one(": "), ":");
+        assert!(parse(": ").is_err());
     }
 
     // spec: 03-types §3.1 — a colon-prefixed FQ type annotation reads as ONE
@@ -349,14 +451,20 @@
     // valid in annotation position.
     #[test]
     fn test_parse_colon_prefix_qualified() {
-        assert_symbol(&parse_one(":primitives/Int"), ":primitives/Int");
+        let Sexp::Annotated { annotation, .. } = parse_one(":primitives/Int 1") else {
+            panic!()
+        };
+        assert_symbol(&annotation, "primitives/Int");
     }
 
     // spec: 03-types §3.1 — multi-dot module path in a colon annotation reads
     // as one qualified token (`:core.option/Option`).
     #[test]
     fn test_parse_colon_prefix_qualified_dotted_module() {
-        assert_symbol(&parse_one(":core.option/Option"), ":core.option/Option");
+        let Sexp::Annotated { annotation, .. } = parse_one(":core.option/Option x") else {
+            panic!()
+        };
+        assert_symbol(&annotation, "core.option/Option");
     }
 
     // spec: 03-types §3.1 — the qualified colon annotation survives in field
@@ -376,15 +484,17 @@
         let Sexp::Bracket(fields, _) = &ctor[1] else {
             panic!("expected field Bracket, got {:?}", ctor[1]);
         };
-        // Exactly two items: the FQ type annotation and the field name — NOT
-        // three (`:primitives`, `/`, `Int`) plus the name.
-        assert_eq!(
-            fields.len(),
-            2,
-            "FQ field type must read as one token; got {fields:?}"
-        );
-        assert_symbol(&fields[0], ":primitives/Int");
-        assert_symbol(&fields[1], "n");
+        assert_eq!(fields.len(), 1);
+        let Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } = &fields[0]
+        else {
+            panic!()
+        };
+        assert_symbol(annotation, "primitives/Int");
+        assert_symbol(subject, "n");
     }
 
     // -- Lists --
@@ -449,11 +559,8 @@
         let sexp = parse_one("[:Int x :Int y]");
         match sexp {
             Sexp::Bracket(children, _) => {
-                assert_eq!(children.len(), 4);
-                assert_symbol(&children[0], ":Int");
-                assert_symbol(&children[1], "x");
-                assert_symbol(&children[2], ":Int");
-                assert_symbol(&children[3], "y");
+                assert_eq!(children.len(), 2);
+                assert!(children.iter().all(|c| matches!(c, Sexp::Annotated { .. })));
             }
             other => panic!("expected Bracket, got {other:?}"),
         }
@@ -585,33 +692,31 @@
     // spec: 01-lexical §1.4.5 — colon-prefixed symbol in list context
     #[test]
     fn test_parse_type_annotation() {
-        let sexp = parse_one("(:Int)");
-        // Wait, this is a list containing a colon-prefixed symbol — not valid as an expr
-        // but the reader doesn't care.
-        match sexp {
-            Sexp::List(children, _) => {
-                assert_eq!(children.len(), 1);
-                assert_symbol(&children[0], ":Int");
-            }
-            other => panic!("expected List, got {other:?}"),
-        }
+        assert!(parse("(:Int)").is_err());
     }
 
     // spec: 02-grammar §2.8.3 — compound type annotation with bare colon
     #[test]
     fn test_parse_compound_type_annotation() {
-        // :(Fn [Int] Int) should produce : followed by (Fn [Int] Int)
+        // The compound type and subject form one structural node.
         let sexps = parse(":(Fn [Int] Int) 42").unwrap();
-        assert_eq!(sexps.len(), 3);
-        assert_symbol(&sexps[0], ":");
-        match &sexps[1] {
+        assert_eq!(sexps.len(), 1);
+        let Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } = &sexps[0]
+        else {
+            panic!()
+        };
+        match annotation.as_ref() {
             Sexp::List(children, _) => {
                 assert_eq!(children.len(), 3);
                 assert_symbol(&children[0], "Fn");
             }
             other => panic!("expected List, got {other:?}"),
         }
-        assert_int(&sexps[2], 42);
+        assert_int(subject, 42);
     }
 
     // -- Whitespace edge cases --
@@ -1086,8 +1191,8 @@
         #[test]
         fn valid_qualified_names_still_read_as_one_leaf() {
             assert_symbol(&parse_one("foo/bar"), "foo/bar");
-            assert_symbol(&parse_one(":primitives/Int"), ":primitives/Int");
-            assert_symbol(&parse_one(":core.option/Option"), ":core.option/Option");
+            assert!(parse(":primitives/Int x").is_ok());
+            assert!(parse(":core.option/Option x").is_ok());
         }
 
         // spec: 01-lexical §1.7 — a bare dotted symbol/module path (no `/`) still

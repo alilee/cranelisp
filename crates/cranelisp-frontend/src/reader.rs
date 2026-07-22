@@ -17,15 +17,18 @@ struct Reader<'a> {
     src: &'a str,
     pos: usize,
     preserve_comments: bool,
+    /// Comments consumed inside an annotation fold. The enclosing output
+    /// sequence drains these immediately before the completed Annotated node.
+    hoisted_comments: Vec<Sexp>,
 }
 
 impl<'a> Reader<'a> {
     fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0, preserve_comments: false }
+        Reader { src, pos: 0, preserve_comments: false, hoisted_comments: Vec::new() }
     }
 
     fn new_preserving_comments(src: &'a str) -> Self {
-        Reader { src, pos: 0, preserve_comments: true }
+        Reader { src, pos: 0, preserve_comments: true, hoisted_comments: Vec::new() }
     }
 
     /// Remaining source text from current position.
@@ -109,6 +112,7 @@ pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispErr
     skip_ws_collect_comments(&mut reader, &mut sexps);
     while !reader.at_end() {
         let sexp = read_form(&mut reader)?;
+        sexps.append(&mut reader.hoisted_comments);
         sexps.push(sexp);
         skip_ws_collect_comments(&mut reader, &mut sexps);
     }
@@ -151,6 +155,20 @@ fn skip_whitespace_and_comments(r: &mut Reader) {
 fn skip_ws_or_comments(r: &mut Reader, children: &mut Vec<Sexp>) {
     if r.preserve_comments {
         skip_ws_collect_comments(r, children);
+    } else {
+        skip_whitespace_and_comments(r);
+    }
+}
+
+/// Skip an annotation-internal gap while retaining comments for the enclosing
+/// sequence in comment-preserving mode. `Sexp::Annotated` has exactly two
+/// syntax children, so comments cannot be stored as a third child; the settled
+/// contract hoists them immediately before the completed node.
+fn skip_annotation_gap(r: &mut Reader) {
+    if r.preserve_comments {
+        let mut comments = Vec::new();
+        skip_ws_collect_comments(r, &mut comments);
+        r.hoisted_comments.extend(comments);
     } else {
         skip_whitespace_and_comments(r);
     }
@@ -290,7 +308,9 @@ fn read_list(r: &mut Reader) -> Result<Sexp, CranelispError> {
         if r.at_end() {
             return Err(r.error_at("unclosed '('", start, r.pos as u32));
         }
-        children.push(read_form(r)?);
+        let form = read_form(r)?;
+        children.append(&mut r.hoisted_comments);
+        children.push(form);
         skip_ws_or_comments(r, &mut children);
     }
     r.advance(1); // skip ')'
@@ -307,7 +327,9 @@ fn read_bracket(r: &mut Reader) -> Result<Sexp, CranelispError> {
         if r.at_end() {
             return Err(r.error_at("unclosed '['", start, r.pos as u32));
         }
-        children.push(read_form(r)?);
+        let form = read_form(r)?;
+        children.append(&mut r.hoisted_comments);
+        children.push(form);
         skip_ws_or_comments(r, &mut children);
     }
     r.advance(1); // skip ']'
@@ -389,34 +411,40 @@ fn read_colon_prefix(r: &mut Reader) -> Result<Sexp, CranelispError> {
     let start = r.pos as u32;
     r.advance(1); // skip ':'
 
-    // Check if next char is a symbol start -> colon-prefixed symbol
-    if let Some(b) = r.peek() {
-        if is_symbol_start(b) {
-            let sym_start = r.pos;
-            consume_symbol_chars(r);
-            // A `:`-annotation may name a *qualified* type: `:primitives/Int`,
-            // `:core.option/Option`. Without this, `consume_symbol_chars` stops
-            // at `/` (not a symbol char) and the annotation would tokenize as
-            // three forms (`:primitives`, `/`, `Int`) — spec §3.1 requires an FQ
-            // type ref to read as a single qualified leaf. Mirror the qualified /
-            // dotted-module logic of `read_symbol_or_keyword`.
-            let first_part = r.src[sym_start..r.pos].to_string();
-            let name = read_qualified_tail(r, &first_part)?;
-            let end = r.pos as u32;
-            let full = format!(":{name}");
-            return Ok(Sexp::Symbol(full, Span::new(start, end)));
+    // The annotation half is read with the introducer stripped.  The compact
+    // `:Int` spelling keeps the qualified-name lexer; `: (Fn ...)` and `: Int`
+    // use the ordinary recursive form reader.  In both cases the subject is
+    // read here too, making annotation folding universal (including macro
+    // arguments) by construction rather than by positional AST-builder scans.
+    let annotation = if r.peek().is_some_and(is_symbol_start) {
+        let sym_start = r.pos;
+        consume_symbol_chars(r);
+        let first_part = r.src[sym_start..r.pos].to_string();
+        let name = read_qualified_tail(r, &first_part)?;
+        Sexp::Symbol(name, Span::new(sym_start as u32, r.pos as u32))
+    } else {
+        skip_annotation_gap(r);
+        match r.peek() {
+            None | Some(b')' | b']') => {
+                return Err(r.error_at("annotation missing type expression", start, start + 1));
+            }
+            _ => read_form(r)?,
         }
-        if b == b'(' {
-            // :(Fn [...] ret) or :(Option a) — compound type annotation
-            // Return the bare colon as a symbol, let the AST builder handle it
-            let end = r.pos as u32;
-            return Ok(Sexp::Symbol(":".to_string(), Span::new(start, end)));
-        }
-    }
+    };
 
-    // Bare colon
-    let end = r.pos as u32;
-    Ok(Sexp::Symbol(":".to_string(), Span::new(start, end)))
+    skip_annotation_gap(r);
+    let subject = match r.peek() {
+        None | Some(b')' | b']') => {
+            return Err(r.error_at("annotation missing expression", start, start + 1));
+        }
+        _ => read_form(r)?,
+    };
+    let end = subject.span().end;
+    Ok(Sexp::Annotated {
+        annotation: Box::new(annotation),
+        subject: Box::new(subject),
+        span: Span::new(start, end),
+    })
 }
 
 // ---------------------------------------------------------------------------
