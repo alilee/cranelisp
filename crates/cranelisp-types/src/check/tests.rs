@@ -136,7 +136,7 @@ fn type_def_info_serde_roundtrip_preserves_ctor_order() {
     );
 }
 
-// spec: §1.4.5 / §7.1
+// spec: 01-lexical §1.4.5; 07-traits §7.1
 #[test]
 fn unresolved_annotated_tail_round_trips_exact_spans() {
     let method = crate::UnresolvedTraitMethodSig {
@@ -167,7 +167,7 @@ fn unresolved_annotated_tail_round_trips_exact_spans() {
     );
 }
 
-// spec: §7.1
+// spec: 07-traits §7.1
 #[test]
 fn classified_method_closed_sum_round_trips() {
     let methods = [
@@ -204,7 +204,7 @@ fn classified_method_closed_sum_round_trips() {
     }
 }
 
-// spec: §7.1
+// spec: 07-traits §7.1
 #[test]
 fn legacy_parallel_trait_method_shape_is_rejected() {
     let legacy = r#"{"name":"m","docstring":null,"params":[],"ret_type":"SelfType","span":{"start":0,"end":1},"hkt_param_index":null,"default_body":null}"#;

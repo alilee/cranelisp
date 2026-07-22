@@ -212,6 +212,8 @@
         assert!(contains_symbol(&result, "macros/SNil"));
     }
 
+    // spec: 09-macros §9.4 — quote and quasiquote preserve annotated forms as
+    // `SexpAnnotated` with two recursively quoted halves.
     #[test]
     fn quote_and_quasiquote_preserve_annotated_node_shape() {
         for source in ["':Int 5", "`:Int 5"] {
@@ -223,6 +225,8 @@
         }
     }
 
+    // spec: 09-macros §9.4 — unquote-splicing cannot occupy the single
+    // annotation half of an annotated form.
     #[test]
     fn annotation_half_splice_is_rejected_in_quasiquote() {
         let err = expand_quasiquotes(&parse_one("`:~@xs value"))
@@ -230,6 +234,8 @@
         assert!(err.message().contains("unquote-splicing"));
     }
 
+    // spec: 09-macros §9.4 — unquote-splicing cannot occupy the single
+    // subject half of an annotated form.
     #[test]
     fn annotation_subject_splice_is_rejected_in_quasiquote() {
         let err = expand_quasiquotes(&parse_one("`:Int ~@xs"))
@@ -237,6 +243,8 @@
         assert!(err.message().contains("unquote-splicing"));
     }
 
+    // spec: 09-macros §9.4 — unquote is permitted in either half of an
+    // annotated quasiquote form.
     #[test]
     fn unquote_is_processed_in_both_annotated_halves() {
         for source in ["`:~ty value", "`:Int ~value"] {

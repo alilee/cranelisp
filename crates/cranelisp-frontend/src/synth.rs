@@ -87,6 +87,8 @@ pub(crate) fn nil() -> Sexp {
 mod tests {
     use super::*;
 
+    // spec: 01-lexical §1.4.5 — synthetic annotated forms use the same
+    // two-half structural node as reader-produced annotated forms.
     // Every primitive draws a UNIQUE synthetic span (BC invariant 4); the
     // shapes match what `ast_builder` consumes.
     #[test]

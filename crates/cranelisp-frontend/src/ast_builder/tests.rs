@@ -1572,6 +1572,8 @@
         }
     }
 
+    // spec: 07-traits §7.1 — a method signature has exactly one trailing
+    // element, classified by type resolution as required or default.
     #[test]
     fn trait_method_preserves_exactly_one_unclassified_tail() {
         let prog = parse_and_build_program(
@@ -1588,6 +1590,8 @@
         assert!(err.message().contains("exactly one trailing"));
     }
 
+    // spec: 05-definitions §§5.2–5.2.2 — constructor and field binders are
+    // unique and nullary constructors use the specified bare spelling.
     #[test]
     fn deftype_uniqueness_and_constructor_spellings_are_enforced() {
         assert!(parse_and_build_program("(deftype T A (B \"doc\") (C [:Int c]))").is_ok());
@@ -1604,6 +1608,8 @@
         }
     }
 
+    // spec: 05-definitions §5.2.1 — a product type is exactly one field list,
+    // with no trailing form.
     #[test]
     fn deftype_product_rejects_a_trailing_form_at_that_form() {
         let src = "(deftype Point [:Int x] extra)";
@@ -1614,6 +1620,8 @@
         assert!(parse_and_build_program("(deftype Point [:Int x])").is_ok());
     }
 
+    // spec: 06-pattern-matching §§6.2.1–6.2.2 — a parenthesized constructor
+    // pattern binds at least one field; nullary constructors are bare.
     #[test]
     fn constructor_pattern_parentheses_require_a_subpattern() {
         let src = "(match x [(None) 0 None 1 (Some value) value])";
@@ -1624,6 +1632,8 @@
         assert!(parse_and_build_program("(match x [None 0 (Some value) value])").is_ok());
     }
 
+    // spec: 05-definitions §5.2.2 — duplicate constructor and field binders
+    // are rejected at the duplicate declaration.
     #[test]
     fn deftype_duplicate_diagnostics_locate_the_second_binder() {
         let ctor_err = parse_and_build_program("(deftype T A (A \"again\"))").unwrap_err();
@@ -1637,6 +1647,8 @@
         assert!(parse_and_build_program("(deftype A X) (deftype B X)").is_ok());
     }
 
+    // spec: 01-lexical §1.4.5; 03-types §3.3.3 — a folded annotated form is
+    // one expression node in every expression position.
     #[test]
     fn annotated_nodes_build_in_nested_and_operand_positions() {
         let direct = Sexp::Annotated {
@@ -1664,6 +1676,8 @@
             .contains("invalid type expression"));
     }
 
+    // spec: 05-definitions §5.2.2; 06-pattern-matching §6.2.2 — a nullary
+    // constructor pattern is written bare, never as an empty application.
     #[test]
     fn nullary_constructor_pattern_is_bare_only() {
         assert!(parse_and_build_expr("(match x [None 0])").is_ok());
@@ -3680,6 +3694,7 @@
         assert!(msg.contains("single form"), "got: {msg}");
     }
 
+    // spec: 03-types §3.1 — a type expression must contain one type form.
     // FIXME 0230 — zero forms is rejected.
     #[test]
     fn parse_type_expr_rejects_empty() {
@@ -3688,6 +3703,8 @@
         assert!(msg.contains("single form"), "got: {msg}");
     }
 
+    // spec: 08-modules §8.5.1 — qualified type names split into module and
+    // local-name components.
     // FIXME 0362 — a self-qualified type annotation `:t/Box` must split the
     // `module/Name` qualifier so it arrives downstream as
     // `TypeRef { module: Some("t"), name: "Box" }`, not the un-split
@@ -3704,6 +3721,7 @@
         }
     }
 
+    // spec: 03-types §3.1 — a bare named type remains unqualified.
     // FIXME 0362 — a bare (unqualified) type name stays `module: None`.
     #[test]
     fn annotation_name_bare_stays_unqualified() {
@@ -3716,6 +3734,8 @@
         }
     }
 
+    // spec: 08-modules §8.5.1 — a qualified name splits at its module/local
+    // boundary, preserving a dotted module path.
     // FIXME 0362 — a deep-qualified type name `a.b/Box` splits at the LAST `/`
     // (module = `a.b`, name = `Box`), matching the trait-ref precedent.
     #[test]
@@ -3729,6 +3749,8 @@
         }
     }
 
+    // spec: 03-types §3.1; 08-modules §8.5.1 — only bare lowercase names are
+    // type variables; qualified lowercase names are named type references.
     // FIXME 0589 — a qualified-LOWERCASE annotation (`user/int`) is NOT a bare
     // type var (spec §3.3 — a type var is a bare lowercase identifier). It must
     // route to `Named` (splitting the module off) so the downstream unknown-type

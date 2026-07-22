@@ -284,7 +284,8 @@
 
     // -- Type annotation in synthesized param --
 
-    // spec: 09-macros.md section 9.2 -- param type annotation
+    // spec: 01-lexical §1.4.5; 09-macros §§9.1–9.2 — a synthesized typed
+    // macro parameter uses the same structural annotation as parsed source.
     #[test]
     fn synthesize_has_slist_sexp_annotation() {
         let clause = MacroClause {

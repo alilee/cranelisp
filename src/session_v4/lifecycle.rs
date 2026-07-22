@@ -2555,7 +2555,8 @@ mod degraded_startup_tests {
         }
     }
 
-    // spec: repl/spec.md §18.8 — the load error names the broken symbol; the
+    // spec: repl/spec.md §18.8; 07-traits §§7.1–7.1.1 — the load error names
+    // the broken symbol; the fixture uses the normative trait-method syntax;
     // degraded loader keys failed forms by the DEFINING form's name. Matrix A
     // "backing BROKEN" row, classification cells.
     #[test]

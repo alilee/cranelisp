@@ -1765,7 +1765,9 @@ fn got_slot_exhaustion_diagnostic_names_module_and_capacity() {
     );
 }
 
-// spec: design/backend/transitive-drop-glue.md §3.1
+// spec: appendix-c-nfr §C.1.4 — per-type drop glue must have a stable,
+// collision-free callable identity. Implementation lock: design/backend/
+// transitive-drop-glue.md §3.1.
 #[test]
 fn drop_glue_names_are_injective_and_linker_safe() {
     let m = ModuleFullPath::from("user.mod");
@@ -1793,7 +1795,9 @@ fn drop_glue_names_are_injective_and_linker_safe() {
     );
 }
 
-// spec: design/backend/transitive-drop-glue.md §3.2
+// spec: appendix-c-nfr §C.1.4 — recursive field structure determines the
+// per-type drop glue. Implementation lock: design/backend/
+// transitive-drop-glue.md §3.2.
 #[test]
 fn drop_glue_name_preserves_nested_concrete_structure() {
     let node = FQTypeName::new(ModuleFullPath::from("tree"), TypeName::from("Node"));
@@ -1813,7 +1817,9 @@ fn drop_glue_name_preserves_nested_concrete_structure() {
     );
 }
 
-// spec: design/backend/transitive-drop-glue.md §3.1
+// spec: appendix-c-nfr §C.1.4 — distinct concrete types require distinct
+// per-type drop glue. Implementation lock: design/backend/
+// transitive-drop-glue.md §3.1.
 #[test]
 fn drop_glue_name_length_prefixes_identifier_bytes() {
     let a = ConcreteType::ADT(
@@ -1830,8 +1836,9 @@ fn drop_glue_name_length_prefixes_identifier_bytes() {
     );
 }
 
-// spec: design/backend/transitive-drop-glue.md §3.1 — Fn arity and the
-// params/result boundary are identity, not concatenated type text.
+// spec: appendix-c-nfr §C.1.4 — distinct concrete function types require
+// distinct per-type drop glue. Implementation lock: design/backend/
+// transitive-drop-glue.md §3.1 (arity and params/result boundaries).
 #[test]
 fn drop_glue_name_separates_fn_arity_and_result_boundary() {
     let module = ModuleFullPath::from("emit");
@@ -1871,8 +1878,9 @@ fn drop_glue_name_separates_fn_arity_and_result_boundary() {
     );
 }
 
-// spec: design/backend/transitive-drop-glue.md §3.1 — each nested ADT
-// argument vector carries its own arity boundary.
+// spec: appendix-c-nfr §C.1.4 — distinct nested concrete ADTs require
+// distinct per-type drop glue. Implementation lock: design/backend/
+// transitive-drop-glue.md §3.1 (nested ADT arity boundaries).
 #[test]
 fn drop_glue_name_separates_nested_adt_argument_boundaries() {
     let module = ModuleFullPath::from("emit");

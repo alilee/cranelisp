@@ -340,6 +340,8 @@
         assert_int(&subject, 1);
     }
 
+    // spec: 01-lexical §1.4.5 — annotation folding is recursive and stacked
+    // annotations form a nested chain.
     #[test]
     fn annotation_fold_is_recursive_and_stacks() {
         let sexp = parse_one("(f [:Int x] :A :B y)");
@@ -354,6 +356,8 @@
         );
     }
 
+    // spec: 01-lexical §1.4.5 — an introducer without a subject is a located
+    // `annotation missing expression` reader error.
     #[test]
     fn annotation_fold_rejects_dangling_delimiters_at_introducer() {
         for src in [":Int", "(:Int)", "[:Int]"] {
@@ -365,6 +369,8 @@
         }
     }
 
+    // spec: 01-lexical §1.4.5 — whitespace is permitted and both halves are
+    // recursively read forms within one full-span annotated node.
     #[test]
     fn annotation_fold_handles_compound_spaced_quoted_and_full_span_forms() {
         let folded = parse_one(": (Fn [Int] Bool) 'x");
@@ -383,6 +389,8 @@
         assert_eq!(span, Span::new(0, 20));
     }
 
+    // spec: 01-lexical §§1.2, 1.4.5 — comments remain comments while the
+    // annotation introducer binds the next non-comment forms.
     #[test]
     fn annotation_fold_hoists_intervening_comments_before_the_node() {
         let forms = parse_preserving_comments(
@@ -404,6 +412,8 @@
         assert!(matches!(&plain[0], Sexp::Annotated { .. }));
     }
 
+    // spec: 01-lexical §§1.2, 1.4.5 — preserved comments retain source order
+    // around the single folded annotation node.
     #[test]
     fn annotation_comment_hoist_preserves_enclosing_list_order() {
         let Sexp::List(items, _) = parse_preserving_comments(
@@ -420,6 +430,8 @@
         assert!(matches!(&items[3], Sexp::Symbol(s, _) if s == "after"));
     }
 
+    // spec: 01-lexical §§1.2, 1.4.5 — comments do not satisfy an annotation's
+    // required subject form.
     #[test]
     fn annotation_comments_do_not_hide_a_dangling_subject_error() {
         for (src, start) in [

@@ -621,6 +621,8 @@ mod tests {
         fq
     }
 
+    // spec: appendix-c-nfr §C.1.4 — per-type drop glue recursively releases
+    // heap-typed fields, including recursive type graphs.
     #[test]
     fn registry_defines_self_recursive_mutual_and_unbounded_depth_graph() {
         let module_path = ModuleFullPath::from("user");
@@ -723,6 +725,8 @@ mod tests {
         }
     }
 
+    // spec: appendix-c-nfr §C.1.4 — drop glue depends on the concrete type's
+    // declared field layout.
     #[test]
     fn substitution_uses_declared_result_order_and_preserves_phantom_parameter() {
         let module_path = ModuleFullPath::from("user");
@@ -750,6 +754,8 @@ mod tests {
         assert_eq!(shapes[0].fields, vec![ConcreteType::String]);
     }
 
+    // spec: appendix-c-nfr §C.1.4 — generated per-type drop glue is callable
+    // at each concrete deallocation site.
     #[test]
     fn jit_projection_contains_finalized_address() {
         let module_path = ModuleFullPath::from("user");
@@ -776,6 +782,8 @@ mod tests {
         );
     }
 
+    // spec: appendix-c-nfr §C.1.4 — recursive heap fields are released by
+    // per-type recursive glue, not a fixed-depth expansion.
     #[test]
     fn recursive_shape_keeps_a_finite_type_key() {
         let list = adt("user", "List", vec![ConcreteType::String]);
@@ -796,6 +804,8 @@ mod tests {
         );
     }
 
+    // spec: appendix-c-nfr §C.1.4 — one concrete field type identifies one
+    // per-type drop-glue dependency even when repeated.
     #[test]
     fn repeated_field_type_has_one_registry_identity() {
         let child = adt("user", "Child", vec![]);
@@ -807,12 +817,16 @@ mod tests {
         assert_eq!(unique, std::collections::HashSet::from([child]));
     }
 
+    // spec: appendix-c-nfr §C.1.4 — per-type glue requires a concrete field
+    // layout; unresolved field parameters cannot be emitted.
     #[test]
     fn substitution_rejects_an_unbound_recursive_parameter() {
         let err = substitute(&Type::Var(7), &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("unresolved field substitution t7"));
     }
 
+    // spec: appendix-c-nfr §C.1.4 — recursive decrementing is required for
+    // arbitrary concrete field graphs, with no fixed nesting limit.
     #[test]
     fn no_fixed_depth_cutoff_exists_in_canonical_registry() {
         let source = include_str!("drop_glue.rs");
