@@ -36,8 +36,8 @@ A `match` expression MUST contain at least one arm.
 ```ebnf
 pattern      = ctor_pattern | wildcard | var_pattern
 
-ctor_pattern = '(' (symbol | dotted_symbol) symbol* ')'  ; data constructor with bindings
-             | symbol | dotted_symbol        ; nullary constructor (see 6.2.4 for disambiguation)
+ctor_pattern = '(' (symbol | dotted_symbol) symbol+ ')'  ; data constructor — at least one binding
+             | symbol | dotted_symbol        ; nullary constructor, matched bare (see 6.2.4 for disambiguation)
 
 wildcard     = '_'
 
@@ -53,6 +53,8 @@ var_pattern  = symbol                       ; variable binding (see 6.2.4 for di
 A parenthesized pattern matches a **data constructor** (a constructor with fields). The first symbol MUST name a known data constructor. The remaining symbols are variable names that bind to the constructor's fields, positionally.
 
 The number of variable bindings MUST equal the number of fields declared in the constructor's `deftype`. A mismatch is a compile-time error.
+
+**A parenthesized constructor pattern MUST bind at least one field. [S115]** The `symbol+` in the grammar is deliberate: the empty-binding form `(Ctor)` — parens with no sub-pattern — is **illegal** in pattern position. A nullary constructor (§6.2.2) is matched by its **bare** name (`None`, `Red`, or the dotted `Maybe.None`), never `(None)` / `(Maybe.None)`. This is the pattern-position instance of the principle that governs `(Ctor)` in every position: parens denote application/binding, and a nullary constructor is a value with nothing to bind, so no position spells it `(Ctor)` (§5.2.2). (User ruling 2026-07-21.)
 
 **Example:**
 
@@ -83,7 +85,7 @@ This is the unifying rule across positions: a contested bare constructor resolve
 Ctor
 ```
 
-A bare symbol that names a known **nullary constructor** (a constructor with no fields) matches that constructor exactly and binds no variables.
+A bare symbol that names a known **nullary constructor** (a constructor with no fields) matches that constructor exactly and binds no variables. The **bare** name is the only spelling — the parenthesized `(None)` / `(Red)` is illegal (§6.2.1), because a nullary constructor is a value with no fields to bind (§5.2.2).
 
 **Example:**
 

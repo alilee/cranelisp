@@ -190,17 +190,18 @@ deftype_form   = '(' ('deftype' | 'deftype-') type_head docstring? type_body ')'
 type_head      = name                         (* monomorphic *)
                | '(' name type_var+ ')'       (* polymorphic *)
 type_var       = symbol                        (* lowercase by convention *)
-type_body      = field_list                    (* product type *)
+type_body      = field_list                    (* product type — empty field_list = unit *)
                | constructor+                  (* sum type *)
-field_list     = '[' field_def* ']'
+field_list     = '[' field_def* ']'            (* product position: zero fields legal (the unit type) *)
 field_def      = colon_prefix symbol           (* :Type fieldname *)
                | symbol                        (* bare fieldname, type inferred *)
-constructor    = name                              (* nullary *)
-               | '(' name docstring field_list? ')' (* documented ctor; fields optional *)
-               | '(' name field_list ')'           (* data constructor *)
+constructor    = name                                (* nullary — bare name *)
+               | '(' name docstring ctor_fields? ')' (* documented ctor; fields optional *)
+               | '(' name ctor_fields ')'            (* data constructor *)
+ctor_fields    = '[' field_def+ ']'            (* constructor arm: at least one field *)
 ```
 
-The parenthesized arms require **content** — a docstring, a field list, or both. There is no `'(' name ')'` production: see §5.2.2, *Parentheses on a constructor require content*. [S115]
+The parenthesized arms require **content** — a docstring, a field list, or both. There is no `'(' name ')'` production: see §5.2.2, *Parentheses on a constructor require content*. [S115] An **empty field list is legal only in product position** (`type_body = field_list`, the unit type `(deftype Unit [])`): a constructor arm's field list is `ctor_fields`, which requires **at least one field**, so `(Ctor [])` inside a sum type is not admitted — see §5.2.2, *An empty field list is legal only in product position*. [S115]
 
 A type definition introduces an algebraic data type (ADT) into scope. Three shapes are supported: product types, sum types, and enums.
 
@@ -257,18 +258,32 @@ When the type body contains one or more constructor forms, each introduces a dis
 ```clojure
 (deftype Color Red Green Blue)                    ; legal — bare nullary names
 (deftype Color (Red) Green Blue)                  ; ILLEGAL — empty parens on Red
-(deftype Flag (Flag "a documented nullary"))      ; legal — the docstring is the content
+(deftype Signal (Ping "a documented nullary") Pong) ; legal — the docstring is the content
 (deftype (Maybe a) (Nothing) (Just [:a val]))     ; ILLEGAL — write Nothing bare
 (deftype (Maybe a) Nothing (Just [:a val]))       ; legal
 ```
 
-A **documented** nullary keeps its parens and has no other spelling — the docstring has nowhere else to go. The §2.2.2 grammar was tightened to match this prose, which is confirmed rather than softened.
+A **documented** nullary keeps its parens and has no other spelling — the docstring has nowhere else to go. (The documented nullary must still not share its type's name; see the same-name rule below — that is why the example uses `Ping` inside `Signal`, not `Flag` inside `Flag`.) The §2.2.2 grammar was tightened to match this prose, which is confirmed rather than softened.
 
-One adjacent spelling is **not settled by this ruling**: `(deftype Flag (Flag []))` — parens carrying an *empty* field list. The grammar above admits it (a `field_list` is present, so the parens have content) and the implementation accepts it today, but the ruling addressed empty *parens*, not an empty bracket pair inside them. Treat the grammar as descriptive here, not as a decision; the question is open. [S115]
+**A nullary constructor is a value, so no position spells it `(Ctor)`. [S115]** This is the principle beneath the rule above, and it reaches **every** position — definition, pattern, and value. Parens denote **application** (and, in pattern position, field-binding); a nullary constructor is a **value**, not an application, and it has no fields to bind, so there is nothing for parens to do. Applying a value is never the same as writing the value elsewhere — `Unit` and `(Unit)` are not interchangeable, and the language does not encourage the confusion (user ruling 2026-07-21). Consequently `(Ctor)` is illegal wherever it appears:
 
-**A nullary constructor MUST NOT share its type's name. [S115]** `(deftype Flag Flag)` is **illegal**, and so is the parenthesized `(deftype Flag (Flag))` (already illegal under the rule above). A nullary constructor that repeats the type name declares a type whose single value is spelled identically to the type and carries nothing — the unit type, written the long way round. The unit type has a spelling of its own: the zero-field product `(deftype Unit [])` (§5.2.1). (User ruling 2026-07-21.)
+- **Definition:** `(deftype Flag (Flag))` — a parse error (above).
+- **Pattern:** `(None)` / `(Red)` — illegal; a nullary is matched by its bare name (§2.5.1, §6.2.1, §6.2.2).
+- **Value:** `(None)` / `(Unit)` — ill-formed, because a nullary constructor is not callable (§4.2.1, §5.2.7); the value is written bare as `None` / `Unit`.
 
-The rule bites **only** on a *nullary* constructor sharing the type name. A **product** constructor sharing the type name is legal, normal, and untouched — that is precisely what §5.2.1 defines:
+**An empty field list is legal only in product position. [S115]** The field-list bracket attaches to two different things, and the empty case `[]` means opposite things in each. A **product type's** field list attaches to the *type* — it sits at the `deftype` level, after the optional docstring — and its zero-field case `(deftype Unit [])` is the **only** spelling of a zero-field product, so it stays legal (§5.2.1). A **constructor arm's** field list attaches to a *variant* — it sits inside the arm's parens — and its zero-field case is **redundant**: the bare name already spells a nullary variant, so an empty bracket pair inside an arm adds nothing and is **illegal** (user ruling 2026-07-21, settling the question left open at S115). Thus `(deftype Something (Unit []))` is illegal (an empty arm field list); `(deftype Unit [])` is legal (a zero-field product). The grammar reflects this: constructor arms take `ctor_fields` (`field_def+`), the product body takes `field_list` (`field_def*`) — §5.2.
+
+```clojure
+(deftype Unit [])                        ; legal   — zero-field product (the unit type)
+(deftype Something (Unit []))            ; ILLEGAL — empty field list in a constructor arm
+(deftype Flag (Flag []))                 ; ILLEGAL — same, and (Flag) is already illegal above
+```
+
+**A nullary constructor MUST NOT share its type's name. [S115]** `(deftype Flag Flag)` is **illegal**, and so is the parenthesized `(deftype Flag (Flag))` (already illegal under the parens-require-content rule above). A nullary constructor that repeats the type name declares a type whose single value is spelled identically to the type and carries nothing — the unit type, written the long way round. The unit type has a spelling of its own: the zero-field product `(deftype Unit [])` (§5.2.1). (User ruling 2026-07-21.)
+
+**The docstring never enters this verdict.** [S115] A *documented* nullary sharing its type's name — `(deftype Flag (Flag "a documented nullary"))` — is **illegal** on exactly the same ground: `(Flag "doc")` is a **nullary constructor named `Flag` inside type `Flag`**, and adding a docstring does not change what it is (this closes the S115 question of whether the same-name rule reaches the documented spelling — it does; a docstring is not a rescue). There is therefore **no** legal spelling of a documented nullary that shares its type's name — the undocumented `(deftype Flag Flag)`, the content-free `(deftype Flag (Flag))`, and the documented `(deftype Flag (Flag "doc"))` are all rejected; write the unit type as `(deftype Unit [])` instead. A documented nullary that does **not** share its type's name is unaffected — `(None "Represents absence")` inside `(Opt a)` is legal (§5.2.5), because `None` is not the name of its sum type.
+
+The same-name rule bites **only** on a *nullary* constructor sharing the type name. A **product** constructor sharing the type name is legal, normal, and untouched — that is precisely what §5.2.1 defines:
 
 ```clojure
 (deftype Point [:Int x :Int y])   ; legal — Point is type and sole constructor
@@ -278,7 +293,7 @@ The rule bites **only** on a *nullary* constructor sharing the type name. A **pr
 
 A nullary constructor sharing the name of some *other* type is unaffected; the rule is about the type being defined.
 
-> **Implementation note (non-normative).** Neither rule in this subsection is live at the time of writing. The implementation at S115 **accepts** `(deftype Flag (Flag))`, `(deftype Color (Red) Green Blue)`, `(deftype (Maybe a) (Nothing) (Just [:a val]))` and `(deftype Flag Flag)`; it already rejects `(deftype Flag ())` (`empty constructor`) and `(deftype Unit)` (`deftype missing constructors`), and already accepts `(deftype Unit [])`. Enforcement of the two rejects is scheduled for **S116**. Until it lands, a program using a now-illegal form will compile — that is a known implementation gap, not a licence.
+> **Implementation note (non-normative).** The definition-position and arm-shape rejects in this subsection are not yet live. The implementation at S115 **accepts** `(deftype Flag (Flag))`, `(deftype Color (Red) Green Blue)`, `(deftype (Maybe a) (Nothing) (Just [:a val]))`, `(deftype Flag Flag)`, the documented same-name `(deftype Flag (Flag "a documented nullary"))`, and the empty-arm-field-list `(deftype Something (Unit []))` / `(deftype Flag (Flag []))`; it already rejects `(deftype Flag ())` (`empty constructor`), `(deftype Unit)` (`deftype missing constructors`), and the standalone truncated `(deftype None "…")` (`deftype missing constructors`), and already accepts `(deftype Unit [])`. Enforcement of the new rejects is scheduled for **S116**. In pattern position the implementation likewise accepts `(Red)` / `(None)` today; in value position `(None)` / `(Unit)` are already rejected (a non-`Fn` value is not callable — a type error). Until the definition/pattern enforcement lands, a program using a now-illegal form will compile — that is a known implementation gap, not a licence.
 
 ### 5.2.3 Enum (All Nullary) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_enum_type, tests/repl_introspection.rs::deftype_display_enum, tests/spec_05_definitions.rs::deftype_enum_construct_and_match, tests/examples.rs::every_example_runs_with_documented_exit]
 
@@ -332,7 +347,7 @@ An optional docstring MAY appear after the type head (before the body) and after
   (Some "Wraps a present value" [:a val]))
 ```
 
-`(None "Represents absence")` is a **documented nullary** constructor: it keeps its parens because the docstring is the content, and this is its only spelling. Dropping the docstring means dropping the parens too — plain `None` — since parens with neither docstring nor field list are a parse error (§5.2.2). [S115]
+`(None "Represents absence")` is a **documented nullary** constructor: it keeps its parens because the docstring is the content, and this is its only spelling. Dropping the docstring means dropping the parens too — plain `None` — since parens with neither docstring nor field list are a parse error (§5.2.2). [S115] This documented nullary is legal because `None` is **not** the name of its type (`Option`); a documented nullary that *shares* its type's name is illegal — the docstring never rescues a same-name nullary (§5.2.2, *The docstring never enters this verdict*). A documented nullary carries **no** field list — never a spurious `(None "…" [])` (§5.2.2, *An empty field list is legal only in product position*). [S115]
 
 ### 5.2.6 Generated Accessors [Tested+Neg tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_field_accessor::bare_alias_resolves_when_field_unique, tests/spec_field_accessor::bare_alias_and_canonical_dispatch_equivalently, tests/spec_field_accessor::bare_alias_ambiguous_canonical_both_work]
 
@@ -377,10 +392,10 @@ Alias contention is scoped to the colliding bare name only: a bare field name **
 
 ### 5.2.7 Constructor Semantics [Tested tests/spec_05_definitions::deftype_product_constructor_arity_mismatch_neg]
 
-- **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type.
+- **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type. Because a nullary constructor is a value, it is written **bare** in value position — `Unit`, `None` — never `(Unit)` / `(None)`: parens denote application, and applying a non-`Fn` value is ill-formed (§4.2.1). This is the value-position instance of the cross-position principle that no position spells a nullary constructor `(Ctor)` (§5.2.2). [S115]
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
 - Constructor names MUST be capitalized — a **bare uppercase** symbol; a lowercase constructor name is rejected as ill-formed, and a qualified **or dotted** spelling is a compile-time error (§5.2.2). [S115]
-- A nullary constructor is written **bare**; parens on a constructor require a docstring and/or a field list, so `(Flag)` is a parse error while `(Flag "doc")` is legal (§5.2.2). [S115]
+- A nullary constructor is written **bare**; parens on a constructor require a docstring and/or a field list, so the content-free `(Ping)` is a parse error while the documented `(Ping "doc")` is legal (§5.2.2) — provided the documented nullary does not share its type's name (a docstring does not rescue a same-name nullary; §5.2.2, *The docstring never enters this verdict*). An empty field list inside an arm — `(Ping [])` — is also illegal (§5.2.2, *An empty field list is legal only in product position*). [S115]
 - A **nullary** constructor MUST NOT repeat its type's name (§5.2.2); a **product** constructor sharing the type name is the normal case (§5.2.1), including the zero-field unit type `(deftype Unit [])`. [S115]
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 

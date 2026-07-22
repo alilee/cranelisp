@@ -106,6 +106,8 @@ Red     ; => Red (tag 0)
 Green   ; => Green (tag 1)
 ```
 
+A nullary constructor is a **value**, so it is written **bare** — `None`, `Red`, `Unit`. The parenthesized `(None)` / `(Unit)` is **not** the value: parens denote **application**, and a nullary constructor is not a function, so applying it is ill-formed (not callable). `Unit` and `(Unit)` are not interchangeable — a value and its (non-)application are different things. This is the value-position instance of the one principle that governs `(Ctor)` in every position (§5.2.2, *A nullary constructor is a value, so no position spells it `(Ctor)`*); cf. the parallel note at [§4.9](#49-type-annotation) that applying a non-`Fn` value such as `None` is ill-formed. [S115]
+
 **Data constructors** (constructors with fields) evaluate to constructor functions. Referencing a data constructor by name produces a function value that, when called with the appropriate field arguments, allocates and returns the constructed value:
 
 ```

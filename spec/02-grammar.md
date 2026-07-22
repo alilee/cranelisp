@@ -119,12 +119,13 @@ product_body = field_list
 sum_body     = constructor_def+
 
 constructor_def
-             = CONSTRUCTOR_NAME                    (* nullary *)
-             | '(' CONSTRUCTOR_NAME ( docstring field_list? | field_list ) ')'
+             = CONSTRUCTOR_NAME                    (* nullary — bare name *)
+             | '(' CONSTRUCTOR_NAME ( docstring ctor_fields? | ctor_fields ) ')'
                                                    (* parens require content: a docstring,
                                                       a field list, or both — §5.2.2 *)
 
-field_list   = '[' field_def* ']'
+field_list   = '[' field_def* ']'                 (* product body: zero fields legal (unit) *)
+ctor_fields  = '[' field_def+ ']'                 (* constructor arm: at least one field — §5.2.2 *)
 
 field_def    = annotation SYMBOL                  (* typed field *)
              | SYMBOL                              (* bare field -- inferred *)
@@ -148,9 +149,11 @@ The field list MAY be empty: `(deftype Unit [])` is the **unit type**, the degen
 
 **Sum type**: One or more constructor definitions define a sum type. Each constructor is either a bare uppercase symbol (nullary/enum variant) or a parenthesized form carrying a docstring, a field list, or both.
 
-**Parentheses on a constructor require content. [S115]** The parenthesized arm above admits no empty spelling: `'(' CONSTRUCTOR_NAME ')'` — parens with neither a docstring nor a field list — is a **parse error**, as is `()`. If a constructor is written in brackets it is because it takes parameters and/or carries a docstring; without either, the brackets are illegal and the constructor MUST be written as a bare name (user ruling 2026-07-21). So `(deftype Color (Red) Green Blue)` and `(deftype (Maybe a) (Nothing) (Just [:a val]))` are parse errors; write `Red` and `Nothing` bare. A **documented** nullary keeps its parens, because the docstring is the content: `(deftype Flag (Flag "a documented nullary"))` is legal and is the only spelling for a documented nullary constructor. This confirms, rather than softens, the prose at §5.2.2 — the grammar was the thing out of step.
+**Parentheses on a constructor require content. [S115]** The parenthesized arm above admits no empty spelling: `'(' CONSTRUCTOR_NAME ')'` — parens with neither a docstring nor a field list — is a **parse error**, as is `()`. If a constructor is written in brackets it is because it takes parameters and/or carries a docstring; without either, the brackets are illegal and the constructor MUST be written as a bare name (user ruling 2026-07-21). So `(deftype Color (Red) Green Blue)` and `(deftype (Maybe a) (Nothing) (Just [:a val]))` are parse errors; write `Red` and `Nothing` bare. This is the definition-position instance of the one principle that governs `(Ctor)` everywhere — a nullary constructor is a **value**, and no position spells it `(Ctor)` (§5.2.2). A **documented** nullary keeps its parens, because the docstring is the content: `(deftype Signal (Ping "a documented nullary") Pong)` is legal and is the only spelling for a documented nullary constructor. This confirms, rather than softens, the prose at §5.2.2 — the grammar was the thing out of step.
 
-A second, **non-context-free** restriction rides on top of this one and is stated where it can be checked, at [§5.2.2](05-definitions.md#522-sum-type-multiple-constructors): a **nullary constructor MUST NOT repeat its type's name**, so `(deftype Flag Flag)` is illegal even though the grammar above admits it. A type with one valueless inhabitant is written as the zero-field product `(deftype Unit [])` ([§5.2.1](05-definitions.md#521-product-type-single-constructor)). [S115]
+**A constructor arm's field list requires at least one field. [S115]** The arm uses `ctor_fields` (`field_def+`), not `field_list`: the empty `(deftype Something (Unit []))` — an empty bracket pair inside an arm — is a **parse error**, because the bare name already spells a nullary variant, so the empty field list is redundant. An empty field list is legal **only** in product position (`product_body = field_list`, the unit type `(deftype Unit [])`, §5.2.1). This is the grammar half of §5.2.2, *An empty field list is legal only in product position*. [S115]
+
+Two further, **non-context-free** restrictions ride on top of these and are stated where they can be checked, at [§5.2.2](05-definitions.md#522-sum-type-multiple-constructors): (1) a **nullary constructor MUST NOT repeat its type's name**, so `(deftype Flag Flag)` — and the documented same-name `(deftype Flag (Flag "doc"))`, since a docstring does not rescue it — are illegal even though the grammar above admits them; a type with one valueless inhabitant is written as the zero-field product `(deftype Unit [])` ([§5.2.1](05-definitions.md#521-product-type-single-constructor)). [S115]
 
 ```clojure
 ;; Enum (all nullary)
@@ -764,8 +767,8 @@ pattern      = constructor_pat
              | wildcard_pat
              | var_pat
 
-constructor_pat = CONSTRUCTOR_NAME                    (* nullary *)
-                | '(' CONSTRUCTOR_NAME SYMBOL* ')'    (* with bindings *)
+constructor_pat = CONSTRUCTOR_NAME                    (* nullary — matched bare *)
+                | '(' CONSTRUCTOR_NAME SYMBOL+ ')'    (* with bindings — at least one *)
 
 wildcard_pat    = '_'
 
@@ -784,6 +787,8 @@ Red                           ; matches nullary Red
 ```
 
 The number of bindings MUST match the number of fields in the constructor.
+
+**A parenthesized constructor pattern MUST bind at least one sub-pattern. [S115]** The `SYMBOL+` above is deliberate: parens on a constructor pattern are present *because* the constructor has fields to bind, so the content-free `(Red)` / `(None)` is **illegal** in pattern position exactly as `(deftype Flag (Flag))` is illegal in definition position (§5.2.2, *Parentheses on a constructor require content*). A **nullary** constructor is matched by its **bare** name — `Red`, `None` — never `(Red)`. This is the pattern-position instance of the one principle that governs `(Ctor)` everywhere: parens denote application/binding, and a nullary constructor is a value with nothing to apply or bind (§5.2.2, *A nullary constructor is a value, so no position spells it `(Ctor)`*). The same rule applies whether the head is bare or dotted: a dotted nullary is matched bare as `Maybe.None`, never `(Maybe.None)`. (User ruling 2026-07-21.)
 
 ### 2.5.2 Wildcard Pattern
 
