@@ -20,7 +20,7 @@
 use cranelisp_types::{
     Sexp, Span, NULLARY_TAG_THRESHOLD,
     TAG_SNIL, TAG_SCONS,
-    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
+    TAG_SEXP_ANNOTATED, TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
     TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
 };
 
@@ -60,6 +60,15 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> i64 {
             let slist = marshal_children_to_slist(children);
             alloc_sexp_cell(TAG_SEXP_BRACKET, slist)
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => alloc_sexp_pair(
+            TAG_SEXP_ANNOTATED,
+            sexp_to_runtime(annotation),
+            sexp_to_runtime(subject),
+        ),
         Sexp::Comment(_, _) => {
             unreachable!("invariant: Comment nodes should not reach marshal (compiler pipeline uses non-preserving reader)")
         }
@@ -107,6 +116,14 @@ pub fn runtime_to_sexp(val: i64) -> Sexp {
         TAG_SEXP_BRACKET => {
             let children = read_slist_to_vec(field0);
             Sexp::Bracket(children, Span::SYNTHETIC)
+        }
+        TAG_SEXP_ANNOTATED => {
+            let field1 = unsafe { read_i64(val, FIELD1_OFFSET) };
+            Sexp::Annotated {
+                annotation: Box::new(runtime_to_sexp(field0)),
+                subject: Box::new(runtime_to_sexp(field1)),
+                span: Span::SYNTHETIC,
+            }
         }
         _ => {
             unreachable!("invariant: invalid Sexp tag {tag}")
@@ -200,6 +217,20 @@ fn alloc_sexp_cell(tag: i64, field: i64) -> i64 {
         write_i64(base, FIELD0_OFFSET, field);
     }
     protect_marshalled_cell(base); // FIXME 0638 deep protection (+1 per cell)
+    base
+}
+
+/// Allocate a two-field Sexp cell: `[header | tag | field0 | field1]`.
+fn alloc_sexp_pair(tag: i64, field0: i64, field1: i64) -> i64 {
+    let payload_size = 24; // tag(8) + two fields(16)
+    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
+    // SAFETY: base is a valid heap pointer with 24 bytes of payload space.
+    unsafe {
+        write_i64(base, PAYLOAD_OFFSET, tag);
+        write_i64(base, FIELD0_OFFSET, field0);
+        write_i64(base, FIELD1_OFFSET, field1);
+    }
+    protect_marshalled_cell(base);
     base
 }
 

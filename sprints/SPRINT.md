@@ -451,6 +451,10 @@ runtime certification is still mandatory.
 
 **Safe follow-on:** `/dev(typecheck)` resolved carried usability FIXME 0806 without entering the memory-sensitive waves. Impl-conformance diagnostics now identify trait, method, and target and report the declared signature as expected versus the supplied body as actual; a focused sibling unit test pins the direction. `/review(typecheck)` PASS with no Blocker/Important finding. Runtime verification remains environment-blocked (`cranelift` absent from the offline index; `cargo-nextest` unavailable).
 
+**Runtime verification 2026-07-23:** after installing `cargo-nextest` and fetching the dependency graph, the first focused run exposed stale test fixtures from the S116 carrier/syntax migration (unresolved-vs-classified method helpers, stored `DefnVariant` shape, reader-owned dangling annotations, global field uniqueness, bare nullary constructors, colon-free trait return tails, and explicit primitives visibility). `/dev` migrated those fixtures without production changes; the repeated focused gate is green: `cargo nextest run --no-fail-fast -p cranelisp-types -p cranelisp-frontend -p cranelisp-typecheck` — **1482 passed, 0 failed, 0 skipped**. `cargo check` and `cargo check --tests` are clean for all three crates. Clippy completes with the pre-existing workspace warning backlog and no warning introduced by this fixture-only diff.
+
+The first complete workspace gate now builds and executes all **5460 tests**: **5220 passed, 240 failed, 1 skipped**. The failures are not a single backend blocker: the dominant cascades are macro compilation/expansion and structural trait-tail migration, with three reactor tests independently reaching the 30-second one-shot backstop. This is the active RED baseline; the focused 1482-test result above is not a substitute for it.
+
 **Gate:** 0708, duplicate-constructor, duplicate-field, all eight constructor-form REDs, §7.1/default-method cells, and stale-cache/round-trip cells are green.
 
 ### Wave 7 — intrinsics detection proof and convergence

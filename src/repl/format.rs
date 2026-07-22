@@ -351,6 +351,11 @@ pub(crate) fn format_sexp(sexp: &Sexp) -> String {
             let parts: Vec<String> = children.iter().map(format_sexp).collect();
             format!("[{}]", parts.join(" "))
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => format!(":{} {}", format_sexp(annotation), format_sexp(subject)),
         Sexp::Comment(text, _) => {
             if text.is_empty() {
                 ";".to_string()

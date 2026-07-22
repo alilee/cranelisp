@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use cranelift::prelude::*;
+use cranelift_codegen::ir::AtomicRmwOp;
 use cranelift_module::{FuncId, Linkage, Module};
 use dashmap::DashMap;
 
@@ -529,6 +530,7 @@ fn substitute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CodeFinalizer;
     use cranelift_module::{Module, default_libcall_names};
     use cranelift_object::{ObjectBuilder, ObjectModule};
     use cranelisp_types::{

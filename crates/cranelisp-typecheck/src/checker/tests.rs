@@ -634,7 +634,7 @@
 
     use cranelisp_types::{
         Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl,
-        TraitName, TypeExpr, TypeName,
+        TraitName, TypeName,
     };
 
     /// Make a unary trait `T` over type parameter `a` with one method `op`

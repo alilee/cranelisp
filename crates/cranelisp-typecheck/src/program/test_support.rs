@@ -16,7 +16,7 @@ use super::*;
 pub(crate) use crate::checker::TestFixture;
 pub(crate) use cranelisp_types::{CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName,
     ModuleEntry, ModuleFullPath, MonoDefnVariant, MonoExpr, Symbol,
-    TraitDecl, TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
+    TraitImpl, TraitName, TypeExpr, TypeName, Visibility,
 };
 
 /// Seed glob-import edges from `source` into the fixture's CURRENT module,

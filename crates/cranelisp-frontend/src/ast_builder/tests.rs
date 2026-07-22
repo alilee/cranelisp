@@ -432,8 +432,7 @@
     // following form is a parse error in EVERY position.
     #[test]
     fn dangling_annotation_top_level_is_error() {
-        let sexps = crate::reader::parse(":Int").unwrap();
-        let err = build_forms(&sexps).unwrap_err();
+        let err = crate::reader::parse(":Int").unwrap_err();
         assert!(
             format!("{err:?}").contains("annotation missing expression"),
             "expected `annotation missing expression`, got {err:?}"
@@ -987,14 +986,14 @@
     }
 
     // Edge: a trailing annotation run with no terminating binder `[:Eq]` is the
-    // "annotation missing parameter name" error.
+    // structural "annotation missing expression" error.
     //
     // spec: spec/07-traits.md §7.8.2 — annotation must bind a parameter
     #[test]
     fn trailing_annotation_without_binder_errors() {
         let err = parse_and_build_program("(defn g [:Eq] 0)").unwrap_err();
         assert!(
-            format!("{err:?}").contains("annotation missing parameter name"),
+            format!("{err:?}").contains("annotation missing expression"),
             "trailing annotation run must error: {err:?}",
         );
     }
@@ -1105,10 +1104,7 @@
     fn test_build_deftype_nameless_ctor_field_rejected() {
         let err = parse_and_build_program("(deftype Rotation (L :Int) (R :Int))").unwrap_err();
         let msg = format!("{err:?}");
-        assert!(
-            msg.contains("bracketed") && msg.contains("field name"),
-            "expected a diagnostic naming the missing bracketed field name, got: {msg}"
-        );
+        assert!(msg.contains("annotation missing expression"), "{msg}");
     }
 
     // spec: 05-definitions §5.2 — the rejection above must be NARROW: a
@@ -1116,7 +1112,7 @@
     #[test]
     fn test_build_deftype_bracketed_ctor_field_still_ok() {
         let prog =
-            parse_and_build_program("(deftype Rotation (L [:Int n]) (R [:Int n]))").unwrap();
+            parse_and_build_program("(deftype Rotation (L [:Int n]) (R [:Int m]))").unwrap();
         match &prog[0] {
             TopLevel::TypeDef {
                 name, constructors, ..

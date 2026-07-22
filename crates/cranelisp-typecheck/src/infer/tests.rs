@@ -1843,7 +1843,7 @@
     /// Set up Num trait with + method (impl for Int, Float only)
     /// and Ord trait with < method (impl for Int, Float only).
     fn register_num_and_ord_traits(tc: &mut TestFixture) {
-        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitName, TypeExpr, Defn};
+        use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitName};
 
         // Num trait: + :: (Fn [a a] a)
         let num_decl = crate::traits::test_helpers::parse_trait_decl(
@@ -2180,7 +2180,7 @@
     /// Register Eq (Int + String impls) and Display (Int impl) so the
     /// value-position §7.6 tests can resolve `=` / `show` as values.
     fn register_eq_and_display_traits(tc: &mut TestFixture) {
-        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitName, TypeExpr, Defn};
+        use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitName};
 
         // Eq trait: = :: (Fn [a a] Bool)
         let eq_decl = crate::traits::test_helpers::parse_trait_decl(

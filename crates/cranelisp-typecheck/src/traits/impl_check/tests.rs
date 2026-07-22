@@ -22,7 +22,10 @@ fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
     TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(trait_name)),
-        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            Some(ModuleFullPath::from("primitives")),
+            TypeName::from("Int"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from(method),
@@ -52,6 +55,7 @@ fn int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
 #[test]
 fn impl_method_too_few_parameters_rejected_before_enrollment() {
     let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     tc.register_trait_decl_self(&unary_trait_decl("ArityLow", "op"))
         .unwrap();
     let mut impl_ = int_op_impl("ArityLow", "op");
@@ -66,6 +70,7 @@ fn impl_method_too_few_parameters_rejected_before_enrollment() {
 #[test]
 fn impl_method_too_many_parameters_rejected_before_enrollment() {
     let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     tc.register_trait_decl_self(&unary_trait_decl("ArityHigh", "op"))
         .unwrap();
     let mut impl_ = int_op_impl("ArityHigh", "op");
@@ -108,6 +113,7 @@ fn multi_method_failure_rolls_back_earlier_method_write() {
 #[test]
 fn failed_reimpl_restores_prior_method_definition() {
     let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     let decl = parse_trait_decl(
         "(deftrait AtomicReplace (first [a b] self) (second [a b] self))",
     );
@@ -128,15 +134,15 @@ fn failed_reimpl_restores_prior_method_definition() {
     replacement.methods[1].variants[0].params.pop();
     tc.register_trait_impl_self(&replacement).unwrap_err();
 
-    let entry = tc
-        .symbol_table()
+    let table = tc.symbol_table();
+    let entry = table
         .get("AtomicReplace.first$primitives/Int")
         .expect("the prior method remains enrolled");
     let cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. } = entry else {
         panic!("expected prior checked method definition, got {entry:?}");
     };
     assert!(
-        matches!(defn.variants[0].body, Expr::Apply { .. }),
+        matches!(defn.body, Expr::Apply { .. }),
         "failed replacement must restore the prior body"
     );
 }
@@ -145,6 +151,7 @@ fn failed_reimpl_restores_prior_method_definition() {
 #[test]
 fn omitted_inferred_default_is_checked_for_concrete_self() {
     let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     tc.register_trait_decl_self(&parse_trait_decl(
         "(deftrait IdentityDefault (identity [x] x))",
     ))
@@ -156,7 +163,7 @@ fn omitted_inferred_default_is_checked_for_concrete_self() {
             TraitName::from("IdentityDefault"),
         ),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
+            Some(ModuleFullPath::from("primitives")),
             TypeName::from("Int"),
         )),
         type_constraints: vec![],
@@ -186,7 +193,7 @@ fn annotated_default_result_mismatch_rejects_without_enrollment() {
             TraitName::from("ConstrainedDefault"),
         ),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(
-            None,
+            Some(ModuleFullPath::from("primitives")),
             TypeName::from("Int"),
         )),
         type_constraints: vec![],
@@ -206,12 +213,16 @@ fn annotated_default_result_mismatch_rejects_without_enrollment() {
 #[test]
 fn impl_return_mismatch_reports_trait_method_and_declared_direction() {
     let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
     tc.register_trait_decl_self(&parse_trait_decl("(deftrait D2 (dsc [self] String))"))
         .unwrap();
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("D2")),
-        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            Some(ModuleFullPath::from("primitives")),
+            TypeName::from("Int"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("dsc"),

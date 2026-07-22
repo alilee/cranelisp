@@ -688,6 +688,15 @@ fn rewrite_spans_unique(sexp: &mut Sexp) {
             }
             *s = cranelisp_frontend::next_synthetic_span();
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            span,
+        } => {
+            rewrite_spans_unique(annotation);
+            rewrite_spans_unique(subject);
+            *span = cranelisp_frontend::next_synthetic_span();
+        }
         Sexp::Comment(_, s) => *s = cranelisp_frontend::next_synthetic_span(),
     }
 }

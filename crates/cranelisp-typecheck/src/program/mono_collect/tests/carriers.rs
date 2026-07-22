@@ -725,7 +725,7 @@ fn w0b_every_codegen_reached_entry_carries_a_view() {
     check_src(
         &mut tc,
         "(deftype Box [:Int v])\n\
-         (deftype Color (Red) (Green))\n\
+         (deftype Color Red Green)\n\
          (defn main [] (v (Box 7)))",
     );
     let st = tc.symbol_table();

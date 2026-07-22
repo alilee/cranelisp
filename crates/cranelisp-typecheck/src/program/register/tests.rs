@@ -988,7 +988,7 @@ fn conventional_impl_poly_applied_target_binds_con_var() {
     check_src(
         &mut tc,
         "(deftype (Box a) (Box [:a val]))\n\
-         (deftrait Disp (dp [x] :primitives/Int))\n\
+         (deftrait Disp (dp [x] primitives/Int))\n\
          (impl Disp (Box a) (defn dp [x] 7))",
     );
 }
@@ -1005,14 +1005,14 @@ fn impl_target_unknown_trait_constraint_rejected_tb24b() {
     check_src(
         &mut tc,
         "(deftype (Box a) (Box [:a val]))\n\
-         (deftrait Disp (dp [x] :primitives/Int))\n\
+         (deftrait Disp (dp [x] primitives/Int))\n\
          (impl Disp (Box :Disp a) (defn dp [x] 7))",
     );
     // Unknown trait `NoSuchTrait` in the constraint slot — REJECTS.
     let mut tc2 = tc_with_prims();
     let sexps = cranelisp_frontend::parse(
         "(deftype (Box a) (Box [:a val]))\n\
-         (deftrait Disp (dp [x] :primitives/Int))\n\
+         (deftrait Disp (dp [x] primitives/Int))\n\
          (impl Disp (Box :NoSuchTrait a) (defn dp [x] 7))",
     )
     .expect("parse");

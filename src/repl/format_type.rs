@@ -745,7 +745,9 @@ mod fq_arg_format_type_tests {
     // `:user/T` and dropped both sections. spec: repl/spec.md §4.1.4
     #[test]
     fn format_trait_display_roots_sections_at_resolved_home() {
-        use cranelisp_types::{TraitDeclInfo, TraitMethodSig, TraitName, TypeExpr};
+        use cranelisp_types::{
+            TraitDeclInfo, TraitMethodKind, TraitMethodSig, TraitName, TypeExpr,
+        };
         let s = session();
         let home = ModuleFullPath::from("home");
         let mut table = SessionSymbolTable::new_with_params(home.clone());
@@ -759,10 +761,11 @@ mod fq_arg_format_type_tests {
                         name: Symbol::from("mm"),
                         docstring: None,
                         params: vec![],
-                        ret_type: TypeExpr::SelfType,
+                        kind: TraitMethodKind::Required {
+                            ret_type: TypeExpr::SelfType,
+                        },
                         span: Span::SYNTHETIC,
                         hkt_param_index: None,
-                        default_body: None,
                     }],
                 },
                 visibility: Visibility::Public,

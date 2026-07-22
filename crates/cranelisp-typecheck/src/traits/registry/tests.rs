@@ -310,6 +310,25 @@ fn named_ty(n: &str) -> cranelisp_types::TypeExpr {
     cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(n)))
 }
 
+/// Lower a predicate-only required-method fixture to the classified carrier.
+/// These tests deliberately use type heads absent from the fixture world, so
+/// they cannot go through declaration registration without testing resolution
+/// instead of the occurrence predicate.
+fn required_method(decl: &TraitDecl) -> TraitMethodSig {
+    let method = &decl.methods[0];
+    TraitMethodSig {
+        name: method.name.clone(),
+        docstring: method.docstring.clone(),
+        params: method.params.clone(),
+        kind: TraitMethodKind::Required {
+            ret_type: cranelisp_frontend::parse_type_expr(&method.tail.format_flat())
+                .expect("required-method fixture tail is a type expression"),
+        },
+        span: method.span,
+        hkt_param_index: method.hkt_param_index,
+    }
+}
+
 // spec: spec/07-traits.md §7.1.1 — a NULLARY method mentioning the implementing
 // type nowhere (`(zed [] Int)`) has nothing to dispatch on and MUST be rejected
 // at declaration, with the spec-pinned reason substring.
@@ -493,7 +512,7 @@ fn occurrence_rule_accepts_self_nested_in_applied_or_fn_type() {
         ),
     );
     assert!(
-        method_mentions_self(&applied.methods[0]),
+        method_mentions_self(&required_method(&applied)),
         "`(Option self)` in return position is an occurrence"
     );
     let fn_ty = occurrence_decl(
@@ -509,13 +528,13 @@ fn occurrence_rule_accepts_self_nested_in_applied_or_fn_type() {
         named_ty("Int"),
     );
     assert!(
-        method_mentions_self(&fn_ty.methods[0]),
+        method_mentions_self(&required_method(&fn_ty)),
         "`:(Fn [self] Int)` in parameter position is an occurrence"
     );
     // NEGATIVE: nothing anywhere in the tree.
     let none = occurrence_decl("Nope", "n", vec![], named_ty("Int"));
     assert!(
-        !method_mentions_self(&none.methods[0]),
+        !method_mentions_self(&required_method(&none)),
         "a signature with no `self` anywhere has no occurrence"
     );
 }

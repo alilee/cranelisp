@@ -251,6 +251,21 @@ fn emit_source_spans(
                 *cursor = e;
             }
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => {
+            let annotation_end = annotation.span().end as usize;
+            if annotation_end > e || annotation_end < s {
+                return false;
+            }
+            doc.push(Role::TypeAnnotation, &code[s..annotation_end]);
+            *cursor = annotation_end;
+            if !emit_source_spans(code, subject, false, cursor, doc) {
+                return false;
+            }
+        }
         Sexp::Symbol(name, _) => {
             let role = if in_head {
                 Role::Head
@@ -310,6 +325,17 @@ fn pp(sexp: &Sexp, indent: usize, in_head: bool) -> StyledDoc {
         }
         Sexp::List(children, _) => pp_list(children, indent, in_head),
         Sexp::Bracket(children, _) => pp_bracket(children, indent),
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => {
+            let mut doc = StyledDoc::new();
+            doc.push(Role::TypeAnnotation, format!(":{}", annotation.format_flat()));
+            doc.plain(" ");
+            doc.extend(pp(subject, indent + 2, false));
+            doc
+        }
         Sexp::Comment(text, _) => {
             let t = if text.is_empty() {
                 ";".to_string()
