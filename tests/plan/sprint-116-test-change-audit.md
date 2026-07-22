@@ -67,6 +67,15 @@ ignore status. Verification:
   `constructor_as_value_falls_through_to_fn_as_value` drop-glue fixture defect.
 - Root annotation controls: 3 passed.
 
+Post-gate backend fixture review:
+
+- `constructor_as_value_falls_through_to_fn_as_value` retained every assertion.
+  Its synthetic table was completed with the canonical `Option = None | Some
+  Int` type/constructor inventory required by §C.1.4 drop-glue generation.
+  The initially incomplete one-constructor inventory correctly selected the
+  product value layout, confirming why the full sum definition is load-bearing.
+  The complete backend package is now 496/496 green.
+
 No `#[test]` entry was deleted and no `#[ignore]` was added in the sprint diff.
 The complete-workspace RED-name comparison remains the final QA gate.
 

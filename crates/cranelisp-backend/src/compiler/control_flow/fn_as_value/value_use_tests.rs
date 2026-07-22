@@ -3,8 +3,9 @@
 use crate::test_support::*;
 
 
-// spec: design/backend/compile-to-module.md §2.6.6 — constructor-as-value
-// through the generic fn-as-value GOT path (S75 W4 closure deletion).
+// spec: 05-definitions §5.2.7; appendix-c-nfr §C.1.4 — a data constructor is
+// first-class and its concrete ADT has per-type drop glue. Implementation
+// lock: design/backend/compile-to-module.md §2.6.6 (generic fn-as-value path).
 //
 // This is the durable regression guard for deleting the bespoke
 // `compile_data_constructor_as_value` + `compile_ctor_wrapper_body` family.
@@ -33,7 +34,7 @@ use crate::test_support::*;
 #[test]
 fn constructor_as_value_falls_through_to_fn_as_value() {
     use cranelisp_types::{
-        DefKind, FQTypeName, ModuleEntry, Scheme, TypeName,
+        DefKind, FQTypeName, ModuleEntry, Scheme, TypeDefInfo, TypeName,
     };
 
     let module = ModuleFullPath::from("user");
@@ -169,6 +170,49 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
     let tables = empty_tables();
     {
         let mut st = SymbolTable::new(module.clone());
+        // A real typecheck-produced table always carries the type definition;
+        // drop-glue generation needs that canonical constructor inventory.
+        st.insert(
+            Symbol::from("Option"),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: fqtn.clone(),
+                    type_params: vec![],
+                    constructors: vec![Symbol::from("None"), Symbol::from("Some")],
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+            },
+        );
+        st.insert(
+            Symbol::from("None"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    type_vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::ADT(fqtn.clone(), vec![]),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(DefKind::Constructor {
+                    got_slot: 0,
+                    type_name: fqtn.clone(),
+                    tag: 0,
+                    field_count: 0,
+                    internal: false,
+                    type_def: None,
+                    mode_summary: None,
+                }),
+                callees: vec![],
+                trait_origin: None,
+                seq: 0,
+                ast: None,
+                codegen_view: None,
+                code: None,
+                value_use: false,
+            },
+        );
         st.insert(ctor_defn.name.clone(), ctor_entry);
         st.insert(consumer_defn.name.clone(), make_def_entry_slot(consumer_defn.clone(), 1));
         st.next_got_slot = 2;
