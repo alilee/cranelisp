@@ -406,6 +406,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         );
 
+        // Default bodies are checked as concrete impl methods below. A default
+        // may call a required sibling (`bump` calling `size`), and that dispatch
+        // must resolve against the candidate impl while its methods are being
+        // validated. Stage the impl shell now, but retain the prior shell so the
+        // method-check transaction can restore it on any failure. This makes the
+        // candidate visible to conformance checking without publishing a failed
+        // first impl or partially replacing a settled re-impl (§7.1.5, §5.4.5).
+        let prior_impl_entry = {
+            let mut table = self.symbol_table_mut_in(&trait_home);
+            let prior = table.get(pending_impl_entry.0.as_ref()).cloned();
+            table.insert(
+                pending_impl_entry.0.clone(),
+                pending_impl_entry.1.clone(),
+            );
+            prior
+        };
+
         // Method checking writes each settled mangled `Def` at its normal
         // seam. Snapshot the complete method grain so a later sibling failure
         // can restore the prior enrollment (or remove first-impl writes).
@@ -500,20 +517,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Ok(defns) => defns,
             Err(err) => {
                 debug_assert_eq!(state.current_module, writer_module);
-                let mut table = self.current_symbol_table_mut(state);
-                for (name, prior) in prior_method_entries {
-                    if let Some(entry) = prior {
-                        table.insert(name, entry);
-                    } else {
-                        table.symbols.remove(&name);
+                {
+                    let mut table = self.current_symbol_table_mut(state);
+                    for (name, prior) in prior_method_entries {
+                        if let Some(entry) = prior {
+                            table.insert(name, entry);
+                        } else {
+                            table.symbols.remove(&name);
+                        }
                     }
+                }
+                let mut table = self.symbol_table_mut_in(&trait_home);
+                if let Some(prior) = prior_impl_entry {
+                    table.insert(pending_impl_entry.0, prior);
+                } else {
+                    table.symbols.remove(&pending_impl_entry.0);
                 }
                 return Err(err);
             }
         };
-
-        self.symbol_table_mut_in(&trait_home)
-            .insert(pending_impl_entry.0, pending_impl_entry.1);
 
         Ok(all_defns)
     }
@@ -972,7 +994,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
 
         // Write the fully annotated defn to ModuleEntry::Def.ast.
-        let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
+        let fn_type = apply(
+            &state.subst,
+            &Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone())),
+        );
         let concrete_scheme = crate::scheme::mono(fn_type);
         let ast_variant: Option<DefnVariant> = annotated.variants.first().cloned();
         // S84 Phase-3 (FIXME 0392): a trait-impl method (mangled `Trait.method$Type`)

@@ -4,8 +4,8 @@
 //! of the code it exercises, per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl,
-    TraitName, TypeExpr, TypeName, Visibility,
+    Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TraitDecl,
+    TraitImpl, TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
 use crate::traits::test_helpers::*;
@@ -176,6 +176,72 @@ fn omitted_inferred_default_is_checked_for_concrete_self() {
         &TraitName::from("IdentityDefault"),
         &TypeName::from("Int")
     ));
+}
+
+// spec: 07-traits §7.1.5 — an omitted default may dispatch through a required
+// sibling while the impl is being enrolled; conformance checking must see the
+// candidate impl without publishing it if a later check fails.
+#[test]
+fn omitted_default_can_dispatch_through_candidate_impl_sibling() {
+    let mut tc = tf_prims();
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait Sized (size [x] Int) (bump [x] (add-i64 (size x) 1)))",
+    ))
+    .unwrap();
+
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Sized")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            Some(ModuleFullPath::from("primitives")),
+            TypeName::from("Int"),
+        )),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("size"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                body: Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    };
+
+    tc.register_trait_impl_self(&impl_)
+        .expect("the candidate impl must be visible while checking its default sibling call");
+    assert!(tc.has_impl(&TraitName::from("Sized"), &TypeName::from("Int")));
+    let table = tc.symbol_table();
+    let Some(ModuleEntry::Def { scheme, .. }) = table.get("Sized.bump$primitives/Int") else {
+        panic!("the checked default method must be written under its concrete mangle");
+    };
+    assert_eq!(
+        scheme.ty,
+        Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        "the inferred default result must be substitution-resolved before publication"
+    );
+    drop(table);
+
+    let mut call = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("bump"), Span::SYNTHETIC)),
+        args: vec![Expr::IntLit {
+            value: 6,
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        }],
+        span: Span::SYNTHETIC,
+        resolved_call: None,
+        inferred_type: None,
+    };
+    assert_eq!(
+        tc.infer_expr_for_test(&mut call).unwrap(),
+        Type::Int,
+        "dispatch must use the selected concrete method's inferred result"
+    );
 }
 
 // spec: 07-traits §7.1.5 — a body annotation constrains the inferred result.

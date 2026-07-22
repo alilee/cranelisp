@@ -998,6 +998,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(resolution) =
                 self.try_resolve_trait_method(state, name, &resolved_args, span)?
             {
+                // An unannotated default method has a fresh result variable on
+                // the trait's generic carrier. Once dispatch selects a concrete
+                // impl, refine that variable from the selected mangled method's
+                // checked scheme. The impl method is the authoritative inferred
+                // result; leaving the carrier's fresh var untouched reports
+                // values such as `:a 7` even though the method body inferred Int.
+                if let ResolvedCall::TraitMethod {
+                    mangled_name,
+                    impl_module,
+                    ..
+                } = &resolution
+                    && let Some(ModuleEntry::Def { scheme, .. }) = self
+                        .probe_module_entry_owned(impl_module, mangled_name.as_ref())
+                    && let Type::Fn(_, selected_ret) = scheme.ty
+                {
+                    self.unify(state, &ret_ty, selected_ret.as_ref(), span)?;
+                }
                 // Trait method resolution (Ring 2): operators like +, -, =, <
                 // S110 0583 leg 1: record the dispatch-leg carrier at the Apply
                 // span alongside the `resolved_calls` insert (FIXME 0616).
