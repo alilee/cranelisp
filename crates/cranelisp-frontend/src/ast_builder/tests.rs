@@ -1595,15 +1595,37 @@
     #[test]
     fn deftype_uniqueness_and_constructor_spellings_are_enforced() {
         assert!(parse_and_build_program("(deftype T A (B \"doc\") (C [:Int c]))").is_ok());
+        assert!(parse_and_build_program("(deftype Cell (Cell [:Int value]))").is_ok());
         for src in [
             "(deftype T (A))",
             "(deftype T (A []))",
             "(deftype T T)",
+            "(deftype T (T \"documented nullary\"))",
             "(deftype T A (A \"doc\"))",
             "(deftype T (A [:Int x]) (B [:Int x]))",
         ] {
             assert!(parse_and_build_program(src).is_err(), "must reject: {src}");
         }
+    }
+
+    #[test]
+    fn deftype_product_rejects_a_trailing_form_at_that_form() {
+        let src = "(deftype Point [:Int x] extra)";
+        let err = parse_and_build_program(src).unwrap_err();
+        assert!(err.message().contains("trailing"), "{}", err.message());
+        assert_err_span_at(src, &err, "extra", 0);
+
+        assert!(parse_and_build_program("(deftype Point [:Int x])").is_ok());
+    }
+
+    #[test]
+    fn constructor_pattern_parentheses_require_a_subpattern() {
+        let src = "(match x [(None) 0 None 1 (Some value) value])";
+        let err = parse_and_build_program(src).unwrap_err();
+        assert!(err.message().contains("at least one"), "{}", err.message());
+        assert_err_span_at(src, &err, "(None)", 0);
+
+        assert!(parse_and_build_program("(match x [None 0 (Some value) value])").is_ok());
     }
 
     #[test]

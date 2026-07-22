@@ -705,6 +705,12 @@ pub(crate) fn parse_deftype(
     let is_product = matches!(&children[next], Sexp::Bracket(..));
     let (resolved_params, constructors) = match &children[next] {
         Sexp::Bracket(..) => {
+            if next + 1 != children.len() {
+                return Err(parse_err(
+                    "product deftype has an unexpected trailing form after its field list",
+                    children[next + 1].span(),
+                ));
+            }
             let fields = build_field_list(&children[next])?;
             let ctor = ConstructorDef {
                 name: Symbol::from(type_name.as_ref()),
@@ -738,9 +744,9 @@ pub(crate) fn parse_deftype(
 
     let mut field_names = HashSet::new();
     for ctor in &constructors {
-        if !is_product && ctor.name.as_ref() == type_name.as_ref() {
+        if !is_product && ctor.fields.is_empty() && ctor.name.as_ref() == type_name.as_ref() {
             return Err(parse_err(
-                "a sum constructor must have a name distinct from its type",
+                "a nullary constructor must have a name distinct from its type",
                 ctor.span,
             ));
         }
@@ -1984,6 +1990,13 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
             // (Constructor var1 var2 ...)
             if children.is_empty() {
                 return Err(parse_err("empty pattern", *span));
+            }
+            if children.len() == 1 {
+                return Err(parse_err(
+                    "parenthesized constructor pattern requires at least one subpattern; write a \
+                     nullary constructor pattern as a bare name",
+                    *span,
+                ));
             }
             let (name, _) = expect_symbol(&children[0])?;
             // children[0] is the constructor name (a REFERENCE, not a binder —
