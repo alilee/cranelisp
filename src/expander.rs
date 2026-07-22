@@ -993,6 +993,21 @@ fn expand_scoped(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, span))
         }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            span,
+        } => Ok(Sexp::Annotated {
+            annotation,
+            subject: Box::new(expand_scoped(
+                *subject,
+                resolver,
+                depth,
+                origin_span,
+                shadows,
+            )?),
+            span,
+        }),
         _ => Ok(sexp),
     }
 }
@@ -1047,10 +1062,16 @@ fn expand_children_clone(
 pub(crate) fn params_scope(param_items: &[Sexp], shadows: &HashSet<String>) -> HashSet<String> {
     let mut scope = shadows.clone();
     for item in param_items {
-        if let Sexp::Symbol(n, _) = item
-            && !n.starts_with(':')
-        {
-            scope.insert(n.clone());
+        match item {
+            Sexp::Symbol(n, _) if !n.starts_with(':') => {
+                scope.insert(n.clone());
+            }
+            Sexp::Annotated { subject, .. } => {
+                if let Sexp::Symbol(n, _) = subject.as_ref() {
+                    scope.insert(n.clone());
+                }
+            }
+            _ => {}
         }
     }
     scope

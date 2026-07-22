@@ -1472,15 +1472,14 @@
         );
     }
 
-    // spec: 01-lexical §1.4.5 — int's grouping recogniser counts the sexps a
-    // leading `:Type` occupies (1 for `:Int`, 2 for bare `:` + compound), 0
-    // otherwise — recognition-for-grouping only; the frontend owns the pairing.
+    // spec: 01-lexical §1.4.5 — the reader folds annotations structurally, so
+    // int never sees a separate annotation prefix to group with another sexp.
     #[test]
-    fn leading_annotation_len_counts_annotation_sexps() {
+    fn leading_annotation_len_is_zero_for_reader_folded_annotations() {
         let int_ann = cranelisp_frontend::parse(":Int 42").unwrap();
-        assert_eq!(leading_annotation_len(&int_ann), 1);
+        assert_eq!(leading_annotation_len(&int_ann), 0);
         let compound = cranelisp_frontend::parse(": (Fn [a] a) f").unwrap();
-        assert_eq!(leading_annotation_len(&compound), 2);
+        assert_eq!(leading_annotation_len(&compound), 0);
         let plain = cranelisp_frontend::parse("42").unwrap();
         assert_eq!(leading_annotation_len(&plain), 0);
         let defn = cranelisp_frontend::parse("(defn id [x] x)").unwrap();

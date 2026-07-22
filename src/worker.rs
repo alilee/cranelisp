@@ -85,29 +85,12 @@ pub(crate) fn build_program_compat(
     cranelisp_frontend::build_forms(&flattened)
 }
 
-/// Number of sexps a leading `:Type` annotation occupies at the head of
-/// `sexps`, or `0` if `sexps[0]` is not an annotation.
-///
-/// Mirrors the frontend's `try_consume_annotation` shape (the single source of
-/// truth for what a `:Type` token is — BC §1 invariant 9) so the orchestrator
-/// can GROUP an annotation with its bound form into one cluster/Pass-2 unit
-/// WITHOUT itself performing the `Expr::Annotate` pairing (which stays
-/// frontend-owned, done inside `build_forms`):
-/// - `:Int`, `:a`, `:Num` — colon-prefixed symbol → 1 sexp.
-/// - a bare `:` followed by a compound type sexp (`(Fn [a] a)`) → 2 sexps.
-///
-/// This is recognition-for-grouping only; the authoritative pairing +
-/// validation (including the trailing-annotation parse error) happens in
-/// `cranelisp_frontend::build_forms`. int only decides which span of sexps is
-/// fed to the frontend as one form (BC §1 invariant 9; FIXME 0329).
+/// Legacy grouping query retained while the two callers keep their uniform
+/// cluster loop. The reader now folds an annotation and its subject into one
+/// `Sexp::Annotated`, so no annotation occupies a separate prefix in `sexps`.
 pub(crate) fn leading_annotation_len(sexps: &[Sexp]) -> usize {
-    match sexps.first() {
-        // `:Int`, `:a`, `:Num` — colon-prefixed symbol (one sexp).
-        Some(Sexp::Symbol(s, _)) if s.starts_with(':') && s.len() > 1 => 1,
-        // bare `:` then a compound type sexp (`(Fn [...] ret)` etc).
-        Some(Sexp::Symbol(s, _)) if s == ":" && sexps.len() >= 2 => 2,
-        _ => 0,
-    }
+    let _ = sexps;
+    0
 }
 
 /// Convert `Vec<TopLevel>` back into `Vec<ParsedEntry>` for handoff to

@@ -2563,7 +2563,7 @@ mod degraded_startup_tests {
         assert_eq!(defined_symbol_of_form(&p("(defn k [:Int y] (f y))")), Some("k".into()));
         assert_eq!(defined_symbol_of_form(&p("(defmacro m [e] e)")), Some("m".into()));
         assert_eq!(defined_symbol_of_form(&p("(deftype P [:Int x])")), Some("P".into()));
-        assert_eq!(defined_symbol_of_form(&p("(deftrait Show (defn show [a] :String))")), Some("Show".into()));
+        assert_eq!(defined_symbol_of_form(&p("(deftrait Show (show [a] String))")), Some("Show".into()));
     }
 
     // Negative cells: structural forms define no repairable symbol;

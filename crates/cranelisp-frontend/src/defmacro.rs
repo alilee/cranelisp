@@ -408,8 +408,8 @@ pub fn synthesize_macro_clause_defn(
     };
 
     // Build: (defn __macro_name_clause_N [: (macros/SList macros/Sexp) __args__] <body>)
-    // The bracket items must be at the top level — the AST builder's
-    // build_annotated_params expects `:` + type-expr + name as separate bracket items.
+    // Synthetic trees bypass the reader's annotation fold, so construct the
+    // same structural `Annotated` node that parsed `: type name` source yields.
     //
     // Type names must be FQ (`macros/SList`, `macros/Sexp`). Sprint 66 Wave 3a-α
     // tightened typecheck to current-module-only short-name resolution per
@@ -420,7 +420,10 @@ pub fn synthesize_macro_clause_defn(
     // known_types registry used to be flat, but is no longer.)
     let type_expr = synth::list(vec![synth::sym("macros/SList"), synth::sym("macros/Sexp")]);
 
-    let param_bracket = synth::bracket(vec![synth::sym(":"), type_expr, synth::sym(args_name)]);
+    let param_bracket = synth::bracket(vec![synth::annotated(
+        type_expr,
+        synth::sym(args_name),
+    )]);
 
     // Outer list span carries the user-source span of the originating
     // clause — the underscore in the parameter was a "not yet wired"

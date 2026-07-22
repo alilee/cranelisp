@@ -60,6 +60,17 @@ pub(crate) fn bracket(items: Vec<Sexp>) -> Sexp {
     Sexp::Bracket(items, span())
 }
 
+/// `Sexp::Annotated { annotation, subject }` — a synthetic reader-folded
+/// annotation. Synthetic trees bypass the reader, so callers must construct
+/// the structural form directly rather than reproducing the source tokens.
+pub(crate) fn annotated(annotation: Sexp, subject: Sexp) -> Sexp {
+    Sexp::Annotated {
+        annotation: Box::new(annotation),
+        subject: Box::new(subject),
+        span: span(),
+    }
+}
+
 /// A `macros/`-qualified list cell `(macros/SCons head tail)` — the shared
 /// list-cell shape both quasiquote (SList construction) and defmacro (SCons
 /// destructuring patterns) build.
@@ -85,6 +96,12 @@ mod tests {
         assert!(matches!(str("s"), Sexp::Str(ref s, _) if s == "s"));
         assert!(matches!(list(vec![]), Sexp::List(_, _)));
         assert!(matches!(bracket(vec![]), Sexp::Bracket(_, _)));
+        assert!(matches!(
+            annotated(sym("Int"), sym("x")),
+            Sexp::Annotated { annotation, subject, .. }
+                if matches!(*annotation, Sexp::Symbol(ref s, _) if s == "Int")
+                    && matches!(*subject, Sexp::Symbol(ref s, _) if s == "x")
+        ));
 
         // Synthetic spans are unique (>= 1_000_000) across a batch of atoms.
         let a = sym("a");

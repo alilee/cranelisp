@@ -294,11 +294,30 @@
         };
         let result = synthesize_macro_clause_defn("test", 0, &clause, Span::SYNTHETIC);
 
-        // The param bracket should contain type annotation with macros/SList
-        // and macros/Sexp (FQ — Sprint 66 Wave 3a-α requires FQ for cross-module
-        // refs since typecheck is current-module-only per Principle 17).
-        assert!(contains_symbol(&result, "macros/SList"));
-        assert!(contains_symbol(&result, "macros/Sexp"));
+        // The param bracket contains the reader-folded annotation shape, with
+        // the FQ element type required for cross-module resolution.
+        let Sexp::List(defn, _) = result else {
+            panic!("expected synthesized defn list");
+        };
+        let Sexp::Bracket(params, _) = &defn[2] else {
+            panic!("expected synthesized parameter bracket");
+        };
+        assert_eq!(params.len(), 1);
+        let Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } = &params[0]
+        else {
+            panic!("expected structural parameter annotation");
+        };
+        assert!(matches!(
+            annotation.as_ref(),
+            Sexp::List(items, _) if matches!(items.as_slice(),
+                [Sexp::Symbol(list, _), Sexp::Symbol(element, _)]
+                    if list == "macros/SList" && element == "macros/Sexp")
+        ));
+        assert!(matches!(subject.as_ref(), Sexp::Symbol(name, _) if name == "__args__"));
     }
 
     // -------------------------------------------------------------------
