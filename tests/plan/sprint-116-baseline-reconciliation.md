@@ -130,6 +130,29 @@ entry. In particular, the S116 trait-tail tests already use the normative
 spelling and expose a real default-synthesis/conformance defect; their tests
 must not be weakened.
 
+### QA-approved residual syntax migrations
+
+After the default-method implementation checkpoint (`0aad5bca`), the complete
+workspace gate executed 5,461 tests: 5,311 passed, 150 failed, and one was
+skipped. The current-only set fell from 40 to 32 names; 20 captured-baseline
+REDs are now absent. The following second fixture batch is approved before any
+test source changes:
+
+| Test/fixture set | Fixture or diagnostic substitution | Normative basis | Preserved oracle |
+|---|---|---|---|
+| S99 `f1_machinery.cl` through `f4_sudoku.cl`; S105 `F3_SHARED_READ`; runtime `conj_wrapper_multivariant_cell_vec_built_correctly_run` | Give `Given`, `Solved`, and `Candidates` distinct field binders within `Cell` | `spec/05-definitions.md` §5.2.2: field binders are pairwise unique within one type | All reads remain positional pattern destructures; parallel/serial, RC-stat, and exit assertions are unchanged |
+| S99 F8 fixtures and S105 `F8_SERIAL`/`F8_PARALLEL` | Give `B` field binders names distinct from `A` within `P` | `spec/05-definitions.md` §5.2.2 | Constructor values and positional pattern bindings are unchanged |
+| `spec_07_traits::impl_missing_required_method_neg`; both `impl_redefinition_dispatch` tests | Remove the deleted return-type slot preceding each default body | `spec/07-traits.md` §7.1 and §7.1.5 | Missing-required rejection and re-impl dispatch values remain unchanged |
+| `bd_a_annotation_ascription::{trait_default_method_body_ascription_accepted,trait_default_method_body_bare_twin}` | Write the annotated one-tail body as `:Int x`; write its bare twin as `x` | `spec/07-traits.md` §7.1 and `spec/01-lexical.md` §1.4.5 | Acceptance/exit assertions remain unchanged; the pair again differs only by annotation |
+| `spec_07_traits::{deftrait_bare_return_convar_never_applied_rejected_neg,never_applied_head_declaration_reject_is_mode_uniform_neg}` | Replace the illegal trailing annotation introducer `:a` with bare return type `a` | `spec/07-traits.md` §7.1.1: required return types are bare, while §7.2.1 rejects the never-applied constructor variable | The declaration-time never-applied rejection and its mode parity remain the asserted behavior |
+| `spec_07_traits::deftrait_method_nameless_annotation_param_rejected_neg` | Expect the reader's located `annotation missing expression` diagnostic for `[:a]` | `spec/01-lexical.md` §1.4.5: an annotation introducer must bind the following form before the closing delimiter | Still a negative test: the malformed declaration must reject and must not register the trait |
+
+The HKT unknown-uppercase-tail tests are deliberately excluded. Under
+`spec/07-traits.md` §7.1's resolution-based discriminator, an unknown name does
+not resolve as a type and therefore reads as a default body; HKT defaults are
+separately forbidden. Their desired `unknown type` diagnostic is a normative
+question, not an approved fixture migration.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.
