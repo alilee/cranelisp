@@ -231,7 +231,7 @@ This is not a new construct; it is `field_list` with zero `field_def`s, so it ne
 
 The alternative spelling `(deftype Unit)` — a bare head with no body at all — is **rejected**, and deliberately so (user ruling 2026-07-21): a `deftype` with no body is the shape of a **truncated declaration**, and the compiler's existing `deftype missing constructors` diagnostic is what catches it. Legalising the bare spelling would convert a caught truncation (`(deftype Color)`, where the author meant `(deftype Color Red Green Blue)`) into a silently-declared unit type. The brackets are cheap and they make the intent explicit.
 
-### 5.2.2 Sum Type (Multiple Constructors) [Tested tests/spec_05_definitions::data_constructor_arg_from_closure_call_result]
+### 5.2.2 Sum Type (Multiple Constructors)
 
 When the type body contains one or more constructor forms, each introduces a distinct variant.
 
@@ -252,6 +252,22 @@ When the type body contains one or more constructor forms, each introduces a dis
 - Data constructors are functions: `Some :: (Fn [a] (Option a))`.
 - A constructor name is a **binder** (§5, *Declaration heads are binders*; user ruling 2026-07-19) — it mints a module-level callable, so it MUST be a **bare uppercase** symbol. A qualified **or dotted** spelling (`(deftype Shape (fmt/Circle …))`, `(deftype Shape (Shape.Circle …))`) is a compile-time error, with the diagnostic span on the constructor name: you can define a constructor only into the module that contains the `deftype`, never into another module. This holds in both constructor arms — the nullary bare-name arm and the parenthesized data-constructor arm. (Lowercase constructor names are separately rejected as ill-formed — a lowercase ctor would be callable but unmatchable, since a lowercase pattern symbol binds a variable, §6.2.4.) [S113]
 - A **field name** is likewise a binder — it mints a module-level accessor `Type.field` (§5.2.6), so it MUST be a **bare** symbol; a qualified **or dotted** field name (`(deftype T [:Int fmt/r])`, `(deftype T [:Int a.r])`) is a compile-time error, span at the field name. [S113] [S115]
+
+**Constructor and field binders are unique within one type.** Constructor names
+within a single `deftype` MUST be pairwise distinct, across bare nullaries,
+documented nullaries, and data-constructor arms. Repeating a constructor name is
+a compile-time error located at the second occurrence. Thus each variant has one
+constructor binder and one canonical `Type.Ctor` referent (§8.5.2); a later arm
+MUST NOT replace or overload an earlier arm.
+
+Named field binders within a single `deftype` MUST likewise be pairwise
+distinct, including fields declared in different constructor arms. Repeating a
+field name is a compile-time error located at the second occurrence. For
+example, `(deftype T [:Int a :Int a])` is rejected at the second `a`, and a sum
+type MUST NOT declare two fields that would both mint the same canonical
+`Type.field` accessor (§5.2.6, §8.5.2). These rules do not prohibit distinct
+types from reusing a constructor or field name; cross-type reuse is governed by
+the bare-alias ambiguity rules in §8.6.5. (User ruling 2026-07-22.)
 
 **Parentheses on a constructor require content. [S115]** A constructor written in parens is in parens *because* it takes parameters and/or carries a docstring; with neither, the parens are illegal (user ruling 2026-07-21). `(deftype Flag (Flag))` is a **parse error**, and so is the empty `(deftype Flag ())`. The bare-name spelling above is not a stylistic preference for nullary constructors — it is the **only** spelling, save for the documented case:
 

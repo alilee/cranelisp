@@ -471,12 +471,13 @@ and one constraint (0703) is a hard *don't* on the widening.
   doc's — flagged, not actioned here.
 
 - **0710 (dangling-local-qualifier message parity) — a DIFFERENT seam (the
-  reader), not the binder helper.** 0710 is about the `read_local_name` reject
-  (`reader.rs:824`, `"expected local name after '/'"`) being terse vs the rich
-  `/bar` empty-module-half message (`reader.rs:564`). This is the **RA
+  reader), not the binder helper.** The old `read_local_name` reject was terse
+  beside the `/bar` empty-module-half diagnostic. The rich remedy-oriented form
+  is now landed and pinned by
+  `reader::tests::empty_local_half_message_names_shape_and_remedy`. This is the **RA
   reference/annotation family** (dangling qualifier at tokenization), owned by
   `enforcement-matrices.md` §3, **not** the §5 binder-head axis this doc covers.
-  It rides the same wave only because both touch frontend message text; the
+  It rode the same wave only because both touched frontend message text; the
   binder-reject widening neither depends on nor conflicts with it. The parity fix
   is designed in `enforcement-matrices.md` §3.2 (see the S115 note added there).
   Named here so the wave brief sees the full frontend message-family set (0710

@@ -2,6 +2,15 @@
 
 Owner: `/design`. Single source of design intent for the integration layer (`src/` + `crates/cranelisp-exe-bundle/`). Authored Sprint 63; refreshed Sprint 64 against the pinned Decision 40 / 41 / 42 + Principle 14 / 15 configuration.
 
+**Sprint 116 result-owner refinement.** `result-owner.md` is the active
+subordinate design for R15/FIXME 0745. A clean generated result remains owned as
+`(i64, Type)` through its last observation and is then released exactly once
+through backend's module-qualified per-concrete drop glue. Fresh JIT consumes
+`CompilationArtifacts.drop_glues`; cache-hit resolves the same canonical symbol
+through `Linker::get_symbol`; linked startup relocates and calls it after exit-code
+conversion. The JIT/linker code owner remains live through the call. No JIT-only,
+IO-only, display-owned, shallow, or type-erased releaser is part of int.
+
 This document elaborates *within* the bounded context fixed by `design/arch/bounded-contexts.md` §6 and the public surface fixed by `design/arch/facades/int.md`. Where this document and either of those drift, the bounded-context statement and facade win — file FIXME `target: /arch` or update this doc accordingly.
 
 > **S76 implementation plan — see `design/int/s76-implementation-plan.md`.** This master is S64-era and substantially stale w.r.t. the as-built (`cluster.rs`, `cache.rs`, `got_trace.rs`, `trace.rs`, `io_trace.rs`, `display.rs` have since landed in `src/`; many §14/§16 FIXMEs are resolved). The S76 plan is the authoritative sequencing for the facade-arc wash-through (W-Absorb), the parallel-JIT-pipeline collapse (W-Collapse), the LOCKED three-pass macro orchestration (W-Macro), W-Enablement, and host-wiring. Two master claims are **superseded by the S76 LOCKED W-Macro decision** (`macro-availability-model.md` §0): (1) §2 note 4 / §6.3's "macro-vs-fn discrimination is orchestrator-owned via a `MacroInMem` gap peek" — recognition is now a `cranelisp_types::resolve_macro_head` query in int's Pass-1 `process_cluster` expand loop over the committed view, and the `block_for_macro_codegen` path is DELETED not wired (no same-module non-macro clause-callee case exists under the lock); (2) §3/§6's "macro expansion is frontend's job / `int::process_form` is the gap-orchestrator not the expander" — int now OWNS macro execution via `cranelisp_types::MacroExpander` over `src/expander.rs`'s invocation core + `src/marshal.rs`, and the free-standing `expand_sexp_recursive` walk / `SymbolTableMacroResolver` DELETE (BC §6 int bullet).
@@ -433,11 +442,26 @@ Backend's `CompilationError` lives in `cranelisp-backend` (post-FIXME 0100 Phase
 
 ### 7.4 Linker retention
 
+Result drop-glue addresses obey the same retention rule as callable code. A
+fresh-JIT `DropGlueArtifact.jit_address` is usable only while paired with the
+existing `Code::Jit(Arc<Jit>)`; a cache-hit symbol returned by
+`Linker::get_symbol` is usable only while paired with `Code::Linker`'s
+`Arc<Linker>`. The pair is carried by the armed program-result owner through
+display/exit conversion and the glue call. Linked startup needs no host `Arc`:
+the system-linked text remains live until process exit. See `result-owner.md`.
+
 `Code::Linker.linker: Arc<Linker>` is the per-symbol retention root. When the last `Code::Linker` referencing an `Arc<Linker>` drops (last entry from one cache-hit `.o` evicted/redefined), the mmap'd pages reclaim. Symmetrical with Decision 31 Scenario 2 (per-redefinition reclaim) but at module granularity. `SharedState.kept_linkers` is dissolved (Sprint 58 Wave 3); only `kept_dlls` remains as a session-global side store (orthogonal — DLLs are session-scoped, not per-module).
 
 ---
 
 ## 8. REPL flow
+
+An executed `EvalResult::Val` is an ownership-bearing result, not a freely
+copyable display tuple. REPL formatting observes the live value completely and
+then consumes its armed owner, invoking canonical type glue exactly once for an
+owning result. Definition/bare-symbol display does not fabricate ownership. IO
+unwrapping occurs once at the program-driver boundary; the formatter has no
+private IO-result release path. See `result-owner.md` §§2, 4.2, and 4.4.
 
 ### 8.1 Eval cursor + defn_order append
 
@@ -700,6 +724,12 @@ The fourth sink (introspection) is a per-key store, not a ring; it serves slash 
 | Performance (P6) | Per-symbol JIT (Decisions 31 + 41) is the chosen target — long-lived per-worker JIT (Decision 28) was retracted because it coalesces batches and defeats reclaim. Persistent worker pool (Decision 27) avoids per-module thread spawn cost. Cache-hit-via-`LoadObject` skips codegen entirely on cache-hit. Production batch zero-overhead introspection (`shared.introspection == None`) and zero-overhead observer ring buffers (no observer registered → relaxed load + null-check branch). |
 | Testability (P5) | `process_form` is a free function over `&SharedState` — testable with a synthetic SharedState. The scheduler's wait/notify primitives are unit-testable in isolation. `Code` reclaim verified by `tests/v4_jit_reclaim.rs` (Decision 31 Scenario 2). `Introspection` populate paths are conditional on a single discriminator — easy to assert in integration tests. The observer contracts are unit-testable: register a captured-events observer; assert events fired in the expected order. |
 
+Sprint 116 touches maintainability, performance, and testability at the typed
+result exit: one owner state machine accepts three keyed code-housing adapters;
+scalar results stay call-free; observe-before-release and exact-once behavior are
+unit-testable with recorded callbacks. It does not change compiler-internal
+concurrency or the observability sink architecture (`result-owner.md` §7).
+
 ---
 
 ## 13. Decision register (int-relevant)
@@ -772,6 +802,12 @@ The destination shape is the working reference for design. The as-built reality 
 > Principle-23 scenario-space matrices (A–E) that FIXME 0496 derives its unit briefs
 > from. Cited from §8.6.
 
+> **S116 — `result-owner.md` is a current, load-bearing subordinate doc (KEEP).**
+> It defines the program-result owner's observe-then-release state machine and
+> the fresh-JIT/cache-hit/linked-startup adapters for backend's one canonical
+> per-concrete drop-glue contract. It is the int design of record for R15/FIXME
+> 0745 and is cited from §§7.4 and 8.
+
 The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
 
 ### Concurrency family
@@ -842,6 +878,12 @@ The triage itself is a `/sprint`-coordinated `/dev` task — too large for a sin
 ---
 
 ## 16. Open questions / FIXMEs filed
+
+**S116 typed-context exit:** FIXME 0745 remains open for implementation. Its
+design question is settled by `result-owner.md`: int owns the successful result
+through final display/exit conversion and releases it once through the approved
+backend glue identity while retaining code lifetime. No further intrinsics ABI,
+heap-header, cache-schema, or private release mechanism is required.
 
 **S64-era FIXMEs (0098/0099/0100/0103/0104/0108) have all CLOSED** (W-Macro, the trace relocation, the platform-interface landing, the display absorb, and the cluster-atomic restructure resolved them — verified against source S81). The current int FIXME backlog (S81 "clean & green", Phase 3 design):
 

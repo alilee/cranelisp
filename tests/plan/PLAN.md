@@ -4003,3 +4003,48 @@ imports its *names* correctly, but the alias is never registered as a
 is non-functional end to end, against explicit spec §8.3.4/§8.3.6 text. The
 owed matrix is **import shape × reference form**, whose
 `(alias import × alias-qualified ref)` cell is empty — see 0798 for the table.
+# Sprint 116 — QA-first safety and settled-syntax matrix
+
+Plan of record: `tests/plan/s116-test-plan.md`. Status below is **authored,
+execution pending**: the environment lacks `cargo-nextest` and cannot resolve
+the dependency index. `[S116]` therefore means a required cell exists, not that
+its runtime result has been certified.
+
+## S116-A — transitive discharge and typed exits
+
+| Requirement / design invariant | Test | Polarity / status |
+|---|---|---|
+| §12.3.1 depths 1, 2, 4 | `capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_up_to_glue_depth_limit_balances_green` | positive control; `[S116]` authored |
+| §12.3.1 depths 5 and >5, both ownership toggles | `capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_past_glue_depth_limit_does_not_leak` | live defect; `[S116]` authored RED |
+| §12.3.1 finite recursive values 0/1/many; compiler/runtime termination | `transitive_drop_glue_s116::finite_recursive_values_zero_one_many_terminate_and_balance` | live defect; `[S116]` authored RED |
+| §12.3.1 consuming constructor/var-pattern eliminators | ten baseline cells in `match_owned_temporary_scrutinee_0810.rs` enumerated by `s116-test-plan.md` §2.1 | live defect; `[S116]` baseline frozen |
+| §12.3.1 TCO ownership displacement | `adt_wrapped_supersede_leak_0720::{adt_wrapped_supersede_loop_does_not_leak, adt_wrapped_supersede_residue_does_not_scale_with_n}` | live defect; `[S116]` baseline frozen |
+| §10.1 + §12.3.1 run result observed then released, both toggles | `program_result_owner_s116::run_nested_pure_payload_observed_then_released_both_toggles` | live defect; `[S116]` authored RED |
+| §10.1 + §12.3.1 linked conversion then release | `program_result_owner_s116::linked_nested_pure_payload_converts_then_releases` | live defect; `[S116]` authored RED |
+| repl §5.1 + §12.3.1 display then release | `program_result_owner_s116::repl_nested_heap_value_displays_before_exact_release` | live defect; `[S116]` authored RED |
+| §10.1 scalar exit conversion fence | `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | positive control; `[S116]` authored |
+| §12.3.1 composed application residual | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | live defect threshold; `[S116]` authored RED |
+
+## S116-B — trait tails, constructors, and structural annotations
+
+| Requirement | Test set | Polarity / status |
+|---|---|---|
+| §7.1/§7.1.5 one inferred/default tail | `trait_method_tail_s116::{inferred_default_body_is_the_single_tail_and_dispatches, annotated_default_body_is_one_structural_tail}` | positive; `[S116]` authored RED |
+| §7.1 deleted return-type-plus-body spelling | `trait_method_tail_s116::deleted_return_type_plus_body_spelling_rejected_neg` | negative; `[S116]` authored RED |
+| §7.1.1 implementing-type occurrence | `trait_method_tail_s116::{nonnullary_no_self_occurrence_rejected_at_declaration_neg, required_method_bare_type_tail_control_green}` | negative + positive control; `[S116]` authored |
+| §5.4.5 default/re-impl conformance | `trait_method_tail_s116::{reimpl_default_body_calls_replaced_sibling, first_impl_extra_parameter_rejected_neg, reimpl_extra_parameter_rejected_and_prior_impl_survives_neg}` | positive + negatives; `[S116]` authored RED |
+| §5.2.1 duplicate field binder, located second occurrence | `deftype_duplicate_constructor::{deftype_duplicate_field_name_rejected_at_second_occurrence_neg, deftype_distinct_field_names_control_green}` | negative + positive control; `[S116]` authored |
+| §5.2.1/2/3/5 constructor-arm spelling and uniqueness | all 15 cells in `deftype_duplicate_constructor.rs` and `deftype_constructor_form_rulings_s116.rs` named by FIXME 0847 | positive/negative variant matrix; `[S116]` authored, runtime pending |
+| §1.4.5 recursive structural fold | `annotation_structural_s116::{nested_and_application_annotations_fold_recursively, qualified_compound_annotation_round_trips_through_macro}` | positive; `[S116]` authored RED |
+| §1.4.5 structural cache carrier | `annotation_structural_s116::structural_annotation_cold_warm_cache_round_trip` | positive; `[S116]` authored RED |
+| §1.4.5 malformed/dangling annotation | `annotation_structural_s116::{dangling_annotation_at_eof_rejected_neg, annotation_before_closing_delimiter_rejected_neg}` | negative; `[S116]` authored RED |
+
+## S116-C — M3 production wiring
+
+| Design requirement | Test | Static verdict |
+|---|---|---|
+| `diagnostic-modes.md` §7.3 exact closed protocol, positive | `intrinsics_m3_detection_s116::m3_parity_catches_injected_imbalance` | **BLOCKED:** env arm and plant spelling are exact, but the cleared child environment does not restore required library paths and the fixture is not a valid `IO` entry program; it can fail before the plant/atexit path, so the control is not discriminating |
+| `diagnostic-modes.md` §7.3 clean sibling | `intrinsics_m3_detection_s116::m3_parity_clean_child_exits_normally_control` | **BLOCKED by same fixture:** intended green polarity cannot prove the production path until the child contract is repaired |
+
+No coverage annotation is promoted to `[Tested]` in this static gate. Runtime
+evidence is required first.

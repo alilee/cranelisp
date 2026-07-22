@@ -95,6 +95,15 @@ The audit's recommended-remediation item 3 calls for a crate-local `crates/crane
 
 ## 4. Form-classification + dispatch model
 
+### Sprint 116 syntax surface
+
+Sprint 116's annotation, `deftype`, and trait-tail responsibilities are designed
+in `s116-syntax-and-annotation.md`. The load-bearing shape is one recursive
+read-time `Sexp::Annotated` producer, one definition-wide constructor/field
+uniqueness pass, and a preserved §7.1 trailing element whose type-or-default
+judgment belongs to typecheck. FIXME 0785 corpus repair precedes the reader flip.
+This is current where older annotation-pairing descriptions conflict.
+
 > **S66 Wave 3a update.** The per-form pair `build_ast` + `build_expr` named in earlier drafts of this section collapses into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156. See `wave-3a-build-form.md` for the wave-specific shape; the model description below is the pre-pivot reading and remains accurate at the chain-composition level (parse → expand → per-form build → typecheck).
 >
 > **S76 W-Macro update.** The `expand` step in the chain below is NOT a frontend call post-S76 — macro expansion is int's Pass-1 loop (recognition via `cranelisp_types::resolve_macro_head`, execution via `cranelisp_types::MacroExpander`), running before the expanded forms reach frontend's `build_form`. Frontend's contribution to the chain is now: `parse` → quasiquote desugar → (int/typecheck expand) → `build_form`/`build_expr`. Read the `expand`-as-frontend-call references below as historical. See `s76-syntactic-only.md` §0.

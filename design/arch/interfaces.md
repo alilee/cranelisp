@@ -456,17 +456,37 @@ pub struct ConstructorDef {
     pub span: Span,
 }
 
-/// Trait method signature. spec: §5.3
+/// Frontend-stage trait method with one unclassified trailing form.
+/// `tail` retains its own exact source span, including `Sexp::Annotated`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedTraitMethodSig {
+    pub name: Symbol,
+    pub docstring: Option<String>,
+    pub params: Vec<(Symbol, TypeExpr)>,
+    pub tail: Sexp,
+    pub span: Span,
+    pub hkt_param_index: Option<usize>,
+}
+
+/// The one settled required-vs-default authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TraitMethodKind {
+    Required { ret_type: TypeExpr },
+    Default {
+        body: Expr,
+        result_constraint: Option<TypeExpr>,
+    },
+}
+
+/// Typecheck-classified trait method stored in `TraitDeclInfo`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitMethodSig {
     pub name: Symbol,
     pub docstring: Option<String>,
-    pub params: Vec<TypeExpr>,
-    pub ret_type: TypeExpr,
+    pub params: Vec<(Symbol, TypeExpr)>,
+    pub kind: TraitMethodKind,
     pub span: Span,
     pub hkt_param_index: Option<usize>,
-    pub default_param_names: Vec<Symbol>,
-    pub default_body: Option<Sexp>,
 }
 
 /// Trait declaration. spec: §5.3
@@ -475,7 +495,7 @@ pub struct TraitDecl {
     pub name: TraitName,
     pub docstring: Option<String>,
     pub type_params: Vec<Symbol>,
-    pub methods: Vec<TraitMethodSig>,
+    pub methods: Vec<UnresolvedTraitMethodSig>,
     pub visibility: Visibility,
     pub span: Span,
 }
@@ -504,6 +524,29 @@ pub struct TraitImpl {
     pub span: Span,
 }
 ```
+
+The method-tail boundary is deliberately phase-separated. Frontend constructs
+`UnresolvedTraitMethodSig` and preserves the sole trailing form verbatim; its
+exact tail span is available through `Sexp::span()`, including the outer and
+child spans of `Sexp::Annotated`. Typecheck is the only classifier. It must
+complete the transactional type-resolution probe before replacing the
+unresolved declaration with `TraitMethodSig` in `TraitDeclInfo`; an unresolved
+method is never published to the symbol table.
+
+`TraitMethodKind` is the one authoritative closed sum. The former parallel
+`ret_type: TypeExpr` plus `default_body: Option<Expr>` representation is removed
+in the same coordinated change. For an annotated default, typecheck builds
+`body` from the annotation's subject and stores the annotation exactly once as
+`result_constraint`; it must not also retain an outer `Expr::Annotate` carrying
+the same constraint. `TraitDecl.methods` is therefore the frontend-stage
+`Vec<UnresolvedTraitMethodSig>`, while `TraitDeclInfo.methods` remains the
+classified `Vec<TraitMethodSig>`.
+
+This carrier change coalesces with `Sexp::Annotated` in the already approved
+cache schema 22→23 window. The required public-API baseline change is exactly
+`crates/cranelisp-types/public-api.txt`. Frontend and typecheck baselines are
+regenerated only as zero-diff verification: neither crate adds a public entry
+point, re-export, or carrier of its own.
 
 ### TopLevel (CHANGED from v1)
 
@@ -1334,6 +1377,36 @@ Decision 23 (updated Sprint 58 Wave 2) records that every CLIF reference to `__c
 **Mode dispatch is the Module impl, not the CLIF.** This is the canonical illustration of Principle 11 (single pipeline, mode parameters): one CLIF, two resolvers. Adding a third mode (e.g. AOT to a static archive) would add a third resolver behind a third Module impl — the CLIF would not change.
 
 **Single-source GOT data-symbol name.** The `__cranelisp_got_{M}` naming scheme is produced by one function — `cranelisp_types::got_data_symbol_name(module_path) -> String` (`crates/cranelisp-types/src/module.rs`). It lives in `cranelisp-types` because **two** crates consume it: `cranelisp-backend` (emits the `Linkage::Import`/`Export` relocation symbol during codegen) and `int` (registers the SymbolTable-GOT slab base under this name for the JIT `symbol_lookup_fn`, the cache-hit `Linker::register_symbol`, and the `--link` startup `.o`). It was relocated DOWN from backend's former `pub(crate) compiler::got_data_symbol_name` at S76 (per the /arch S76 Phase 2 review) so the scheme is single-source rather than reached-into across the backend boundary or duplicated in int. It is pure string formatting over `ModuleFullPath`, a peer of `ensure_module_exists`.
+
+**Type-drop glue identity and address boundary (S116 Phase 3; R15/0745).** One pure cross-crate naming function is added beside `got_data_symbol_name`:
+
+```rust
+pub fn drop_glue_symbol_name(
+    module: &ModuleFullPath,
+    ty: &ConcreteType,
+) -> LinkerSymbol;
+```
+
+The result is an injective, linker-safe, **module-qualified** encoding of the complete `ConcreteType` (enum discriminator, fully-qualified ADT name, and recursively encoded arguments/parameter/result types). The module component is an emission namespace, not part of type identity: each `compile_to_module` registry remains keyed only by `ConcreteType`, while two module objects that both require `String` glue receive distinct exported symbol names and cannot collide at final link. No span, source spelling, traversal depth, requesting function, or process address enters the name. This function lives in `cranelisp-types` because backend emits the definition and int/exe-bundle independently names the keyed JIT/cache/link consumer; duplicating the grammar would recreate the drop-glue-underkey class. It is a pure naming primitive, not release behavior and not a generic releaser.
+
+Backend extends its existing behavior-owned return DTO rather than `cranelisp-types`:
+
+```rust
+#[non_exhaustive]
+pub struct DropGlueArtifact {
+    pub symbol: LinkerSymbol,
+    pub jit_address: Option<usize>,
+}
+
+pub struct CompilationArtifacts {
+    // existing fields unchanged
+    pub drop_glues: HashMap<ConcreteType, DropGlueArtifact>,
+}
+```
+
+`compile_to_module`'s signature and single entry remain unchanged. During its normal declaration-first registry walk it requests glue for every concrete owning return type reachable from the compiled targets (including the `a` inside entry `IO a`), marks those type-glue definitions `Linkage::Export`, and returns the registry projection keyed by `ConcreteType`. `jit_address` is `Some(finalized address)` only when `CodeFinalizer` exposes runtime pointers; object mode returns `None`. The address is valid only while the caller retains the existing `Code::Jit(Arc<Jit>)`; the artifact is not a retention owner. Int converts its carried result `Type` once to `ConcreteType`, performs one direct map lookup, and invokes that address after the last observation. A missing owning-type row is a hard internal error, never ambient symbol search or shallow release.
+
+Cache-hit int and linked startup do not consume a process address. They call the same types-owned naming function with the entry module + concrete inner result type, then use their existing keyed mechanisms: `Linker::get_symbol(symbol)` for a loaded object, or an ordinary system-linker relocation from the startup object. Thus fresh JIT, cache-hit JIT execution, and standalone link invoke the same module-qualified backend-emitted body from the same object/JIT compilation. No GOT slot is allocated: glue is not a language-callable or redefinable value. No serialized carrier, heap-layout field, C ABI, cache-schema bump, second compile entry, generic type-erased release, or public arbitrary-JIT-symbol lookup is introduced.
 
 Cross-references: Decision 23 (two-GOT framing); Decision 31 (the SymbolTable GOT slot is the redefinition atomic-swap target — the `--run` GOT MUST be mutable for redefinition to work); Decision 36 (function symbol naming + linkage policy — bare-Local is correct because the `.o` data section GOT's relocation initializers are intra-`.o`); Decision 37 (cache-hit codegen-phase order independence is established by the SymbolTable GOT slot LAYOUT being pinned at typecheck time).
 

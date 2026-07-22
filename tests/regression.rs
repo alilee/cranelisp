@@ -3252,7 +3252,8 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 }
 
 // =============================================================================
-// Sprint 78 — int-internal structural-target guard: SharedState field count
+// Int-internal structural guard: SharedState parking maps stay absent and the
+// total public-field surface remains bounded.
 // =============================================================================
 //
 // RELOCATED in Sprint 78 Wave 1 (plan §3) FROM `tests/facade_pif_rows.rs`
@@ -3262,26 +3263,15 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 // the wrong home. `regression.rs` is the canonical home for cross-cutting
 // int-internal structural guards.
 //
-// This is the standing guard that the cross-thread in-progress parking maps
-// (`module_sexps`, `suspend_states`) do not creep back onto `SharedState` after
-// the Sprint 78 restructure deletes them. The restructure removes EXACTLY those
-// 2 fields from 16 (the `register_dep_for_eval`/republish removal sheds methods,
-// not fields). Wave 4 §2.7 then ADDS the one legitimate session-side field
-// `prelude_fallback: cranelisp_typecheck::PreludeFallback` (the prelude-outer-
-// scope companion map, parallel to `module_aliases`; session-side + unserialized
-// — NOT creep), reaching 15. Sprint 80 Wave 2D defect D1 (the `/arch` ruling
-// `design/arch/d1-introspection-repl-only.md` §4) ADDS one further sanctioned
-// session-side field `run_mode: RunMode` — the explicit REPL-vs-batch carrier
-// that replaces the `introspection.is_some()` proxy (a data-model addition, NOT
-// parking-map creep) — reaching 16. So the target is `== 16` (16 − module_sexps
-// − suspend_states + prelude_fallback + run_mode). `module_sexps`/`suspend_states`
-// stay deleted.
+// The count is a creep tripwire. The direct name assertions are the durable
+// statement: the deleted cross-thread parking maps must never return. Legitimate
+// additions remain documented in the count assertion below.
 
 // spec: design/int/s77-int-restructure.md §2.3 — SharedState drops 16 → 14
 //       after module_sexps/suspend_states deletion; S78 Wave 4 §2.7 then adds
 //       prelude_fallback → 15; S80 Wave 2D D1 then adds run_mode → 16.
 #[test]
-fn shared_state_field_count_at_target_14() {
+fn shared_state_pub_field_count_guard() {
     // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
     //
     // Target is 17: 16 − module_sexps − suspend_states (S78 restructure) +
@@ -3303,6 +3293,12 @@ fn shared_state_field_count_at_target_14() {
         .find("\n}\n")
         .expect("end of SharedState struct definition");
     let body = &after[..end_offset];
+    for forbidden in ["module_sexps", "suspend_states"] {
+        assert!(
+            !body.contains(forbidden),
+            "SharedState MUST NOT regain deleted cross-thread parking field `{forbidden}`"
+        );
+    }
     // Count `pub ` field declarations — lines matching `\s+pub <ident>:`.
     let field_count = body
         .lines()

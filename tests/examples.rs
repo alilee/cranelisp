@@ -41,7 +41,10 @@ fn project_root() -> PathBuf {
 }
 
 fn binary_path() -> PathBuf {
-    project_root().join("target").join("debug").join("cranelisp")
+    project_root()
+        .join("target")
+        .join("debug")
+        .join("cranelisp")
 }
 
 fn examples_dir() -> PathBuf {
@@ -330,12 +333,10 @@ impl std::fmt::Display for Outcome {
 // per-crate sweep undetected — there was ZERO CI coverage for a multi-file
 // directory project run end-to-end.
 //
-// This test closes that gap with a self-contained NESTED multi-file project
-// (per §8.2.5 nested-only resolution, ruled by FIXME 0345). It is intentionally
-// NOT coupled to `examples/16-modules/` — that example is not yet relaid out to
-// the nested shape (a Phase-6 /examples task), so coupling to it would make
-// this guard depend on user-proxy churn. A self-contained `tempfile::TempDir`
-// nested fixture is the durable, decoupled regression guard per
+// This test closes the mechanism gap with a self-contained NESTED multi-file
+// project (per §8.2.5 nested-only resolution, ruled by FIXME 0345). The checked-in
+// learning-sequence project has its own row below; this fixture remains the
+// durable guard independent of user-proxy content churn per
 // tests/CLAUDE.md §"Repros live in tests/, not exemplar/ or examples/".
 //
 // It is a real, durable CI extension (green, not a failing defect guard): it
@@ -397,6 +398,27 @@ fn multi_file_nested_directory_example_runs_with_documented_exit() {
         Some(33),
         "multi-file nested-directory project should exit 33 (square(5)=25 + \
          double(4)=8); got {code:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+// spec: spec/08-modules.md §8.2.5 — the checked-in `16-modules` nested
+// directory project exercises mod/import/export/private definitions end-to-end.
+#[test]
+fn modules_directory_example_runs_with_documented_exit_47() {
+    // read-only on project_root — runs the checked-in learning-sequence example.
+    let main = examples_dir().join("16-modules").join("main.cl");
+    assert!(
+        main.exists(),
+        "examples/16-modules/main.cl not found at {main:?}"
+    );
+    let out = run_example(&main);
+    assert_eq!(
+        out.status.code(),
+        Some(47),
+        "16-modules MUST exit 47; got {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );

@@ -135,17 +135,18 @@ Scheme { vars: [42], constraints: { 42: ["Num"] }, ty: Fn([Var(42), Var(42)], Va
 
 `+` is polymorphic over one variable, constrained to types implementing `Num`.
 
-### Occurrence-rule enforcement (§7.1.1, S115 — FIXME 0709)
+### Occurrence-rule enforcement (§7.1.1, SHIPPED S115)
 
-**Status:** DESIGN (S115 Phase 3, `/design`(typecheck)). Closes the F-D2
-`silent-accept`/`check-gate-leak` corner: `(deftrait Zeroable (zed [] Int))` —
-empty params, CONCRETE `Int` return, no `self` — is today accepted silently, and
-the downstream `(zed)` call leaks past the typecheck gate to a raw
-`codegen error … undefined function: zed`
-(`tests/nondispatchable_trait_method_0709.rs`, retargeted `/testing`).
+**Status: shipped.** The conventional-trait branch of
+`registry::register_trait_decl` checks every method before the trait entry is
+written. `traits/type_resolve.rs::method_mentions_self` is the single predicate.
+The HKT path returns through `register_hkt_trait` before this loop, so the
+§7.2 exemption is structural rather than a flag. This is the broad occurrence
+rule settled by the user on 2026-07-21 and scribed in §7.1.1 [S115]: parameter
+count does not narrow it.
 
-**The rule (spec/07-traits.md §7.1, line 79 — spec-settled, no user question).**
-Each required method signature of a CONVENTIONAL (bare-head, kind-`*`) trait MUST
+**The rule (spec/07-traits.md §7.1.1 [S115]).** Each method signature of a
+CONVENTIONAL (bare-head, kind-`*`) trait MUST
 contain **at least one occurrence of the implementing type** — in parameter OR
 return position — **except higher-kinded trait methods (§7.2)**. An occurrence is:
 
@@ -190,13 +191,10 @@ occurrence rule here is for the conventional bare-head form.
 registration path of `register_trait_decl` (where the method signatures are in
 hand and the conventional-vs-HKT discrimination already lives — HKT routes to
 `register_hkt_trait`, exempt), BEFORE the trait entry is written, per method.
-`build_method_type` already maps a `TypeExpr::SelfType` return and a bare param to
-the implementing-type var, so the occurrence predicate reads the same parsed
-signal (bare param / `:self` param / `self` return) off `decl.methods` — no new
-parsing. Placement at the arm (mirroring the name-freedom loop's "ONE visible
-place") is the alternative; the registry is preferred because it holds the
-signature data and the HKT discrimination. `/dev` settles the exact call site; the
-requirement is: conventional-only, per-method, declaration-time, correct reason.
+`build_method_type` maps a `TypeExpr::SelfType` return and a bare param to the
+implementing-type var, so the predicate reads the same parsed signal (bare param
+/ `:self` param / `self` return) off `decl.methods`. The registry placement is
+the shipped seam because it holds both signature data and the HKT branch.
 
 **The negative twin flips as a consequence.** Once (i) rejects `(deftrait Zeroable
 (zed [] Int))` at declaration, `(zed)` never reaches codegen, so the (ii)
@@ -206,12 +204,19 @@ declaration reject. Located error uses existing error machinery
 (`CranelispError::TypeError` + `ErrorLocation` from the decl span) — no
 `cranelisp-types` edit (arch §7).
 
-**Unit tier (`/dev`, METHOD §2.2).** At the registration seam, an accept/reject
-pair: `(deftrait Zero (z [] self))` accepted (occurrence via self-return);
-`(deftrait Zeroable (zed [] Int))` rejected with the reason substring; a bare-param
-method (`(size [x] Int)`) accepted (occurrence via bare param). The GREEN control
-`(zed [] self)` (§7.1.1's own example) staying accepted is the fix's boundary
-guard (test plan §1.3).
+**Design-drift lesson.** The Phase-3 design already required the conjunction
+`no-param-occurrence ∧ no-self-return`. W4 nevertheless shipped a narrower
+`params.is_empty() && !method_mentions_self(method)` guard and recorded that
+departure only in code/FIXME 0770; W8 widened it to the designed rule. Any
+future provisional narrowing must be recorded in this design-of-record as well
+as carrying its ruling back-edge, otherwise review is asked to compare source
+against a standard known silently not to describe it.
+
+**Unit tier.** Tests cover the occurrence predicate and registration seam by
+the definition variants: parameter vs return occurrence, required vs default,
+nullary vs non-nullary, nested type expressions, and conventional vs HKT. Do
+not duplicate a drifting list of individual test names here. Sprint 116 extends
+the default-method column under `s116-method-signature-resolution.md` §6.
 
 ## 3. Trait Implementation (`impl`)
 

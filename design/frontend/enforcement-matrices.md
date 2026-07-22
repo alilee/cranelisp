@@ -158,7 +158,7 @@ enforced asymmetrically and swallowed in the annotation path:
 | Written | Path | Today |
 |---|---|---|
 | `foo/bar` | `read_symbol_or_keyword` → `read_qualified_symbol` → `read_local_name` | OK (both halves) |
-| `foo/` (value) | same → `read_local_name` peeks nothing valid → `Err("expected local name after '/'")` (`:788`, propagated by `?`) | **already errors** |
+| `foo/` (value) | same → `read_local_name` peeks nothing valid → located empty-local-half diagnostic naming `mod/name` and the remedy | **errors; rich message LANDED in S115** |
 | `:foo/` (annotation) | `read_colon_prefix` → `read_qualified_tail` → sees `/`, `read_local_name` fails → **returns `first_part`, `/` consumed** (`:700-706`) | **SWALLOWS** → degrades to `:foo` |
 | `:a.b/` (annotation) | `read_qualified_tail` dotted branch → found_slash, `read_local_name` fails → **returns `module`** (`:737-742`) | **SWALLOWS** → degrades to `:a.b` |
 | `/bar` (any) | `read_operator` reads lone `/`, next byte `b` (symbol-start) → returns operator symbol `/`, then `bar` as a separate token | **not detected** (reads as `/` `bar`) |
@@ -196,30 +196,19 @@ axis:**
    operator — RA-N4 fence). This is the ONE genuinely-new lexical reject; the
    others un-swallow existing paths.
 
-3. **`read_local_name`'s existing `Err` (`:788`, `"expected local name after
-   '/'"`) is retained** as the value-path dangling-local reject (RA-N3 value
-   position). Edit 1 brings the annotation path to parity with it (same message,
-   both positions).
+3. **`read_local_name`'s located rejection is retained** as the value-path
+   dangling-local reject (RA-N3). Edit 1 brings annotation position to parity.
+   S115 replaced the terse historical words with a diagnostic naming the
+   `mod/name` shape and remedy; the standing pin is
+   `reader::tests::empty_local_half_message_names_shape_and_remedy`. Design
+   relies on the remedy, not a duplicated verbatim string.
 
-   **S115 message-parity rider (0710, /dev(frontend), Minor).** The empty-LOCAL
-   half message (`read_local_name`, `reader.rs:824` at HEAD — the `:788` reference
-   above is pre-drift; verify at fix time) is terse and remedy-less
-   (`"expected local name after '/'"`) compared to its **rich empty-MODULE-half
-   sibling** at `read_operator` (`reader.rs:564` — "`/` here has no module name
-   before it — a qualified name needs a non-empty module (`mod/name`); a bare `/`
-   division must be separated (`(/ a b)`)"). Both are correctly located + rejected
-   (spec §8.5.1); the finding (`/docs`, FIXME 0710) is purely that a newcomer who
-   typed `map/` gets less help than one who typed `/bar`. **Fix: raise the
-   `read_local_name` message to the empty-module sibling's shape** — name the
-   dangling-qualifier shape and the remedy ("a qualified name needs a non-empty
-   local (`mod/name`); drop the trailing `/`"). **Message text only, no semantic
-   change**, no path change — the same `Err` at the same seam, richer wording.
-   Coordinate the two phrasings with /spec §8.5.1 if they should share one
-   template (0710 suggests it). This is the value/annotation-position dangling-
-   local twin of the `/bar` empty-module reject; it is NOT the §5 binder-reject
-   message (that is `binder-head-reject.md` §2.1/0711 — a different seam). Both
-   ride the same S115 /dev(frontend) frontend-message wave (with the 0702 dotted
-   widening) but are independent one-line edits.
+   **S115 message-parity rider (0710, LANDED).** The empty-local-half diagnostic
+   now matches its empty-module sibling's remedy-oriented shape: it names the
+   dangling qualifier, requires `mod/name`, and explains how to write the bare
+   name. The standing reader unit pin owns the exact words. This is the
+   value/annotation dangling-local twin of `/bar`; it is not the §5 binder-reject
+   message, and the two seams remain independent.
 
 **Why the reader, not ast_builder:** `/bar` and `foo/` never form a single
 `module/name` string that reaches the ast_builder splitters (`type_ref_from_name`

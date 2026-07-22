@@ -100,7 +100,11 @@ fn assert_rejected(c: &str, form: &str, ctor: &str) {
 #[test]
 fn deftype_duplicate_nullary_constructor_rejected_neg() {
     let c = repl_prims("(deftype Flag (Raised \"up\") (Raised \"still up\"))\n");
-    assert_rejected(&c, "(deftype Flag (Raised \"up\") (Raised \"still up\"))", "Raised");
+    assert_rejected(
+        &c,
+        "(deftype Flag (Raised \"up\") (Raised \"still up\"))",
+        "Raised",
+    );
 }
 
 // RED — duplicate arms in the ENUM spelling (§5.2.3, all-nullary bare names).
@@ -147,5 +151,39 @@ fn deftype_distinct_fielded_constructors_control_green() {
     assert!(
         !c.to_lowercase().contains("error"),
         "distinct constructor names MUST NOT produce any diagnostic; got:\n{c}"
+    );
+}
+
+// RED — duplicate FIELD binders in one product type. Both accessors would mint
+// the same canonical `T.a`; §8.5.2 requires that name to have one referent. The
+// diagnostic is required to point at the second `a`, not the first declaration.
+// spec: spec/05-definitions.md §5.2.1 and spec/08-modules.md §8.5.2 — field
+// binders are pairwise unique and a duplicate rejects at its second occurrence.
+// defect: class=silent-accept locus=frontend deftype field-registration seam — duplicate field binder admitted and later accessor shadows earlier one found=S115 owner=/dev
+#[test]
+fn deftype_duplicate_field_name_rejected_at_second_occurrence_neg() {
+    let form = "(deftype T [:primitives/Int a :primitives/Int a])";
+    let c = repl_prims(&format!("{form}\n"));
+    assert!(
+        !c.contains(ACCEPTED) && c.to_lowercase().contains("duplicate") && c.contains("a"),
+        "`{form}` MUST reject the second field binder `a` as a duplicate; got:\n{c}"
+    );
+    assert!(
+        c.contains("46..47") || c.contains("at 46") || c.contains("second"),
+        "the duplicate-field diagnostic MUST locate the second `a` (byte span \
+         46..47 in the submitted form), not the first; got:\n{c}"
+    );
+}
+
+// GREEN control — the same product shape with distinct field binders remains
+// legal; uniqueness is per field name, not per field type.
+// spec: spec/05-definitions.md §5.2.1 — product fields may share a type while
+// retaining distinct binder names.
+#[test]
+fn deftype_distinct_field_names_control_green() {
+    let c = repl_prims("(deftype T [:primitives/Int a :primitives/Int b])\n");
+    assert!(
+        c.contains(ACCEPTED) && !c.to_lowercase().contains("error"),
+        "got:\n{c}"
     );
 }

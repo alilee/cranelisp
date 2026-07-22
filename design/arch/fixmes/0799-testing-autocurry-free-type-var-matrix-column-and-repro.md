@@ -8,7 +8,7 @@ refers_to: spec/04-expressions.md §4.6.3 Auto-Currying (the `[Tested+Neg …]` 
   tests/spec_04_expressions.rs::auto_curry_* ;
   design/arch/fixmes/0779-qa-autocurry-drain-seam-detection-gap.md ;
   tests/plan/s115-test-plan.md §10.4 (the adjudication + the probe table)
-status: open
+status: deferred
 ---
 
 # Auto-curry over a free-var parameter: the failing repro at the SHARPENED axis + the §4.6.3 free-type-variable column
@@ -105,6 +105,11 @@ via `/spec`; `/qa` routed it to `/sprint` for an S116 slot. It blocks nothing
 here — do not pin a polarity for (e) until it is ruled.
 
 ## Context
+
+**S116 disposition:** Deferred outside Sprint 116 Tracks A--C. The sharpened
+wrong-reject and missing free-type-variable column remain live; this is not a
+closure verdict. `/sprint` must schedule the repro/matrix with the next
+auto-curry/type-inference wave.
 
 Found by `/testing` at S115 W7 while making `tests/gen_ownership_flows.rs`
 well-typed by construction (an unannotated owning-type parameter in the

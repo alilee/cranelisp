@@ -8,7 +8,7 @@ refers_to: spec/08-modules.md §8.3.4 (module aliases — "the alias can then be
   used for qualified references") + §8.3.6 (alias-only import — "useful when you
   only want qualified access") + design/arch/fixmes/0787-*.md (the undispositioned
   tail) + tests/dotted_binder_reject_0702.rs (the reference-column cells)
-status: open
+status: deferred
 ---
 
 # A module alias is never registered as a qualifier — `(import [(m u) …])` then `(u/name)` fails; spec §8.3.4/§8.3.6 violation
@@ -101,6 +101,10 @@ before fixing.
    accept-anything-before-`/`.
 
 ## Context
+
+**S116 disposition:** Deferred outside Sprint 116 Tracks A--C. The cited spec
+and empty alias-qualified matrix remain live; this is not a closure verdict.
+`/sprint` must schedule the repro/matrix before the modules surface next opens.
 
 Found by `/qa` at S115 W7 while dispositioning FIXME 0787. `/testing` flagged
 `(u/helper)` as "outside this FIXME's ask — `/qa` to route if it is a defect"

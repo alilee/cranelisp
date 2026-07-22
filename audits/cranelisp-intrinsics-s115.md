@@ -468,13 +468,13 @@ rationale. Not written by `/audit`.)*
 
 | # | Disposition | Note |
 |---|---|---|
-| R-1 | | |
-| R-2 | | |
-| R-3 | | |
-| R-4 | | |
-| R-5 | | |
-| R-6 | | |
-| R-7 | | |
+| R-1 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0848 (`/dev` intrinsics; `/testing` e2e and `/qa` regrade dependencies preserved). |
+| R-2 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0849 (`/arch`, then `/dev` rename). |
+| R-3 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0850 (`/dev` intrinsics); third-sprint recurrence, S116 must-ship unless user approves further deferral. |
+| R-4 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0851 (`/arch`, then `/dev` public-surface change). |
+| R-5 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0852 (`/dev` intrinsics). |
+| R-6 | **ACCEPTED** | User accepted 2026-07-22 → FIXME 0853 (`/arch`); joins 0745 and 0837 before S116 per-seam fixes. |
+| R-7 | **ACCEPTED** | User accepted 2026-07-22 → FIXMEs 0854 (`/design` intrinsics), 0855 (`/dev` intrinsics), 0856 (`/arch`), 0857 (`/qa`). |
 
 ### Carried from S87 (`audits/cranelisp-intrinsics-s87.md`)
 

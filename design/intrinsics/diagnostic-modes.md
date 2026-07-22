@@ -1,9 +1,12 @@
 # Memory-safety diagnostic modes (tier-5) + RC/alloc seam asserts (tier-3)
 
-Subordinate topic doc for `cranelisp-intrinsics`. **DESIGN (S113 W5a),
-pre-implementation.** Owner: `/design`(intrinsics); implemented by
-`/dev`(intrinsics) after this design settles; lane wiring is `/qa`/`/testing`
-(`tests/plan/memory-safety-coverage.md`).
+Subordinate topic doc for `cranelisp-intrinsics`. **IMPLEMENTED (S113 W5a),
+DETECTION-PROOF EXTENSION DESIGNED (S116 Phase 3).** Owner:
+`/design`(intrinsics); implementation is `/dev`(intrinsics), while subprocess
+and lane wiring is `/qa`/`/testing` (`tests/plan/memory-safety-coverage.md` and
+`tests/plan/s116-test-plan.md` §4). The M1/M2/M3 mechanisms and A1--A4 release
+faces exist; S116 adds the missing positive proof that each detects the fault it
+claims to detect.
 
 Register trace: everything here is the **R8 row** (RC balance — "every alloc
 exactly one net free; scope decs match incs") of `design/arch/safety-invariants.md`
@@ -278,36 +281,111 @@ test-run); this design states the expected outcome per class.
   the tier-4 differential oracle (behavioural divergence on/off), which is where
   the W5b frame places them. Correctly out of W5a scope.
 
-**Self-tests (MS-P6):** each mode lands with one deliberate-violation unit test
-that plants a fault the mode must catch — a quarantine+scrub read-after-free
-returns poison; a double-free trips M3; a leaked alloc trips the exit parity.
-These are `/dev`(intrinsics) `#[cfg(test)]` unit tests at the `alloc`/`rc` seams
-(the crate's tests externalize to `alloc/tests.rs`, `rc/tests.rs`) plus the
-`/qa` lane faces. The unit test is mandatory per each fix (root CLAUDE.md
-§Testing); the e2e face is the oracle lane wiring the env vars.
+The S113 implementation landed the mechanisms, but not this section's required
+positive self-tests. S116 closes that evidence gap through the production-path
+injection contract in §7. Mechanism-internal tests remain useful unit controls,
+but cannot satisfy a detector row by themselves.
 
 ---
 
-## §7. FIXME 0656 residual — stale citations to re-point (for `/dev`)
+## §7. S116 production-path fault-injection boundary
 
-Independent comment-only rider drained opportunistically in this intrinsics
-change-set (the FIXME is `target: /dev`; deletes when actioned). Three stale
-rustdoc citations point at the deleted backend startup-`.o` emitter; re-point
-each at int's live `src/exe.rs`:
+### 7.1 Boundary and activation
 
-- `crates/cranelisp-intrinsics/src/layout.rs:3` — names
-  `cranelisp-backend::exe::generate_startup_object_checked`; the live emitter is
-  **int's `src/exe.rs::generate_startup_object`**.
-- `crates/cranelisp-intrinsics/src/layout.rs:49` — says the hash is baked "by
-  `cranelisp-backend` (`define_cstr_data`)"; the live `define_cstr_data` is
-  **int's (`src/exe.rs`)**.
-- `crates/cranelisp-intrinsics/src/io.rs:1140` — cites the ambiguous
-  `exe.rs::define_cstr_data`; the intended referent is **int's `src/exe.rs`**.
+The injection seam is **crate-private and diagnostic-test-only in purpose**, but
+is compiled into the executable so an e2e subprocess can prove the real
+counter→atexit→report→abort wiring. It adds no `pub` item, catalog entry,
+exported symbol, Cargo feature, ABI, heap-layout, or emitted-IR change.
 
-(NOT stale, leave as-is: `panic.rs:326` cites int's live
-`src/exe.rs::generate_startup_object`.) These have no behavioural effect; fix by
-symbol not line number (lines have shifted). After the edits, `/dev`
-`git rm`s `design/arch/fixmes/0656-stale-citations-to-deleted-backend-startup-emitter.md`.
+Activation requires both exact child-process values:
+
+| Variable | Required value | Purpose |
+|---|---|---|
+| `CRANELISP_TEST_FAULTS` | `s116-detection-proof-v1` | explicit protocol arm; absent or any other value is fully off |
+| `CRANELISP_TEST_FAULT` | one closed `FaultPlant` spelling | selects exactly one plant |
+
+The private closed enum is `FaultPlant::{M1StaleReuse, M2StaleRead, M3Leak,
+M3OverFree, A1ZeroRc, A2InteriorPointer, A3FreedPointer,
+A4MalformedHeader}`. Parsing happens once per process. Unknown, empty, or
+multiple spellings are a hard test-configuration error before allocation; they
+never become a partial plant. With the arm value absent there is no state
+construction, mutation, allocation, counter adjustment, or new failure. The
+ordinary M1/M2/M3/A-gate variables remain detector controls; test variables
+plant faults only and never silently enable the detector under test.
+
+Every proof runs in a **fresh subprocess**. No test mutates these variables in
+a shared in-process harness: mode gates are `LazyLock`s and the allocator
+ledger/quarantine are process-global, so in-process toggling is order-dependent
+under parallel nextest. Parent tests use `env_clear`, restore only required
+executable/library paths and named detector/plant variables, use a unique temp
+directory and `--no-cache`, and capture stdout/stderr/status. They never inherit
+a developer's `CRANELISP_*` diagnostics.
+
+### 7.2 One production funnel, narrow observation seam
+
+`alloc_with_rc` and `dealloc` remain the only lifecycle funnels. They call one
+`diagnostics::test_fault_event(event, allocation)` hook at named events:
+post-header-initialisation, pre-dispose, and post-logical-free. It returns
+`NoAction` normally. Closed actions may retain the planted address for a child
+fixture, corrupt only that allocation, or suppress exactly one discharge for
+M3 leak injection. It must not provide counter setters, arbitrary pointer
+writes/callbacks, or a replacement allocator. RC plants enter through `rc_inc`,
+`consume_shallow`, or `drop::atomic_dec_rc`; tests never call
+`seam_hard_fail` directly.
+
+A private read-only fixture observation may expose the planted address/word
+after the production funnel acts. M2's stale read uses
+`heap_access::read_i64`, the single mechanical read owner (§9). M1 requests
+subsequent same-layout blocks through `alloc_with_rc` and performs the stale RC
+operation; it never instantiates `Quarantine` directly.
+
+### 7.3 Positive, clean, and fail-on-revert matrix
+
+Each row is a child-process triplet: **positive** (plant + detector), **clean**
+(detector without plant), and **negative control** (plant with detector off).
+The positive names the detector in stderr/status; clean exits normally; the
+negative control lacks the expected observation. Thus removing/bypassing a
+detector makes the committed positive assertion fail rather than false-green.
+
+| Detector | Production-path plant | Required positive observation | Safe negative control |
+|---|---|---|---|
+| M1 | allocate and `dealloc`, request same-layout allocations, then stale-inc/dec quarantined base | address is not re-handed; lifecycle check names it | M1 off proves the quarantine observation absent; never dereference reclaimed memory |
+| M2 | allocate and `dealloc`, physically retain via M1, read payload through `heap_access` | exact `POISON_WORD`, then stale-RC rejection | scrub off yields pre-free sentinel |
+| M3 leak | suppress exactly one discharge after real `alloc_with_rc` | atexit leak report + non-zero abort | parity off has no report/abort |
+| M3 over-free | inject one ledger over-free event without UB | atexit double-free polarity + non-zero abort | parity off has no report/abort |
+| A1 | set planted live allocation RC to zero, call `rc_inc` | rejection before resurrection | check off avoids unsafe follow-on; fixture cleans up |
+| A2 | submit a planted interior/non-base address to decrement validation | address/range rejection before atomic mutation | check off does not execute the unsafe mutation |
+| A3 | logically free under M1, decrement quarantined base | lifecycle rejection before mutation | check off does not execute the unsafe decrement |
+| A4 | corrupt planted header size, call `dealloc` | header/size rejection before layout/disposal | check off restores header and cleans up |
+
+The A labels follow `tests/plan/s116-test-plan.md` §4's fault classes. Existing
+source comments using the older function-oriented inventory are reconciled in
+implementation so one label never means two plants. Validation-before-mutation
+is load-bearing: negative controls never obtain polarity by executing UB.
+
+M3 additionally has root e2e cell
+`m3_parity_catches_injected_imbalance`, running the production compiler binary
+under this exact protocol and asserting full atexit report and abnormal status.
+Its clean sibling runs the same minimal program with M3 on and no plant. Unit
+children own both M3 polarities; e2e proves composition, not a second mechanism.
+
+### 7.4 Safety and concurrency constraints
+
+- At most one plant is armed and fires once via atomic compare/exchange.
+- A plant touches only a base/size captured from that production event;
+  range/lifecycle validation precedes RC atomic or `Layout` construction.
+- Retained blocks have one fixture owner and cleanup path. No test frees
+  reclaimed memory or relies on allocator address reuse.
+- The protocol is process-global because the allocator is; subprocess
+  isolation means rayon/reactor frees cannot miss a thread-local override.
+- Diagnostics include plant spelling and identity, not an unrelated address as
+  the sole oracle.
+
+Principle 5 (Testability is structural) requires the production-funnel hook.
+Principles 18 (Enforce invariants structurally) and 25 (Narrowing carries its
+check) require validation-before-mutation and both polarities. Principle 6
+(Complexity has a budget) rejects a general fault API. Principle 7 (Single
+source of truth) keeps existing funnels/counters authoritative.
 
 ---
 
@@ -319,22 +397,63 @@ symbol not line number (lines have shifted). After the edits, `/dev`
 - **Observability:** the whole point — a free-class fault names its seam at the
   faulting op (poison read / stale-dec assert / parity dump) instead of N
   crossings later or never.
-- **Testability (Principle 5):** the seam is already single-sourced (one alloc,
-  one dealloc, two dec funnels), so the modes are structurally testable at the
-  `alloc`/`rc` unit seams and as oracle-lane env faces; no internal-session
-  bridging.
+- **Testability (Principle 5):** the seam is already single-sourced. S116's
+  closed protocol proves production paths in isolated children;
+  mechanism-internal helper tests are controls, not detection evidence.
 - **Concurrency:** the quarantine list and counters are process-global; the
   list needs a `Mutex` (or a lock-free stack) — modelled on the existing
   `LIVE_ALLOCS`/`FREED_TRACKED` `Mutex`es, same contention profile, lane-only.
   The IVar spark SeqCst-atomic RC (BC §4b invariant 3) is untouched.
-- **Performance:** off = one cached bool load per alloc/dealloc, zero writes;
-  on = lane-only (never production — R8's production carve-out stays
-  `unasserted` by design, cost; recorded in the register).
+- **Performance:** diagnostic modes retain their cached-gate cost. The fault
+  hook's unarmed path is one cached closed-enum read and `NoAction`; no
+  allocation, lock, counter write, or IR/ABI change. Armed is test-only use.
 - **Untouched this design:** the reactor, IO, trace subsystems — no change.
 
 ---
 
-## §9. Cross-references
+## §9. Single-owner and record-integrity riders (S116)
+
+Raw `i64` pointer arithmetic has one mechanical owner:
+`heap_access::{read_i64, write_i64}`. `drop.rs` delegates reads there.
+`vec_runtime` remains the single owner of Vec layout constants and typed Vec
+accessors; `drop.rs` imports those constants or `pub(crate)` typed readers
+instead of copying offsets. This separates layout authority from mechanical
+access without duplicating either (Principle 7).
+
+The flat catalog carries no prose/test-name count. Its guard is
+`name_set_is_exactly_expected`; `EXPECTED_NAMES.len()` is the only numeric
+authority. `reset_counts()` and `bytes_peak()` are removed without replacement;
+remaining counters are monotonic process-lifetime evidence, so M3 cannot be
+invalidated by a public reset. This approved subtractive public-API change
+requires crate rustdoc and `public-api.txt` regeneration.
+
+All live reactor citations under the crate point to
+`design/intrinsics/reactor.md`; `design/int/reactor.md` is not an alias. The
+mechanical correction spans source, Cargo, and test `// spec:`/`// design:`
+citations and ends with a grep-zero check.
+
+---
+
+## §10. Unit-scenario matrix and implementation order
+
+| Submodule | Normal / positive | Complexity / edge | Negative / detector |
+|---|---|---|---|
+| `diagnostics` | gates absent; clean M1/M2/M3 children | exact plant parses/fires once; unknown/multiple rejects | eight detector triplets; report polarity |
+| `alloc` | normal alloc/dealloc; monotonic counters | odd-byte scrub tail; quarantine cap 0/exact/over | M1, M2, both M3 faces, A4 before layout |
+| `rc` | nullary and live inc/dec | RC=1 transition; non-atomic diagnostic composition | A1/A2/A3; no mutation before rejection |
+| `drop` | every `consume_*` unchanged | Vec zero len/cap, heap elements, recursive protocol | stale drop pointer uses validated A3 path |
+| `heap_access` / `vec_runtime` | round-trip and typed Vec readers | largest field offset; pointer data field | M2 reads through shared accessor; no local reader/offset copy |
+| `catalog` / facade | exact expected set; surviving counter API | missing/duplicate/unexpected guards | count-bearing prose/name grep-zero; removed API absent |
+| subprocess/e2e | clean M3 compiler child | env allow-list; unique temp; no cache | imbalance reports then aborts; off lacks observation |
+
+Implementation is serial: (1) closed protocol and validation; (2)
+M1/M2/A1--A4 triplets; (3) M3 unit children and `/testing` handoff; (4)
+heap/Vec convergence; (5) API/catalog/citation/doc-memory corrections; (6)
+review of unarmed behavior, UB-free controls, baseline and grep-zero proofs.
+
+---
+
+## §11. Cross-references
 
 - `design/arch/safety-invariants.md` §2 (ladder tiers 3/5), §4 R8 — the owning
   register row (arch-owned; FIXME `target: /arch` to change it).
@@ -342,10 +461,18 @@ symbol not line number (lines have shifted). After the edits, `/dev`
   (the blindness quantification), §6 (increment sequencing).
 - `tests/plan/s113-test-plan.md` MS-P4/MS-P6/MS-P7 — the lane rows the modes
   ride; the acceptance run.
+- `tests/plan/s116-test-plan.md` §4/§6 — positive proof and owner acceptance.
 - `crates/cranelisp-intrinsics/src/{alloc,rc,drop}.rs` — the seams; the crate
   `lib.rs` `//!` is the `/arch`-approved facade (unchanged — no public surface
   delta).
 - `crates/cranelisp-intrinsics/CLAUDE.md` §"Debug hooks" — the env-var table
   `/dev` extends with the three new rows at implementation.
-</content>
-</invoke>
+
+## Next skills
+
+- `/arch` — verify the subtractive public API and no ABI/catalog/schema change.
+- `/qa` — align A labels and regrade R8 only from landed detector evidence.
+- `/dev`(intrinsics) — implement the closed protocol and convergence batch.
+- `/testing` — add the isolated M3 compiler-subprocess e2e.
+- `/review`(intrinsics) — reject bypass tests, UB-dependent controls, open-ended
+  fault APIs, or nonzero unarmed behavior.

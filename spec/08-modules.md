@@ -543,7 +543,7 @@ core.math/+             ; operator '+' in module 'core.math'
 
 Qualified-name resolution per §8.6.6 walks module alias chains. Alias substitution operates on the dot-separated segments of `module_path` (within the grammar above), NOT across `/`. If the current resolution scope contains a public mount alias under module `current-module` that maps the segment `str` to `core.string` (per §8.4.4), then writing `current-module.str/split` causes the resolver to walk `module_path` segment-by-segment: it finds `current-module`, looks up `str` in that module's alias table, substitutes `core.string`, and then resolves `split` in `core.string`. Mount aliases declared by `export` are public; alias-imports declared by `import` (§8.3.4) are private to the importing module.
 
-### 8.5.2 Dotted Names [Tested tests/spec_field_accessor::cross_module_canonical_accessor_resolves, tests/spec_field_accessor::cross_module_contested_canonical_accessors_no_cliff, tests/spec_field_accessor::list_shows_canonical_qualified_accessor, tests/spec_05_definitions::type_member_field_accessor_disambiguates_poisoned_field, tests/spec_05_definitions::type_member_accessor_typed_fn_of_type]
+### 8.5.2 Dotted Names
 
 The `.` within a name provides access to members of types and traits. A member is a **constructor** of the type, a **field accessor** of the type, or a **method** of the trait:
 
@@ -563,7 +563,17 @@ Dotted names resolve directly from the parent type or trait definition, bypassin
 
 **Product dual-facet corner.** For a product type whose constructor name equals the type name (`(deftype Point [:Int x :Int y])`, §5.2.1 — `Point` doubles as the sole constructor), the constructor keeps its single key at the type name `Point`, and its canonical dotted form `Point.Point` is **degenerate** (the type name and the constructor name coincide, so there is nothing to disambiguate). A product constructor is reached by its type name (`Point`), never a dotted form; two distinct product types cannot share a constructor name without also sharing a type name, which the type-name collision rules (§8.6.4) already govern.
 
-`Type.member` always denotes exactly one thing — a field accessor never has to be disambiguated against a same-named trait method: a trait `impl` whose method name collides with an existing field-accessor name of the target type is **rejected at impl time** (§7.3.1, FIXME 0365). Constructors are uppercase and accessors/methods are lowercase, so the only possible same-name collision is accessor-vs-method, and that collision is prevented at the definition site — leaving the canonical `Type.member` a unique referent in every case.
+`Type.member` always denotes exactly one thing. Constructor names and field names
+are each pairwise distinct within one `deftype` (§5.2.2), so two variants or two
+fields of the same type cannot mint the same canonical member. A field accessor
+also never has to be disambiguated against a same-named trait method: a trait
+`impl` whose method name collides with an existing field-accessor name of the
+target type is **rejected at impl time** (§7.3.1, FIXME 0365). Constructors are
+uppercase and accessors/methods are lowercase, preventing collisions across
+those categories; the remaining accessor-vs-method collision is prevented at
+the definition site. Cross-type reuse creates distinct canonical names and may
+contest only the bare alias (§8.6.5). These rules leave canonical `Type.member`
+a unique referent in every case.
 
 **Canonical display form.** Because `Type.field` is the canonical accessor name, it is the form the language uses when it **displays or reports** an accessor (consistent with the qualified-display convention applied to all names — `:primitives/Int`, `:(Fn [a] a) user/id`). The bare alias is a convenience for source input, but introspection and reporting name the accessor by its canonical `Type.field`. (The exact wording of any REPL command surface that lists accessors is the REPL experience spec's concern, not specified here.)
 
