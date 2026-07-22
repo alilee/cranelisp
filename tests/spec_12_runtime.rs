@@ -2255,7 +2255,7 @@ fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
         .file(
             "user.cl",
             "(import [primitives [vec-push vec-set vec-get vec-len add-i64 sub-i64 le-i64 Int Pure]])\n\
-             (deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int bitmask]))\n\
+             (deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [:Int bitmask]))\n\
              (defn cval [c] (match c [(Given x) x (Solved x) x (Candidates m) m]))\n\
              (defn conj [v x] (vec-push v x))\n\
              (defn build [v n] (if (le-i64 n 0) v (build (conj v (Candidates n)) (sub-i64 n 1))))\n\

@@ -91,7 +91,7 @@ fn reimpl_same_type_hot_reloads_dispatch() {
 fn reimpl_omitting_a_method_reverts_it_to_the_trait_default() {
     let out = repl(
         "(deftype Box (Bx [:Int v]))\n\
-         (deftrait Sizeable (size [x] Int) (weight [x] Int 100))\n\
+         (deftrait Sizeable (size [x] Int) (weight [x] 100))\n\
          (impl Sizeable Box (defn size [x] 12) (defn weight [x] 55))\n\
          (weight (Bx 0))\n\
          (impl Sizeable Box (defn size [x] 7))\n\
@@ -130,7 +130,7 @@ fn reimpl_omitting_a_method_reverts_it_to_the_trait_default() {
 fn reimpl_default_then_override_then_default_cycles() {
     let out = repl(
         "(deftype Box (Bx [:Int v]))\n\
-         (deftrait Sizeable (size [x] Int) (weight [x] Int 100))\n\
+         (deftrait Sizeable (size [x] Int) (weight [x] 100))\n\
          (impl Sizeable Box (defn size [x] 1))\n\
          (weight (Bx 0))\n\
          (impl Sizeable Box (defn size [x] 2) (defn weight [x] 55))\n\

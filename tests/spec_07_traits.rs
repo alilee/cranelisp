@@ -220,7 +220,7 @@ fn default_method_overridden_by_impl() {
 #[test]
 fn impl_missing_required_method_neg() {
     let out = repl_prims(
-        "(deftrait Greetable (greet [self] Int) (wave [x] Int (add-i64 (greet x) 10)))\n\
+        "(deftrait Greetable (greet [self] Int) (wave [x] (add-i64 (greet x) 10)))\n\
          (impl Greetable Int (defn wave [x] 42))\n",
     );
     assert!(
@@ -795,7 +795,7 @@ fn hkt_on_primitive_no_backend_undefined_function_leak_neg() {
 // defect: class=check-gate-leak locus=crates/cranelisp-typecheck/src/traits/registry.rs::register_trait_decl found=S110 owner=/dev
 #[test]
 fn deftrait_bare_return_convar_never_applied_rejected_neg() {
-    let out = repl_prims("(deftrait (Zeroable a) (zed [] :a))\n");
+    let out = repl_prims("(deftrait (Zeroable a) (zed [] a))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.contains("; deftrait"),
@@ -1007,7 +1007,7 @@ fn hkt_impl_on_user_well_kinded_adt_dispatches() {
 // REPL/`--run`/`--link` split; this makes the class loud once.
 #[test]
 fn never_applied_head_declaration_reject_is_mode_uniform_neg() {
-    const DECL: &str = "(deftrait (Zeroable a) (zed [] :a))\n";
+    const DECL: &str = "(deftrait (Zeroable a) (zed [] a))\n";
     let repl = repl_prims(DECL);
     let run = run_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
     let link = link_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
@@ -1761,7 +1761,7 @@ fn deftrait_method_nameless_annotation_param_rejected_neg() {
     let out = repl_prims("(deftrait Sized (size [:a] Int))\n");
     // Clear, actionable parse error — the pin: nameless annotation is an error
     // with a message naming the cause, not a panic and not silent acceptance.
-    out.assert_stdout_contains("annotation missing parameter name")
+    out.assert_stdout_contains("annotation missing expression")
         // Negative: the trait MUST NOT be silently declared from the bad sig.
         .assert_stdout_does_not_contain("user/Sized");
 }

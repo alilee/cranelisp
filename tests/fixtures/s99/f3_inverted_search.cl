@@ -25,7 +25,7 @@
 
 (import [primitives [*]])
 
-(deftype Cell (Given [:Int value]) (Solved [:Int value]))
+(deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]))
 (deftype Found (Hit [:Int v]) (Miss [:Int w]))
 
 (defn cell-value [c] (match c [(Given v) v  (Solved v) v]))

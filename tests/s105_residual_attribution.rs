@@ -96,7 +96,7 @@ const F7_MINI: &str = "(import [primitives [*]])\n\
 // F8 SERIAL arm — non-recursive phi-P construction (gate 3 & 5 clear ⇒ stack-allocs).
 const F8_SERIAL: &str = "(import [primitives [*]])\n\
   (defn rmod [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
-  (deftype P (A [:Int x :Int y]) (B [:Int x :Int y]))\n\
+  (deftype P (A [:Int x :Int y]) (B [:Int bx :Int by]))\n\
   (defn one [n] (let [p (if (eq-i64 (rmod n 2) 0) (A n (add-i64 n 1)) (B (add-i64 n 2) n))]\n\
     (match p [(A x y) (add-i64 x y)  (B x y) (sub-i64 x y)])))\n\
   (defn drive [k acc] (if (le-i64 k 0) acc (drive (sub-i64 k 1) (add-i64 acc (one k)))))\n\
@@ -107,7 +107,7 @@ const F8_SERIAL: &str = "(import [primitives [*]])\n\
 const F8_PARALLEL: &str = "(import [primitives [*]])\n\
   (defn rmod [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
   (defn mid-of [lo hi] (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
-  (deftype P (A [:Int x :Int y]) (B [:Int x :Int y]))\n\
+  (deftype P (A [:Int x :Int y]) (B [:Int bx :Int by]))\n\
   (defn drive [lo hi] (if (le-i64 (sub-i64 hi lo) 1) lo\n\
     (add-i64\n\
       (let [r (drive lo (mid-of lo hi))\n\
@@ -121,7 +121,7 @@ const F8_PARALLEL: &str = "(import [primitives [*]])\n\
 // A minimal shared-grid parallel reduce (F3/F2 miniature): cells read across
 // strands. The conservative analysis marks the shared cells Crossing ⇒ atomic RC.
 const F3_SHARED_READ: &str = "(import [primitives [*]])\n\
-  (deftype Cell (Given [:Int value]) (Solved [:Int value]))\n\
+  (deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]))\n\
   (defn cell-value [c] (match c [(Given v) v  (Solved v) v]))\n\
   (defn rmod [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
   (defn mid-of [lo hi] (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\

@@ -81,7 +81,7 @@ fn impl_method_body_bare_twin() {
     .assert_exit(41);
 }
 
-// TRAIT DEFAULT-METHOD BODY position. `(deftrait T (m [x] Int :Int x))` — the
+// TRAIT DEFAULT-METHOD BODY position. `(deftrait T (m [x] :Int x))` — the
 // default body `:Int x` is ascribed; wrongly parse-rejected. Should compile.
 // (The RETURN slot is a bare `type_expr`, §7.1.1 — the fixture formerly wrote it
 // `:Int` too, which is parameter-annotation syntax. Repaired S115 W5a, 0785.)
@@ -89,11 +89,11 @@ fn impl_method_body_bare_twin() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_method_sig (default body not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn trait_default_method_body_ascription_accepted() {
-    let out = run_prims("(deftrait T (m [x] Int :Int x))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(deftrait T (m [x] :Int x))\n(defn main [] (Pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.contains("parse error"),
-        "an ascribed trait default-method body `(m [x] Int :Int x)` MUST be \
+        "an ascribed trait default-method body `(m [x] :Int x)` MUST be \
          accepted (§2.3.8); wrongly parse-rejected today; got:\n{c}"
     );
     out.assert_exit(0);
@@ -102,7 +102,7 @@ fn trait_default_method_body_ascription_accepted() {
 // spec: spec/03-types.md §2.3.8 — bare trait default-method body twin (GREEN).
 #[test]
 fn trait_default_method_body_bare_twin() {
-    run_prims("(deftrait T (m [x] :Int x))\n(defn main [] (Pure 0))\n").assert_exit(0);
+    run_prims("(deftrait T (m [x] x))\n(defn main [] (Pure 0))\n").assert_exit(0);
 }
 
 // TRACE OPERAND position. `(trace :Int 5)` ascribes the traced operand; wrongly

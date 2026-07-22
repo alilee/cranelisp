@@ -46,7 +46,7 @@
 ;; A two-constructor, all-Int-payload ADT. The two constructors force a runtime
 ;; phi at the construction site (the tag is not statically known), so the aggregate
 ;; MATERIALIZES rather than being scalar-replaced to registers.
-(deftype P (A [:Int x :Int y]) (B [:Int x :Int y]))
+(deftype P (A [:Int x :Int y]) (B [:Int bx :Int by]))
 
 ;;S105-F8-SERIAL-BEGIN
 ;; SERIAL arm — non-recursive construction (gate 3 & 5 clear ⇒ stack-allocates).
