@@ -112,6 +112,39 @@ fn unknown_type_looking_tail_classifies_as_default_body() {
     assert!(matches!(decl.methods[0].kind, TraitMethodKind::Default { .. }));
 }
 
+// spec: 07-traits §7.1 — the canonical resolver rejects malformed applied
+// scalar types, so the non-raising classifier takes the expression branch.
+#[test]
+fn malformed_applied_type_tail_classifies_as_default_body() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait T (m [x] (Int Bool)))",
+    ))
+    .unwrap();
+    let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
+    assert!(matches!(decl.methods[0].kind, TraitMethodKind::Default { .. }));
+}
+
+// spec: 07-traits §7.1 — probing is transactional and never advances the
+// session's shared fresh-variable allocator.
+#[test]
+fn type_tail_probe_does_not_mint_shared_ids() {
+    use std::sync::atomic::Ordering;
+
+    let tc = tf_prims();
+    let decl = parse_trait_decl("(deftrait T (m [:(Fn [a] a) x] (Fn [a] a)))");
+    let tail = cranelisp_frontend::parse_type_expr("(Fn [a] a)").unwrap();
+    let before = tc.next_id.load(Ordering::Relaxed);
+    assert!(tc.env().probe_trait_sig_type_expr(
+        &decl.methods[0].params,
+        &tail,
+        &tc.state.current_module,
+        &decl.type_params,
+        decl.methods[0].span,
+    ));
+    assert_eq!(tc.next_id.load(Ordering::Relaxed), before);
+}
+
 // spec: 07-traits §7.1 — no traits registered at startup
 #[test]
 fn test_no_traits_at_startup() {

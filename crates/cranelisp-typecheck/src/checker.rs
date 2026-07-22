@@ -3000,6 +3000,111 @@ where
         )
     }
 
+    /// Non-publishing trait-tail recognizer for spec §7.1 classification.
+    ///
+    /// This runs the canonical [`crate::resolve::resolve_type_expr`] walk with
+    /// transaction-local IDs. Parameter types are resolved first to establish
+    /// method-local type variables; the tail then uses that same local map.
+    /// No shared fresh ID, constraint, side map, or diagnostic is mutated.
+    pub(crate) fn probe_trait_sig_type_expr(
+        &self,
+        params: &[(Symbol, cranelisp_types::TypeExpr)],
+        tail: &cranelisp_types::TypeExpr,
+        module_path: &ModuleFullPath,
+        trait_type_params: &[Symbol],
+        span: Span,
+    ) -> bool {
+        let next_local = std::cell::Cell::new(0_u32);
+        let mint = || {
+            let id = next_local.get();
+            next_local.set(id + 1);
+            id
+        };
+        let mut var_map = std::collections::HashMap::new();
+
+        if trait_type_params.is_empty() {
+            let self_type = Type::Var(mint());
+            for (_, param) in params {
+                if self
+                    .resolve_type_expr_ctx(
+                        param,
+                        &mut var_map,
+                        module_path,
+                        Some(&mint),
+                        Some(self_type.clone()),
+                        trait_type_params,
+                        crate::resolve::ConVars::None,
+                        true,
+                        span,
+                    )
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+
+            if let cranelisp_types::TypeExpr::TypeVar(name) = tail
+                && !var_map.contains_key(name)
+            {
+                return false;
+            }
+            self.resolve_type_expr_ctx(
+                tail,
+                &mut var_map,
+                module_path,
+                Some(&mint),
+                Some(self_type),
+                trait_type_params,
+                crate::resolve::ConVars::None,
+                true,
+                span,
+            )
+            .is_ok()
+        } else {
+            let con_vars: std::collections::HashMap<Symbol, TypeId> = trait_type_params
+                .iter()
+                .map(|name| (name.clone(), mint()))
+                .collect();
+            for (_, param) in params {
+                if self
+                    .resolve_type_expr_ctx(
+                        param,
+                        &mut var_map,
+                        module_path,
+                        Some(&mint),
+                        None,
+                        &[],
+                        crate::resolve::ConVars::Decl(&con_vars),
+                        true,
+                        span,
+                    )
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+
+            if let cranelisp_types::TypeExpr::TypeVar(name) = tail
+                && !var_map.contains_key(name)
+                && !con_vars.contains_key(name)
+            {
+                return false;
+            }
+            self.resolve_type_expr_ctx(
+                tail,
+                &mut var_map,
+                module_path,
+                Some(&mint),
+                None,
+                &[],
+                crate::resolve::ConVars::Decl(&con_vars),
+                true,
+                span,
+            )
+            .is_ok()
+        }
+    }
+
     /// Resolve an **HKT trait-decl** signature type expression (FIXME 0590,
     /// former `resolve_type_expr_hkt` mirror). A constructor variable named in
     /// `con_var_map` produces `Type::Var(id)` bare and `Type::TyConApp(id, args)`

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cranelisp_types::{
     CranelispError, ErrorLocation, FQTraitName, Scheme, Span, Symbol, TraitDecl, TraitMethodKind,
-    TraitMethodSig, TraitName, Type, TypeExpr, TypeId, Visibility,
+    TraitMethodSig, TraitName, Type, TypeId, Visibility,
 };
 
 use super::*;
@@ -518,12 +518,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     tail => {
                         let parsed = cranelisp_frontend::parse_type_expr(&tail.format_flat()).ok();
                         if let Some(ret_type) = parsed.filter(|ty| {
-                            self.type_tail_resolves(
-                                state,
+                            self.probe_trait_sig_type_expr(
+                                &method.params,
                                 ty,
+                                &state.current_module,
                                 &decl.type_params,
                                 method.span,
-                                false,
                             )
                         }) {
                             TraitMethodKind::Required { ret_type }
@@ -547,34 +547,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .collect()
     }
 
-    fn type_tail_resolves(
-        &self,
-        state: &CheckState,
-        ty: &TypeExpr,
-        constructor_vars: &[Symbol],
-        span: Span,
-        nested: bool,
-    ) -> bool {
-        match ty {
-            TypeExpr::SelfType => true,
-            TypeExpr::TypeVar(name) => nested || constructor_vars.contains(name),
-            TypeExpr::Named(name) => self.resolve_type(state, &name.name, span).is_ok(),
-            TypeExpr::Applied(name, args) => {
-                (constructor_vars
-                    .iter()
-                    .any(|v| v.as_ref() == name.name.as_ref())
-                    || self.resolve_type(state, &name.name, span).is_ok())
-                    && args.iter().all(|arg| {
-                        self.type_tail_resolves(state, arg, constructor_vars, span, true)
-                    })
-            }
-            TypeExpr::FnType(params, ret) => params
-                .iter()
-                .chain(std::iter::once(ret.as_ref()))
-                .all(|part| self.type_tail_resolves(state, part, constructor_vars, span, true)),
-            TypeExpr::Bounds(_) => false,
-        }
-    }
 }
 
 #[cfg(test)]
