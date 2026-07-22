@@ -9,12 +9,71 @@ use cranelisp_types::{ModuleEntry, Symbol, TraitName, TypeName};
 use super::*;
 use crate::traits::test_helpers::*;
 
+fn parsed_trait(source: &str) -> TraitDecl {
+    let sexps = cranelisp_frontend::parse(source).expect("trait source parses");
+    match cranelisp_frontend::build_form(&sexps[0])
+        .expect("trait source builds")
+        .remove(0)
+    {
+        cranelisp_types::ParsedEntry::TraitDecl { decl } => decl,
+        other => panic!("expected trait declaration, got {other:?}"),
+    }
+}
+
+// spec: 07-traits §7.1 — a resolvable bare type tail classifies as required.
+#[test]
+fn classifier_records_required_type_tail() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parsed_trait("(deftrait T (m [x] Int))"))
+        .unwrap();
+    let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
+    assert!(matches!(
+        decl.methods[0].kind,
+        TraitMethodKind::Required { .. }
+    ));
+}
+
+// spec: 07-traits §7.1, §7.1.5 — an ordinary expression tail is a default.
+#[test]
+fn classifier_records_unannotated_default_body() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parsed_trait("(deftrait T (m [x] x))"))
+        .unwrap();
+    let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
+    assert!(matches!(
+        decl.methods[0].kind,
+        TraitMethodKind::Default {
+            result_constraint: None,
+            ..
+        }
+    ));
+}
+
+// spec: 07-traits §7.1 — an annotated tail bypasses type-tail classification.
+#[test]
+fn classifier_records_annotated_default_constraint() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parsed_trait("(deftrait T (m [x] :Int 1))"))
+        .unwrap();
+    let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
+    assert!(matches!(
+        decl.methods[0].kind,
+        TraitMethodKind::Default {
+            result_constraint: Some(_),
+            ..
+        }
+    ));
+}
+
 // spec: 07-traits §7.1 — no traits registered at startup
 #[test]
 fn test_no_traits_at_startup() {
     let tc = tf();
     // No traits should be discoverable via lookup
-    assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_none());
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("TestTrait"))
+            .is_none()
+    );
 }
 
 // spec: 07-traits §7.3 — no impls registered at startup
@@ -78,7 +137,10 @@ fn test_register_trait_decl() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     // Trait should be discoverable via SymbolTable lookup
-    assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("TestTrait"))
+            .is_some()
+    );
     // Method should be reverse-mapped via trait_origin on ModuleEntry::Def
     assert_eq!(
         tc.method_to_trait(&Symbol::from("test-op")),
@@ -126,7 +188,10 @@ fn test_register_identical_trait_twice_is_idempotent() {
     tc.register_trait_decl_self(&decl)
         .expect("identical re-registration must be idempotent (S86 D3)");
     // The trait is still registered exactly once and resolvable.
-    assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("TestTrait"))
+            .is_some()
+    );
 }
 
 // =================== §7.1.1 occurrence rule (S115 W4, FIXME 0709) ============
@@ -177,7 +242,8 @@ fn occurrence_rule_rejects_nullary_method_with_no_self_occurrence() {
         .register_trait_decl_self(&decl)
         .expect_err("a nullary no-occurrence method MUST be rejected at declaration");
     assert!(
-        err.message().contains("no occurrence of the implementing type"),
+        err.message()
+            .contains("no occurrence of the implementing type"),
         "the diagnostic MUST carry the §7.1.1 reason (never the §7.2.3 \
          'not a type constructor' HK wording); got: {}",
         err.message()
@@ -201,12 +267,7 @@ fn occurrence_rule_rejects_nullary_method_with_no_self_occurrence() {
 #[test]
 fn occurrence_rule_accepts_nullary_self_return_method() {
     let mut tc = tf_prims();
-    let decl = occurrence_decl(
-        "Zero",
-        "z",
-        vec![],
-        cranelisp_types::TypeExpr::SelfType,
-    );
+    let decl = occurrence_decl("Zero", "z", vec![], cranelisp_types::TypeExpr::SelfType);
     tc.register_trait_decl_self(&decl)
         .expect("`(z [] self)` satisfies the occurrence rule via its return type");
     assert!(tc.lookup_trait_decl(&TraitName::from("Zero")).is_some());
@@ -256,7 +317,8 @@ fn occurrence_rule_rejects_annotated_param_method_with_no_self_occurrence() {
          all-annotated non-`self` signature MUST be rejected at any arity (§7.1.1)",
     );
     assert!(
-        err.message().contains("no occurrence of the implementing type"),
+        err.message()
+            .contains("no occurrence of the implementing type"),
         "the reject MUST carry the §7.1.1 reason substring at every arity, not \
          only the nullary one; got: {}",
         err.message()
@@ -265,7 +327,8 @@ fn occurrence_rule_rejects_annotated_param_method_with_no_self_occurrence() {
     // no method binding, so the accepted-impl-then-misleading-call-site leak
     // (0805) is closed at the declaration.
     assert!(
-        tc.lookup_trait_decl(&TraitName::from("Convertible")).is_none(),
+        tc.lookup_trait_decl(&TraitName::from("Convertible"))
+            .is_none(),
         "a rejected declaration MUST NOT leave a partially-written trait entry"
     );
     assert!(
@@ -294,7 +357,8 @@ fn occurrence_rule_rejects_multi_annotated_param_method_at_higher_arity() {
         .register_trait_decl_self(&decl)
         .expect_err("no occurrence at arity 2 MUST be rejected too");
     assert!(
-        err.message().contains("no occurrence of the implementing type"),
+        err.message()
+            .contains("no occurrence of the implementing type"),
         "got: {}",
         err.message()
     );
@@ -385,7 +449,11 @@ fn test_trait_method_has_constrained_scheme() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("test-op") {
-        assert_eq!(scheme.type_vars.len(), 1, "test-op should have 1 quantified var");
+        assert_eq!(
+            scheme.type_vars.len(),
+            1,
+            "test-op should have 1 quantified var"
+        );
         assert!(
             !scheme.constraints.is_empty(),
             "test-op should have TestTrait constraint"
@@ -405,10 +473,14 @@ fn test_no_core_traits_at_startup() {
     let tc = tf();
     // Traits come from prelude .cl files, NOT compiler builtins.
     // No traits should be discoverable via SymbolTable lookup.
-    assert!(tc.lookup_trait_decl(&TraitName::from("Num")).is_none(),
-        "no traits should be registered at startup");
-    assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
-        "no impls should be registered at startup");
+    assert!(
+        tc.lookup_trait_decl(&TraitName::from("Num")).is_none(),
+        "no traits should be registered at startup"
+    );
+    assert!(
+        !tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
+        "no impls should be registered at startup"
+    );
 }
 
 // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
@@ -498,9 +570,15 @@ fn deftrait_never_applied_head_var_rejected_at_declaration() {
         .register_trait_decl_self(&decl)
         .expect_err("a never-applied `(Zeroable a)` head is malformed (§7.2.1)");
     let msg = err.message();
-    assert!(msg.contains("Zeroable"), "diagnostic names the trait: {msg}");
+    assert!(
+        msg.contains("Zeroable"),
+        "diagnostic names the trait: {msg}"
+    );
     assert!(msg.contains('a'), "diagnostic names the con_var: {msg}");
-    assert!(msg.contains("self"), "diagnostic points at the bare-head + self fix: {msg}");
+    assert!(
+        msg.contains("self"),
+        "diagnostic points at the bare-head + self fix: {msg}"
+    );
     // And nothing registered.
     assert!(tc.lookup_trait_decl(&TraitName::from("Zeroable")).is_none());
 }
@@ -517,7 +595,11 @@ fn deftrait_applied_con_var_registers_as_hkt() {
     let info = tc
         .lookup_trait_decl(&TraitName::from("Functor"))
         .expect("Functor registered");
-    assert_eq!(info.type_params, vec![Symbol::from("f")], "HKT: non-empty type_params");
+    assert_eq!(
+        info.type_params,
+        vec![Symbol::from("f")],
+        "HKT: non-empty type_params"
+    );
     assert_eq!(
         info.methods[0].hkt_param_index,
         Some(1),
@@ -536,7 +618,10 @@ fn deftrait_bare_head_registers_conventional_not_hkt() {
     let info = tc
         .lookup_trait_decl(&TraitName::from("NullaryRP"))
         .expect("NullaryRP registered");
-    assert!(info.type_params.is_empty(), "conventional: empty type_params");
+    assert!(
+        info.type_params.is_empty(),
+        "conventional: empty type_params"
+    );
     assert_eq!(
         info.methods[0].hkt_param_index, None,
         "the conventional path never sets hkt_param_index"

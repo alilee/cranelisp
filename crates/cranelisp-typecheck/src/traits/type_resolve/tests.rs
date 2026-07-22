@@ -22,10 +22,12 @@ use crate::traits::test_helpers::*;
 fn test_build_default_body_neq() {
     // != → (not (= x y))
     let body = build_default_body(
-        "Eq", "!=",
+        "Eq",
+        "!=",
         &[Symbol::from("x"), Symbol::from("y")],
         Span::SYNTHETIC,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_apply_callee(&body, "not");
     let not_args = apply_args(&body);
@@ -42,10 +44,12 @@ fn test_build_default_body_neq() {
 fn test_build_default_body_gt() {
     // > → (< y x)
     let body = build_default_body(
-        "Ord", ">",
+        "Ord",
+        ">",
         &[Symbol::from("x"), Symbol::from("y")],
         Span::SYNTHETIC,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_apply_callee(&body, "<");
     let args = apply_args(&body);
@@ -59,10 +63,12 @@ fn test_build_default_body_gt() {
 fn test_build_default_body_le() {
     // <= → (not (< y x))
     let body = build_default_body(
-        "Ord", "<=",
+        "Ord",
+        "<=",
         &[Symbol::from("x"), Symbol::from("y")],
         Span::SYNTHETIC,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_apply_callee(&body, "not");
     let not_args = apply_args(&body);
@@ -79,10 +85,12 @@ fn test_build_default_body_le() {
 fn test_build_default_body_ge() {
     // >= → (not (< x y))
     let body = build_default_body(
-        "Ord", ">=",
+        "Ord",
+        ">=",
         &[Symbol::from("x"), Symbol::from("y")],
         Span::SYNTHETIC,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_apply_callee(&body, "not");
     let not_args = apply_args(&body);
@@ -98,7 +106,8 @@ fn test_build_default_body_ge() {
 #[test]
 fn test_build_default_body_unknown_method_errors() {
     let result = build_default_body(
-        "Unknown", "foo",
+        "Unknown",
+        "foo",
         &[Symbol::from("x"), Symbol::from("y")],
         Span::SYNTHETIC,
     );
@@ -108,10 +117,6 @@ fn test_build_default_body_unknown_method_errors() {
 // spec: 07-traits §7.1.5 — default body with wrong param count errors
 #[test]
 fn test_build_default_body_wrong_param_count_errors() {
-    let result = build_default_body(
-        "Eq", "!=",
-        &[Symbol::from("x")],
-        Span::SYNTHETIC,
-    );
+    let result = build_default_body("Eq", "!=", &[Symbol::from("x")], Span::SYNTHETIC);
     assert!(result.is_err());
 }

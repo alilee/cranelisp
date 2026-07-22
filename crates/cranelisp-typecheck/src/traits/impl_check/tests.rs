@@ -4,8 +4,8 @@
 //! of the code it exercises, per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    Defn, DefnVariant, Expr, ModuleFullPath, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr,
-    TypeName, Visibility, Symbol, TraitName,
+    Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig,
+    TraitName, TypeExpr, TypeName, Visibility,
 };
 
 use crate::traits::test_helpers::*;
@@ -186,7 +186,10 @@ fn test_register_trait_impl() {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-i64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
@@ -226,7 +229,10 @@ fn test_has_impl_via_symbol_table() {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-i64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
@@ -268,7 +274,10 @@ fn test_generate_default_methods_produces_real_bodies() {
                     (Symbol::from("x"), TypeExpr::SelfType),
                     (Symbol::from("y"), TypeExpr::SelfType),
                 ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Bool"),
+                )),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
                 default_body: None,
@@ -280,7 +289,10 @@ fn test_generate_default_methods_produces_real_bodies() {
                     (Symbol::from("x"), TypeExpr::SelfType),
                     (Symbol::from("y"), TypeExpr::SelfType),
                 ],
-                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Bool"),
+                )),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
                 // Default body: (not (= x y)) — parsed Expr per S69 Submission 26
@@ -318,7 +330,11 @@ fn test_generate_default_methods_produces_real_bodies() {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
-                body: Expr::BoolLit { value: true, span: Span::SYNTHETIC, inferred_type: None, },
+                body: Expr::BoolLit {
+                    value: true,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
                 span: Span::SYNTHETIC,
             }],
             visibility: Visibility::Public,
@@ -327,7 +343,8 @@ fn test_generate_default_methods_produces_real_bodies() {
         span: Span::SYNTHETIC,
     };
 
-    let decl = tc.lookup_trait_decl(&TraitName::from("Eq"))
+    let decl = tc
+        .lookup_trait_decl(&TraitName::from("Eq"))
         .expect("Eq trait should be registered");
     // S102 4th lossy-head cure: the default-method `$Type` suffix is now the FQ
     // home-qualified type head (`primitives/Int`), lock-step with the dispatch
@@ -336,7 +353,9 @@ fn test_generate_default_methods_produces_real_bodies() {
         cranelisp_types::ModuleFullPath::from("primitives"),
         TypeName::from("Int"),
     );
-    let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_, &fq_int).unwrap();
+    let defaults = tc
+        .generate_default_methods(&tc.state, &decl, &impl_, &fq_int)
+        .unwrap();
 
     assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");
     let neq = &defaults[0];
@@ -467,7 +486,10 @@ fn functor_impl(head_con_var: Option<&str>, target: TypeExpr, body: Expr) -> Tra
 fn pairing(trait_name: &str, con: &str) -> TypeExpr {
     TypeExpr::Applied(
         cranelisp_types::TypeRef::new(None, TypeName::from(trait_name)),
-        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(con)))],
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from(con),
+        ))],
     )
 }
 
@@ -534,8 +556,14 @@ fn hkt_impl_bare_head_rejected() {
         .register_trait_impl_self(&impl_)
         .expect_err("a bare-head impl of an HK trait is rejected");
     let msg = err.message();
-    assert!(msg.contains("higher-kinded"), "names the kind mismatch: {msg}");
-    assert!(msg.contains("echo"), "directs to echo the declared head: {msg}");
+    assert!(
+        msg.contains("higher-kinded"),
+        "names the kind mismatch: {msg}"
+    );
+    assert!(
+        msg.contains("echo"),
+        "directs to echo the declared head: {msg}"
+    );
 }
 
 // spec: 07-traits §7.3 "Slot 1 is fixed" (hkt.md §5.4 step 3, shape bit) —
@@ -570,7 +598,10 @@ fn conventional_impl_parenthesized_head_rejected() {
         .expect_err("a parenthesized head on a conventional trait is rejected");
     let msg = err.message();
     assert!(msg.contains("conventional"), "names the kind: {msg}");
-    assert!(msg.contains("bare name"), "directs to the bare name form: {msg}");
+    assert!(
+        msg.contains("bare name"),
+        "directs to the bare name form: {msg}"
+    );
 }
 
 // spec: 07-traits §7.2.3 / §7.3.5 Case 2 — NEGATIVE (the 0628 root). An HK trait
@@ -590,7 +621,10 @@ fn hkt_impl_on_primitive_rejected() {
         .register_trait_impl_self(&impl_)
         .expect_err("`(Functor Int)` — a primitive is not a type constructor");
     let msg = err.message();
-    assert!(msg.contains("not a type constructor"), "clean §7.2 diagnostic: {msg}");
+    assert!(
+        msg.contains("not a type constructor"),
+        "clean §7.2 diagnostic: {msg}"
+    );
     assert!(msg.contains("Int"), "names the offending type: {msg}");
 }
 
@@ -608,16 +642,29 @@ fn hkt_impl_applied_type_in_pairing_rejected() {
         cranelisp_types::TypeRef::new(None, TypeName::from("Functor")),
         vec![TypeExpr::Applied(
             cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
-            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))],
+            vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+                None,
+                TypeName::from("Int"),
+            ))],
         )],
     );
-    let impl_ = functor_impl(Some("f"), target, Expr::var(Symbol::from("None"), Span::SYNTHETIC));
+    let impl_ = functor_impl(
+        Some("f"),
+        target,
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
     let err = tc
         .register_trait_impl_self(&impl_)
         .expect_err("`(Functor (Option Int))` — an applied type is not a bare constructor");
     let msg = err.message();
-    assert!(msg.contains("kind-mismatch"), "names the kind-mismatch: {msg}");
-    assert!(msg.contains("bare constructor"), "directs to the bare constructor: {msg}");
+    assert!(
+        msg.contains("kind-mismatch"),
+        "names the kind-mismatch: {msg}"
+    );
+    assert!(
+        msg.contains("bare constructor"),
+        "directs to the bare constructor: {msg}"
+    );
 }
 
 // spec: 07-traits §7.2.3 / §7.3.5 Case 2 — NEGATIVE. A wrong-arity constructor
@@ -656,7 +703,10 @@ fn conventional_impl_under_applied_constructor_rejected() {
     let impl_ = TraitImpl {
         head_con_var: None,
         trait_name: TraitRef::new(None, TraitName::from("Display")),
-        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Option"))),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Option"),
+        )),
         type_constraints: vec![],
         methods: vec![Defn {
             name: Symbol::from("show"),
@@ -676,10 +726,16 @@ fn conventional_impl_under_applied_constructor_rejected() {
         .expect_err("`(impl Display Option)` — Option is under-applied");
     let msg = err.message();
     assert!(msg.contains("Option"), "names the constructor: {msg}");
-    assert!(msg.contains("constructor, not a type"), "the §7.3.5 Case 1 diagnostic: {msg}");
+    assert!(
+        msg.contains("constructor, not a type"),
+        "the §7.3.5 Case 1 diagnostic: {msg}"
+    );
     // M2: the fix suggestion is arity-aware — one fresh var per declared param.
     // `Option : * -> *` → `(Option a)`.
-    assert!(msg.contains("(Option a)"), "arity-aware fix suggestion (M2): {msg}");
+    assert!(
+        msg.contains("(Option a)"),
+        "arity-aware fix suggestion (M2): {msg}"
+    );
 }
 
 // ===========================================================================
@@ -721,7 +777,11 @@ fn disp_impl(trait_name: &str, target: TypeExpr) -> TraitImpl {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("w"), None)],
-                body: Expr::IntLit { value: 5, span: Span::SYNTHETIC, inferred_type: None },
+                body: Expr::IntLit {
+                    value: 5,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
                 span: Span::SYNTHETIC,
             }],
             visibility: Visibility::Public,
@@ -751,8 +811,14 @@ fn hkt_impl_pairing_head_nonexistent_trait_rejected() {
         .register_trait_impl_self(&impl_)
         .expect_err("`(NotFunctor Option)` — the pairing head names no trait");
     let msg = err.message();
-    assert!(msg.contains("(NotFunctor Option)"), "names the written pairing: {msg}");
-    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(
+        msg.contains("(NotFunctor Option)"),
+        "names the written pairing: {msg}"
+    );
+    assert!(
+        msg.contains("(Functor Option)"),
+        "names the expected pairing: {msg}"
+    );
     assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
@@ -780,8 +846,14 @@ fn hkt_impl_pairing_head_different_real_trait_rejected() {
         .register_trait_impl_self(&impl_)
         .expect_err("`(Mappy Option)` — a different real trait as the pairing head");
     let msg = err.message();
-    assert!(msg.contains("(Mappy Option)"), "names the written pairing: {msg}");
-    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(
+        msg.contains("(Mappy Option)"),
+        "names the written pairing: {msg}"
+    );
+    assert!(
+        msg.contains("(Functor Option)"),
+        "names the expected pairing: {msg}"
+    );
     assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
@@ -825,7 +897,10 @@ fn pairing_qualified(module: &str, trait_name: &str, con: &str) -> TypeExpr {
             Some(ModuleFullPath::from(module)),
             TypeName::from(trait_name),
         ),
-        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from(con)))],
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from(con),
+        ))],
     )
 }
 
@@ -854,7 +929,10 @@ fn hkt_impl_pairing_head_qualified_bad_module_rejected() {
         msg.contains("(nosuchmod/Functor Option)"),
         "names the written QUALIFIED pairing (qualifier participates): {msg}"
     );
-    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(
+        msg.contains("(Functor Option)"),
+        "names the expected pairing: {msg}"
+    );
     assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
@@ -886,9 +964,8 @@ fn hkt_impl_pairing_head_qualified_resolves_to_slot1_accepts() {
         pairing_qualified("fmt", "Functor", "Option"),
         Expr::var(Symbol::from("None"), Span::SYNTHETIC),
     );
-    tc.register_trait_impl_self(&impl_).expect(
-        "qualified `fmt/Functor` resolves to slot-1's imported `Functor` — must register",
-    );
+    tc.register_trait_impl_self(&impl_)
+        .expect("qualified `fmt/Functor` resolves to slot-1's imported `Functor` — must register");
     assert!(tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
@@ -926,7 +1003,10 @@ fn hkt_impl_pairing_head_qualified_different_module_trait_rejected() {
         msg.contains("(other/Functor Option)"),
         "names the written QUALIFIED pairing (qualifier routes to `other`): {msg}"
     );
-    assert!(msg.contains("(Functor Option)"), "names the expected pairing: {msg}");
+    assert!(
+        msg.contains("(Functor Option)"),
+        "names the expected pairing: {msg}"
+    );
     assert!(!tc.has_impl(&TraitName::from("Functor"), &TypeName::from("Option")));
 }
 
@@ -951,9 +1031,18 @@ fn conventional_impl_over_applied_target_rejected() {
         .register_trait_impl_self(&disp_impl("Disp", target))
         .expect_err("`(Option Int Int)` over-applies Option (arity 1)");
     let msg = err.message();
-    assert!(msg.contains("1 type parameter"), "names the declared arity: {msg}");
-    assert!(msg.contains("applied to 2"), "names the arity surplus: {msg}");
-    assert!(msg.contains("(Option a)"), "arity-aware fix suggestion (M2): {msg}");
+    assert!(
+        msg.contains("1 type parameter"),
+        "names the declared arity: {msg}"
+    );
+    assert!(
+        msg.contains("applied to 2"),
+        "names the arity surplus: {msg}"
+    );
+    assert!(
+        msg.contains("(Option a)"),
+        "arity-aware fix suggestion (M2): {msg}"
+    );
     assert!(!tc.has_impl(&TraitName::from("Disp"), &TypeName::from("Option")));
 }
 
@@ -973,7 +1062,10 @@ fn conventional_impl_exactly_arity_target_accepts() {
 
     let target = TypeExpr::Applied(
         cranelisp_types::TypeRef::new(None, TypeName::from("Option")),
-        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))],
+        vec![TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        ))],
     );
     tc.register_trait_impl_self(&disp_impl("Disp", target))
         .expect("`(Option Int)` applies Option to exactly its arity — must register");

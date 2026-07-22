@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cranelisp-frontend = { path = "../cranelisp-frontend" }
 cranelisp-types = { path = "../cranelisp-types" }
 dashmap = "6"
 
 [dev-dependencies]
-cranelisp-frontend = { path = "../cranelisp-frontend" }
 # Re-point cranelisp-types WITH the test-support feature so
 # `cranelisp_types::test_support::SymbolTableBuilder` (Tier 2) is visible in the
 # test build. Same path as the normal dependency above.

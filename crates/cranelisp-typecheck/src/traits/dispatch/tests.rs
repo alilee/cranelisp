@@ -4,8 +4,8 @@
 //! structural, per METHOD §2.2 / Principle 23).
 
 use cranelisp_types::{
-    CranelispError, Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, TraitDecl,
-    TraitImpl, TraitMethodSig, TraitName, Type, TypeExpr, TypeName, Visibility,
+    CranelispError, Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, TraitDecl, TraitImpl,
+    TraitMethodSig, TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
 use super::*;
@@ -117,7 +117,10 @@ fn test_try_resolve_trait_method_success() {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-i64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
@@ -198,10 +201,18 @@ fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
     );
 
     let result = tc
-        .try_resolve_trait_method_self(&Symbol::from("test-op"), &[Type::Int, Type::Int], Span::SYNTHETIC)
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        )
         .expect("should not error");
     match result {
-        Some(ResolvedCall::TraitMethod { impl_module, mangled_name, .. }) => {
+        Some(ResolvedCall::TraitMethod {
+            impl_module,
+            mangled_name,
+            ..
+        }) => {
             assert_eq!(
                 impl_module.as_ref(),
                 "writermod",
@@ -233,7 +244,10 @@ fn test_try_resolve_trait_method_no_impl() {
             // S87-1: the trait renders fully-qualified (`user/TestTrait`); the
             // bare primitive `Bool` is not a resolvable type-def in this bare
             // fixture, so the type half best-effort-falls-back to the bare name.
-            assert!(message.contains("no impl of trait user/TestTrait for type Bool"), "{message}");
+            assert!(
+                message.contains("no impl of trait user/TestTrait for type Bool"),
+                "{message}"
+            );
         }
         other => panic!("expected TypeError, got {other:?}"),
     }
@@ -248,7 +262,8 @@ fn no_impl_diagnostic_renders_type_fully_qualified() {
     use cranelisp_types::{ConstructorDef, FQTypeName, ModuleFullPath};
 
     let mut tc = tf_prims();
-    tc.register_trait_decl_self(&make_test_trait_decl()).unwrap();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
     // Register a `Widget` ADT in the current (`user`) module so the type name
     // resolves to its FQ identity `user/Widget`.
     tc.register_type_def_self(
@@ -272,7 +287,11 @@ fn no_impl_diagnostic_renders_type_fully_qualified() {
     );
     // No impl of TestTrait for Widget is registered.
     let err = tc
-        .try_resolve_trait_method_self(&Symbol::from("test-op"), &[widget.clone(), widget], Span::SYNTHETIC)
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[widget.clone(), widget],
+            Span::SYNTHETIC,
+        )
         .expect_err("missing impl must be a type error");
     match err {
         CranelispError::TypeError { message, .. } => {
@@ -312,7 +331,12 @@ fn nullary_return_poly_method_dispatches_on_return_type() {
         .expect("should not error");
     let resolved = result.expect("nullary return-poly method must resolve to the Int impl");
     match resolved {
-        ResolvedCall::TraitMethod { method_name, impl_type, mangled_name, .. } => {
+        ResolvedCall::TraitMethod {
+            method_name,
+            impl_type,
+            mangled_name,
+            ..
+        } => {
             assert_eq!(method_name.as_ref(), "z");
             assert_eq!(impl_type.name.as_ref(), "Int");
             assert_eq!(mangled_name.as_ref(), "NullaryRP.z$primitives/Int");
@@ -331,11 +355,7 @@ fn nullary_return_poly_method_defers_when_return_type_unfixed() {
     register_nullary_rp_int_impl(&mut tc);
 
     // No expr_types entry seeded at the span → return type is unknown.
-    let result = tc.try_resolve_trait_method_self(
-        &Symbol::from("z"),
-        &[],
-        Span::new(20, 23),
-    );
+    let result = tc.try_resolve_trait_method_self(&Symbol::from("z"), &[], Span::new(20, 23));
     assert!(
         matches!(result, Ok(None)),
         "must defer when the return type is not yet fixed, got {result:?}"
@@ -422,11 +442,9 @@ fn test_try_resolve_with_inline_trait() {
     tc.register_trait_impl_self(&impl_).unwrap();
     tc.clear_transient_state();
 
-    let result = tc.try_resolve_trait_method_self(
-        &Symbol::from("+"),
-        &[Type::Int, Type::Int],
-        Span::SYNTHETIC,
-    ).expect("should not error");
+    let result = tc
+        .try_resolve_trait_method_self(&Symbol::from("+"), &[Type::Int, Type::Int], Span::SYNTHETIC)
+        .expect("should not error");
     assert!(result.is_some());
     // NOTE: `Num.+`/Int hits the primitive short-circuit → `BuiltinFn`, so this
     // arm is not taken; kept FQ-consistent for the day the path changes.
@@ -478,7 +496,10 @@ fn mangle_trait_method_distinct_for_same_bare_name_different_home() {
     let b = crate::traits::mangle_trait_method("Describe", "describe", &fqtn("b", "Widget"));
     assert_eq!(a, "Describe.describe$a/Widget");
     assert_eq!(b, "Describe.describe$b/Widget");
-    assert_ne!(a, b, "same-bare-name-different-home types must not collide (§3.8.4)");
+    assert_ne!(
+        a, b,
+        "same-bare-name-different-home types must not collide (§3.8.4)"
+    );
 }
 
 // (b-support) The dispatch derivation takes the receiver's OWN home from an ADT
@@ -492,7 +513,11 @@ fn dispatch_derivation_uses_adt_receiver_home_not_caller_fallback() {
     let receiver = Type::ADT(fqtn("a", "Widget"), vec![]);
     let wrong_caller_fallback = fqtn("caller", "Widget");
     let got = fq_type_for_dispatch_mangle(&receiver, &wrong_caller_fallback);
-    assert_eq!(got, fqtn("a", "Widget"), "must use the ADT receiver's own home");
+    assert_eq!(
+        got,
+        fqtn("a", "Widget"),
+        "must use the ADT receiver's own home"
+    );
     assert_ne!(got, wrong_caller_fallback);
 }
 
@@ -523,8 +548,15 @@ fn dispatch_derivation_receiver_head_grain_drops_type_args() {
     let fallback = fqtn("primitives", "Vec");
     let a = fq_type_for_dispatch_mangle(&vec_int, &fallback);
     let b = fq_type_for_dispatch_mangle(&vec_str, &fallback);
-    assert_eq!(a, fqtn("primitives", "Vec"), "receiver head only — args dropped");
-    assert_eq!(a, b, "both Vec instantiations share the head key (grain = receiver head)");
+    assert_eq!(
+        a,
+        fqtn("primitives", "Vec"),
+        "receiver head only — args dropped"
+    );
+    assert_eq!(
+        a, b,
+        "both Vec instantiations share the head key (grain = receiver head)"
+    );
     let m = crate::traits::mangle_trait_method("Sizeable", "size", &a);
     assert_eq!(m, "Sizeable.size$primitives/Vec");
 }
@@ -553,7 +585,10 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                 body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                    callee: Box::new(cranelisp_types::Expr::var(
+                        Symbol::from("add-i64"),
+                        Span::SYNTHETIC,
+                    )),
                     args: vec![
                         cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
                         cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
@@ -572,7 +607,11 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
     tc.register_trait_impl_self(&impl_).unwrap();
 
     let result = tc
-        .try_resolve_trait_method_self(&Symbol::from("test-op"), &[Type::Int, Type::Int], Span::SYNTHETIC)
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        )
         .expect("should not error");
     let dispatch_key = match result {
         Some(ResolvedCall::TraitMethod { mangled_name, .. }) => mangled_name.as_ref().to_string(),
@@ -584,7 +623,9 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
     // mis-split the `/` in the FQ suffix as a module separator (the documented
     // `/`-split gotcha), so it is not a valid probe for a mangled key.
     assert!(
-        tc.symbol_table().symbols.contains_key(&Symbol::from(dispatch_key.as_str())),
+        tc.symbol_table()
+            .symbols
+            .contains_key(&Symbol::from(dispatch_key.as_str())),
         "definition-side writeback must exist under the dispatch key `{dispatch_key}` \
          (lock-step: name-path == definition-path)",
     );

@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall,
-    Span, Symbol, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
-    UserFnState, Visibility, apply,
+use cranelisp_types::{
+    CranelispError, DefKind, Defn, DefnVariant, ErrorLocation, FQTraitName, FQTypeName,
+    ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall, Span, Symbol, TraitDeclInfo,
+    TraitImpl, TraitMethodSig, TraitName, Type, TypeId, UserFnState, Visibility, apply,
 };
 
+use super::*;
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme;
-use super::*;
 
 /// Arity-aware fix suggestion for a Case-1 kind diagnostic (`hkt.md` §5.4 M2):
 /// one fresh type-var per declared parameter, drawn from the constructor's
@@ -132,9 +133,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                  (declaration-time reject guarantees it)",
             );
             let con_ref: cranelisp_types::TypeRef = match &impl_.target {
-                cranelisp_types::TypeExpr::Applied(pairing_head, args)
-                    if args.len() == 1 =>
-                {
+                cranelisp_types::TypeExpr::Applied(pairing_head, args) if args.len() == 1 => {
                     // B1 (§7.3.5 Case-2, the 4th rejection) — validate the
                     // pairing head FIRST, before the constructor kind-check. The
                     // pairing head MUST name the same trait slot 1 resolves to
@@ -178,8 +177,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                  `{}`: a trait-constructor pairing's head must name \
                                  the trait being implemented — write `({} {})`, not \
                                  `({} {})`.",
-                                decl.name, pairing_written, decl.name, con_disp,
-                                pairing_written, con_disp
+                                decl.name,
+                                pairing_written,
+                                decl.name,
+                                con_disp,
+                                pairing_written,
+                                con_disp
                             ),
                             location: ErrorLocation::from_span(impl_.span),
                         });
@@ -297,9 +300,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     let message = if provided < arity {
                         // Under-applied / bare (pre-existing) — `Option` is a
                         // constructor, not a type.
-                        format!(
-                            "{head} is a constructor, not a type; apply it: `{suggestion}`"
-                        )
+                        format!("{head} is a constructor, not a type; apply it: `{suggestion}`")
                     } else {
                         // Over-applied (I1, NEW) — an arity surplus.
                         format!(
@@ -343,8 +344,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .map_err(cranelisp_types::CranelispError::from)?;
 
         // Generate default method implementations for missing methods
-        let default_defns =
-            self.generate_default_methods(state, &decl, impl_, &fq_impl_type)?;
+        let default_defns = self.generate_default_methods(state, &decl, impl_, &fq_impl_type)?;
 
         // Register the impl as a ModuleEntry::TraitImpl in the trait's
         // **defining module** (Decision 45 / Pattern B). The write target is
@@ -366,15 +366,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (`trait_home` / `fq_trait_name` / `fq_impl_type` resolved above — the
         // single-source-of-truth for both the impl registry key and every
         // impl-method mangle in this impl.)
-        let method_names: Vec<Symbol> = impl_.methods.iter()
-            .map(|m| m.name.clone())
-            .collect();
+        let method_names: Vec<Symbol> = impl_.methods.iter().map(|m| m.name.clone()).collect();
 
-        let impl_key = Symbol::from(format!(
-            "impl${}${}",
-            fq_impl_type, fq_trait_name
-        ));
-        self.symbol_table_mut_in(&trait_home).insert(
+        let impl_key = Symbol::from(format!("impl${}${}", fq_impl_type, fq_trait_name));
+        let pending_impl_entry = (
             impl_key,
             ModuleEntry::TraitImpl {
                 trait_name: fq_trait_name,
@@ -447,15 +442,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         for method_defn in &impl_.methods {
-            let annotated = self.check_impl_method(
-                state,
-                &decl,
-                impl_,
-                method_defn,
-                &fq_impl_type,
-            )?;
+            let annotated =
+                self.check_impl_method(state, &decl, impl_, method_defn, &fq_impl_type)?;
             all_defns.push(annotated);
         }
+
+        self.symbol_table_mut_in(&trait_home)
+            .insert(pending_impl_entry.0, pending_impl_entry.1);
 
         Ok(all_defns)
     }
@@ -467,22 +460,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         decl: &TraitDeclInfo,
         impl_: &TraitImpl,
     ) -> Result<(), CranelispError> {
-        let provided: std::collections::HashSet<&str> = impl_
-            .methods
-            .iter()
-            .map(|m| m.name.as_ref())
-            .collect();
+        let provided: std::collections::HashSet<&str> =
+            impl_.methods.iter().map(|m| m.name.as_ref()).collect();
 
         for method_sig in &decl.methods {
             // Skip methods with defaults
-            if method_sig.default_body.is_some() {
+            if method_default_body(method_sig).is_some() {
                 continue;
             }
             if !provided.contains(method_sig.name.as_ref()) {
                 return Err(CranelispError::TypeError {
                     message: format!(
                         "impl {} for {}: missing required method {}",
-                        decl.name, impl_target_name_or_panic(&impl_.target), method_sig.name
+                        decl.name,
+                        impl_target_name_or_panic(&impl_.target),
+                        method_sig.name
                     ),
                     location: ErrorLocation::from_span(impl_.span),
                 });
@@ -589,7 +581,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })?;
         // `home: None` — an explicit impl-provided method body is correct in the
         // writer's (current) module scope; no defining-module switch (D1, S86).
-        self.check_impl_method_with_sig(state, decl, impl_, method_defn, method_sig, false, None, fq_impl_type)
+        self.check_impl_method_with_sig(
+            state,
+            decl,
+            impl_,
+            method_defn,
+            method_sig,
+            false,
+            None,
+            fq_impl_type,
+        )
     }
 
     /// Type-check an impl method (or default method) given an explicit trait method sig.
@@ -618,6 +619,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         home: Option<&ModuleFullPath>,
         fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
+        for variant in &method_defn.variants {
+            if variant.params.len() != method_sig.params.len() {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "impl method `{}` has {} parameter{}, but trait `{}` declares {}",
+                        method_defn.name,
+                        variant.params.len(),
+                        if variant.params.len() == 1 { "" } else { "s" },
+                        decl.name,
+                        method_sig.params.len(),
+                    ),
+                    location: ErrorLocation::from_span(variant.span),
+                });
+            }
+        }
+
         // TB24b (§7.3.3 + §8.5) — the impl-target constraint slot's trait
         // references (`(Box :Disp a)` → `type_constraints = [(a, Disp)]`) MUST
         // resolve, exactly as a param-position bound (`:C x`) does — an unknown
@@ -648,7 +665,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let is_hkt = !decl.type_params.is_empty();
 
         if is_hkt {
-            return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig, fq_impl_type);
+            return self.check_hkt_impl_method(
+                state,
+                decl,
+                impl_,
+                method_defn,
+                method_sig,
+                fq_impl_type,
+            );
         }
 
         // Resolve the concrete type for Self.
@@ -717,19 +741,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_ty = self
-            .resolve_trait_sig_type_expr(
-                &method_sig.ret_type,
+        let ret_ty = if let Some(ret) = method_result_constraint(method_sig) {
+            self.resolve_trait_sig_type_expr(
+                ret,
                 &mut var_map,
                 &module,
                 &concrete_self,
                 &decl.type_params,
                 method_defn.span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .map_err(cranelisp_types::CranelispError::from)?
+        } else {
+            self.fresh_var()
+        };
 
         // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
+        let mr_before: HashSet<Span> = state
+            .method_resolutions
+            .resolved_calls
+            .keys()
+            .copied()
+            .collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
         // FIXME 0472: user-fn reference snapshot — this Pass-1 body check is
         // outside every Pass-2 per-form delta, so the callee edges are
@@ -842,13 +874,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         ufr_before: &HashSet<Span>,
     ) -> Result<Defn, CranelispError> {
         // Extract delta: only entries added during this method's body check
-        let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+        let method_mr: HashMap<Span, ResolvedCall> = state
+            .method_resolutions
             .resolved_calls
             .iter()
             .filter(|(span, _)| !mr_before.contains(span))
             .map(|(span, res)| (*span, res.clone()))
             .collect();
-        let method_et: HashMap<Span, Type> = state.expr_types
+        let method_et: HashMap<Span, Type> = state
+            .expr_types
             .iter()
             .filter(|(span, _)| !et_before.contains(span))
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
@@ -867,11 +901,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility: Visibility::Public,
             span: method_clone.span,
         };
-        crate::program::annotate_defn_from_maps(
-            &mut annotated,
-            &method_et,
-            &method_mr,
-        );
+        crate::program::annotate_defn_from_maps(&mut annotated, &method_et, &method_mr);
         crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
 
         // Write the fully annotated defn to ModuleEntry::Def.ast.
@@ -898,11 +928,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // channel + user-fn references) BEFORE taking the table guard; write
         // them onto the mangled entry after it exists below. This is the
         // impl/default/HKT-method seam of the ONE shared harvest helper.
-        let callee_edges =
-            self.harvest_callee_edges(state, &mangled_sym, &method_mr, ufr_before);
+        let callee_edges = self.harvest_callee_edges(state, &mangled_sym, &method_mr, ufr_before);
         let mut st = self.current_symbol_table_mut(state);
-        if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
-            st.symbols.get_mut(&mangled_sym)
+        if let Some(ModuleEntry::Def {
+            ast,
+            codegen_view: cv,
+            ..
+        }) = st.symbols.get_mut(&mangled_sym)
         {
             *ast = ast_variant;
             *cv = codegen_view;
@@ -914,9 +946,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .map_err(crate::result::got_exhausted_error)?;
             let mut builder = ModuleEntry::def(
                 concrete_scheme,
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, mode_summary: None } },
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete {
+                        got_slot,
+                        mode_summary: None,
+                    },
+                },
             )
-            .param_names(method_defn.params().iter().map(|(n, _)| n.clone()).collect());
+            .param_names(
+                method_defn
+                    .params()
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect(),
+            );
             if let Some(doc) = method_defn.docstring.clone() {
                 builder = builder.docstring(doc);
             }
@@ -957,9 +1000,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut type_var_map: HashMap<Symbol, TypeId> = HashMap::new();
 
         // Determine the arity of the constructor from the trait signature
-        let arity = decl.type_params.iter().find_map(|p| {
-            con_var_arity(decl, p)
-        }).expect("invariant: HKT trait must use constructor param in Applied position");
+        let arity = decl
+            .type_params
+            .iter()
+            .find_map(|p| con_var_arity(decl, p))
+            .expect("invariant: HKT trait must use constructor param in Applied position");
 
         // Build the concrete self type: ADT(target, [fresh_vars...])
         let type_arg_vars: Vec<Type> = (0..arity).map(|_| self.fresh_var_id().0).collect();
@@ -994,7 +1039,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let ret_ty = self
             .resolve_hkt_impl_type_expr(
-                &method_sig.ret_type,
+                method_result_constraint(method_sig).expect("HKT methods are required"),
                 &mut type_var_map,
                 &module,
                 &decl.type_params,
@@ -1011,7 +1056,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
+        let mr_before: HashSet<Span> = state
+            .method_resolutions
+            .resolved_calls
+            .keys()
+            .copied()
+            .collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
         // FIXME 0472: user-fn reference snapshot (see check_impl_method_with_sig).
         let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
@@ -1072,14 +1122,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let saved_rigid = std::mem::take(&mut state.rigid_vars);
         let saved_scope = state.written_var_scope.take();
 
-        for ((param_name, _), param_ty) in
-            defn.params().iter().zip(param_types.iter())
-        {
-            self.bind_local(
-                state,
-                param_name.clone(),
-                scheme::mono(param_ty.clone()),
-            );
+        for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
+            self.bind_local(state, param_name.clone(), scheme::mono(param_ty.clone()));
         }
 
         let result = (|| {
@@ -1105,17 +1149,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         impl_: &TraitImpl,
         fq_impl_type: &FQTypeName,
     ) -> Result<Vec<Defn>, CranelispError> {
-        let provided: std::collections::HashSet<&str> = impl_
-            .methods
-            .iter()
-            .map(|m| m.name.as_ref())
-            .collect();
+        let provided: std::collections::HashSet<&str> =
+            impl_.methods.iter().map(|m| m.name.as_ref()).collect();
 
         let mut defaults = Vec::new();
 
         for method_sig in &decl.methods {
             if provided.contains(method_sig.name.as_ref())
-                || method_sig.default_body.is_none()
+                || method_default_body(method_sig).is_none()
             {
                 continue;
             }
@@ -1124,14 +1165,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // (via `mangle_trait_method`) — the trait part is `decl.name`
             // (bare), matching the `{decl.name}.` / `${fq_impl_type}` demangle
             // in `register_trait_impl`. S102 4th lossy-head cure.
-            let mangled = mangle_trait_method(
-                decl.name.as_ref(),
-                method_sig.name.as_ref(),
-                fq_impl_type,
-            );
+            let mangled =
+                mangle_trait_method(decl.name.as_ref(), method_sig.name.as_ref(), fq_impl_type);
 
             let span = impl_.span;
-            let body = if let Some(ref expr_body) = method_sig.default_body {
+            let body = if let Some(expr_body) = method_default_body(method_sig) {
                 // User-defined default body: pre-parsed AST (S69 Submission 26).
                 expr_body.clone()
             } else {
@@ -1139,7 +1177,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 build_default_body(
                     decl.name.as_ref(),
                     method_sig.name.as_ref(),
-                    &method_sig.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                    &method_sig
+                        .params
+                        .iter()
+                        .map(|(n, _)| n.clone())
+                        .collect::<Vec<_>>(),
                     span,
                 )?
             };
@@ -1148,7 +1190,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 name: Symbol::from(mangled.as_str()),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: method_sig.params.iter().map(|(n, _)| (n.clone(), None)).collect::<Vec<_>>(),
+                    params: method_sig
+                        .params
+                        .iter()
+                        .map(|(n, _)| (n.clone(), None))
+                        .collect::<Vec<_>>(),
                     body,
                     span,
                 }],

@@ -1,7 +1,7 @@
-use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol, TraitDecl, TraitDeclInfo,
-    TypeName,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, Span, Symbol, TraitDecl, TraitDeclInfo, TraitMethodKind,
+    TypeExpr, TypeName,
 };
-
 
 // ---------------------------------------------------------------------------
 // Impl-target name extraction + trait-decl identity
@@ -60,8 +60,31 @@ pub(super) fn trait_decl_matches(existing: &TraitDeclInfo, incoming: &TraitDecl)
 /// is EXEMPT and never reaches this predicate (`register_trait_decl` routes the
 /// applied-con_var head to `register_hkt_trait` before the check).
 pub(super) fn method_mentions_self(method: &cranelisp_types::TraitMethodSig) -> bool {
-    method.params.iter().any(|(_, p)| type_expr_mentions_self(p))
-        || type_expr_mentions_self(&method.ret_type)
+    method
+        .params
+        .iter()
+        .any(|(_, p)| type_expr_mentions_self(p))
+        || method_result_constraint(method).is_some_and(type_expr_mentions_self)
+}
+
+pub(super) fn method_result_constraint(
+    method: &cranelisp_types::TraitMethodSig,
+) -> Option<&TypeExpr> {
+    match &method.kind {
+        TraitMethodKind::Required { ret_type } => Some(ret_type),
+        TraitMethodKind::Default {
+            result_constraint, ..
+        } => result_constraint.as_ref(),
+    }
+}
+
+pub(super) fn method_default_body(
+    method: &cranelisp_types::TraitMethodSig,
+) -> Option<&cranelisp_types::Expr> {
+    match &method.kind {
+        TraitMethodKind::Default { body, .. } => Some(body),
+        TraitMethodKind::Required { .. } => None,
+    }
 }
 
 /// Does `texpr` mention [`TypeExpr::SelfType`] anywhere in its tree?
@@ -164,19 +187,16 @@ pub(crate) fn build_default_body(
             inferred_type: None,
         }),
         _ => Err(CranelispError::TypeError {
-            message: format!(
-                "no hard-coded default body for {trait_name}.{method_name}"
-            ),
+            message: format!("no hard-coded default body for {trait_name}.{method_name}"),
             location: ErrorLocation::from_span(span),
         }),
     }
 }
 
-// `sexp_to_default_expr` retired in Sprint 72 Wave 1 — per S69 Submission 26,
-// `TraitMethodSig.default_body: Option<Expr>` carries pre-parsed AST (vindication
-// of the prior facade target). The Sexp→Expr lowering at trait-decl time now
-// lives in the frontend `build_method_sig` path; the typecheck consumer simply
-// clones the Expr. Decision-grounding: S69 Submission 26 + `design/arch/facades/typecheck.md` §"Typing rule".
+// Sprint 116 restored the unresolved `Sexp` tail at the frontend/typecheck
+// boundary. `registry::classify_trait_methods` now performs the sole lowering:
+// a type-resolving tail becomes `Required`, while the same raw form is lowered
+// through the frontend's structural expression builder for `Default`.
 
 // ---------------------------------------------------------------------------
 // HKT Helpers (free functions)
@@ -194,7 +214,10 @@ pub(crate) fn build_default_body(
 // against the symbol table exactly as `defn`/`deftype`-field refs are.
 
 /// Check if a TypeExpr uses any of the constructor variable names in Applied position.
-pub(super) fn type_expr_uses_con_var(texpr: &cranelisp_types::TypeExpr, con_names: &[Symbol]) -> bool {
+pub(super) fn type_expr_uses_con_var(
+    texpr: &cranelisp_types::TypeExpr,
+    con_names: &[Symbol],
+) -> bool {
     use cranelisp_types::TypeExpr;
 
     match texpr {
@@ -212,7 +235,10 @@ pub(super) fn type_expr_uses_con_var(texpr: &cranelisp_types::TypeExpr, con_name
 }
 
 /// Find the first parameter index that uses a constructor variable in Applied position.
-pub(super) fn find_hkt_param_index(params: &[(Symbol, cranelisp_types::TypeExpr)], type_params: &[Symbol]) -> usize {
+pub(super) fn find_hkt_param_index(
+    params: &[(Symbol, cranelisp_types::TypeExpr)],
+    type_params: &[Symbol],
+) -> usize {
     for (idx, (_, param)) in params.iter().enumerate() {
         if type_expr_uses_con_var(param, type_params) {
             return idx;
@@ -229,7 +255,9 @@ pub(super) fn con_var_arity(decl: &TraitDeclInfo, con_name: &Symbol) -> Option<u
                 return Some(arity);
             }
         }
-        if let Some(arity) = find_applied_arity(&method.ret_type, con_name) {
+        if let Some(arity) =
+            method_result_constraint(method).and_then(|ret| find_applied_arity(ret, con_name))
+        {
             return Some(arity);
         }
     }
@@ -237,7 +265,10 @@ pub(super) fn con_var_arity(decl: &TraitDeclInfo, con_name: &Symbol) -> Option<u
 }
 
 /// Find the arity of a constructor variable name in a TypeExpr tree.
-pub(super) fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> Option<usize> {
+pub(super) fn find_applied_arity(
+    texpr: &cranelisp_types::TypeExpr,
+    con_name: &Symbol,
+) -> Option<usize> {
     use cranelisp_types::TypeExpr;
 
     match texpr {
@@ -249,10 +280,10 @@ pub(super) fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &S
                 args.iter().find_map(|a| find_applied_arity(a, con_name))
             }
         }
-        TypeExpr::FnType(params, ret) => {
-            params.iter().find_map(|p| find_applied_arity(p, con_name))
-                .or_else(|| find_applied_arity(ret, con_name))
-        }
+        TypeExpr::FnType(params, ret) => params
+            .iter()
+            .find_map(|p| find_applied_arity(p, con_name))
+            .or_else(|| find_applied_arity(ret, con_name)),
         _ => None,
     }
 }

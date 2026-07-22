@@ -1,12 +1,10 @@
-
-use cranelisp_types::{ErrorLocation, CranelispError, FQTraitName,
-    JitSymbol, ModuleEntry, ModuleFullPath, ResolvedCall,
-    Span, Symbol, TraitMethodSig, TraitName, Type,
-    TypeName,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, FQTraitName, JitSymbol, ModuleEntry, ModuleFullPath,
+    ResolvedCall, Span, Symbol, TraitMethodSig, TraitName, Type, TypeName,
 };
 
-use crate::checker::{CheckState, TypeCheckEnv};
 use super::*;
+use crate::checker::{CheckState, TypeCheckEnv};
 
 // ---------------------------------------------------------------------------
 // Method Resolution
@@ -81,10 +79,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 FQTraitName::new(trait_defining_module.clone(), trait_name.clone()).to_string();
             let fq_impl_type = self.fq_type_name_for_diagnostics(state, &impl_type_name, span);
             return Err(CranelispError::TypeError {
-                message: format!(
-                    "no impl of trait {} for type {}",
-                    fq_trait, fq_impl_type
-                ),
+                message: format!("no impl of trait {} for type {}", fq_trait, fq_impl_type),
                 location: ErrorLocation::from_span(span),
             });
         }
@@ -98,7 +93,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // trait-impl body wrapper. This preserves the pre-D43 inline
         // optimisation while keeping backend trait-free (the dispatch is
         // monomorphisation-keyed in typecheck, not trait-keyed in backend).
-        if let Some(prim_name) = primitive_for_trait_method(&trait_name, callee_name, &impl_type_name) {
+        if let Some(prim_name) =
+            primitive_for_trait_method(&trait_name, callee_name, &impl_type_name)
+        {
             return Ok(Some(ResolvedCall::BuiltinFn {
                 name: Symbol::from(prim_name),
             }));
@@ -134,11 +131,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `impl_check` — both route through `mangle_trait_method` against the
         // same canonical `FQTypeName` (name-path == definition-path).
         let fq_for_mangle = fq_type_for_dispatch_mangle(&resolved_arg, &fq_impl_type);
-        let mangled = mangle_trait_method(
-            trait_name.as_ref(),
-            callee_name.as_ref(),
-            &fq_for_mangle,
-        );
+        let mangled =
+            mangle_trait_method(trait_name.as_ref(), callee_name.as_ref(), &fq_for_mangle);
 
         // S110 W0.1b (§1.1.1): the STORAGE module of the selected mangled
         // method `Def` is the impl-WRITER's module, recorded on the
@@ -384,7 +378,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// trait decl" defaults to `false`.
     pub(crate) fn method_self_in_return(&self, state: &CheckState, method_name: &str) -> bool {
         self.find_trait_method_decl(state, method_name, |m| {
-            type_expr_references_self(&m.ret_type)
+            method_result_constraint(m).is_some_and(type_expr_references_self)
         })
         .unwrap_or(false)
     }
@@ -433,15 +427,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method_name: &str,
         read: impl Fn(&TraitMethodSig) -> R,
     ) -> Option<R> {
-        if let Some(r) =
-            self.find_trait_method_decl_in_module(state, &state.current_module, method_name, false, None, &read)
-        {
+        if let Some(r) = self.find_trait_method_decl_in_module(
+            state,
+            &state.current_module,
+            method_name,
+            false,
+            None,
+            &read,
+        ) {
             return Some(r);
         }
         // Inner miss — consult the prelude fallback iff the bit is ON.
         if let Some(prelude) = self.prelude_fallback_target(&state.current_module)
-            && let Some(r) =
-                self.find_trait_method_decl_in_module(state, &prelude, method_name, true, None, &read)
+            && let Some(r) = self.find_trait_method_decl_in_module(
+                state,
+                &prelude,
+                method_name,
+                true,
+                None,
+                &read,
+            )
         {
             return Some(r);
         }
@@ -453,13 +458,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `Self`-in-return decl and dispatches (else `method_self_in_return`
         // defaults `false`, the call defers unresolved, and codegen leaks
         // `undefined function` — the §7.11.2(e) accept-side leak).
-        let (tn, home) =
-            self.method_to_trait_with_state(state, &Symbol::from(method_name))?;
+        let (tn, home) = self.method_to_trait_with_state(state, &Symbol::from(method_name))?;
         if home != state.current_module {
             // Tighten to the method's OWN trait `tn` (Suggestion 6): read the
             // method off that specific trait's decl, not any home-resident trait.
             return self.find_trait_method_decl_in_module(
-                state, &home, method_name, false, Some(&tn), &read,
+                state,
+                &home,
+                method_name,
+                false,
+                Some(&tn),
+                &read,
             );
         }
         None
@@ -511,8 +520,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             names
         };
         for name in &names {
-            if let Some(terminal) =
-                self.resolve_terminal_entry_and_home(module_path, name.as_ref()).map(|(e, _home)| e)
+            if let Some(terminal) = self
+                .resolve_terminal_entry_and_home(module_path, name.as_ref())
+                .map(|(e, _home)| e)
                 && let ModuleEntry::TraitDecl { info, .. } = terminal
                 && trait_filter.is_none_or(|tn| &info.name == tn)
             {

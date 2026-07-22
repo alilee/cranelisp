@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, CranelispError, FQTraitName, Scheme,
-    Span, Symbol, TraitDecl, TraitMethodSig, TraitName, Type, TypeId, Visibility,
+use cranelisp_types::{
+    CranelispError, ErrorLocation, FQTraitName, Scheme, Span, Symbol, TraitDecl, TraitMethodKind,
+    TraitMethodSig, TraitName, Type, TypeExpr, TypeId, Visibility,
 };
 
-use crate::checker::{CheckState, TypeCheckEnv};
 use super::*;
+use crate::checker::{CheckState, TypeCheckEnv};
 
 // ---------------------------------------------------------------------------
 // Active Constraints (tracked during body checking)
@@ -50,10 +51,7 @@ impl ActiveConstraints {
     /// Note: does NOT follow the substitution — use `TypeChecker::generalize`
     /// for correct constraint propagation through unified vars.
     #[allow(dead_code)]
-    pub fn collect_for_vars(
-        &self,
-        vars: &[TypeId],
-    ) -> HashMap<TypeId, Vec<FQTraitName>> {
+    pub fn collect_for_vars(&self, vars: &[TypeId]) -> HashMap<TypeId, Vec<FQTraitName>> {
         let mut result = HashMap::new();
         for &var_id in vars {
             if let Some(traits) = self.constraints.get(&var_id)
@@ -114,6 +112,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
+        let methods = self.classify_trait_methods(state, decl)?;
+
         // Kind is derived ONCE, HERE at declaration registration, from the head
         // shape (spec §7.1/§7.2.1; `design/typecheck/hkt.md` §5.1). A
         // parenthesized head (non-empty `type_params`) is higher-kinded IFF its
@@ -126,11 +126,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // "Resolve once"; the former usage-derived kind derivation here and the
         // one at `impl_check.rs` collapse onto this single declaration fact).
         if !decl.type_params.is_empty() {
-            let con_applied = decl.methods.iter().any(|m| {
+            if let Some(method) = methods
+                .iter()
+                .find(|method| method_default_body(method).is_some())
+            {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "higher-kinded trait `{}` method `{}` cannot have a default body",
+                        decl.name, method.name
+                    ),
+                    location: ErrorLocation::from_span(method.span),
+                });
+            }
+            let con_applied = methods.iter().any(|m| {
                 m.params
                     .iter()
                     .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
-                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
+                    || method_result_constraint(m)
+                        .is_some_and(|ret| type_expr_uses_con_var(ret, &decl.type_params))
             });
             if !con_applied {
                 // §7.2.1 malformed: a head type variable that is never applied is
@@ -138,11 +151,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // a head type variable — conventional traits use the bare head and
                 // `self`. Naming the fix (spec §7.1 example).
                 let con = &decl.type_params[0];
-                let example_method = decl
-                    .methods
-                    .first()
-                    .map(|m| m.name.as_ref())
-                    .unwrap_or("m");
+                let example_method = decl.methods.first().map(|m| m.name.as_ref()).unwrap_or("m");
                 return Err(CranelispError::TypeError {
                     message: format!(
                         "trait `{}`'s type parameter `{con}` is never applied \
@@ -156,7 +165,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
             // Genuinely higher-kinded (con_var applied) — the declaration-derived
             // kind. `register_hkt_trait` only ever sees an applied-con_var decl.
-            return self.register_hkt_trait(state, decl);
+            return self.register_hkt_trait(state, decl, methods);
         }
 
         // §7.1.1 OCCURRENCE RULE (S115 W4, FIXME 0709; `design/typecheck/traits.md`
@@ -204,7 +213,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // METHOD-LEVEL TYPE VARIABLES ARE UNAFFECTED: the rule bites only on the
         // ABSENCE of the implementing type. `(map-val [:(Fn [a] b) f x] self)` is
         // well-formed — `x` is bare and the return is `self`.
-        for method in &decl.methods {
+        for method in &methods {
             if !method_mentions_self(method) {
                 return Err(CranelispError::TypeError {
                     message: format!(
@@ -229,15 +238,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // operators as bare names through the prelude fallback
         // (`/review` I-1); within the trait's own subtree they stay reachable
         // (the `cranelisp_types::resolve` visibility check honours `in_subtree`).
-        for method in &decl.methods {
-            self.register_trait_method(state,
-                &decl.name,
-                method,
-                type_var_id,
-                &decl.type_params,
-                decl.visibility,
-                decl.span,
-            )?;
+        let method_entries = methods
+            .iter()
+            .map(|method| {
+                self.build_trait_method_entry(
+                    state,
+                    &decl.name,
+                    method,
+                    type_var_id,
+                    &decl.type_params,
+                    decl.visibility,
+                    decl.span,
+                )
+                .map(|entry| (method.name.clone(), entry))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (name, entry) in method_entries {
+            self.current_symbol_table_mut(state).insert(name, entry);
         }
 
         // Register in symbol table as TraitDecl entry
@@ -247,7 +264,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 info: cranelisp_types::TraitDeclInfo {
                     name: decl.name.clone(),
                     type_params: decl.type_params.clone(),
-                    methods: decl.methods.clone(),
+                    methods,
                 },
                 visibility: decl.visibility,
                 docstring: decl.docstring.clone(),
@@ -263,6 +280,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         decl: &TraitDecl,
+        methods: Vec<TraitMethodSig>,
     ) -> Result<(), CranelispError> {
         // Create fresh type var IDs for each constructor param
         let mut con_var_map: HashMap<Symbol, TypeId> = HashMap::new();
@@ -273,14 +291,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let module = state.current_module.clone();
 
         // Build a modified decl with hkt_param_index set on each method
-        let mut modified_decl = decl.clone();
+        let mut methods = methods;
 
-        for (mi, method) in decl.methods.iter().enumerate() {
+        let mut method_entries = Vec::with_capacity(methods.len());
+        for mi in 0..methods.len() {
+            let method = methods[mi].clone();
             // Determine which param index carries the type constructor
             // find_hkt_param_index now expects &[(Symbol, TypeExpr)] per spec
             // — pass `method.params` directly.
             let param_idx = find_hkt_param_index(&method.params, &decl.type_params);
-            modified_decl.methods[mi].hkt_param_index = Some(param_idx);
+            methods[mi].hkt_param_index = Some(param_idx);
 
             // Create fresh regular type vars for any type variables in the signature
             // that are NOT constructor params
@@ -302,7 +322,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .collect::<Result<Vec<_>, _>>()?;
             let ret_ty = self
                 .resolve_hkt_sig_type_expr(
-                    &method.ret_type,
+                    method_result_constraint(&method).expect("HKT methods are required"),
                     &mut type_var_map,
                     &module,
                     &con_var_map,
@@ -343,10 +363,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(doc) = method.docstring.clone() {
                 builder = builder.docstring(doc);
             }
-            self.current_symbol_table_mut(state).insert(method.name.clone(), builder.build());
+            method_entries.push((method.name.clone(), builder.build()));
 
             // trait_origin is already set on the ModuleEntry::Def above,
             // so no separate reverse lookup registration is needed.
+        }
+
+        for (name, entry) in method_entries {
+            self.current_symbol_table_mut(state).insert(name, entry);
         }
 
         // Register in symbol table as TraitDecl entry (with hkt_param_index)
@@ -354,9 +378,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 info: cranelisp_types::TraitDeclInfo {
-                    name: modified_decl.name.clone(),
-                    type_params: modified_decl.type_params.clone(),
-                    methods: modified_decl.methods.clone(),
+                    name: decl.name.clone(),
+                    type_params: decl.type_params.clone(),
+                    methods,
                 },
                 visibility: decl.visibility,
                 docstring: decl.docstring.clone(),
@@ -368,7 +392,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
     /// Register a single trait method with its constrained polymorphic scheme.
     #[allow(clippy::too_many_arguments)]
-    fn register_trait_method(
+    fn build_trait_method_entry(
         &self,
         state: &mut CheckState,
         trait_name: &TraitName,
@@ -377,7 +401,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         trait_type_params: &[Symbol],
         visibility: Visibility,
         span: Span,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<cranelisp_types::ModuleEntry<C>, CranelispError> {
         let method_type =
             self.build_method_type(state, method, type_var_id, trait_type_params, span)?;
 
@@ -402,17 +426,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             },
         )
         .visibility(visibility)
-        .param_names(method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>())
+        .param_names(
+            method
+                .params
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>(),
+        )
         .trait_origin(fq_trait_name);
         if let Some(doc) = method.docstring.clone() {
             builder = builder.docstring(doc);
         }
-        self.current_symbol_table_mut(state).insert(method.name.clone(), builder.build());
-
-        // trait_origin is already set on the ModuleEntry::Def above,
-        // so no separate reverse lookup registration is needed.
-
-        Ok(())
+        Ok(builder.build())
     }
 
     /// Build the function type for a trait method.
@@ -454,18 +479,101 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_type = self
-            .resolve_trait_sig_type_expr(
-                &method.ret_type,
+        let ret_type = if let Some(result_constraint) = method_result_constraint(method) {
+            self.resolve_trait_sig_type_expr(
+                result_constraint,
                 &mut var_map,
                 &module,
                 &self_type,
                 trait_type_params,
                 span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .map_err(cranelisp_types::CranelispError::from)?
+        } else {
+            self.fresh_var()
+        };
 
         Ok(Type::Fn(param_types, Box::new(ret_type)))
+    }
+
+    fn classify_trait_methods(
+        &self,
+        state: &CheckState,
+        decl: &TraitDecl,
+    ) -> Result<Vec<TraitMethodSig>, CranelispError> {
+        decl.methods
+            .iter()
+            .map(|method| {
+                let kind = match &method.tail {
+                    cranelisp_types::Sexp::Annotated {
+                        annotation,
+                        subject,
+                        ..
+                    } => TraitMethodKind::Default {
+                        body: cranelisp_frontend::build_expr(subject)?,
+                        result_constraint: Some(cranelisp_frontend::parse_type_expr(
+                            &annotation.format_flat(),
+                        )?),
+                    },
+                    tail => {
+                        let parsed = cranelisp_frontend::parse_type_expr(&tail.format_flat()).ok();
+                        if let Some(ret_type) = parsed.filter(|ty| {
+                            self.type_tail_resolves(
+                                state,
+                                ty,
+                                &decl.type_params,
+                                method.span,
+                                false,
+                            )
+                        }) {
+                            TraitMethodKind::Required { ret_type }
+                        } else {
+                            TraitMethodKind::Default {
+                                body: cranelisp_frontend::build_expr(tail)?,
+                                result_constraint: None,
+                            }
+                        }
+                    }
+                };
+                Ok(TraitMethodSig {
+                    name: method.name.clone(),
+                    docstring: method.docstring.clone(),
+                    params: method.params.clone(),
+                    kind,
+                    span: method.span,
+                    hkt_param_index: method.hkt_param_index,
+                })
+            })
+            .collect()
+    }
+
+    fn type_tail_resolves(
+        &self,
+        state: &CheckState,
+        ty: &TypeExpr,
+        constructor_vars: &[Symbol],
+        span: Span,
+        nested: bool,
+    ) -> bool {
+        match ty {
+            TypeExpr::SelfType => true,
+            TypeExpr::TypeVar(name) => nested || constructor_vars.contains(name),
+            TypeExpr::Named(name) => self.resolve_type(state, &name.name, span).is_ok(),
+            TypeExpr::Applied(name, args) => {
+                (constructor_vars
+                    .iter()
+                    .any(|v| v.as_ref() == name.name.as_ref())
+                    || self.resolve_type(state, &name.name, span).is_ok())
+                    && args.iter().all(|arg| {
+                        self.type_tail_resolves(state, arg, constructor_vars, span, true)
+                    })
+            }
+            TypeExpr::FnType(params, ret) => params
+                .iter()
+                .chain(std::iter::once(ret.as_ref()))
+                .all(|part| self.type_tail_resolves(state, part, constructor_vars, span, true)),
+            TypeExpr::Bounds(_) => false,
+        }
     }
 }
 
