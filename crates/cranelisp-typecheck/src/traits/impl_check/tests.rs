@@ -201,6 +201,49 @@ fn annotated_default_result_mismatch_rejects_without_enrollment() {
     ));
 }
 
+// spec: 05-definitions §5.4 — impl conformance diagnostics identify the
+// declaration as expected and the method body as supplied.
+#[test]
+fn impl_return_mismatch_reports_trait_method_and_declared_direction() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl("(deftrait D2 (dsc [self] String))"))
+        .unwrap();
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("D2")),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+        type_constraints: vec![],
+        methods: vec![Defn {
+            name: Symbol::from("dsc"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("self"), None)],
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }],
+        span: Span::SYNTHETIC,
+    };
+
+    let err = tc.register_trait_impl_self(&impl_).unwrap_err();
+    let message = err.message();
+    assert!(
+        message.contains("impl of trait `D2` for `primitives/Int`"),
+        "{err:?}"
+    );
+    assert!(message.contains("method `dsc` does not conform"), "{err:?}");
+    assert!(
+        message.contains("expected primitives/String, got primitives/Int"),
+        "{err:?}"
+    );
+}
+
 // spec: 07-traits §7.3 + 08-modules §8.6.2 — an `(impl <trait> <type> …)` form
 // resolves its bare `trait_name` in module scope WITH the implicit-prelude
 // fallback hop: a PRELUDE-GLOBBED trait (reachable only via the implicit

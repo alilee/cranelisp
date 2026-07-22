@@ -23,6 +23,27 @@ fn arity_var_suggestion(head: &str, arity: usize) -> String {
     format!("({head} {})", vars.join(" "))
 }
 
+/// Add the declaration context that a raw body-check error cannot carry.
+///
+/// The body checker is also used by monomorphisation, so impl-specific names
+/// belong at this caller boundary rather than in the shared inference helper.
+fn impl_conformance_error(
+    error: CranelispError,
+    trait_name: &TraitName,
+    method_name: &Symbol,
+    impl_type: &FQTypeName,
+) -> CranelispError {
+    match error {
+        CranelispError::TypeError { message, location } => CranelispError::TypeError {
+            message: format!(
+                "impl of trait `{trait_name}` for `{impl_type}`: method `{method_name}` does not conform: {message}"
+            ),
+            location,
+        },
+        other => other,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Impl Registration and Checking
 // ---------------------------------------------------------------------------
@@ -844,7 +865,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state.current_module = prev;
         }
 
-        body_result?;
+        body_result.map_err(|error| {
+            impl_conformance_error(error, &decl.name, &method_sig.name, fq_impl_type)
+        })?;
 
         // Build the mangled name and create annotated defn for symbol table.
         // For default methods, `method_defn.name` is already mangled by
@@ -1112,7 +1135,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Clone the method defn and check the body with the mutable copy
         let mut method_clone = method_defn.clone();
-        self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)?;
+        self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)
+            .map_err(|error| {
+                impl_conformance_error(error, &decl.name, &method_sig.name, fq_impl_type)
+            })?;
 
         // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
         self.resolve_auto_curry(state, crate::program::AutoCurryDrain::Final);
@@ -1172,7 +1198,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let result = (|| {
             let body_ty = self.infer_expr(state, defn.body())?;
-            self.unify(state, &body_ty, ret_ty, defn.span)?;
+            // The signature is the expectation; the inferred body is the
+            // supplied value. Keep that direction in the diagnostic too.
+            self.unify(state, ret_ty, &body_ty, defn.span)?;
             // Post-inference deferred trait resolution
             self.resolve_deferred_trait_calls(state, defn.body())?;
             Ok(())
