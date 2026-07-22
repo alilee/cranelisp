@@ -104,6 +104,103 @@ fn multi_method_failure_rolls_back_earlier_method_write() {
     );
 }
 
+// spec: 07-traits §7.3 — failed re-impl preserves the prior settled methods.
+#[test]
+fn failed_reimpl_restores_prior_method_definition() {
+    let mut tc = tf_prims();
+    let decl = parse_trait_decl(
+        "(deftrait AtomicReplace (first [a b] self) (second [a b] self))",
+    );
+    tc.register_trait_decl_self(&decl).unwrap();
+
+    let mut initial = int_op_impl("AtomicReplace", "first");
+    let mut initial_second = initial.methods[0].clone();
+    initial_second.name = Symbol::from("second");
+    initial.methods.push(initial_second);
+    tc.register_trait_impl_self(&initial).unwrap();
+
+    let mut replacement = initial.clone();
+    replacement.methods[0].variants[0].body = Expr::IntLit {
+        value: 99,
+        span: Span::SYNTHETIC,
+        inferred_type: None,
+    };
+    replacement.methods[1].variants[0].params.pop();
+    tc.register_trait_impl_self(&replacement).unwrap_err();
+
+    let entry = tc
+        .symbol_table()
+        .get("AtomicReplace.first$primitives/Int")
+        .expect("the prior method remains enrolled");
+    let cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. } = entry else {
+        panic!("expected prior checked method definition, got {entry:?}");
+    };
+    assert!(
+        matches!(defn.variants[0].body, Expr::Apply { .. }),
+        "failed replacement must restore the prior body"
+    );
+}
+
+// spec: 07-traits §7.1.5 — an omitted unannotated default infers per impl.
+#[test]
+fn omitted_inferred_default_is_checked_for_concrete_self() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait IdentityDefault (identity [x] x))",
+    ))
+    .unwrap();
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(
+            None,
+            TraitName::from("IdentityDefault"),
+        ),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        )),
+        type_constraints: vec![],
+        methods: vec![],
+        span: Span::SYNTHETIC,
+    };
+
+    tc.register_trait_impl_self(&impl_).unwrap();
+    assert!(tc.has_impl(
+        &TraitName::from("IdentityDefault"),
+        &TypeName::from("Int")
+    ));
+}
+
+// spec: 07-traits §7.1.5 — a body annotation constrains the inferred result.
+#[test]
+fn annotated_default_result_mismatch_rejects_without_enrollment() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait ConstrainedDefault (flag [x] :Bool 1))",
+    ))
+    .unwrap();
+    let impl_ = TraitImpl {
+        head_con_var: None,
+        trait_name: cranelisp_types::TraitRef::new(
+            None,
+            TraitName::from("ConstrainedDefault"),
+        ),
+        target: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        )),
+        type_constraints: vec![],
+        methods: vec![],
+        span: Span::SYNTHETIC,
+    };
+
+    tc.register_trait_impl_self(&impl_).unwrap_err();
+    assert!(!tc.has_impl(
+        &TraitName::from("ConstrainedDefault"),
+        &TypeName::from("Int")
+    ));
+}
+
 // spec: 07-traits §7.3 + 08-modules §8.6.2 — an `(impl <trait> <type> …)` form
 // resolves its bare `trait_name` in module scope WITH the implicit-prelude
 // fallback hop: a PRELUDE-GLOBBED trait (reachable only via the implicit

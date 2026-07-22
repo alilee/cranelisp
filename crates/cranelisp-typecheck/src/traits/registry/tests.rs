@@ -65,6 +65,53 @@ fn classifier_records_annotated_default_constraint() {
     ));
 }
 
+// spec: 07-traits §7.1.1 — a default's bare parameter supplies dispatch.
+#[test]
+fn default_occurrence_accepts_bare_parameter() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl("(deftrait T (m [x] x))"))
+        .unwrap();
+}
+
+// spec: 07-traits §7.1.1 — an annotated default may dispatch by `self` result.
+#[test]
+fn default_occurrence_accepts_self_result_constraint() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait T (m [:Int x] :self x))",
+    ))
+    .unwrap();
+}
+
+// spec: 07-traits §7.1.1 — body references do not create dispatch positions.
+#[test]
+fn default_body_self_reference_does_not_satisfy_occurrence() {
+    let mut tc = tf_prims();
+    let err = tc
+        .register_trait_decl_self(&parse_trait_decl(
+            "(deftrait T (m [:Int x] :Bool self))",
+        ))
+        .unwrap_err();
+    assert!(
+        err.message().contains("no occurrence of the implementing type"),
+        "{err:?}"
+    );
+    assert!(tc.lookup_trait_decl(&TraitName::from("T")).is_none());
+}
+
+// spec: 07-traits §7.1 — an unknown type-looking tail takes the body branch;
+// the non-raising recognizer emits no type-expression diagnostic.
+#[test]
+fn unknown_type_looking_tail_classifies_as_default_body() {
+    let mut tc = tf_prims();
+    tc.register_trait_decl_self(&parse_trait_decl(
+        "(deftrait T (m [x] MissingType))",
+    ))
+    .unwrap();
+    let decl = tc.lookup_trait_decl(&TraitName::from("T")).unwrap();
+    assert!(matches!(decl.methods[0].kind, TraitMethodKind::Default { .. }));
+}
+
 // spec: 07-traits §7.1 — no traits registered at startup
 #[test]
 fn test_no_traits_at_startup() {
