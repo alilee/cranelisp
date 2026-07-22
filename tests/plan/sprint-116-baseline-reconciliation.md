@@ -3,7 +3,7 @@
 Date: 2026-07-23  
 Authority: `/qa`  
 Sprint-start commit: `aefe7e11`  
-Current checkpoint: `f606ce4c`
+Current checkpoint: `e10ee657`
 
 ## Method
 
@@ -92,6 +92,43 @@ HEAD-only set has been reduced at the two dominant seams. Work serially:
 The acceptance condition for this recovery wave is name-level parity with the
 sprint-start deterministic set, except for explicitly planned S116 REDs that
 have flipped green. A lower scalar failure count alone is insufficient.
+
+## Post-repair reconciliation
+
+The full workspace run at `e10ee657` executed 5,460 tests: 5,300 passed, 160
+failed, and one was skipped. Name-set comparison against the captured
+sprint-start run gives:
+
+- 40 failures present now but absent from the captured sprint-start run;
+- 18 failures present in the captured sprint-start run but absent now;
+- 82 of the 242 failures at `f606ce4c` have been removed.
+
+The scalar difference is therefore +22, but the 40 current-only names are the
+correct review set: the 18 opposite-polarity names show why subtracting totals
+would conceal test identity and environmental flapping.
+
+### QA-approved fixture migrations
+
+The following current-only failures stop at syntax that was valid before the
+settled S115/S116 rulings. They do not reach the behavior their assertions are
+intended to test. QA approves only the listed source-fixture substitutions; the
+test names, assertions, expected values, polarity, and `// spec:` behavioral
+traces MUST remain unchanged.
+
+| Test(s) | Fixture-only substitution | Normative basis | Preserved oracle |
+|---|---|---|---|
+| `spec_05_definitions::deftype_sum_bracketed_field_still_constructs` | Give the `R` arm a field binder distinct from the `L` arm's `n` | `spec/05-definitions.md` §5.2.2: field binders are pairwise unique within one type | `L` remains a unary constructor and `(L 5)` remains `Rotation.L 5` |
+| `spec_12_runtime::{lazy_stream_construction_does_not_force_tail,lazy_stream_take_from_infinite_terminates_with_demanded_element}` | Spell the nullary constructor and its patterns as bare `SNil`, not `(SNil)` | `spec/05-definitions.md` §5.2.2 and `spec/06-pattern-matching.md` §6.2.1–2: no position parenthesizes a nullary constructor | Construction remains non-strict; demanded exits remain 37 and 42 |
+| `spec_07_traits::{default_method_used_when_not_overridden,default_method_overridden_by_impl,default_method_used_on_adt_impl,default_method_with_primitive_only_body,default_method_body_resolves_in_trait_defining_module}` | Remove the deleted return-type slot before each default body | `spec/07-traits.md` §7.1 and §7.1.5: exactly one trailing element; a non-type expression is the inferred default body | Default synthesis, override, ADT dispatch, primitive body, and defining-module resolution assertions remain unchanged |
+
+These migrations are not compiler fixes and MUST NOT be reported as evidence
+that the behaviors themselves were repaired. If a migrated test remains RED,
+its resulting diagnostic is the attributable implementation defect.
+
+The remaining current-only names are not approved for test edits by this
+entry. In particular, the S116 trait-tail tests already use the normative
+spelling and expose a real default-synthesis/conformance defect; their tests
+must not be weakened.
 
 ## Next skills
 
