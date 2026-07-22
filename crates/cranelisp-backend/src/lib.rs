@@ -160,6 +160,7 @@ pub mod primitives_inline;
 /// backend-side per-site residual-atomic-RC dump (`[RC_SITE_STATS]`). Internal —
 /// no public surface (codegen-time measurement counter, zero-cost-off).
 mod rc_site_stats;
+mod drop_glue;
 
 // Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
 // "the platform-interface codegen role"). The single generator with multiple
@@ -200,7 +201,7 @@ use cranelift_module::FuncId;
 
 use dashmap::DashMap;
 
-use cranelisp_types::{ErrorLocation,
+use cranelisp_types::{ConcreteType, ErrorLocation, LinkerSymbol,
     CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable,
 };
 
@@ -309,6 +310,17 @@ pub struct CompilationArtifacts {
     pub code_size: usize,
     /// Wall-clock duration of the codegen step (parse-IR → finalized code).
     pub compile_duration: std::time::Duration,
+    /// Canonical, module-qualified release functions emitted for concrete
+    /// owning result types. Runtime addresses are present only in JIT mode.
+    pub drop_glues: HashMap<ConcreteType, DropGlueArtifact>,
+}
+
+/// A canonical type-directed drop function emitted into this compilation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DropGlueArtifact {
+    pub symbol: LinkerSymbol,
+    pub jit_address: Option<usize>,
 }
 
 /// Capability extension for the `Module` trait: post-finalize code access.
@@ -668,6 +680,34 @@ where
     let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
     declare_module_functions(module, &defns, &mut func_ids)?;
 
+    // Declare and define result-root glue before ordinary bodies. The registry
+    // inserts `Defining` entries before walking fields, so recursive and
+    // mutually-recursive type graphs close through already-declared FuncIds.
+    let result_roots: Vec<ConcreteType> = bodies
+        .iter()
+        .map(|body| match body.ty() {
+            ConcreteType::ADT(name, args)
+                if name.module.as_ref() == "primitives"
+                    && name.name.as_ref() == "IO"
+                    && !args.is_empty() => args[0].clone(),
+            ty => ty.clone(),
+        })
+        .collect();
+    let mut glue_registry = drop_glue::DropGlueRegistry::new(
+        module,
+        module_path.clone(),
+        symbol_tables,
+        intrinsic_ids.dealloc.ok_or_else(|| CranelispError::CodegenError {
+            message: "runtime/dealloc is required for drop-glue emission".into(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?,
+        intrinsic_ids.vec_drop,
+    );
+    for ty in result_roots {
+        glue_registry.request_if_owning(ty)?;
+    }
+    let glue_ids = glue_registry.finish()?;
+
     // No cross-module function declarations: under all-GOT calling
     // (Decision 31) cross-module calls are GOT-indirect against
     // `__cranelisp_got_{other_M}`, never direct. Compile-time arity for
@@ -702,6 +742,8 @@ where
     // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
     module.finalize_for_code_read()?;
 
+    let drop_glues = project_drop_glues(module, glue_ids);
+
     // Step 5 (§3.1): per-symbol finalized-ptr → GOT-slot direct-write + GotEvent.
     write_finalized_got_slots::<M, C, L>(module, &module_path, symbol_tables, &defns, &func_ids);
 
@@ -709,7 +751,21 @@ where
         clif_ir: clif_ir_agg,
         code_size: code_size_agg,
         compile_duration: compile_start.elapsed(),
+        drop_glues,
     })
+}
+
+fn project_drop_glues<M: CodeFinalizer>(
+    module: &M,
+    glue_ids: HashMap<ConcreteType, (LinkerSymbol, FuncId)>,
+) -> HashMap<ConcreteType, DropGlueArtifact> {
+    glue_ids
+        .into_iter()
+        .map(|(ty, (symbol, id))| {
+            let jit_address = module.try_get_finalized_function(id).map(|p| p as usize);
+            (ty, DropGlueArtifact { symbol, jit_address })
+        })
+        .collect()
 }
 
 /// Step 1 (S111 R5 §3.1): look up each named entry, reconstruct its single-variant

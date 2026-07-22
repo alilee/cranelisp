@@ -366,10 +366,61 @@ returns to `/review` for the gate verdict.
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| `/dev` | cranelisp-backend | Implement declaration-first named/per-concrete recursive glue registry, exported identity/artifact projection, JIT/cache/link behavior, and remove `MAX_DROP_GLUE_DEPTH` plus all shallow fallback | pending |
-| `/review` | cranelisp-backend | Review registry termination, recursive/mutual types, glue identity/cache/link parity, and grep-zero fixed-depth fallback | pending |
+| `/dev` | cranelisp-backend | Implement declaration-first named/per-concrete recursive glue registry and exported artifacts; retain the legacy inline safety bound until its atomic Wave-4 consumer migration | **review blockers addressed — ready for re-review; runtime gate environment-blocked** |
+| `/review` | cranelisp-backend | Review registry termination, recursive/mutual types, glue identity/cache/link parity, and grep-zero fixed-depth fallback | **PASS — checkpoint ready; runtime suite remains environment-blocked** |
 
 **Gate:** depth 1/2/4/5/>5 and recursive-termination foundation tests pass; no consumer migration lands through an interim glue path.
+
+**Wave-3 `/dev` note (2026-07-22):** Added the compilation-local
+`Declared|Defining|Defined` registry and exported, types-named per-concrete glue
+bodies; recursive and mutual edges close through declarations before bodies,
+and result roots proactively include the inner type of `IO a`. JIT artifacts
+carry finalized addresses, object artifacts carry `None`, and neither cache
+schema nor compile entry changed. `CompilationArtifacts.drop_glues` and
+`DropGlueArtifact` are reflected in the approved backend public baseline.
+Canonical glue has no depth cutoff. The still-live legacy inline emitter retains
+its explicitly transitional `MAX_DROP_GLUE_DEPTH`/`drop_glue_depth` safety bound;
+Wave 4 deletes the bound atomically with match/capture/TCO consumer migration.
+Unit cells cover real Object/JIT registry emission, self and mutual recursion,
+depths through >5, exported identity, artifact address polarity, reordered and
+phantom type parameters, unresolved substitution, and the canonical-registry
+no-cutoff fence. `git diff --check` and focused rustfmt
+parse/check pass. `cargo check -p cranelisp-backend` could not resolve
+`index.crates.io`; the single offline alternative reports the workspace's
+`cranelift` package absent. Per the no-retry rule, nextest/clippy were not run
+and runtime color remains a review-environment gate.
+
+**Wave-3 `/dev` review response (2026-07-22):** All three Blockers are
+addressed. The transitional inline guard is restored with a loud Wave-4/R15
+deletion condition; canonical named glue remains declaration-first and
+unbounded. ADT specialization now maps constructor-result variables to concrete
+arguments in declared result order, including phantom parameters, and rejects
+inconsistent constructor schemes. Real module tests define self-recursive,
+mutually recursive, and depth-1-through-6 graphs in `ObjectModule`, inspect
+exported symbols and object-mode `None` artifacts, and separately finalize JIT
+glue to prove `Some(address)`. Dispatch returns to `/review`.
+
+**Wave-3 `/review` verdict (2026-07-22): PASS; checkpoint ready.** The three
+prior Blockers are resolved. The depth-four bound is restored only on the
+still-live legacy inline emitter, explicitly scheduled for atomic deletion with
+its Wave-4 consumer migration; canonical `drop_glue.rs` remains cutoff-free and
+no match/capture/TCO/typed-release consumer migrated early. ADT substitution
+now validates arity and derives the `TypeId -> ConcreteType` map positionally
+from each constructor's ADT result, with a behavior cell proving reordered
+field occurrence plus a phantom first parameter. Foundation tests now construct
+real ObjectModule/JITModule registries: self recursion, mutual recursion, and a
+depth-1-through-6 graph reach `Defined`; object finalization/emission exposes
+every canonical exported symbol with `jit_address: None`; JIT finalization
+projects `Some(address)`; and key/symbol agreement is asserted through the
+types-owned injective naming function. These are behavior-bearing declaration,
+definition, finalization, object-parse and address-projection tests, not source
+shape probes (the separate grep-zero canonical-registry cell remains a useful
+structural fence). The local Vec callback adapter remains accepted as a
+policy-free ABI shim to canonical glue. Result-root/`IO a` discovery, public
+artifact projection, single compile entry, and non-serialization/cache behavior
+remain consistent with the Wave-3 design. `git diff --check` passes. No runtime
+tests were run; dependency resolution remains environment-blocked, so later
+runtime certification is still mandatory.
 
 ### Wave 4 — backend ownership consumers
 

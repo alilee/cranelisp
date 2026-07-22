@@ -541,6 +541,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerEr
 pub cranelisp_backend::CompilationArtifacts::clif_ir: alloc::string::String
 pub cranelisp_backend::CompilationArtifacts::code_size: usize
 pub cranelisp_backend::CompilationArtifacts::compile_duration: core::time::Duration
+pub cranelisp_backend::CompilationArtifacts::drop_glues: std::collections::hash::map::HashMap<cranelisp_types::concrete::ConcreteType, cranelisp_backend::DropGlueArtifact>
 impl core::marker::Freeze for cranelisp_backend::CompilationArtifacts
 impl core::marker::Send for cranelisp_backend::CompilationArtifacts
 impl core::marker::Sync for cranelisp_backend::CompilationArtifacts
@@ -548,6 +549,23 @@ impl core::marker::Unpin for cranelisp_backend::CompilationArtifacts
 impl core::marker::UnsafeUnpin for cranelisp_backend::CompilationArtifacts
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::CompilationArtifacts
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::CompilationArtifacts
+#[non_exhaustive] pub struct cranelisp_backend::DropGlueArtifact
+pub cranelisp_backend::DropGlueArtifact::jit_address: core::option::Option<usize>
+pub cranelisp_backend::DropGlueArtifact::symbol: cranelisp_types::newtype::LinkerSymbol
+impl core::clone::Clone for cranelisp_backend::DropGlueArtifact
+pub fn cranelisp_backend::DropGlueArtifact::clone(&self) -> cranelisp_backend::DropGlueArtifact
+impl core::cmp::Eq for cranelisp_backend::DropGlueArtifact
+impl core::cmp::PartialEq for cranelisp_backend::DropGlueArtifact
+pub fn cranelisp_backend::DropGlueArtifact::eq(&self, other: &cranelisp_backend::DropGlueArtifact) -> bool
+impl core::fmt::Debug for cranelisp_backend::DropGlueArtifact
+pub fn cranelisp_backend::DropGlueArtifact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_backend::DropGlueArtifact
+impl core::marker::Send for cranelisp_backend::DropGlueArtifact
+impl core::marker::Sync for cranelisp_backend::DropGlueArtifact
+impl core::marker::Unpin for cranelisp_backend::DropGlueArtifact
+impl core::marker::UnsafeUnpin for cranelisp_backend::DropGlueArtifact
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::DropGlueArtifact
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::DropGlueArtifact
 #[non_exhaustive] pub struct cranelisp_backend::LinkerArtefact
 pub cranelisp_backend::LinkerArtefact::linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>
 pub cranelisp_backend::LinkerArtefact::ptrs: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, *const u8>

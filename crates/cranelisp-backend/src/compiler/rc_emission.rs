@@ -487,12 +487,12 @@ where
         use cranelisp_types::HeapHeader;
         use cranelift_codegen::ir::AtomicRmwOp;
 
-        // Depth limit for inline drop glue: prevents infinite IR for
-        // recursive types (e.g., List contains List). Allows several
-        // levels of nesting for non-recursive parametric types like
-        // Option(Option(String)). Beyond the limit, fall back to plain
-        // dec (fields leak — known limitation of inline drop glue,
-        // to be replaced by proper drop-glue functions later).
+        // TRANSITIONAL WAVE-4/R15 SAFETY BOUND. This guard belongs only to the
+        // still-live legacy inline consumer. Wave 4 migrates that consumer to
+        // canonical named/per-concrete glue and deletes this bound atomically.
+        // The canonical registry/body builder is declaration-first and has no
+        // depth cutoff. Until migration, removing this guard makes recursive
+        // source types expand forever in the compiler.
         const MAX_DROP_GLUE_DEPTH: u32 = 4;
         if self.drop_glue_depth >= MAX_DROP_GLUE_DEPTH {
             if needs_guard {
@@ -500,9 +500,7 @@ where
                     &mut self.builder, self.module, val, dealloc, None, true,
                 );
             } else {
-                heap::emit_rc_dec(
-                    &mut self.builder, self.module, val, dealloc, None,
-                );
+                heap::emit_rc_dec(&mut self.builder, self.module, val, dealloc, None);
             }
             return;
         }
@@ -570,8 +568,8 @@ where
         self.builder.switch_to_block(cont_block);
         self.builder.seal_block(cont_block);
 
-        // Restore depth counter.
         self.drop_glue_depth -= 1;
+
     }
 }
 

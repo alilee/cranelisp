@@ -164,11 +164,14 @@ where
     /// the drop glue function is stored here so that `pop_scope_with_cleanup`
     /// can pass it to `emit_rc_dec` when freeing the closure.
     pub(crate) closure_drop_glue: HashMap<Symbol, FuncId>,
+    /// Transitional safety bound state for the still-live inline release
+    /// consumer. Wave 4 migrates that consumer to canonical named glue and
+    /// deletes this field atomically (R15); canonical glue never reads it.
+    pub(crate) drop_glue_depth: u32,
 
     /// Depth counter for inline drop glue generation.
     /// Prevents infinite IR for recursive types (e.g., List).
     /// Allows limited nesting for non-recursive parametric types (e.g., Option(Option(String))).
-    pub(crate) drop_glue_depth: u32,
 
     /// Pending closure drop glue from the last `compile_lambda` call.
     /// Set by `compile_lambda`, consumed by `compile_let` or `compile_body`
