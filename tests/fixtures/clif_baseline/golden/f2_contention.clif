@@ -43,10 +43,10 @@ function %build-grid(i64, i64, i64) -> i64 system_v {
     sig5 = (i64) -> i64 system_v
     sig6 = (i64, i64) system_v
     fn0 = u0:0 sig1
-    fn1 = colocated u0:49 sig2
+    fn1 = colocated u0:52 sig2
     fn2 = u0:24 sig3
     fn3 = u0:23 sig4
-    fn4 = colocated u0:50 sig5
+    fn4 = colocated u0:53 sig5
     fn5 = u0:14 sig6
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -212,15 +212,15 @@ function %copy-work(i64, i64, i64, i64) -> i64 system_v {
     sig10 = (i64) -> i64 system_v
     sig11 = (i64, i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:49 sig1
+    fn1 = colocated u0:52 sig1
     fn2 = u0:22 sig2
     fn3 = u0:2 sig3
     fn4 = u0:1 sig5
-    fn5 = colocated u0:50 sig6
+    fn5 = colocated u0:53 sig6
     fn6 = u0:14 sig7
-    fn7 = colocated u0:50 sig8
+    fn7 = colocated u0:53 sig8
     fn8 = u0:14 sig9
-    fn9 = colocated u0:50 sig10
+    fn9 = colocated u0:53 sig10
     fn10 = u0:14 sig11
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
@@ -350,7 +350,7 @@ function %leaf-work(i64, i64) -> i64 system_v {
     sig2 = (i64, i64, i64, i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:50 sig3
+    fn0 = colocated u0:53 sig3
     fn1 = u0:14 sig4
 
 block0(v0: i64, v1: i64):
@@ -416,7 +416,7 @@ function %main() -> i64 system_v {
     sig7 = (i64, i64) system_v
     fn0 = u0:13 sig0
     fn1 = u0:0 sig5
-    fn2 = colocated u0:50 sig6
+    fn2 = colocated u0:53 sig6
     fn3 = u0:14 sig7
 
 block0:
@@ -550,20 +550,20 @@ function %reduce-tree(i64, i64, i64) -> i64 system_v {
     sig21 = (i64, i64) system_v
     fn0 = u0:21 sig1
     fn1 = u0:0 sig2
-    fn2 = colocated u0:51 sig3
-    fn3 = colocated u0:52 sig4
+    fn2 = colocated u0:54 sig3
+    fn3 = colocated u0:55 sig4
     fn4 = u0:17 sig5
     fn5 = u0:18 sig6
     fn6 = u0:0 sig7
-    fn7 = colocated u0:53 sig8
-    fn8 = colocated u0:54 sig9
+    fn7 = colocated u0:56 sig8
+    fn8 = colocated u0:57 sig9
     fn9 = u0:17 sig10
     fn10 = u0:18 sig11
     fn11 = u0:19 sig12
     fn12 = u0:20 sig13
     fn13 = u0:19 sig14
     fn14 = u0:20 sig15
-    fn15 = colocated u0:50 sig20
+    fn15 = colocated u0:53 sig20
     fn16 = u0:14 sig21
 
 block0(v0: i64, v1: i64, v2: i64):

@@ -85,6 +85,20 @@ RED until B0-be lands the capture; the full-corpus diff runs via
 
 ## Re-baselines (scoped, attributed — MANIFEST §"Extension ≠ re-baseline")
 
+- **02_closures_fn_as_value, 08_adt_in_vec_projection, f1_machinery,
+  f2_contention, f3_inverted_search, f4_sudoku** — re-captured S116 Wave 3
+  after `6318fe87` added the canonical recursive drop-glue registry.
+  **Function-ID numbering only; no instruction or control-flow change.** The
+  registry proactively declares one exported glue function for each concrete
+  owning return type before ordinary function compilation. Those declarations
+  shift later module-local Cranelift `FuncId`s by the number of concrete glue
+  functions in that module: +1 in entry 02, +3 in entry 08 and F1/F2, +4 in
+  F3, and +8 in F4. Every observed hunk changes only a `colocated u0:N`
+  operand; signatures, blocks, calls, RC operations, and all seven other
+  entries are byte-identical. This is the intended registration consequence
+  of Wave 3, not a consumer-emission change. The required double-capture
+  determinism self-test passed 13/13 before recapture.
+
 - **02_closures_fn_as_value, 07_trait_dispatch, f4_sudoku** — re-captured S115
   Wave 3b (FIXME 0753 / 0749). **Codegen change; ADDITIVE release work only, no
   RC op removed anywhere.** The moded-arg post-call dec
