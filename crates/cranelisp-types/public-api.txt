@@ -774,6 +774,19 @@ impl core::marker::Unpin for cranelisp_types::TopLevel
 impl core::marker::UnsafeUnpin for cranelisp_types::TopLevel
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TopLevel
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TopLevel
+pub enum cranelisp_types::TraitMethodKind
+pub cranelisp_types::TraitMethodKind::Default
+pub cranelisp_types::TraitMethodKind::Default::body: cranelisp_types::Expr
+pub cranelisp_types::TraitMethodKind::Default::result_constraint: core::option::Option<cranelisp_types::TypeExpr>
+pub cranelisp_types::TraitMethodKind::Required
+pub cranelisp_types::TraitMethodKind::Required::ret_type: cranelisp_types::TypeExpr
+impl core::marker::Freeze for cranelisp_types::TraitMethodKind
+impl core::marker::Send for cranelisp_types::TraitMethodKind
+impl core::marker::Sync for cranelisp_types::TraitMethodKind
+impl core::marker::Unpin for cranelisp_types::TraitMethodKind
+impl core::marker::UnsafeUnpin for cranelisp_types::TraitMethodKind
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitMethodKind
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitMethodKind
 pub enum cranelisp_types::Type
 pub cranelisp_types::Type::ADT(cranelisp_types::FQTypeName, alloc::vec::Vec<cranelisp_types::Type>)
 pub cranelisp_types::Type::Bool
@@ -1658,19 +1671,6 @@ impl core::marker::Unpin for cranelisp_types::TraitImpl
 impl core::marker::UnsafeUnpin for cranelisp_types::TraitImpl
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitImpl
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitImpl
-pub enum cranelisp_types::TraitMethodKind
-pub cranelisp_types::TraitMethodKind::Default
-pub cranelisp_types::TraitMethodKind::Default::body: cranelisp_types::Expr
-pub cranelisp_types::TraitMethodKind::Default::result_constraint: core::option::Option<cranelisp_types::TypeExpr>
-pub cranelisp_types::TraitMethodKind::Required
-pub cranelisp_types::TraitMethodKind::Required::ret_type: cranelisp_types::TypeExpr
-impl core::marker::Freeze for cranelisp_types::TraitMethodKind
-impl core::marker::Send for cranelisp_types::TraitMethodKind
-impl core::marker::Sync for cranelisp_types::TraitMethodKind
-impl core::marker::Unpin for cranelisp_types::TraitMethodKind
-impl core::marker::UnsafeUnpin for cranelisp_types::TraitMethodKind
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TraitMethodKind
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TraitMethodKind
 pub struct cranelisp_types::TraitMethodSig
 pub cranelisp_types::TraitMethodSig::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::TraitMethodSig::hkt_param_index: core::option::Option<usize>
@@ -1825,8 +1825,8 @@ pub const cranelisp_types::CHAIN_FOLLOW_DEPTH_LIMIT: usize
 pub const cranelisp_types::GOT_TABLE_SIZE: usize
 pub const cranelisp_types::NULLARY_TAG_THRESHOLD: usize
 pub const cranelisp_types::TAG_SCONS: i64
-pub const cranelisp_types::TAG_SEXP_BOOL: i64
 pub const cranelisp_types::TAG_SEXP_ANNOTATED: i64
+pub const cranelisp_types::TAG_SEXP_BOOL: i64
 pub const cranelisp_types::TAG_SEXP_BRACKET: i64
 pub const cranelisp_types::TAG_SEXP_FLOAT: i64
 pub const cranelisp_types::TAG_SEXP_INT: i64
