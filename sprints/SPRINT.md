@@ -94,7 +94,7 @@ This table is the proposed in-sprint set, not a claim that every open S115 FIXME
 | 0849 | /arch → /dev(intrinsics) | **arch-resolved P2** | Count-free authority approved; source/test rename routed to Track C. |
 | 0850 | /dev(intrinsics) | open | R-3: converge raw heap reads; third-sprint must-ship. |
 | 0851 | /arch → /dev(intrinsics) | **arch-resolved P2** | Removal of `reset_counts` + `bytes_peak` approved; baseline diff routed to Track C. |
-| 0852 | /dev(intrinsics) | open | R-5: repair 62 stale reactor citations. |
+| 0852 | /dev(intrinsics) | **resolved W7** | R-5: all 62 stale reactor citations repointed to `design/intrinsics/reactor.md`; old path grep-zero and intrinsics release gate green. |
 | 0853 | /arch | **resolved P2** | Two-word header retained; typed-exit owner inventory recorded in R15/BC §4b. |
 | 0854 | /design(intrinsics) | open | R-7 design-record currency. |
 | 0855 | /dev(intrinsics) | open | R-7 local-memory count removal. |
@@ -461,7 +461,7 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| `/dev` | cranelisp-intrinsics | Implement the closed test-only plant protocol, M1/M2/M3/A1–A4 positive proofs, heap-access/Vec convergence, counter API removal, count-free catalog, citation and local-memory corrections | pending |
+| `/dev` | cranelisp-intrinsics | Implement the closed test-only plant protocol, M1/M2/M3/A1–A4 positive proofs, heap-access/Vec convergence, counter API removal, count-free catalog, citation and local-memory corrections | **in progress — citation slice 0852 complete; remaining detector/memory-sensitive work pending** |
 | `/testing` | sprint-wide | Land M3 counter→atexit→report→abort e2e and clean control through production wiring | pending |
 | `/qa` | sprint-wide | Witness fail-on-revert evidence and regrade R8/modes honestly | pending |
 | `/review` | cranelisp-intrinsics | Verify validation-before-mutation, no UB, unarmed byte identity, environment isolation, public baseline, and production-funnel coverage | pending |
@@ -502,6 +502,7 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 - 2026-07-22: Wave-1 `/qa` recheck PASSED the static authoring gate. The repaired M3 child restores the cleared library/platform environment, runs a valid `Pure` IO entry with `--no-cache`, and preserves exact closed-protocol positive/clean polarity. The restored 0741 guard is numeral-free in name, scans only the `SharedState` body, asserts the exact field count, and directly excludes both retired parking fields. Wave 2 may proceed; runtime execution remains environment-blocked and mandatory before certification.
 - 2026-07-22: `/testing` repaired QA's Wave-1 M3 fixture blocker. The env-cleared compiler child now restores only `CRANELISP_LIB` and `CRANELISP_PLATFORM_PATH`, uses an explicit `Pure` program whose local String allocation is observed through `str-len` and normally discharged, and preserves the exact `s116-detection-proof-v1` + `M3Leak` plant. Wave 1 is ready for `/qa` recheck; this records fixture readiness, not an execution gate pass.
 - 2026-07-22: `/testing` restored the fully verified FIXME 0741 resolution after a formatting-cleanup reversal: `shared_state_pub_field_count_guard` has no frozen numeral, retains the exact 17-field creep tripwire, and directly asserts `module_sexps` and `suspend_states` are absent from the bounded `SharedState` body. FIXME 0741 remains correctly closed. Wave 1 remains ready for `/qa` recheck.
+- 2026-07-23: Non-memory certification sequence: installed `cargo-public-api`; regenerated the types/backend baselines with the canonical omit-derived command and the seven-crate API gate passed. All nine web tests and all three previously timed-out reactor tests passed outside the restricted socket sandbox, classifying those REDs as environmental. HKT ruling packet remains open: after S115's resolution-based one-tail classification, `Bogus`/`Ghosttype` tails reject as forbidden HKT default bodies, while two older tests require the pre-S115 `unknown type` diagnostic; no test or semantics change was made. Wave-7 citation-only slice resolved FIXME 0852: exactly 62 stale `design/int/reactor.md` paths became `design/intrinsics/reactor.md`, grep-zero old path; `cargo check`, `cargo check --tests`, 274/274 intrinsics nextest, and clippy completed with zero new warnings (11 pre-existing dependency warnings).
 
 ## Outcome (Phase 7)
 

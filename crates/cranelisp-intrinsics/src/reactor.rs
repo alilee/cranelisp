@@ -830,7 +830,7 @@ impl Drop for StateClosure {
 /// is the env base of the host-built state-closure (`closure + 32`), and the
 /// result slot is the FIRST env slot, so the result is at `state + 0`. The S93
 /// per-effect `ResultReader` fn-pointer collapses to this one offset read.
-/// (`design/int/reactor.md §2.5`, `design/backend/io-trampoline.md §12.2`.)
+/// (`design/intrinsics/reactor.md §2.5`, `design/backend/io-trampoline.md §12.2`.)
 const RESULT_SLOT_OFFSET: isize = 0;
 
 /// The async leaf future: `poll` calls the platform poll-fn, maps `Ready` → the
@@ -1904,7 +1904,7 @@ where
 
     // The program degree throttle (§2.13). Provisional reactor-construction
     // surface: the `CRANELISP_DEGREE` env var (the carrier the Chunk-B acceptance
-    // rows read; `design/int/reactor.md §2.13` — int `src/` supplies it as a
+    // rows read; `design/intrinsics/reactor.md §2.13` — int `src/` supplies it as a
     // reactor-construction config when the policy surface lands). Unset / invalid
     // / zero ⇒ `u32::MAX` (no throttle), preserving the pre-slice-4 behaviour.
     let degree = read_degree_env();

@@ -8,7 +8,7 @@ edition = "2024"
 # features are RETIRED. The reactor IS the runtime — `reactor`/`strand`, mio, and
 # futures are now UNCONDITIONAL. A pure-blocking program drains synchronously
 # through the one (async) trampoline and constructs no mio `Poll` (lazy reactor
-# init — `design/int/reactor.md`); lean-default is a RUNTIME property, not a
+# init — `design/intrinsics/reactor.md`); lean-default is a RUNTIME property, not a
 # `#[cfg]` split.
 
 [dependencies]

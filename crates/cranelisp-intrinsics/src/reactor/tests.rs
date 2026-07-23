@@ -486,7 +486,7 @@ fn poll_once<F: _Future + Unpin>(f: &mut F) -> _Poll<F::Output> {
     _Pin::new(f).poll(&mut cx)
 }
 
-// spec: design/int/reactor.md §2.8 / §2.9 (the `AcquirePermit` seam) — a pool
+// spec: design/intrinsics/reactor.md §2.8 / §2.9 (the `AcquirePermit` seam) — a pool
 // keyed by token, each slot sized from the node-read `capacity`: capacity-N ⇒ N
 // acquires return `Ready`, the (N+1)th `Pending` until a `Permit` drops. Distinct
 // tokens have independent slots.
@@ -533,7 +533,7 @@ fn semaphore_pool_keyed_by_token_sized_from_node_capacity() {
     );
 }
 
-// spec: design/int/reactor.md §2.8 / §3 (token-pool strand events) — capacity-N
+// spec: design/intrinsics/reactor.md §2.8 / §3 (token-pool strand events) — capacity-N
 // parking is observable in the strand stream: the (N+1)th effect emits
 // `TokenParked`, then `TokenAcquired` when a permit frees (the resume), and the
 // releaser emits `TokenReleased`.
@@ -580,7 +580,7 @@ fn capacity_n_park_resume_recorded_in_strand_stream() {
     );
 }
 
-// spec: design/int/reactor.md §2.8 (reconciliation) / arch §8.1 — same token,
+// spec: design/intrinsics/reactor.md §2.8 (reconciliation) / arch §8.1 — same token,
 // different capacity ⇒ FIRST-WRITER-WINS: the slot is sized by the value that
 // created it (never resized), and a `TokenCapacityMismatch` strand event records
 // the disagreement (NOT an abort, NOT a max).
@@ -621,7 +621,7 @@ fn same_token_conflicting_capacity_first_writer_wins_and_records_event() {
     let _ = poll_once(&mut a2); // drain (now Ready) — no assertion needed.
 }
 
-// spec: design/int/reactor.md §2.17 + S96 Chunk-C C2-review forward item #1 — a
+// spec: design/intrinsics/reactor.md §2.17 + S96 Chunk-C C2-review forward item #1 — a
 // parked `AcquirePermit` that was WOKEN (its FIFO entry popped by a `Drop for
 // Permit`, which incremented `permits`) but then CANCELLED before re-polling must
 // FORWARD the freed permit: pop+wake the NEXT front waiter. Without it the freed
@@ -702,7 +702,7 @@ fn woken_then_cancelled_acquire_forwards_permit_to_next_waiter() {
     );
 }
 
-// spec: design/int/reactor.md §2.16 + S96 Chunk-C C2-review forward item #2 — the
+// spec: design/intrinsics/reactor.md §2.16 + S96 Chunk-C C2-review forward item #2 — the
 // `RegistrantGuard` clears `Reactor::current_registrant` on drop, so a poll-fn
 // panic mid-`EffectPoll::poll` cannot leak a stale registrant tag onto the next
 // leaf's fd/timer registrations. A null guard is a no-op (no deref).
@@ -756,7 +756,7 @@ unsafe extern "C" fn never_ready_short_timer_pollfn(
     CPoll::Pending
 }
 
-// spec: design/int/reactor.md §2.6 — blocking I/O is uncapped by design. A
+// spec: design/intrinsics/reactor.md §2.6 — blocking I/O is uncapped by design. A
 // blocking branch whose rayon work OUTLASTS the no-progress cap still completes
 // (no panic), because `pending_bridges > 0` resets the no-progress deadline on
 // every turn while the bridge is outstanding. This is the feature-on ≥
@@ -800,7 +800,7 @@ fn cap_held_off_while_blocking_bridge_in_flight() {
     );
 }
 
-// spec: design/int/reactor.md §2.6 — the backstop is PRESERVED. A poll leaf that
+// spec: design/intrinsics/reactor.md §2.6 — the backstop is PRESERVED. A poll leaf that
 // never completes with NO blocking bridge pending still trips the no-progress cap
 // (panics), so a genuine hang surfaces as a panic rather than wedging forever.
 #[test]
@@ -830,7 +830,7 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
     );
 }
 
-// spec: design/int/reactor.md §8.3 — the `OneShot` no-progress backstop decision.
+// spec: design/intrinsics/reactor.md §8.3 — the `OneShot` no-progress backstop decision.
 // The regression this pins (FIXME 0479 / 5.1B): a merely non-empty supervisor must
 // NOT hold the backstop off — a one-shot armed-but-hung strand (a handler parked
 // reading a peer that never sends) must still hit the wall-clock guard. The rule is
@@ -897,7 +897,7 @@ unsafe extern "C" fn unarmed_pending_pollfn(
     CPoll::Pending
 }
 
-// spec: design/int/reactor.md §8.3 — the structural armed-ness deadlock detector
+// spec: design/intrinsics/reactor.md §8.3 — the structural armed-ness deadlock detector
 // (`reactor_is_armed`, §8.2) trips IMMEDIATELY on a `Pending` top future that armed
 // NOTHING (no fd/timer waiter, no bridge, no supervised strand, no parked permit) — a
 // true deadlock nothing can ever wake. It fires WITHOUT waiting the wall-clock
@@ -929,7 +929,7 @@ fn armed_ness_detector_trips_immediately_on_unarmed_pending() {
     );
 }
 
-// spec: design/int/reactor.md §8.3 — an ARMED leaf (an fd waiter) must NOT trip the
+// spec: design/intrinsics/reactor.md §8.3 — an ARMED leaf (an fd waiter) must NOT trip the
 // structural armed-ness detector: `reactor_is_armed` is true (`has_waiters`), so the
 // drive keeps turning and the leaf falls through to the SECONDARY wall-clock backstop
 // (a short one here) instead. This proves the detector distinguishes "armed but not
@@ -973,7 +973,7 @@ fn armed_fd_leaf_does_not_trip_detector_reaches_backstop() {
 // tests exercise the host-side `acquire_permit` / `release_all` / `retire_token`
 // mechanism (`reactor.md §7.2/§7.3`) directly, plus an end-to-end Consume leaf that
 // drives `ctx.acquire` through `EffectPoll`.
-// design: design/int/reactor.md §7
+// design: design/intrinsics/reactor.md §7
 // ===========================================================================
 
 /// A v9 reactor wired to a fresh `TokenPool` (the `host_acquire`/`host_retire`
@@ -1044,7 +1044,7 @@ fn acquire_now(pool: &std::rc::Rc<TokenPool>, token: u64, capacity: u32, strand:
     }
 }
 
-// spec: design/int/reactor.md §7.2/§7.3 — a v9 Consume leaf acquires its OWN token
+// spec: design/intrinsics/reactor.md §7.2/§7.3 — a v9 Consume leaf acquires its OWN token
 // permit via `ctx.acquire`, the host HOLDS it across the whole establish→Pending→
 // …→Ready arc (a re-poll's re-`acquire` is idempotent — no 2nd permit), and the host
 // RELEASES it eagerly on `Ready`. Observed by the token's slot permit count.
@@ -1071,7 +1071,7 @@ fn v9_consume_leaf_acquires_holds_releases_on_ready() {
     assert_eq!(slot_permits(&pool, 7), Some(1), "permit released eagerly on Ready");
 }
 
-// spec: design/int/reactor.md §7.3 — cancellation = future drop. A still-Pending
+// spec: design/intrinsics/reactor.md §7.3 — cancellation = future drop. A still-Pending
 // Consume leaf that acquired its permit and is DROPPED mid-flight (race-lost /
 // timed-out) has the host release that permit via the `EffectPoll`'s identity-keyed
 // release-guard (`ReactorInterest::drop` → `release_all(reg)`) — no leak, and cancel
@@ -1233,7 +1233,7 @@ fn keepalive_state_closure_consumed_exactly_once_on_cancel_drop() {
     );
 }
 
-// spec: design/int/reactor.md §7.2 — `acquire` is idempotent per in-flight effect
+// spec: design/intrinsics/reactor.md §7.2 — `acquire` is idempotent per in-flight effect
 // (a re-acquire on a token the effect already holds does NOT consume a 2nd permit),
 // and a DIFFERENT effect on a full capacity-1 token PARKS. A later `release_all`
 // frees it so the parked effect can acquire.
@@ -1263,7 +1263,7 @@ fn v9_acquire_idempotent_per_effect_and_parks_second() {
     assert!(matches!(unsafe { reactor.acquire_permit(7, 1, wp) }, CAcquire::Acquired), "the parked effect now acquires");
 }
 
-// spec: design/int/reactor.md §7.6 / §3.1 — the SINGLETON resource (`read-line`)
+// spec: design/intrinsics/reactor.md §7.6 / §3.1 — the SINGLETON resource (`read-line`)
 // acquires a manifest-static token at capacity 1, so a SECOND concurrent acquirer on
 // that token PARKS — single-in-flight by construction (no value, no header).
 #[test]
@@ -1282,7 +1282,7 @@ fn v9_singleton_token_single_in_flight() {
     );
 }
 
-// spec: design/int/reactor.md §7.2 — `retire` drops the token's permit pool (a
+// spec: design/intrinsics/reactor.md §7.2 — `retire` drops the token's permit pool (a
 // Retire/`close` leaf calls `ctx.retire` after `close(r)`). Idempotent; a later
 // acquire on that token re-creates a fresh slot.
 #[test]
@@ -1304,7 +1304,7 @@ fn v9_retire_drops_token_pool() {
     assert!(matches!(unsafe { reactor.acquire_permit(9, 1, wp) }, CAcquire::Acquired), "fresh slot after retire");
 }
 
-// spec: design/int/reactor.md §7.3 — release-exactly-once: after an eager `Ready`
+// spec: design/intrinsics/reactor.md §7.3 — release-exactly-once: after an eager `Ready`
 // release removed the effect's ledger entry, the drop-path `release_all` is a no-op
 // (no double-release). Modelled directly: `release_all` twice for one effect credits
 // the slot exactly once.
@@ -1324,11 +1324,11 @@ fn v9_release_exactly_once_no_double_release() {
     assert_eq!(slot_permits(&pool, 17), Some(1), "no double-release: the slot was credited exactly once");
 }
 
-// spec: design/int/reactor.md §2.9 §1A — two distinct poll-shape effect "kinds"
+// spec: design/intrinsics/reactor.md §2.9 §1A — two distinct poll-shape effect "kinds"
 // on the SAME token of capacity N draw from ONE `Semaphore(N)` (capacity attaches
 // to the token, not the effect kind): N acquire, the (N+1)th parks. `token == 0`
 // ⇒ no acquire (the inert permit, no map entry). (`TokenPool`-direct; carrier-agnostic.)
-// design: design/int/reactor.md §2.8
+// design: design/intrinsics/reactor.md §2.8
 #[test]
 fn poll_effects_sharing_one_token_draw_from_one_pool() {
     let pool = TokenPool::new();
@@ -1348,11 +1348,11 @@ fn poll_effects_sharing_one_token_draw_from_one_pool() {
     assert!(matches!(poll_once(&mut z), _Poll::Ready(_)), "token 0 is unrestricted on the poll carrier — no acquire");
 }
 
-// spec: design/int/reactor.md §2.8 / arch §8.1 — first-writer-wins on the shared
+// spec: design/intrinsics/reactor.md §2.8 / arch §8.1 — first-writer-wins on the shared
 // pool: two effects on one token declaring different capacities ⇒ the slot is sized
 // by the FIRST writer (never resized, never silent-max), and a `TokenCapacityMismatch`
 // strand event records the disagreement.
-// design: design/int/reactor.md §2.8
+// design: design/intrinsics/reactor.md §2.8
 #[test]
 fn poll_same_token_conflicting_capacity_first_writer_wins_and_records_event() {
     start_strand_recording();
@@ -1382,14 +1382,14 @@ fn poll_same_token_conflicting_capacity_first_writer_wins_and_records_event() {
 
 // ===========================================================================
 // S96 Chunk B §2.13 — backpressure: degree throttle + global admission budget.
-// design: design/int/reactor.md §2.13
+// design: design/intrinsics/reactor.md §2.13
 // ===========================================================================
 
-// spec: design/int/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 1 — the
+// spec: design/intrinsics/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 1 — the
 // program `degree` throttles a token's effective in-flight limit to
 // `min(node_capacity, degree)`: under degree d < N a capacity-N token admits only
 // d (the (d+1)th parks). It can only TIGHTEN.
-// design: design/int/reactor.md §2.13
+// design: design/intrinsics/reactor.md §2.13
 #[test]
 fn degree_throttles_token_slot_to_min_capacity_degree() {
     // degree 2 < node capacity 5 ⇒ effective 2: two acquire, the 3rd parks.
@@ -1411,10 +1411,10 @@ fn degree_throttles_token_slot_to_min_capacity_degree() {
     );
 }
 
-// spec: design/int/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 2 — a
+// spec: design/intrinsics/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 2 — a
 // degree ABOVE a token's capacity has no extra effect: capacity still binds
 // (`min(N, D) = N`). Degree never loosens past the platform ceiling.
-// design: design/int/reactor.md §2.13
+// design: design/intrinsics/reactor.md §2.13
 #[test]
 fn degree_above_capacity_capacity_still_binds() {
     // degree 5 > node capacity 2 ⇒ effective 2: capacity binds, the 3rd parks.
@@ -1436,11 +1436,11 @@ fn degree_above_capacity_capacity_still_binds() {
     );
 }
 
-// spec: design/int/reactor.md §2.13 part 2 / spec/10-io.md §10.12.4.2 item 3 — the
+// spec: design/intrinsics/reactor.md §2.13 part 2 / spec/10-io.md §10.12.4.2 item 3 — the
 // global admission budget bounds total in-flight detached strands to the global
 // degree D: D global acquires succeed, the (D+1)th PARKS until one frees
 // (saturate-not-oversaturate). Emits the `GlobalBudget*` events (not `Token*`).
-// design: design/int/reactor.md §2.13
+// design: design/intrinsics/reactor.md §2.13
 #[test]
 fn global_budget_bounds_inflight_to_degree_nplus1_parks() {
     start_strand_recording();
@@ -1492,12 +1492,12 @@ fn global_budget_bounds_inflight_to_degree_nplus1_parks() {
     );
 }
 
-// spec: design/int/reactor.md §2.14 (the A→C volume consumer) — a supervised
+// spec: design/intrinsics/reactor.md §2.14 (the A→C volume consumer) — a supervised
 // strand OWNS its global-budget `Permit`; dropping the strand (completion /
 // shutdown) drops the `Permit`, freeing a global slot so a parked launch proceeds.
 // This is the global half of the A→C contract (the per-token half is covered by
 // the §2.9 EffectPoll-drop tests above). RAII, no leak.
-// design: design/int/reactor.md §2.14
+// design: design/intrinsics/reactor.md §2.14
 #[test]
 fn dropping_global_permit_frees_budget_parked_launch_proceeds() {
     let pool = TokenPool::with_degree(1); // global budget = 1
@@ -1520,7 +1520,7 @@ fn dropping_global_permit_frees_budget_parked_launch_proceeds() {
 //   finding #4 (§2.17): `Drop for AcquirePermit` — stale-waker removal.
 //   finding #3 (§2.16): `ReactorInterest` — active fd/timer deregistration.
 //   `sleep` (§2.18): the tokenless timer leaf.
-// design: design/int/reactor.md §2.16 / §2.17 / §2.18
+// design: design/intrinsics/reactor.md §2.16 / §2.17 / §2.18
 // ===========================================================================
 
 use std::sync::atomic::{AtomicBool, Ordering as _Ordering};
@@ -1544,14 +1544,14 @@ fn poll_with<F: _Future + Unpin>(f: &mut F, w: &std::task::Waker) -> _Poll<F::Ou
     _Pin::new(f).poll(&mut cx)
 }
 
-// spec: design/int/reactor.md §2.17 — finding #4: an `AcquirePermit` dropped WHILE
+// spec: design/intrinsics/reactor.md §2.17 — finding #4: an `AcquirePermit` dropped WHILE
 // PARKED removes its OWN stale waker from the slot's FIFO, so a later `Drop for
 // Permit`'s front-`pop` wakes the next LIVE waiter — not the stranded one. Without
 // `Drop for AcquirePermit` the release pops+wakes the dead waker (a no-op) while the
 // live waiter behind it is NEVER woken and the freed permit goes unclaimed
 // (lost-wakeup / a free permit nobody can take). We observe the wake directly via
 // flag wakers: the LIVE waiter's flag must fire, the stale one's must not.
-// design: design/int/reactor.md §2.17
+// design: design/intrinsics/reactor.md §2.17
 #[test]
 fn dropping_parked_acquire_removes_stale_waker_next_live_waiter_woken() {
     let pool = TokenPool::new();
@@ -1594,11 +1594,11 @@ fn dropping_parked_acquire_removes_stale_waker_next_live_waiter_woken() {
     );
 }
 
-// spec: design/int/reactor.md §2.17 — finding #4 on the GLOBAL-budget acquire (the
+// spec: design/intrinsics/reactor.md §2.17 — finding #4 on the GLOBAL-budget acquire (the
 // shutdown-cancelled accept-loop launch the A3 review asked to co-cover): a parked
 // `acquire_global` cancelled while queued behind a full budget removes its own stale
 // waker, so the release wakes the next live launch — same machinery, global token.
-// design: design/int/reactor.md §2.17
+// design: design/intrinsics/reactor.md §2.17
 #[test]
 fn dropping_parked_global_acquire_removes_stale_waker_co_covers_shutdown() {
     let pool = TokenPool::with_degree(1); // global budget = 1
@@ -1627,14 +1627,14 @@ fn dropping_parked_global_acquire_removes_stale_waker_co_covers_shutdown() {
     assert!(!stale_flag.load(_Ordering::SeqCst), "the cancelled launch's stale waker must not be woken");
 }
 
-// spec: design/int/reactor.md §2.16 — finding #3: an in-flight `EffectPoll` that
+// spec: design/intrinsics/reactor.md §2.16 — finding #3: an in-flight `EffectPoll` that
 // armed reactor interest (an fd/timer waiter) and is DROPPED mid-flight (cancelled
 // before `Ready`) ACTIVELY deregisters that interest via its `ReactorInterest` field
 // drop. Without it the `fd_waiters`/`timer_waiters` entry + mio registration leak
 // until the fd next readies (unbounded growth under volume cancellation). We drive a
 // REAL reactor (so the interest is live), arm a far-future timer leaf, drop it, and
 // assert the reactor's waiter count returns to 0.
-// design: design/int/reactor.md §2.16
+// design: design/intrinsics/reactor.md §2.16
 #[test]
 fn dropping_inflight_poll_deregisters_reactor_interest() {
     let strand = next_strand();
@@ -1677,12 +1677,12 @@ fn dropping_inflight_poll_deregisters_reactor_interest() {
     .expect("reactor");
 }
 
-// spec: design/int/reactor.md §2.18 — the `sleep` tokenless timer leaf: arms the
+// spec: design/intrinsics/reactor.md §2.18 — the `sleep` tokenless timer leaf: arms the
 // reactor timer on first poll (Pending → parks), resumes to `Unit` (0) when the
 // timer fires. Proves it genuinely PARKS for ≈the duration (not a busy spin) and
 // emits the Dispatched→Suspended→Resumed strand trace, reusing the whole EffectPoll
 // / timer-turn machinery. This is the leaf `timeout = race io (sleep d)` builds on.
-// design: design/int/reactor.md §2.18
+// design: design/intrinsics/reactor.md §2.18
 #[test]
 fn sleep_leaf_parks_for_duration_then_resumes_unit() {
     start_strand_recording();

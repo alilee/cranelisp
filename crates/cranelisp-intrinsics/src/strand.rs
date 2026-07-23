@@ -373,7 +373,7 @@ mod tests {
         }
     }
 
-    // spec: design/int/reactor.md §2.15 / §2.18 / §2.19 — `StrandCancelled` is the
+    // spec: design/intrinsics/reactor.md §2.15 / §2.18 / §2.19 — `StrandCancelled` is the
     // cancellation counterpart to `StrandFailed`: a strand dropped because it lost a
     // race / timed out / was cleared by shutdown. It constructs with a
     // `CancelReason`, correlates back to its strand (so the `/strand` dump shows the

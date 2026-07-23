@@ -435,7 +435,7 @@ async fn await_poll_node(
 /// detached strand** that the continuation does **not** await; the node yields
 /// `Pure Unit` (`0`) immediately so the continuation runs at once.
 ///
-/// Steps (`design/int/reactor.md §2.11` / `io-trampoline.md §15`):
+/// Steps (`design/intrinsics/reactor.md §2.11` / `io-trampoline.md §15`):
 /// 1. **Acquire a global-budget permit** for the new strand (§2.13). A free
 ///    global slot ⇒ proceed; an exhausted budget PARKS here (`.await`) — parking
 ///    the accept loop itself until an in-flight strand completes (backpressure).
@@ -514,7 +514,7 @@ unsafe fn read_select_branches(node: i64) -> Vec<i64> {
 /// Runs all N branch sub-trees concurrently on the ONE reactor thread, yields the
 /// **first-ready** winner's value, and **drops the losers** — and the drop IS the
 /// cancellation (§9: "cancel is the consequence of losing a race"). Steps
-/// (`design/int/reactor.md §2.15` / `io-trampoline.md §16`):
+/// (`design/intrinsics/reactor.md §2.15` / `io-trampoline.md §16`):
 /// 1. **Read the branches by raw pointer** off the field-0 `Vec (IO a)` — NO
 ///    move-out, NO RC: the node owns the Vec for the tree lifetime; `consume_io_tree`
 ///    reclaims every branch (winner + losers) uniformly at the end (§16.5).
@@ -585,7 +585,7 @@ async fn run_select_node(
 }
 
 /// The async `Par` overlap arm — the **two-pool join** (slice 6) wrapping the
-/// **token-capacity admission** gate (slice 3), per `design/int/reactor.md` §2.6
+/// **token-capacity admission** gate (slice 3), per `design/intrinsics/reactor.md` §2.6
 /// / §2.8.
 ///
 /// Branches are **partitioned by node tag** (gate (c) — the tag is already on the

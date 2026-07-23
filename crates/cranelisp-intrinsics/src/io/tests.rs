@@ -750,7 +750,7 @@ fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
     base
 }
 
-// spec: design/int/reactor.md §2.9 — the RETAINED synchronous rayon dispatcher
+// spec: design/intrinsics/reactor.md §2.9 — the RETAINED synchronous rayon dispatcher
 // (the rayon-worker per-branch driver under the single-trampoline cutover,
 // §6.8.0a) token-groups same-token blocking branches via `SerialGroup` and runs
 // them WITHOUT any token-capacity `Semaphore` (the appended `capacity` field is
@@ -893,14 +893,14 @@ mod poll_arm {
         node
     }
 
-    // spec: design/int/reactor.md §2.9 §1A — the trampoline reads the LIVE
+    // spec: design/intrinsics/reactor.md §2.9 §1A — the trampoline reads the LIVE
     // `(token, capacity)` off the `IO_TAG_EFFECT_POLL` node (the S95-reserved
     // slots, now carrying real values), using the SAME offsets the blocking
     // carrier and the backend agree on: token @ abs 32 (`read_resource_token` via
     // FIELD_1_OFFSET), capacity @ abs 40 (`read_capacity` via
     // POLL_CAPACITY_ABS_OFFSET). NOT the sentinel `(0, 1)`. Offset-agreement guard
     // with `io-trampoline.md §13`.
-    // design: design/int/reactor.md §2.9
+    // design: design/intrinsics/reactor.md §2.9
     #[test]
     fn poll_node_token_capacity_read_live_not_sentinel() {
         // A poll node declaring token 42, capacity 3 reads back the LIVE values.
@@ -929,14 +929,14 @@ mod poll_arm {
         crate::drop::consume_io_tree(node);
     }
 
-    // spec: design/int/reactor.md §2.9 §1A — the LIVE poll-carrier acquire wiring:
+    // spec: design/intrinsics/reactor.md §2.9 §1A — the LIVE poll-carrier acquire wiring:
     // a poll node declaring a non-zero `(token, capacity)` drives through
     // `await_poll_node`, which now READS the live `(token, capacity)`, ACQUIRES the
     // token's permit from `env.pool` before establish, OWNS it on the `EffectPoll`
     // across the suspend/resume arc, and RELEASES it on `Ready` — completing with
     // the generic env-slot result. Proves the acquire-around-poll path is wired on
     // the poll carrier (not just readable), end-to-end through the trampoline.
-    // design: design/int/reactor.md §2.9
+    // design: design/intrinsics/reactor.md §2.9
     #[test]
     fn live_capacity_poll_node_acquires_owns_releases_through_trampoline() {
         let node = build_poll_node_tc(63, 21, 1); // token 21, capacity 1, result 63
@@ -1026,7 +1026,7 @@ mod poll_arm {
         base
     }
 
-    // spec: design/int/reactor.md §2.6 (two-pool join) — a mixed `Par` of one
+    // spec: design/intrinsics/reactor.md §2.6 (two-pool join) — a mixed `Par` of one
     // BLOCKING branch (→ rayon, across the wakeable bridge) and one POLL branch
     // (→ reactor) overlaps on BOTH pools: the blocking branch offloaded to rayon
     // does NOT starve the reactor, so the poll branch progresses concurrently and
@@ -1088,7 +1088,7 @@ mod poll_arm {
         base as i64
     }
 
-    // spec: spec/10-io.md §10.12.4.2 item 3 / design/int/reactor.md §2.13 — a launch
+    // spec: spec/10-io.md §10.12.4.2 item 3 / design/intrinsics/reactor.md §2.13 — a launch
     // LOOP under a global degree D bounds in-flight DETACHED strands to D: the
     // (D+1)th launch PARKS on `acquire_global`, then RESUMES when an in-flight
     // strand completes and frees a global slot. The regression this guards: when
@@ -1100,7 +1100,7 @@ mod poll_arm {
     // flag suppresses that false hang. Without the fix this `block_on_reactor`
     // drive panics; with it the launch loop drains cleanly and the launcher reaches
     // its `(Pure 42)`.
-    // design: design/int/reactor.md §2.13
+    // design: design/intrinsics/reactor.md §2.13
     #[test]
     fn degree_parked_launcher_resumes_when_strand_frees_budget_no_false_hang() {
         // SAFETY: nextest runs each test in its own process, so this env mutation
@@ -1187,7 +1187,7 @@ mod poll_arm {
         f.as_mut().poll(&mut cx)
     }
 
-    // spec: design/int/reactor.md §2.15.1 — the trampoline-frame cancellation
+    // spec: design/intrinsics/reactor.md §2.15.1 — the trampoline-frame cancellation
     // drop-guard. A branch future suspended on a FRESH (continuation-produced)
     // in-flight poll node, then DROPPED mid-flight (a cancelled race/select loser),
     // must FREE that fresh subtree (node + state closure) via the `TrampolineFrame`
@@ -1195,7 +1195,7 @@ mod poll_arm {
     // owner — its producing Bind was already dec'd). `Bind(Pure 0, (fn [_] <fresh
     // poll node>))` steps Pure→continuation→the poll node (now fresh) → suspends;
     // dropping the future there frees the fresh node.
-    // design: design/int/reactor.md §2.15.1
+    // design: design/intrinsics/reactor.md §2.15.1
     #[test]
     fn cancelled_branch_future_frees_fresh_inflight_subtree() {
         // The poll node becomes a FRESH in-flight node when the continuation returns
@@ -1236,7 +1236,7 @@ mod poll_arm {
 // trampoline — the launch arm exists only there; the sync stepper never sees an
 // `IO_TAG_LAUNCH` node), so the launch detaches the sub-tree into the supervisor
 // and the continuation proceeds without awaiting it.
-// design: design/int/reactor.md §2.11 / §2.12
+// design: design/intrinsics/reactor.md §2.11 / §2.12
 // ===========================================================================
 
 use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
@@ -1293,7 +1293,7 @@ fn make_runtime_error_effect(msg: &'static str) -> i64 {
 // continuation runs with 0 ⇒ 77 — NOT the launched 999 (the launcher did not
 // await). The detached strand still RAN (drained before exit: StrandLaunched +
 // StrandCompleted), under the root strand.
-// design: design/int/reactor.md §2.11
+// design: design/intrinsics/reactor.md §2.11
 #[test]
 fn launch_arm_detaches_subtree_continuation_proceeds_without_awaiting() {
     start_strand_recording();
@@ -1327,7 +1327,7 @@ fn launch_arm_detaches_subtree_continuation_proceeds_without_awaiting() {
 // not silently dropped), the drive SURVIVES (the launcher's continuation still
 // completes), and the panic is NEVER re-raised (the runtime-error slot stays
 // clear). A non-supervised detached panic would abort the whole drive.
-// design: design/int/reactor.md §2.12
+// design: design/intrinsics/reactor.md §2.12
 #[test]
 fn supervisor_catches_panicking_strand_records_failed_drive_survives() {
     // Silence the EXPECTED panic's default hook output (nextest isolates this
@@ -1369,7 +1369,7 @@ fn supervisor_catches_panicking_strand_records_failed_drive_survives() {
 // completion boundary (`take_runtime_error`, reused from the S95 ferry) →
 // StrandFailed{message} with the ferried message, the drive survives, and the
 // error is captured (taken), not re-raised into the host slot.
-// design: design/int/reactor.md §2.12
+// design: design/intrinsics/reactor.md §2.12
 #[test]
 fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
     start_strand_recording();
@@ -1428,7 +1428,7 @@ fn make_flag_setting_cont() -> i64 {
     base as i64
 }
 
-// spec: design/int/reactor.md §9 / spec/10-io.md §10.12.8 — a degenerate empty
+// spec: design/intrinsics/reactor.md §9 / spec/10-io.md §10.12.8 — a degenerate empty
 // `(select [])` MUST raise a recoverable runtime error ("select over empty
 // collection") through the standard runtime-error slot, NOT return a synthesised
 // Unit `0` and NOT hang. The trampoline aborts BEFORE feeding the sentinel to the
