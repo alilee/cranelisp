@@ -3293,20 +3293,25 @@ fn shared_state_pub_field_count_guard() {
         .find("\n}\n")
         .expect("end of SharedState struct definition");
     let body = &after[..end_offset];
+    // Parse actual public field declarations once. Comments deliberately name
+    // the deleted fields as design history and are not evidence of a field.
+    let pub_fields: Vec<&str> = body
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("pub ")?
+                .split_once(':')
+                .map(|(name, _)| name.trim())
+        })
+        .filter(|name| !name.starts_with("fn "))
+        .collect();
     for forbidden in ["module_sexps", "suspend_states"] {
         assert!(
-            !body.contains(forbidden),
+            !pub_fields.contains(&forbidden),
             "SharedState MUST NOT regain deleted cross-thread parking field `{forbidden}`"
         );
     }
-    // Count `pub ` field declarations — lines matching `\s+pub <ident>:`.
-    let field_count = body
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with("pub ") && t.contains(':') && !t.starts_with("pub fn")
-        })
-        .count();
+    let field_count = pub_fields.len();
     assert_eq!(
         field_count, 17,
         "SharedState has {field_count} pub fields; target is exactly 17 \
