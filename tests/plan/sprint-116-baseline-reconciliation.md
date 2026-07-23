@@ -220,6 +220,16 @@ curated workspace prelude deliberately exports only `Int`, `Bool`, `Float`,
 and `String`. The annotated empty-vector expression, expected length zero, and
 positive pinning oracle remain unchanged.
 
+### Exemplar field-binder reconciliation
+
+Once the workspace stdlib cascade cleared, the exemplar and its independent
+`exemplar::t_s2_1_eliminate_contract_on_given_returns_none` fixture both
+stopped at `Cell` declarations that reused one field binder across `Given` and
+`Solved`. QA approves distinct `given-*` and `solved-*` binder names under
+`spec/05-definitions.md` §5.2.2. Constructor arities and all positional match
+bindings are unchanged; the fixture still asserts only that eliminating a
+fixed cell's own digit returns `None` via exit 0.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.

@@ -128,8 +128,8 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
     let source = r#"(import [primitives [*]])
 
 (deftype Cell
-  (Given [:Int v])
-  (Solved [:Int v])
+  (Given [:Int given-v])
+  (Solved [:Int solved-v])
   (Candidates [:Int mask]))
 
 ;; `Option` (None/Some) is SEEDED by `primitives` and reached via the

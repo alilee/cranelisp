@@ -85,8 +85,8 @@
 ;; ── Data Types ──────────────────────────────────────────────────────────
 
 (deftype Cell
-  (Given [:Int value])
-  (Solved [:Int value])
+  (Given [:Int given-value])
+  (Solved [:Int solved-value])
   (Candidates [:Int bitmask]))
 
 (deftype Grid [cells])

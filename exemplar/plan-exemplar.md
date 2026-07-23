@@ -426,8 +426,8 @@ exemplar/
 
 ;; A cell is either given (fixed in the puzzle) or has remaining candidates
 (deftype Cell
-  (Given [:Int value])
-  (Solved [:Int value])
+  (Given [:Int given-value])
+  (Solved [:Int solved-value])
   (Candidates [candidates]))       ; :(Vec Int) — remaining possible values
 
 ;; A Sudoku grid: 81 cells stored as a flat Vec
@@ -694,7 +694,7 @@ This is expected and confirms the exemplar plan's original assessment that the b
 
 | Component | Ring 1 viable? | Assessment |
 |---|---|---|
-| `grid.cl` — Grid/Cell types | **Partially** | `Cell` ADT can now be fully defined: `(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [candidates]))`. However, `Candidates` wraps a `:(Vec Int)` which does not exist yet. `Grid` wraps `:(Vec Cell)` — also blocked. Individual `Cell` values can be constructed, passed through functions, and pattern-matched. But no collection to hold 81 of them. |
+| `grid.cl` — Grid/Cell types | **Partially** | `Cell` ADT can now be fully defined: `(deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [candidates]))`. However, `Candidates` wraps a `:(Vec Int)` which does not exist yet. `Grid` wraps `:(Vec Cell)` — also blocked. Individual `Cell` values can be constructed, passed through functions, and pattern-matched. But no collection to hold 81 of them. |
 | `solver.cl` — constraint propagation, backtracking | **No** | The solver traverses and transforms a grid (Vec-based). Candidate elimination requires `Vec` filtering. Even with `Cell` definable, the algorithms cannot operate without `Vec`. `PropResult` (pure enum) and `SolveResult` (sum with field) are both expressible, but useless without the grid. |
 | `html.cl` — HTML generation | **Partially** | String concatenation (`str-concat`) and conversion (`int-to-string`) are available. A function like `(defn wrap-tag [tag content] (str-concat (str-concat "<" (str-concat tag ">")) (str-concat content (str-concat "</" (str-concat tag ">")))))` works. But building the 9x9 grid HTML requires iterating over 81 cells — which requires `Vec` or a recursive data structure. Individual string-building helpers (tag wrapping, CSS embedding) are expressible. |
 | `form.cl` — URL form parsing | **No** | Requires `str-split` (to split on `&` and `=`), `char-at` (to inspect individual characters), and iteration over a collection of key-value pairs. None of these are available. `str-eq` is available, which would help compare keys, but without string splitting/indexing, parsing is impossible. |
@@ -710,8 +710,8 @@ Ring 1 unlocks meaningful prototyping of isolated data model fragments and strin
    ```clojure
    ;; Ring 1 workaround: candidates as bitmask (bits 1-9)
    (deftype Cell
-     (Given [:Int value])
-     (Solved [:Int value])
+     (Given [:Int given-value])
+     (Solved [:Int solved-value])
      (Candidates [:Int bitmask]))
    ```
    This is a legitimate and possibly even *better* representation for a Sudoku solver (bitwise operations on a 9-bit mask are faster than Vec filtering). All Cell operations — construction, pattern matching, field extraction — work at Ring 1. The design can keep this representation even when Vec arrives.
