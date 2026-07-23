@@ -145,6 +145,41 @@ fn type_tail_probe_does_not_mint_shared_ids() {
     assert_eq!(tc.next_id.load(Ordering::Relaxed), before);
 }
 
+// spec: 07-traits §7.1 — classification depends on whether the one trailing
+// element resolves as a type; an unrelated bad parameter is diagnosed later
+// and must not reclassify a valid HKT return tail as a default body.
+#[test]
+fn hkt_type_tail_probe_ignores_unrelated_parameter_resolution_error() {
+    let tc = tf_prims();
+    let decl = parsed_trait(
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(Bogus a) x] (f b)))",
+    );
+    let tail = cranelisp_frontend::parse_type_expr("(f b)").unwrap();
+    assert!(tc.env().probe_trait_sig_type_expr(
+        &decl.methods[0].params,
+        &tail,
+        &tc.state.current_module,
+        &decl.type_params,
+        decl.methods[0].span,
+    ));
+}
+
+// spec: 07-traits §7.1 — the same independent-tail rule applies to a
+// conventional trait; a bad annotated parameter cannot reclassify `self`.
+#[test]
+fn conventional_type_tail_probe_ignores_unrelated_parameter_resolution_error() {
+    let tc = tf_prims();
+    let decl = parsed_trait("(deftrait T (m [:(Bogus a) x y] self))");
+    let tail = cranelisp_frontend::parse_type_expr("self").unwrap();
+    assert!(tc.env().probe_trait_sig_type_expr(
+        &decl.methods[0].params,
+        &tail,
+        &tc.state.current_module,
+        &decl.type_params,
+        decl.methods[0].span,
+    ));
+}
+
 // spec: 07-traits §7.1 — no traits registered at startup
 #[test]
 fn test_no_traits_at_startup() {

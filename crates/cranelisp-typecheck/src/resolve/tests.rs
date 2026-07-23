@@ -834,7 +834,8 @@
         assert_eq!(got, Type::ADT(test_fqtn("Option"), vec![Type::Var(1000)]));
     }
 
-    // spec: 07-traits §7.2 — TX-5 unit representative: an unknown uppercase Named
+    // spec: 07-traits §7.2 — resolver-level HKT-declaration representative:
+    // an unknown uppercase Named
     // in an HKT *decl* sig now ERRORS (the never-error fabrication arm is
     // deleted), instead of fabricating an empty-module ADT.
     #[test]

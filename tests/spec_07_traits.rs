@@ -2230,9 +2230,11 @@ fn arg_directed_dispatch_result_in_value_position_not_flagged() {
 // the four TypeExpr resolver mirrors onto the ONE canonical resolver:
 //   - mirror 1 (`resolve_trait_type_expr`, trait-method sigs) TODAY errors on a
 //     bare in-scope user type → post-convergence RESOLVES (TX-1, RED positive);
-//   - mirrors 2/3 (`resolve_type_expr_hkt{,_impl}`, HKT trait/impl sigs) TODAY
-//     fabricate an empty-module ADT for an unknown Named (never error) →
-//     post-convergence ERROR (TX-5/TX-6, RED negatives).
+//   - mirrors 2/3 (`resolve_type_expr_hkt{,_impl}`, HKT trait/impl sigs)
+//     historically fabricated an empty-module ADT for an unknown Named.
+//     Resolver-level rejection remains pinned by unit tests; at the §7.1
+//     method-tail boundary, a non-resolving tail instead takes the body branch
+//     (TX-5), while an impl-signature type position errors (TX-6).
 // FV-13/FV-14 (TX-8/TX-9) pin what must NOT broaden. Design:
 // design/typecheck/type-expr-resolver-convergence.md §1. Spec: spec/07-traits.md
 // + spec/08-modules.md §8.5 (bare ≡ qualified-in-scope). Plan: PLAN.md §S110 C.
@@ -2274,25 +2276,20 @@ fn trait_method_sig_bare_user_type_resolves() {
     );
 }
 
-// spec: spec/07-traits.md §7.2 + spec/03-types.md §3.7 — an UNKNOWN uppercase
-// `Named` type in a HIGHER-KINDED trait method signature MUST be rejected with an
-// `unknown type` error — a type reference that names nothing is a fault, not a
-// silently-fabricated empty-module ADT.
-//
-// RED today (0590 mirror-2): `resolve_type_expr_hkt` fabricates an empty-module
-// ADT for any unknown Named leaf and NEVER errors, so the bogus return type
-// `Ghosttype` is silently accepted and the `deftrait` "succeeds". GREEN
-// post-convergence (the fabrication arm is deleted; unknown Named errors).
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/traits/type_resolve.rs::resolve_type_expr_hkt (unknown uppercase Named in an HKT trait sig fabricates an empty-module ADT instead of erroring) found=S110 owner=/dev
+// spec: spec/07-traits.md §7.1 — a trailing element is a return type iff it
+// resolves as a type; unresolved `Ghosttype` therefore classifies as a body.
+// spec: spec/07-traits.md §7.2 — higher-kinded traits cannot define default
+// method bodies, so that classification is rejected at the declaration.
 #[test]
-fn hkt_trait_sig_unknown_named_errors_neg() {
+fn hkt_unresolved_tail_classifies_as_forbidden_default_body_neg() {
     let out = repl_prims("(deftrait (Boxx f) (peek [:(f a) x] Ghosttype))\n");
     let c = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
-        c.contains("unknown type") || c.contains("ghosttype"),
-        "an unknown uppercase Named in an HKT trait-method sig MUST error \
-         `unknown type Ghosttype`, NOT silently fabricate an empty-module ADT \
-         (TX-5, 0590 mirror-2 tightening); got:\n{c}"
+        c.contains("higher-kinded trait")
+            && c.contains("cannot have a default body")
+            && !c.contains("unknown type"),
+        "an unresolved HKT trait tail is a body under §7.1 and MUST be rejected \
+         by §7.2's no-default-body rule, not as an unknown return type; got:\n{c}"
     );
 }
 
@@ -2314,8 +2311,9 @@ fn hkt_trait_sig_unknown_named_errors_neg() {
 //   (ii) a KNOWN in-scope Named in the same position resolves (the positive
 //        control, so the error is the unknown-ness, not the position);
 //   (iii) the error names the unknown type.
-// TX-5 (mirror-2) stands as the e2e representative of the fabrication-deletion
-// class. Plan: PLAN.md §S110 C TX-6.
+// Resolver-level HKT-declaration rejection has a direct unit representative;
+// TX-5's e2e now pins the distinct §7.1 tail-classification boundary. Plan:
+// PLAN.md §S110 C TX-5/TX-6.
 
 // spec: spec/03-types.md §3.11 — FV-13 over-broadening fence (TX-8): the
 // convergence's mint capability (a bare LOWERCASE name mints a fresh type var)

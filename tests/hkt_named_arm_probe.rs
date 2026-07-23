@@ -37,8 +37,12 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 // `(deftrait (Functor f) (fmap [… :(Bogus a) x] (f b)))` uses the unknown `Bogus`
 // in an HKT param type position. Guards the S110 converged resolver (`resolve_named`)
 // against any future refactor reintroducing a never-error / mint-on-miss arm.
-// spec: spec/07-traits.md §7.3.5 — an unknown named type in a (higher-kinded) trait
-// signature/impl-target is a located `unknown type` error, not a minted `Named`.
+// spec: spec/07-traits.md §7.1.4 + spec/08-modules.md §8.6.1 — parameter
+// annotations use valid type expressions whose names resolve through ordinary
+// module scope; an absent `Bogus` is a located `unknown type`, not a minted type.
+// defect: class=wrong-diagnostic locus=cranelisp-typecheck trait-tail probe
+// (a bad parameter reclassified the valid `(f b)` return tail as a forbidden
+// HKT default body) found=S116 owner=/dev
 #[test]
 fn hkt_sig_unknown_named_type_rejected_not_silently_minted() {
     let out = run_prims(

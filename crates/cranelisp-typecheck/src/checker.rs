@@ -3025,22 +3025,20 @@ where
         if trait_type_params.is_empty() {
             let self_type = Type::Var(mint());
             for (_, param) in params {
-                if self
-                    .resolve_type_expr_ctx(
-                        param,
-                        &mut var_map,
-                        module_path,
-                        Some(&mint),
-                        Some(self_type.clone()),
-                        trait_type_params,
-                        crate::resolve::ConVars::None,
-                        true,
-                        span,
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
+                // Parameter errors are diagnosed by final signature
+                // resolution.  They must not decide whether the independent
+                // trailing element resolves as a type (§7.1).
+                let _ = self.resolve_type_expr_ctx(
+                    param,
+                    &mut var_map,
+                    module_path,
+                    Some(&mint),
+                    Some(self_type.clone()),
+                    trait_type_params,
+                    crate::resolve::ConVars::None,
+                    true,
+                    span,
+                );
             }
 
             if let cranelisp_types::TypeExpr::TypeVar(name) = tail
@@ -3066,22 +3064,20 @@ where
                 .map(|name| (name.clone(), mint()))
                 .collect();
             for (_, param) in params {
-                if self
-                    .resolve_type_expr_ctx(
-                        param,
-                        &mut var_map,
-                        module_path,
-                        Some(&mint),
-                        None,
-                        &[],
-                        crate::resolve::ConVars::Decl(&con_vars),
-                        true,
-                        span,
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
+                // As above, preserve any method-local variables discovered
+                // before a parameter error, but classify the tail on its own
+                // resolution result.
+                let _ = self.resolve_type_expr_ctx(
+                    param,
+                    &mut var_map,
+                    module_path,
+                    Some(&mint),
+                    None,
+                    &[],
+                    crate::resolve::ConVars::Decl(&con_vars),
+                    true,
+                    span,
+                );
             }
 
             if let cranelisp_types::TypeExpr::TypeVar(name) = tail

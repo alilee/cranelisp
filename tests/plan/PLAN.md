@@ -3041,14 +3041,15 @@ tier for the co-reference pins). Blast-radius scout precedes the flip.
 | TX-2 | bare in-scope user type × HKT trait sig | RESOLVES against the table (not fabricated) — pin via a working HKT trait whose sig names a user ADT; assert the resolved type behaves nominally (impl dispatch works) | fabricates empty-module ADT (accidentally "works" or silently mis-keys) | [S110] |
 | TX-3 | bare in-scope user type × HKT impl method | RESOLVES against the table | fabricates target-module ADT | [S110] |
 | TX-4 | unknown uppercase Named × trait-method sig | ERRORS "unknown type" (unchanged — mirror 1 already errored) — GREEN pin | errors | [S110] — pin |
-| TX-5 | unknown uppercase Named × HKT trait sig | **ERRORS** — the fabrication deletion made loud | silently fabricates | **[S110] — RED neg** |
+| TX-5 | unresolved uppercase tail × HKT trait sig | **FORBIDDEN DEFAULT BODY** — §7.1 classifies a non-resolving tail as a body, then §7.2 rejects HKT defaults | current classifier behavior | **[S116] — corrected negative; `tests/spec_07_traits.rs::hkt_unresolved_tail_classifies_as_forbidden_default_body_neg`** |
+| TX-5b | unknown named type in HKT parameter annotation + independently valid `(f b)` tail | **UNKNOWN TYPE** — §7.1 keeps the resolvable tail required; §7.1.4/§8.6.1 then diagnose the bad parameter through ordinary type-name resolution | formerly misclassified as a forbidden HKT default | **[S116] — regression; `tests/hkt_named_arm_probe.rs::hkt_sig_unknown_named_type_rejected_not_silently_minted`** |
 | TX-6 | unknown uppercase Named × HKT impl method | **ERRORS** | silently fabricates | **[S110] — RED neg** |
 | TX-7 | qualified type × each of the three contexts | RESOLVES via module ref (the FIXME-0436 arm) — GREEN pins | works | [S110] — pin |
 | TX-8 | **FV-13 fence** — uppercase-unknown-in-annotation still errors | stays GREEN (over-broadening guard: the mint capability must not swallow unknown TYPES) | green | [S110] — must-hold |
 | TX-9 | **FV-14 fence** — trait-path resolution unaffected by the annotation mint | stays GREEN | green | [S110] — must-hold |
 | TX-10 | Step-A co-reference pin — platform-sig multi-occurrence free var shares one id (mint-on-miss ≡ the deleted pre-walk) | typecheck unit at `check_type_expr`'s caller (enumerated: two occurrences of `a` in one sig unify; `a` vs `b` stay distinct) | — | [S110] — unit, `/dev` |
 
-**Blast-radius scout (BEFORE the TX-5/TX-6 flip; `/dev` (typecheck) executes,
+**Blast-radius scout (historical, before the resolver-convergence flip; `/dev` (typecheck) executes,
 `/qa` reads the report):** grep every HKT trait/impl sig in tests/, stdlib/,
 examples/, exemplar/ for non-intrinsic bare `Named` heads that today resolve
 only via fabrication — each hit is either (a) genuinely in scope (TX-2/TX-3
@@ -3262,7 +3263,8 @@ surface (hygiene).
 
 Author order: (1) **RD-3 (the `(add2 3 4)` value-position fence) + KC-W0-6
 harness prep + the TX blast-radius scout request** — the fences must exist
-BEFORE their waves land; (2) the VP-3/4/5 matrix REDs + TX-1/TX-5/TX-6 REDs
+BEFORE their waves land; (2) the VP-3/4/5 matrix REDs + the then-RED
+TX-1/TX-5/TX-6 rows
 (behaviour-tightening rows, RED-for-the-right-reason against HEAD); (3)
 KC-W0-3 cache rows + KC-N1..N6 unit-family handoff enumeration to `/dev`
 (backend) — `/testing` verifies the drafted unit set matches the rows at the
