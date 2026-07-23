@@ -1090,7 +1090,7 @@ fn sig_unknown_name_graceful() {
 // for genuine runtime values (§1.5, e.g. `(Some 42)`).
 #[test]
 fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() {
-    let out = repl("(deftype Color (Red) (Green))
+    let out = repl("(deftype Color Red Green)
 Red
 ");
     // Assert the FULL §4.1.2 line as one substring — the `; deftype` and the
@@ -3875,7 +3875,7 @@ fn ls1_sig_of_defn_invariant_to_session_history() {
 #[test]
 fn ls1_bare_lookup_of_type_invariant_to_session_history() {
     assert_preamble_invariant(
-        "(deftype Color (Red) (Green))\nColor\n",
+        "(deftype Color Red Green)\nColor\n",
         "user/Color",
     );
 }
@@ -3952,7 +3952,7 @@ fn ls1_list_layout_invariant_to_session_history() {
 #[test]
 fn ls1_bare_type_display_invariant_to_session_history() {
     assert_preamble_invariant(
-        "(deftype Shade (Dark) (Light))\nShade\n",
+        "(deftype Shade Dark Light)\nShade\n",
         "user/Shade",
     );
 }

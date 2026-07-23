@@ -153,6 +153,29 @@ not resolve as a type and therefore reads as a default body; HKT defaults are
 separately forbidden. Their desired `unknown type` diagnostic is a normative
 question, not an approved fixture migration.
 
+### Post-migration name reconciliation
+
+At checkpoint `11bd5153`, the complete workspace gate executed 5,461 tests:
+5,335 passed, 126 failed, and one was skipped. Against the captured
+sprint-start run, eight failures are current-only and 20 captured-baseline
+failures are now absent. The following current-only fixtures stop before the
+behavior under test at syntax settled by the user; QA approves only these
+substitutions:
+
+| Test(s) | Fixture-only substitution | Normative basis | Preserved oracle |
+|---|---|---|---|
+| `repl_introspection::{nullary_constructor_bare_lookup_shows_deftype_and_qualified_home,ls1_bare_lookup_of_type_invariant_to_session_history,ls1_bare_type_display_invariant_to_session_history}` | Spell the nullary constructor declarations as bare `Red`, `Green`, `Dark`, and `Light` | `spec/05-definitions.md` §5.2.2: bare names are the only content-free nullary-constructor spelling | Qualified constructor display and session-history-invariant type lookup assertions remain unchanged |
+| `ownership_reuse::r5_soundness_couple_unflattened_two_ctor_not_copy_moded` | Give the `Solved` arm a field binder distinct from `Given`'s `value` | `spec/05-definitions.md` §5.2.2: field binders are pairwise unique within one type | Both constructors remain unary; positional matching, sustained value result, and heap-balance assertions remain unchanged |
+
+The other four current-only failures are not approved for test edits:
+
+- the two HKT unknown-name tests still require a normative ruling;
+- `clif_golden_lane_no_drift` requires emission-drift attribution before any
+  golden recapture;
+- `exemplar::t_s2_1_eliminate_contract_on_given_returns_none` is downstream of
+  workspace-stdlib compilation on this host and does not justify changing its
+  assertion.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.

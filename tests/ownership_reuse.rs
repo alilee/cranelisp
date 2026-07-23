@@ -452,7 +452,7 @@ fn r5_soundness_couple_unflattened_two_ctor_not_copy_moded() {
     // Two-ctor Cell in a vec, projected + re-read after the root is copied —
     // the missing-inc UAF would surface as a wrong cell value or a crash.
     let template = "(import [primitives [*]])\n\
-        (deftype Cell (Given [:Int value]) (Solved [:Int value]))\n\
+        (deftype Cell (Given [:Int value]) (Solved [:Int solved-value]))\n\
         (defn cval [c] (match c [(Given v) v  (Solved v) v]))\n\
         (defn spin [:Int n :Int acc v]\n\
         \x20 (if (eq-i64 n 0) acc\n\
