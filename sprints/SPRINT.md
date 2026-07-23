@@ -474,7 +474,7 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 |---|---|---|---|
 | `/qa` + `/testing` | sprint-wide | Two identical deterministic full runs; loaded reduction; at least three captured full runs for the corruption member; exact 29-name reconciliation; zero S115 baseline REDs | pending |
 | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` | user surfaces | Phase 6a standing-quality assessment, then Phase 6b action against what actually shipped | pending |
-| `/audit` | cranelisp-primitives | Whole-context assessment to `audits/cranelisp-primitives-s116.md` | pending |
+| `/audit` | cranelisp-primitives | Whole-context assessment to `audits/cranelisp-primitives-s116.md` | **complete — assessment landed; five recommendations await Sprint 117 Phase-1 disposition** |
 
 **Gate:** certification and every user-proxy plan/action complete; audit landed; any newly discovered RED blocks close absent explicit user-approved carry.
 
@@ -503,6 +503,7 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 - 2026-07-22: `/testing` repaired QA's Wave-1 M3 fixture blocker. The env-cleared compiler child now restores only `CRANELISP_LIB` and `CRANELISP_PLATFORM_PATH`, uses an explicit `Pure` program whose local String allocation is observed through `str-len` and normally discharged, and preserves the exact `s116-detection-proof-v1` + `M3Leak` plant. Wave 1 is ready for `/qa` recheck; this records fixture readiness, not an execution gate pass.
 - 2026-07-22: `/testing` restored the fully verified FIXME 0741 resolution after a formatting-cleanup reversal: `shared_state_pub_field_count_guard` has no frozen numeral, retains the exact 17-field creep tripwire, and directly asserts `module_sexps` and `suspend_states` are absent from the bounded `SharedState` body. FIXME 0741 remains correctly closed. Wave 1 remains ready for `/qa` recheck.
 - 2026-07-23: Non-memory certification sequence: installed `cargo-public-api`; regenerated the types/backend baselines with the canonical omit-derived command and the seven-crate API gate passed. All nine web tests and all three previously timed-out reactor tests passed outside the restricted socket sandbox, classifying those REDs as environmental. HKT ruling packet remains open: after S115's resolution-based one-tail classification, `Bogus`/`Ghosttype` tails reject as forbidden HKT default bodies, while two older tests require the pre-S115 `unknown type` diagnostic; no test or semantics change was made. Wave-7 citation-only slice resolved FIXME 0852: exactly 62 stale `design/int/reactor.md` paths became `design/intrinsics/reactor.md`, grep-zero old path; `cargo check`, `cargo check --tests`, 274/274 intrinsics nextest, and clippy completed with zero new warnings (11 pre-existing dependency warnings).
+- 2026-07-23: Required `cranelisp-primitives` whole-context audit landed at `audits/cranelisp-primitives-s116.md`; 105/105 crate tests green. Verdict: implementation boundary strong, but registration remains four-way/manual, ownership declarations lack production-emission agreement proof, String/Vec layout access remains unconverged, and active design/rustdoc carry stale migration material. Five recommendations are proposals for Sprint 117 Phase-1 user disposition; no FIXME was filed by `/audit`.
 
 ## Outcome (Phase 7)
 
