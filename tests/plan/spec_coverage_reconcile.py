@@ -20,8 +20,10 @@ This script adds the reverse:
      direction) keyed by (spec-file, §anchor).
   4. For dead citations, propose the real covering test by matching the
      governing §anchor against that index (the reliable join key).
-  5. Detect stale-pending: `[S{M}]` sections whose anchor has a covering test.
-  6. Detect true gaps: heading/MUST sections with NO covering test.
+  5. Detect cleared coverage: `[Uncovered S{M} — was tests/…]` rows whose
+     normative requirement changed and whose prior covers require re-judgment.
+  6. Detect stale-pending: `[S{M}]` sections whose anchor has a covering test.
+  7. Detect true gaps: heading/MUST sections with NO covering test.
 
 Modes:
   --check     (default) report dead citations + stale-pending + true gaps; exit
@@ -61,6 +63,10 @@ CITE_TOKEN_RE = re.compile(r"tests/([A-Za-z0-9_]+)(\.rs)?::([A-Za-z0-9_*]+)")
 TESTED_BRACKET_RE = re.compile(r"\[Tested(\+Neg)?\b([^\]]*)\]")
 # [S{M}] / [S{M} — ...] / [R{N} S{M}] pending tags.
 PENDING_RE = re.compile(r"\[(?:R\d+\s+)?S\d+[^\]]*\]")
+# A normative edit invalidates, but does not erase, its former coverage set.
+# Only /qa restores this marker to Tested/Tested+Neg after re-judgment.
+CLEARED_RE = re.compile(
+    r"\[Uncovered\s+S(?P<sprint>\d+)\s+—\s+was\s+(?P<was>[^\]]+)\]")
 # Heading line with a numeric/appendix anchor.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 HEADING_NUM_RE = re.compile(r"^(?P<num>\d+(?:\.\d+)*[a-z]?)\.?\s")
@@ -219,6 +225,7 @@ class SpecScan:
     dead: list[DeadCite] = field(default_factory=list)
     live: list[DeadCite] = field(default_factory=list)  # cite to a real file
     pending: list[SpecLine] = field(default_factory=list)
+    cleared: list[SpecLine] = field(default_factory=list)
     headings: list[SpecLine] = field(default_factory=list)
     must_lines: list[SpecLine] = field(default_factory=list)
 
@@ -247,6 +254,9 @@ def scan_spec(md: Path, root: Path) -> SpecScan:
         # pending
         if PENDING_RE.search(raw):
             sc.pending.append(SpecLine(md, i, raw, cur_anchor, cur_kind))
+        # invalidated by a normative change; distinct from never-covered work
+        if CLEARED_RE.search(raw):
+            sc.cleared.append(SpecLine(md, i, raw, cur_anchor, cur_kind))
         # MUST/SHOULD lines (for true-gap detection)
         if RFC2119_RE.search(raw) and not raw.lstrip().startswith("|"):
             sc.must_lines.append(SpecLine(md, i, raw, cur_anchor, cur_kind))
@@ -993,6 +1003,10 @@ def main() -> int:
     print(f"  dead UNRESOLVABLE:             {len(unresolved)}",
           file=sys.stderr)
 
+    all_cleared = [sl for sc in scans.values() for sl in sc.cleared]
+    print(f"  cleared coverage awaiting QA:  {len(all_cleared)}",
+          file=sys.stderr)
+
     if live_broken:
         print("\nLIVE-BUT-BROKEN (file exists, fn missing):", file=sys.stderr)
         for dc in live_broken:
@@ -1006,7 +1020,18 @@ def main() -> int:
             print(f"  {spec_md_for(dc.md, root)}:{dc.lineno}  §{dc.anchor}  "
                   f"tests/{dc.token_file}::{dc.token_name}", file=sys.stderr)
 
-    fail = bool(all_dead) or bool(live_broken)
+    if all_cleared:
+        print("\nCLEARED-COVERAGE (normative change; QA re-judgment owed):",
+              file=sys.stderr)
+        for sl in all_cleared:
+            marker = CLEARED_RE.search(sl.text)
+            print(f"  {spec_md_for(sl.md, root)}:{sl.lineno}  §{sl.anchor}  "
+                  f"S{marker.group('sprint')}  was {marker.group('was')}",
+                  file=sys.stderr)
+
+    # This is the sprint-close gate: a cleared row cannot be forgotten merely
+    # because its former citations remain live.
+    fail = bool(all_dead) or bool(live_broken) or bool(all_cleared)
     return 1 if fail else 0
 
 
