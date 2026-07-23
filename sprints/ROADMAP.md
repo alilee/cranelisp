@@ -298,6 +298,34 @@ Three goals: flip the S114 carries, verify every QA/arch instrumentation-and-ass
 
 **Suite at close: 5388 run / 5359 passed / 29 failed / 1 skipped — every RED traces to an open defect or a named S116 flip trigger; zero untraced.** The count rose across the sprint (5→22→18→25→29) as the discipline pinned pre-existing defects and fresh rulings ahead of implementation, not as regression. Zero model-tier escalations (5th consecutive sprint); frontmatter 28/28. **/qa certification stands unaveraged**: the deterministic suite is stable and well-attributed; the load-dependent state holds an uncharacterised memory-safety event and is NOT certified — the heap-corruption member is pulled from the flap family by name as first-class S116 scope. **S116 carries**: the §7.1 default-method implementation (0838 — no default spelling compiles at HEAD); the constructor-form ruling set implementation (frontend, same surface); 0708's multi-crate impl + schema bump; 0837's nested-heap-ownership grouping ruling (/arch); 0604 (0818 contamination lead); 0745 program-result release; the duplicate-constructor + duplicate-field-name defects (0845); the tmpfs preflight + link-dir leak (/qa + /testing); 0823 examples-library principle (/arch); the record-integrity principle question (/arch). **Next (open)**: S116 scope = the constructor/traits frontend implementation wave + the nested-heap-ownership class ruling, then the standing SROA / `--release` LLVM frontier.
 
+### Safety First, Settled Syntax — S116 ✅ CLOSED 2026-07-23 (explicit carry)
+
+Track B shipped: structural annotations, constructor/field uniqueness,
+constructor-form rulings, and the closed trait-method-tail model are implemented
+and verified. The canonical recursive drop-glue foundation and seven-crate
+public API baselines landed, but its ownership consumers did not. The
+intrinsics reactor citations were repaired; the `cranelisp-primitives`
+whole-context audit landed with five recommendations for next-sprint
+disposition. Spec-coverage invalidation is now mechanical and canonical:
+`[Uncovered S{M} — was …]`, a dedicated report bucket, a failing close gate,
+and author guidance are live; the current reverse census is 699 live citations,
+zero broken and zero cleared. Existing user surfaces ran 507/507 green across
+examples, exemplar, stdlib, and REPL. Full record:
+`sprints/archive/sprint-116.md`.
+
+**Suite at close: 5463 run / 5438 passed / 25 attributed RED guards / 1
+skipped.** The prior full run had 26 REDs; its load-dependent nullary-dispatch
+guard passed at close, so deterministic certification is explicitly NOT
+claimed. The user approved closure with carry rather than weakening or deleting
+the guards. **S117 carries:** Waves 4–5's 18 match/capture/transitive-drop,
+entry-result, and program-result ownership guards; Wave 7's two M3 detector
+guards and remaining intrinsics convergence; launch-grid corruption; three
+`conj` ownership/detection guards; the exemplar residue threshold; FIXME 0804's
+historical S115 coverage audit; formal per-proxy Phase-6a reports; the
+three-run loaded-corruption and identical-two-run certification obligations;
+and disposition of the five primitives-audit recommendations. The standing
+SROA / `--release` frontier remains behind this safety work.
+
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.

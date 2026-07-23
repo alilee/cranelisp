@@ -1,6 +1,6 @@
 # Sprint 116: Safety First, Settled Syntax
 
-**Status**: PHASE 7 CLOSE PREPARATION — USER CARRY APPROVAL REQUIRED
+**Status**: CLOSED 2026-07-23 — USER-APPROVED EXPLICIT CARRY
 
 **Goal**: Clear every one of the 29 S115 certification failures, restore confidence in the load-dependent memory-safety state, and make the S115-settled trait and constructor syntax true in the compiler without adding parallel semantic paths.
 
@@ -509,6 +509,10 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 - 2026-07-23: Close preparation completed the safe process and user-surface work. The coverage-invalidation tool's two unit tests pass; reverse traceability reports 699 live citations, zero missing names, and zero cleared rows. The canonical repository and `/spec` guidance now require `[Uncovered S{M} — was …]` on normative change; FIXME 0803 is resolved, while 0804's historical S115 evidence audit remains open. A serial Phase-6 runtime gate ran 507/507 green across examples, exemplar, stdlib, and REPL. The repeated full workspace gate ran 5,463 tests in 144 seconds: 5,438 passed, 25 known RED guards failed, and one was skipped. The previously load-dependent nullary dispatch guard passed in this run, confirming that deterministic certification is not yet established. No memory-instrumentation implementation was attempted in this close-preparation slice.
 
 ## Outcome (Phase 7)
+
+**Close decision:** USER approved closure on 2026-07-23 with every item in
+§Deferred carried explicitly. The 25 RED guards remain live, failing, and
+attributed; closure does not reclassify them as green or resolved.
 
 ### Delivered
 
