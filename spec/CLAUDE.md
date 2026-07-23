@@ -45,6 +45,12 @@ reference documentation for the reference implementation's stdlib.
   §"Requirements/Test Traceability" — that is canonical; follow it, don't
   restate it here. Tests are authored by `/testing` to `/qa`'s plan; `/qa`
   audits the two-sided spec↔test match.
+- **Normative edits invalidate existing coverage in the same edit.** Replace
+  the affected annotation with
+  `[Uncovered S{M} — was tests/file::test_name, ...]`, preserving its former
+  covering set. This is the `/spec` author's invalidation of a changed claim,
+  not a coverage judgment; only `/qa` restores `[Tested …]` or
+  `[Tested+Neg …]` after re-evaluating the tests against the new prose.
 
 ## Files
 

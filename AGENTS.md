@@ -158,7 +158,14 @@ use `sprints/SPRINT.md` for dependencies; otherwise use `sprints/ROADMAP.md`.
 Every spec requirement must trace to a test, and every test must carry a
 `// spec:` comment tracing to a requirement. Spec-side coverage annotations are
 `[Tested ...]`, `[Tested+Neg ...]`, `[Tested]`, `[Tested+Neg]`, `[S{M}]`, and
-`[S{M} — tests/file::test_name IGNORED]`. `[Done]` is retired.
+`[S{M} — tests/file::test_name IGNORED]`. `[Done]` is retired. When a skill
+changes a normative requirement, it replaces that requirement's coverage
+annotation in the same edit with
+`[Uncovered S{M} — was tests/file::test_name, ...]`, preserving the former
+covering set for review. This is coverage invalidation, not a coverage
+judgment: the skill making the normative change clears the annotation, and
+only `$qa` restores it after the cited tests have been re-evaluated against the
+new requirement.
 
 `$testing` adds test-side comments. `$qa` owns the coverage-annotation band in
 `spec/*.md` and `repl/spec.md` and may edit that band directly without a FIXME;

@@ -1,6 +1,6 @@
 # Sprint 116: Safety First, Settled Syntax
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE)
+**Status**: PHASE 7 CLOSE PREPARATION — USER CARRY APPROVAL REQUIRED
 
 **Goal**: Clear every one of the 29 S115 certification failures, restore confidence in the load-dependent memory-safety state, and make the S115-settled trait and constructor syntax true in the compiler without adding parallel semantic paths.
 
@@ -79,7 +79,8 @@ This table is the proposed in-sprint set, not a claim that every open S115 FIXME
 | 0745 | /design(int) + /arch | open | Must consume the Track-A header/typed-context ruling; no isolated release patch. |
 | 0760 | /design | open | Conditional on 0837's grouping ruling and bounded matrix. |
 | 0796 | /design(backend) | open | Same reaching seam as 0760; conditional on 0837. |
-| 0803/0804 | /qa + /spec | open | Make spec-change annotation invalidation mechanical for Track B. |
+| 0803 | /qa | **resolved 2026-07-23** | Distinct `[Uncovered S{M} — was …]` marker, report bucket, failing close gate, tests, and canonical convention are live; 699 citations reconcile with zero cleared rows. |
+| 0804 | /spec | open | Future-change workflow is adopted in `spec/CLAUDE.md`; historical S115 backfill still requires row-by-row QA evidence and is an explicit proposed carry. |
 | 0810 | /testing → design/dev | open | Conditional nested-ownership eliminator family; permanent REDs already landed. |
 | 0818 | /qa | open | Environment/probe-contamination discriminator for 0604; no speculative source fix. |
 | 0826 | /dev | **resolved W6** | Required/default occurrence columns now pin bare/`:self` parameter, `:self` result-constraint, and body-reference-does-not-count polarity. |
@@ -472,8 +473,8 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| `/qa` + `/testing` | sprint-wide | Two identical deterministic full runs; loaded reduction; at least three captured full runs for the corruption member; exact 29-name reconciliation; zero S115 baseline REDs | pending |
-| `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` | user surfaces | Phase 6a standing-quality assessment, then Phase 6b action against what actually shipped | pending |
+| `/qa` + `/testing` | sprint-wide | Two identical deterministic full runs; loaded reduction; at least three captured full runs for the corruption member; exact 29-name reconciliation; zero S115 baseline REDs | **partial — full repeat 5,438/5,463 with 25 REDs and one skipped; nullary load-dependent guard changed colour, so determinism and zero-RED gates are not met** |
+| `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` | user surfaces | Phase 6a standing-quality assessment, then Phase 6b action against what actually shipped | **runtime gate green — 507/507 across examples, exemplar, stdlib, and REPL; formal per-skill assessments remain a proposed carry** |
 | `/audit` | cranelisp-primitives | Whole-context assessment to `audits/cranelisp-primitives-s116.md` | **complete — assessment landed; five recommendations await Sprint 117 Phase-1 disposition** |
 
 **Gate:** certification and every user-proxy plan/action complete; audit landed; any newly discovered RED blocks close absent explicit user-approved carry.
@@ -505,25 +506,67 @@ The first complete workspace gate now builds and executes all **5460 tests**: **
 - 2026-07-23: Non-memory certification sequence: installed `cargo-public-api`; regenerated the types/backend baselines with the canonical omit-derived command and the seven-crate API gate passed. All nine web tests and all three previously timed-out reactor tests passed outside the restricted socket sandbox, classifying those REDs as environmental. HKT ruling settled: an unresolved one-tail `Ghosttype` is a body under §7.1 and is rejected by §7.2's HKT-default prohibition; an independently valid `(f b)` return tail remains required even when another parameter contains unknown `Bogus`, whose final signature resolution reports `unknown type`. Wave-7 citation-only slice resolved FIXME 0852: exactly 62 stale `design/int/reactor.md` paths became `design/intrinsics/reactor.md`, grep-zero old path; `cargo check`, `cargo check --tests`, 274/274 intrinsics nextest, and clippy completed with zero new warnings (11 pre-existing dependency warnings).
 - 2026-07-23: Required `cranelisp-primitives` whole-context audit landed at `audits/cranelisp-primitives-s116.md`; 105/105 crate tests green. Verdict: implementation boundary strong, but registration remains four-way/manual, ownership declarations lack production-emission agreement proof, String/Vec layout access remains unconverged, and active design/rustdoc carry stale migration material. Five recommendations are proposals for Sprint 117 Phase-1 user disposition; no FIXME was filed by `/audit`.
 - 2026-07-23: HKT ruling implementation and QA gate complete. The one-tail probe now classifies a resolvable return tail independently of unrelated parameter-resolution errors, while final signature resolution still emits the parameter's `unknown type`; conventional and HKT unit siblings pin both branches. TX-5 now asserts §7.1's unresolved-tail body classification plus §7.2's HKT-default prohibition, and TX-5b separately preserves the `Bogus` parameter diagnostic. Independent `/qa` review passed after citation, plan-path, risk-ledger, and sibling-coverage cleanup. Verification: typecheck 829/829; affected e2e binaries 89/89; workspace 5,460 passed, 26 known RED defect guards, one skipped (5,486 total).
+- 2026-07-23: Close preparation completed the safe process and user-surface work. The coverage-invalidation tool's two unit tests pass; reverse traceability reports 699 live citations, zero missing names, and zero cleared rows. The canonical repository and `/spec` guidance now require `[Uncovered S{M} — was …]` on normative change; FIXME 0803 is resolved, while 0804's historical S115 evidence audit remains open. A serial Phase-6 runtime gate ran 507/507 green across examples, exemplar, stdlib, and REPL. The repeated full workspace gate ran 5,463 tests in 144 seconds: 5,438 passed, 25 known RED guards failed, and one was skipped. The previously load-dependent nullary dispatch guard passed in this run, confirming that deterministic certification is not yet established. No memory-instrumentation implementation was attempted in this close-preparation slice.
 
 ## Outcome (Phase 7)
 
 ### Delivered
 
-- Pending.
+- Track B's settled syntax/typecheck surface, including structural annotations,
+  constructor/field uniqueness, constructor-form rulings, and closed trait
+  method-tail classification, is implemented and verified by its focused gates.
+- The canonical drop-glue foundation and its public API baselines are landed;
+  all seven crate API checks pass. Consumer migration is not claimed.
+- The intrinsics reactor citation repair and the required
+  `cranelisp-primitives` whole-context audit are complete.
+- Spec-coverage invalidation is mechanical: the distinct cleared marker,
+  report bucket, failing close gate, tests, and canonical author workflow are
+  in place. The current reverse traceability census is 699 live, zero broken,
+  zero cleared.
+- Existing user surfaces are green: 507/507 tests across examples, exemplar,
+  stdlib, and REPL.
 
 ### Deferred (with rationale)
 
-- Pending.
+- **User approval required:** Waves 4 and 5 remain unimplemented. Their 18 RED
+  guards cover match/capture/transitive drop glue, entry-result retention, and
+  program-result ownership.
+  These are the principal remainder of Track A and cannot be represented as
+  complete merely because their failing tests are known.
+- **User approval required:** Wave 7's two M3 detector REDs and its remaining
+  intrinsics convergence work are open. Work in the memory-instrumentation
+  area repeatedly triggered the platform security control, so this session
+  restricted itself to non-instrumentation work.
+- The remaining five non-M3 REDs are the launch-grid corruption guard, three
+  `conj` ownership/detection guards, and the exemplar residue threshold.
+  Together with the 18 ownership-consumer/result guards and two M3 guards, the
+  full workspace has 25 known REDs.
+- FIXME 0804's historical Sprint-115 coverage backfill remains open. The
+  future-change rule is adopted, but restoring historical rows requires a
+  row-by-row QA judgment against the changed prose.
+- Formal Phase-6a reports from each user-proxy skill were not produced; the
+  common 507-test runtime gate is green.
+- The three-run loaded corruption certification, exact two-run deterministic
+  equality, and zero-baseline-RED exit contract are not met. The nullary
+  dispatch guard changed from RED in the prior recorded full run to green in
+  this run, which is evidence of load dependence rather than closure.
 
 ### Findings (record in FIXME's if not already)
 
-- Pending.
+- The sprint materially reduced the recorded workspace state from 240 REDs
+  after the initial migration to 25 classified REDs, but it did not achieve
+  the user-approved zero-RED objective.
+- A filtered or user-surface-green run is not evidence that the ownership
+  backlog is closed; the full-workspace result remains the release gate.
+- The load-dependent nullary dispatch guard is unstable across full runs and
+  remains governed by FIXME 0694. Its green result in the latest run must not
+  be treated as a fix.
 
 ## Next skills
 
-`$sprint` sequences Phase 4 from the completed QA/design/architecture gates. The
-method-carrier path is `/testing` REDs and 0785 repair, then serial
-`/dev`(types) → `/dev`(frontend) → `/dev`(typecheck), followed by narrow
-`/review`; `$arch` checks the ruled types public-baseline delta. Independent
-backend and result-owner waves follow their recorded dependency gates.
+`$sprint` presents the explicit carry and close recommendation to the user.
+Without carry approval, serialized `/dev`(backend) → `/review` completes Wave
+4, then `/dev`(src/exe-bundle) → `/review` completes Wave 5. `/dev`(intrinsics),
+`/testing`, `/qa`, and `/review` then complete Wave 7 and deterministic
+certification. `/spec` + `/qa` close the 0804 historical backfill; the five
+primitives-audit recommendations enter Sprint 117 only after user disposition.
