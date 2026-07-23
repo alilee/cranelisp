@@ -7,7 +7,7 @@
 
 (import [prelude []])
 
-(deftype (Either a b) (Left [:a val]) (Right [:b val]))
+(deftype (Either a b) (Left [:a left-val]) (Right [:b right-val]))
 
 (defn is-left? "Test if an Either is Left" [e]
   (match e

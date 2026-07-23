@@ -80,9 +80,9 @@
 ;; ── Outcome ADT — a tally-able per-test result ───────────────────────
 
 (deftype Outcome
-  (Passed [:String name])
-  (Failed [:String name :String why])
-  (Panicked [:String name :String msg]))
+  (Passed [:String passed-name])
+  (Failed [:String failed-name :String why])
+  (Panicked [:String panicked-name :String msg]))
 
 ;; ── Running a single discovered test ─────────────────────────────────
 ;; (Pair name thunk) -> Outcome, thunk bracketed by catch-runtime-error so a

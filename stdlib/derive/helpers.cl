@@ -137,7 +137,7 @@
 (defn- ctor-field-count "Count fields in a constructor" [ctor]
   (if (ctor-nullary? ctor)
     0
-    (div-i64 (slength (ctor-fields-raw ctor)) 2)))
+    (slength (ctor-fields-raw ctor))))
 
 ;; ── Layer 2: Sexp building helpers ─────────────────────
 

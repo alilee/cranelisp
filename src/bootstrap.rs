@@ -507,7 +507,7 @@ fn register_macros_module(
         );
     }
 
-    // Sexp: 7 single-field data constructors.
+    // Sexp: 7 single-field data constructors plus the two-field annotation node.
     let sexp_fqtn = macros_fqtn("Sexp");
     let sexp_ty = Type::ADT(sexp_fqtn.clone(), vec![]);
     let slist_sexp = Type::ADT(slist_fqtn.clone(), vec![sexp_ty.clone()]);
@@ -529,6 +529,21 @@ fn register_macros_module(
                 sexp_ctor("SexpSym", "sname", Type::String),
                 sexp_ctor("SexpList", "sitems", slist_sexp.clone()),
                 sexp_ctor("SexpBracket", "sitems", slist_sexp.clone()),
+                SynthCtor {
+                    name: "SexpAnnotated",
+                    fields: vec![
+                        SynthField {
+                            name: "stype",
+                            ty: sexp_ty.clone(),
+                        },
+                        SynthField {
+                            name: "sform",
+                            ty: sexp_ty.clone(),
+                        },
+                    ],
+                    docstring: None,
+                    internal: false,
+                },
             ],
         );
 
@@ -1264,6 +1279,28 @@ mod tests {
             }) if matches!(kind.as_ref(), DefKind::Constructor { .. })
         ));
         assert!(matches!(macros.get("sconcat"), Some(ModuleEntry::Def { .. })));
+        // spec: spec/09-macros.md §9.1.2 — reader-folded annotations are
+        // available to macro code as (SexpAnnotated stype sform), tag 7.
+        match ctor_entry(&macros, "SexpAnnotated") {
+            Some(ModuleEntry::Def { kind, scheme, param_names, .. }) => {
+                assert!(matches!(
+                    kind.as_ref(),
+                    DefKind::Constructor { tag: 7, field_count: 2, .. }
+                ));
+                assert_eq!(param_names, &vec![Symbol::from("stype"), Symbol::from("sform")]);
+                assert_eq!(
+                    scheme.ty,
+                    Type::Fn(
+                        vec![
+                            Type::ADT(macros_fqtn("Sexp"), vec![]),
+                            Type::ADT(macros_fqtn("Sexp"), vec![]),
+                        ],
+                        Box::new(Type::ADT(macros_fqtn("Sexp"), vec![])),
+                    )
+                );
+            }
+            other => panic!("SexpAnnotated should be a two-field constructor, got {other:?}"),
+        }
     }
 
     #[test]

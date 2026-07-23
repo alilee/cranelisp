@@ -352,7 +352,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///   (SexpStr [:String sval])
     ///   (SexpSym [:String sname])
     ///   (SexpList [:(SList Sexp) sitems])
-    ///   (SexpBracket [:(SList Sexp) sitems]))
+    ///   (SexpBracket [:(SList Sexp) sitems])
+    ///   (SexpAnnotated [:Sexp stype :Sexp sform]))
     /// ```
     ///
     /// Also registers `sconcat` as an extern primitive in this module:
@@ -495,7 +496,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
-    /// Register the Sexp type with 7 data constructors (SexpInt through SexpBracket).
+    /// Register the Sexp type with 8 data constructors (SexpInt through SexpAnnotated).
     fn register_sexp_type(&self, state: &mut CheckState) {
         // Pre-seed Sexp in macros module's SymbolTable so SexpList/SexpBracket's
         // :(SList Sexp) fields resolve during build_constructor_infos.
@@ -529,6 +530,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Self::sexp_ctor("SexpSym", "sname", TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String")))),
             Self::sexp_ctor("SexpList", "sitems", slist_sexp.clone()),
             Self::sexp_ctor("SexpBracket", "sitems", slist_sexp),
+            ConstructorDef {
+                name: Symbol::from("SexpAnnotated"),
+                docstring: None,
+                fields: vec![
+                    FieldDef {
+                        name: Symbol::from("stype"),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Sexp"))),
+                        span: Span::SYNTHETIC,
+                    },
+                    FieldDef {
+                        name: Symbol::from("sform"),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Sexp"))),
+                        span: Span::SYNTHETIC,
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            },
         ];
 
         self.register_type_def(state,
@@ -1609,7 +1627,7 @@ mod tests {
         }
     }
 
-    // spec: 09-macros §9.1.2 — Sexp type registered with 7 constructors
+    // spec: 09-macros §9.1.2 — Sexp type registered with 8 constructors
     #[test]
     fn test_sexp_type_registered() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
@@ -1618,12 +1636,12 @@ mod tests {
         assert!(info.is_some(), "Sexp type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Sexp has 0 type parameters");
-        assert_eq!(info.constructors.len(), 7, "Sexp has 7 constructors");
+        assert_eq!(info.constructors.len(), 8, "Sexp has 8 constructors");
 
-        // Verify tag order matches spec: SexpInt=0 through SexpBracket=6
+        // Verify tag order matches spec: SexpInt=0 through SexpAnnotated=7
         let expected_names = [
             "SexpInt", "SexpFloat", "SexpBool", "SexpStr",
-            "SexpSym", "SexpList", "SexpBracket",
+            "SexpSym", "SexpList", "SexpBracket", "SexpAnnotated",
         ];
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
@@ -1661,7 +1679,7 @@ mod tests {
         }
     }
 
-    // spec: 09-macros §9.1.2 — all 7 Sexp constructors have correct field types
+    // spec: 09-macros §9.1.2 — all 8 Sexp constructors have correct field types
     #[test]
     fn test_all_sexp_constructor_field_types() {
         let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
@@ -1688,6 +1706,13 @@ mod tests {
         check_sexp_ctor(&macros_table, "SexpList", &[("sitems", &slist_sexp_type)], &sexp_type);
         // (SexpBracket [:(SList Sexp) sitems]) -> (Fn [(SList Sexp)] Sexp)
         check_sexp_ctor(&macros_table, "SexpBracket", &[("sitems", &slist_sexp_type)], &sexp_type);
+        // (SexpAnnotated [:Sexp stype :Sexp sform]) -> (Fn [Sexp Sexp] Sexp)
+        check_sexp_ctor(
+            &macros_table,
+            "SexpAnnotated",
+            &[("stype", &sexp_type), ("sform", &sexp_type)],
+            &sexp_type,
+        );
     }
 
     /// Helper: verify a Sexp constructor has the expected fields and function type.
