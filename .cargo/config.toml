@@ -1,6 +1,16 @@
 [alias]
 nt = "nextest run"
 
+# Fresh-JIT and cache-restore compilation resolve the synthetic `macros`
+# module's slot-less PrimitiveExtern functions (`sconcat`, `quote-sexp`) from
+# the compiler host with `dlsym(RTLD_DEFAULT, ...)`. Linux PIE binaries do not
+# place ordinary global symbols in `.dynsym` unless linked export-dynamic.
+# Keep this requirement repository-owned so a clean checkout behaves like the
+# formerly-required machine-local Cargo configuration. This does not affect
+# executables emitted by Cranelisp's own `--link` driver.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-Wl,--export-dynamic"]
+
 # Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
 # §6.8.0a): the three gated lanes — `nt-concurrency`, `nt-concurrency-runtime`,
 # `nt-reactor-e2e` — are RETIRED. The `concurrency` / `concurrency-runtime`

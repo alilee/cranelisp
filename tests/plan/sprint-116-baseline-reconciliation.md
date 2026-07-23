@@ -202,6 +202,24 @@ with the environment-dependent/flapping component already demonstrated by the
 paired baseline runs; sprint closure still requires a saved name-set comparison
 and repeated certification runs, not this scalar alone.
 
+### Host-export and stdlib-cascade attribution
+
+The macro/stdlib cascade reduced to the synthetic `macros/sconcat`
+`PrimitiveExtern`: Linux host binaries contained the function in `.symtab` but
+not `.dynsym`, so fresh-JIT `dlsym(RTLD_DEFAULT, "sconcat")` failed. Repository-
+owned Linux `--export-dynamic` wiring flips the existing
+`worker::tests::dlsym_host_symbol_resolves_exported_primitive` guard and clears
+the macro-splice and stdlib publication cascade without changing library or
+test semantics.
+
+After that fix, `spec_11_stdlib::macro_vec_empty_pinned_ok` alone stopped at an
+unknown bare `Vec` type. QA approves adding `Vec` to its existing explicit
+`primitives` import: `spec/03-types.md` §3.1 and `spec/08-modules.md` §8.8.1
+require a bare type to be explicitly imported or prelude-exported, and the
+curated workspace prelude deliberately exports only `Int`, `Bool`, `Float`,
+and `String`. The annotated empty-vector expression, expected length zero, and
+positive pinning oracle remain unchanged.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.

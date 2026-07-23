@@ -533,7 +533,7 @@ fn macro_vec_empty_neg_ambiguous_element_type() {
 #[test]
 fn macro_vec_empty_pinned_ok() {
     assert_repl_eval_contains(
-        "(import [primitives [vec-len]]) (vec-len :(Vec Int) (vec))",
+        "(import [primitives [Vec vec-len]]) (vec-len :(Vec Int) (vec))",
         ":primitives/Int 0",
     );
 }
