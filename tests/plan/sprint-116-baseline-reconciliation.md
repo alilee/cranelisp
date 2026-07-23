@@ -176,6 +176,23 @@ The other four current-only failures are not approved for test edits:
   workspace-stdlib compilation on this host and does not justify changing its
   assertion.
 
+### Golden-corpus syntax reconciliation
+
+`clif_golden_lane_no_drift` initially stopped after entry 06 because corpus
+entry `07_trait_dispatch.cl` did not emit any frames: its required trait method
+still used the deleted annotation-introducer spelling `(size [a] :Int)`.
+QA approves changing only that tail to bare `Int`, as required by
+`spec/07-traits.md` §7.1.1. The trait remains required, both implementations and
+the exit-8 behavioral witness remain unchanged, and no golden is recaptured by
+this fixture migration. Any resulting CLIF difference remains attributable
+emission evidence and must be reviewed separately.
+
+Entry `08_adt_in_vec_projection.cl` then exposed the same settled duplicate
+field-binder migration: `Given` and `Solved` both declared `value`. QA approves
+renaming only the `Solved` binder to `solved-value` under
+`spec/05-definitions.md` §5.2.2. Constructor arity, positional matches, the
+projection loop, and its exit witness remain unchanged.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.

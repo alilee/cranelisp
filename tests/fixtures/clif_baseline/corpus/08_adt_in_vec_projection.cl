@@ -4,7 +4,7 @@
 ;; green by construction.
 (import [primitives [*]])
 
-(deftype Cell (Given [:Int value]) (Solved [:Int value]))
+(deftype Cell (Given [:Int value]) (Solved [:Int solved-value]))
 
 (defn cell-value [c] (match c [(Given v) v  (Solved v) v]))
 

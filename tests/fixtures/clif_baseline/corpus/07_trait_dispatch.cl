@@ -3,7 +3,7 @@
 (import [primitives [*]])
 
 (deftrait Sizeable
-  (size [a] :Int))
+  (size [a] Int))
 
 (deftype Box (MkBox [:Int w]))
 (deftype Tag (MkTag [:String label]))
