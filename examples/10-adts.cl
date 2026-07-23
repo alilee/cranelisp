@@ -80,7 +80,7 @@
   (add-i64 (get-x (origin)) (get-y (origin))))
 
 ;; A sum type with two data constructors
-(deftype (Either a b) (Left [:a val]) (Right [:b val]))
+(deftype (Either a b) (Left [:a left-val]) (Right [:b right-val]))
 
 (defn get-either [e]
   (match e
