@@ -193,6 +193,15 @@ renaming only the `Solved` binder to `solved-value` under
 `spec/05-definitions.md` §5.2.2. Constructor arity, positional matches, the
 projection loop, and its exit witness remain unchanged.
 
+After those migrations and the separately attributed canonical-glue FuncId
+rebaseline (`4c198e43`), the complete workspace gate executed 5,461 tests:
+5,339 passed, 122 failed, and one was skipped in 69.6 seconds. The golden-lane
+test and all four post-migration current-only fixture tests are green. The
+remaining one-count difference from the deterministic arithmetic is consistent
+with the environment-dependent/flapping component already demonstrated by the
+paired baseline runs; sprint closure still requires a saved name-set comparison
+and repeated certification runs, not this scalar alone.
+
 ## Next skills
 
 - `/dev(src)` — macro/annotation expansion and availability cluster.
