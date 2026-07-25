@@ -18,6 +18,110 @@ refers_to: crates/cranelisp-primitives/src/marshal.rs:160-217
 status: open
 ---
 
+> **S118 W2b `/dev`(runtime pair) IMPLEMENTATION RECORD (2026-07-26, commit
+> `959833ea`). The LEAK face is FIXED. Two faces survive and both are NEW
+> attributions; this FIXME stays `open` on them.**
+>
+> RE-1 landed exactly as ruled (S1–S4, all in `marshal.rs`;
+> `deep_rc_inc_slist` deleted; `consume_slist` untouched). Eight `/dev` unit
+> rows written and observed failing against the unfixed source first, plus
+> the RE-2 invariance fence in intrinsics (green before and after).
+>
+> **1. Leak face — CLOSED on its own repros.** `--run`, `PrimitivesOnly`,
+> `--no-cache`, `CRANELISP_RC_STATS=1`, fresh tmpdir, `env -i` + allow-list:
+>
+> | cell | pre-fix `allocs/deallocs` | post-fix | residual |
+> |---|---|---|---|
+> | B1 (1 `sconcat`, `\|ys\|`=2) | 7 / 4 | 7 / 7 | +3 → **0** |
+> | B2 (2 chained) | 14 / 7 | 14 / 14 | +7 → **0** |
+> | B3 (3 chained) | 23 / 12 | 23 / 21 | +11 → **+2** |
+> | B4 (1 `sconcat`, `\|ys\|`=4) | 12 / 6 | 12 / 12 | +6 → **0** |
+>
+> `repro_b_single_sconcat_tail_embed_balances` and
+> `repro_b_longer_embedded_tail_balances` FLIP GREEN; both controls stay
+> GREEN. `repro_b_chained_…` stays RED on B3's residual **2**, which M3
+> (`CRANELISP_ALLOC_PARITY=1`) locates as two surviving allocations —
+> `size=25 payload@16=0x1` (a 1-byte `HeapString`) and `size=32
+> payload@16=0x2` (a `SexpBool` ADT). Neither is a tail-embed reference:
+> the rate is gone (the residual no longer scales with `\|ys\|` or with call
+> count in B1/B2/B4), so this is a distinct, constant remainder.
+>
+> **2. Abort face — candidate (i) CONFIRMED by measurement, and now
+> LOCATED.** The §4.1 detector plan was executed BEFORE the fix. Pre-fix
+> matrix (REPL, `PrimitivesOnly`, per-child `env_clear`, 3× each,
+> deterministic):
+>
+> | shape | unarmed | M1 quarantine | M2 scrub | M1+M2 | `RC_DEC_CHECK` |
+> |---|---|---|---|---|---|
+> | control, 0 `sconcat`, 2 cells | `6` ✓ | ✓ | ✓ | ✓ | ✓, no seam hit |
+> | 1 `sconcat` (2 cells) | ✓ | ✓ | ✓ | ✓ | ✓, no seam hit |
+> | 2 `sconcat` (4 cells) | `4` ✓ | ✓ | **match failed** | **match failed** | ✓, no seam hit |
+> | 3 `sconcat` (6 cells) | **abort 134** | ✓ **clean** | abort 134 | **match failed** | abort 134, no seam hit |
+>
+> - **D0 (mode divergence):** `--run` completes clean at the identical
+>   6-cell shape (3/3) while the REPL twin aborts `corrupted double-linked
+>   list` (3/3) AFTER printing `:primitives/Int 6`. But M1+M2 shows the
+>   underlying premature free is present in `--run` too — only the
+>   escalation to a glibc abort is mode-divergent.
+> - **D1 (`CRANELISP_RC_DEC_CHECK`, §7.5 precheck armed on both repro-A
+>   children):** **nothing is rejected.** No `[CRANELISP RC/ALLOC SEAM
+>   VIOLATION]` at `rc_inc`, `consume_shallow` or `atomic_dec_rc`; both
+>   children still abort 3/3. Every pointer the deep walk inc'd was a
+>   plausible live base. Under M1 the always-on `is_live` twins in `rc_inc`
+>   / `atomic_dec_rc` also never fire. **This falsifies candidate (ii)** —
+>   the deep walk was not the wild write.
+> - **D2 (M1 quarantine):** the 6-cell abort **DISAPPEARS** on both repro-A
+>   children (3/3 clean, correct value, runner reports `1 passed`). The
+>   corruption is therefore a write into a **reused** freed chunk, not a
+>   leak effect.
+> - **D3 (M2 scrub, ± M1):** the 4- and 6-cell shapes return `runtime
+>   error: match failed` — the `match` in `sfold` reads a scrutinee whose
+>   tag word is the `0xDEAD2FEE…` poison. (One run rendered the panic text
+>   as `runtime oanic`, a poisoned byte inside the message string itself.)
+>   **A use-after-free READ exists at HEAD from 2 chained `sconcat` calls
+>   up, and is invisible unarmed.** This is FIXME 0815's `match failed`
+>   symptom, reproduced under detection.
+>
+> **Post-fix (D4 and the armed re-demonstration): the surplus references
+> were MASKING the premature free, exactly as §4's warning predicted.**
+> Shapes that were clean under M1 pre-fix now abort under M1 post-fix
+> (4-cell and 6-cell), and `alloc.rs:278` names it: **`double free or
+> invalid free at 0x…`**. With `CRANELISP_RC_DEC_CHECK` armed post-fix both
+> repro-A children emit a located message that names the seam:
+>
+> ```
+> STALE RC DEC (JIT inline): about to dec non-live heap pointer 0x… — already
+> freed and reclaimed; this dec corrupts the reused chunk.
+> Freed-value (size, payload@16) = Some((25, 1)).
+> ```
+>
+> `size=25` = `HeapHeader::SIZE + 8 + 1` — a **one-byte `HeapString`**, i.e.
+> a `SexpSym "x"`/`"y"` name; `(JIT inline)` = the **backend-emitted inline
+> dec**, not a marshal or intrinsics body. So the surviving abort face is a
+> double release of a heap `String` extracted under a constructor pattern —
+> the FIXME 0810 Face B / 0782 match-owned-scrutinee family that every
+> repro-A cell runs through `sfold`'s `(match xs [(SCons h t) …])`. Per §7
+> and the honesty caveat above this is a **new `/qa` attribution**, never a
+> re-open of the migrated backend Track-B seams and never a reason to roll
+> back a fix that is correct against RE-1 and pinned by repro B.
+>
+> Post-fix repro-B armed lane is CLEAN: B1/B2/B4 pass `CRANELISP_RC_DEC_CHECK`
+> and M3 with exit = the correct value and exact balance; only B3 trips M3,
+> on the residual-2 above.
+>
+> **3. Prelude-load face — BRANCH F. The scope note's binding prediction
+> FAILED.** The P-ladder re-run post-fix is **byte-identical** to pre-fix:
+> P0 0, P1 0, P2 0, P3 **+2**, P3b **+4**, P3c **+23**, P4 **1143** (allocs
+> 1198 / deallocs 55, unchanged). The ambient prelude-load residue does NOT
+> come through `sconcat`'s tail embed. Cells #10/#19/#20/#23 stay RED and
+> #21 keeps its ambient term; per plan §2.5 Branch F this is a distinct
+> defect no current track owns and the sprint owes the user a scope
+> decision. The P3 shape (two tiny modules, one macro invocation, +2)
+> remains the minimal deterministic reduction. Note for whoever picks it
+> up: `quote_sexp`/`quote_slist` is the OTHER `marshal.rs` producer on the
+> macro-expansion path, and its `+2`-per-invocation / linear-in-sexp-size
+> signature is untouched by RE-1.
+
 > **S118 W2b /design(intrinsics) CONTRACT RULING (2026-07-26). Ruled:
 > structural tail-embedding takes a HEAD-ONLY inc — candidate (a).**
 > `consume_slist` is CORRECT tree-ownership drop glue and does **not** change;
