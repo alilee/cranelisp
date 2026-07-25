@@ -291,6 +291,8 @@ Baseline reconciliation of the two low-confidence cells from the captured log; 0
 | W1+ | /qa | promotion pass: ambient-residue attribution (user macro-expansion lead), #10 green, 0867/0830 dispositions | fable (shim) | xhigh | — |
 | W2a | /dev | cranelisp-intrinsics: precheck hoist, plant protocol, 8 detection triplets, 0850 + ruling-7 | opus[1m] (shim) | high | — |
 | W2a | /review | cranelisp-intrinsics: three-commit Track A change-set | codex (delegated) + fable adjudicator | high | first production delegated review |
+| W2a | /dev | cranelisp-intrinsics: 0880 SAFETY-comment fix | opus[1m] (shim) | high | Blocker resolution |
+| W2a | /review | cranelisp-intrinsics: re-review after 0880 (delegated) | codex (delegated) + fable adjudicator | high | Blocker re-review |
 
 ## Notes
 
