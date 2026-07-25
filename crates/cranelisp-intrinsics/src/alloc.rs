@@ -250,6 +250,25 @@ pub unsafe fn dealloc(base: *mut u8) {
     #[cfg(debug_assertions)]
     scan_live_headers("dealloc-entry");
 
+    // A4 release-gated PREcheck (design §7.5): hoisted ABOVE the debug tracking
+    // block (whose always-on twins would otherwise pre-empt it in the debug
+    // profile) and above `Layout` construction, so a malformed or poisoned
+    // header produces a located seam message instead of a `Layout` panic or a
+    // free with the wrong layout. Reads no side table, so it fires in the
+    // release/`--link` lane too. The double-free + header-integrity halves stay
+    // debug-only (they need `LIVE_ALLOCS`); M3's exit parity is their release
+    // face (a double-free shows as DEALLOC_COUNT > ALLOC_COUNT).
+    if crate::diagnostics::rc_check_release_enabled()
+        && !crate::diagnostics::header_size_plausible(total_size as i64)
+    {
+        crate::diagnostics::seam_hard_fail(&format!(
+            "dealloc: PRECHECK rejected base {:#x} BEFORE disposal — header alloc_size \
+             {total_size} is not a plausible allocation size (below HeapHeader::SIZE, \
+             or no valid Layout)",
+            base as usize
+        ));
+    }
+
     #[cfg(debug_assertions)]
     {
         let addr = base as usize;
@@ -275,16 +294,6 @@ pub unsafe fn dealloc(base: *mut u8) {
         }
     }
 
-    // A4 release-gated (design §5): header sanity that reads no side table, so it
-    // fires in the release/`--link` lane too. The double-free + header-integrity
-    // halves stay debug-only (they need `LIVE_ALLOCS`); M3's exit parity is their
-    // release face (a double-free shows as DEALLOC_COUNT > ALLOC_COUNT).
-    if crate::diagnostics::rc_check_release_enabled() && total_size < HeapHeader::SIZE {
-        crate::diagnostics::seam_hard_fail(&format!(
-            "dealloc: invalid alloc_size {total_size} at {:#x} (below HeapHeader::SIZE)",
-            base as usize
-        ));
-    }
     debug_assert!(
         total_size >= HeapHeader::SIZE,
         "invalid alloc_size {total_size} at {:#x}",

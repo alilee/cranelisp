@@ -412,6 +412,11 @@ pub fn consume_shallow(ptr: i64) {
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to dec
     }
+    // A2 PREcheck (design §7.5): the env-gated seam validation runs FIRST —
+    // before the `fetch_sub` below and before the always-on debug twin, so a
+    // stale/interior/poisoned target is rejected instead of mutated. Off ⇒ one
+    // cached bool load (byte-identical-off).
+    crate::diagnostics::seam_precheck(ptr, "consume_shallow");
     // FIXME 0494 localization: catch a dec of an already-freed pointer AT the dec.
     #[cfg(debug_assertions)]
     debug_assert!(
@@ -485,6 +490,11 @@ pub fn rc_inc(ptr: i64) {
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to inc
     }
+    // A1 PREcheck (design §7.5): the env-gated seam validation runs FIRST —
+    // before the `fetch_add` below and before the always-on debug twin, so an
+    // inc of a freed/poisoned/zero-RC target is rejected rather than
+    // resurrecting a dead chunk. Off ⇒ one cached bool load.
+    crate::diagnostics::seam_precheck(ptr, "rc_inc");
     // A1 (safety-invariants §4 R8 / §5, the inc-half of FIXME 0494's dec-half):
     // an inc of a freed/poisoned pointer is a defect. Debug asserts liveness AT
     // the offending inc — before any deref, so a stale (freed) pointer names its

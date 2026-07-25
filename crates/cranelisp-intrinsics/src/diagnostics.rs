@@ -29,7 +29,10 @@
 
 use std::alloc::Layout;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};
+
+use cranelisp_types::HeapHeader;
 
 // ---------------------------------------------------------------------------
 // Env gates (cached at process start; one bool load per query when off)
@@ -123,6 +126,117 @@ pub(crate) fn ensure_parity_registered() {
 pub(crate) fn seam_hard_fail(msg: &str) -> ! {
     eprintln!("[CRANELISP RC/ALLOC SEAM VIOLATION] {msg}");
     std::process::abort();
+}
+
+// ---------------------------------------------------------------------------
+// §7.5 — the shared seam PREcheck (validation strictly before mutation)
+// ---------------------------------------------------------------------------
+//
+// The single owner (Principle 7) of the env-gated RC/alloc seam validation.
+// Hoisted to the TOP of `rc::rc_inc`, `rc::consume_shallow` and
+// `drop::atomic_dec_rc` — above the RMW they guard AND above the always-on
+// `debug_assert!` twins. Two reasons, both load-bearing (design §7.5):
+//
+//  1. **Validation before mutation** (Principle 25 — a narrowing whose check
+//     runs after the narrowed operation is not a check). The pre-S118 shape
+//     ran every gated check AFTER its `fetch_add`/`fetch_sub`, so the seam
+//     could only ever report a mutation it had already performed.
+//  2. **The debug twins pre-empt the gate.** Unit/e2e children run in the
+//     debug profile where `debug_assert!(is_live(..))` is live; a planted
+//     fault trips the twin and the gated check is never reached, so a
+//     detection proof would fail against a *working* detector.
+//
+// The post-RMW gates in those three seams deliberately STAY: the precheck
+// covers the single-threaded planted case, the post-RMW check keeps the
+// concurrent-race window. Both emit the same `[CRANELISP RC/ALLOC SEAM
+// VIOLATION]` prefix.
+//
+// Byte-identical-off: armed only by `CRANELISP_RC_DEC_CHECK`, whose cached
+// bool load is already on these paths — no new load, branch, or emitted IR.
+
+/// Is `alloc_size` (the word at base+0) a plausible allocation size?
+///
+/// The **release face** of "the target is a live allocation base". The
+/// `is_live` half needs the `#[cfg(debug_assertions)]` `LIVE_ALLOCS` side
+/// table, so the release lane has never had one; this is its honest
+/// approximation, and `/qa`'s R8 regrade must grade it at that tier — a
+/// **plausibility check, not a proof of basehood** (design §7.5).
+///
+/// It rejects exactly two shapes the plants exercise:
+/// - an **interior / non-base** address, whose word@0 is an ADT tag, a length,
+///   or a field value rather than a size (A2);
+/// - a **poisoned or otherwise clobbered** base, whose word@0 is
+///   `0xDEAD2FEE_DEAD2FEE` — negative as an `i64`, and far past any layout
+///   Rust can construct when read as a `usize` (A3, A4).
+///
+/// Deliberately NOT part of the predicate: 8-alignment of the *size value*.
+/// `HeapString`'s payload is `8 + byte_len` **raw bytes**, so a legitimate
+/// 3-byte string's `alloc_size` is `27` — an alignment clause on the size
+/// would hard-fail every string dec in the armed lane. The Layout-validity
+/// clause achieves the design's stated goal (a located seam message instead of
+/// a `Layout` panic on a poisoned header) without that false-positive class.
+#[inline]
+pub(crate) fn header_size_plausible(alloc_size: i64) -> bool {
+    match usize::try_from(alloc_size) {
+        Ok(size) => size >= HeapHeader::SIZE && Layout::from_size_align(size, 8).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The precheck predicate, pure over the two header words it reads, so both
+/// polarities are unit-testable without arming a gate or aborting a process
+/// (Principle 5). `None` ⇒ accept; `Some(reason)` ⇒ reject with `reason`.
+pub(crate) fn seam_precheck_verdict(alloc_size: i64, rc: i64) -> Option<&'static str> {
+    if !header_size_plausible(alloc_size) {
+        return Some(
+            "header alloc_size is not a plausible allocation size (< HeapHeader::SIZE, \
+             negative, or no valid Layout) — an interior/non-base address, or a \
+             poisoned/quarantined base",
+        );
+    }
+    if rc <= 0 {
+        return Some("rc is <= 0 — the target was already released (stale/poisoned)");
+    }
+    None
+}
+
+/// Validate an alleged heap base at an RC seam **before** the seam mutates it.
+/// No-op unless [`rc_check_release_enabled`]; on rejection, a located
+/// [`seam_hard_fail`] naming `site`, the pointer, and which predicate failed.
+///
+/// Callers MUST have applied the nullary-tag guard first (a bare Mixed-category
+/// tag is not a heap pointer and has no header to read).
+///
+/// Fault risk is a signal, not a regression: the armed precheck dereferences
+/// the alleged base's first two words, so a wholly wild pointer may fault at
+/// the read — a located crash AT the offending seam, strictly better than the
+/// silent RMW it replaces, and reachable only with the gate armed.
+#[inline]
+pub(crate) fn seam_precheck(ptr: i64, site: &'static str) {
+    if !rc_check_release_enabled() {
+        return;
+    }
+    seam_precheck_armed(ptr, site);
+}
+
+/// The armed body of [`seam_precheck`], out-of-line so the off path stays one
+/// cached bool load.
+#[inline(never)]
+fn seam_precheck_armed(ptr: i64, site: &'static str) {
+    // SAFETY: `ptr` is the alleged base of a heap allocation at an RC seam
+    // (past the nullary-tag guard). Reading the two header words is exactly
+    // what the seam is about to do to the RC field; see the fault-risk note.
+    let alloc_size = unsafe { crate::heap_access::read_i64(ptr, 0) };
+    let rc = unsafe {
+        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    }
+    .load(Ordering::Relaxed);
+    if let Some(why) = seam_precheck_verdict(alloc_size, rc) {
+        seam_hard_fail(&format!(
+            "{site}: PRECHECK rejected ptr {ptr:#x} BEFORE mutation — {why} \
+             (header alloc_size={alloc_size}, rc={rc})"
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------

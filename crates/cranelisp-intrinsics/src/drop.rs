@@ -75,6 +75,12 @@ unsafe fn read_i64(base: i64, offset: usize) -> i64 {
 /// `ptr` must be a valid heap pointer with `rc > 0`.
 #[inline]
 unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
+    // A3 PREcheck (design §7.5): the env-gated seam validation runs FIRST — before
+    // the `fetch_sub` below and before the always-on debug twin. This is the funnel
+    // every recursive drop-glue leaf routes through, so the 0633/0638 recursive-free
+    // seams inherit validation-before-mutation. Callers have already applied the
+    // nullary-tag guard. Off ⇒ one cached bool load (byte-identical-off).
+    crate::diagnostics::seam_precheck(ptr, "atomic_dec_rc (drop glue)");
     // FIXME 0494 localization: a dec of an already-freed (stale) heap pointer writes
     // into reclaimed/reused memory (the atomic fetch_sub clobbers a smallbin chunk's
     // freelist pointer) — the UAF-write that surfaces later as `free(): chunks in
