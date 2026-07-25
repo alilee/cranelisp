@@ -63,9 +63,10 @@ tests/
   CLAUDE.md              — this file
   plan/                  — /qa's plan + tooling (see above)
   helpers/
-    mod.rs               — module declarations only (pub mod e2e; pub mod regex;)
+    mod.rs               — module declarations only (pub mod e2e; marginal; regex;)
     e2e.rs               — the e2e harness: `Cranelisp` builder + subprocess
                             primitives + tmpdir/fixture management. Source of truth.
+    marginal.rs          — the marginal-balance harness (see below)
     regex.rs             — named regex library for matching compiler output
   fixtures/              — on-disk fixtures (preludes/, stdlib_project/, golden/, …)
   scripts/               — build-link-prereqs.sh and other suite-level scripts
@@ -76,8 +77,11 @@ tests/
 
 ## Test helpers
 
-The only sanctioned helper API is the `Cranelisp` builder in
-`tests/helpers/e2e.rs` — the source of truth. Every test file imports it:
+Two sanctioned helper APIs, and no others: the `Cranelisp` builder in
+`tests/helpers/e2e.rs` (below) and the marginal-balance harness in
+`tests/helpers/marginal.rs` (§"Allocator balance is measured marginally").
+`e2e.rs` is the source of truth for everything else. Every test file imports
+what it needs:
 
 ```rust
 mod helpers;
@@ -119,6 +123,45 @@ materialise a file from `tests/fixtures/preludes/`:
 - **`PreludeVariant::TestStandard`** — Option, Result, Num, Eq, Ord
   (`preludes/test-standard.cl`). Use when the test needs operators, `Option`/
   `Result`, or trait dispatch.
+
+## Allocator balance is measured MARGINALLY, never absolutely
+
+**Rule:** a cell asserting allocator balance over a child that loads a prelude
+MUST measure a control/subject **pair** and assert on the difference. Absolute
+`allocs == deallocs`, and thresholds like `residue <= 1400`, are both banned for
+this class.
+
+**Why:** every stdlib-prelude child carries a program-independent compile-time
+residual — 1143 allocations at S118 HEAD — from the int-side macro-turn marshal
+boundary (FIXME 0889). An absolute cell over such a child measures **only** that
+residual: it reads RED regardless of the runtime behaviour it is named after,
+and it would read GREEN again the moment 0889 is fixed even if that behaviour
+had rotted meanwhile. Either way it is not an instrument. A threshold is worse
+than useless in the same situation — it encodes today's ambient number as slack,
+silently absorbing new leaks up to it, and it has to be re-derived every time the
+baseline moves. Four S118 baseline cells were RED on this alone; the S118 W1
+measurement is the worked example (`tests/plan/s118-test-plan.md` §2.5).
+
+**How:** `helpers::marginal` — `MarginalPair::new(label, control, subject)`, two
+`Child`s that differ in exactly ONE thing (the program, or one macro invocation
+in the library tree), `.instrument(…)`, `.measure()`, then `assert_balanced` (the
+workload leaked nothing) or `assert_residual(n)` (an exact documented residual).
+Both children are spawned identically by construction: same lane binary, fresh
+private tempdirs, `--run --no-cache`, `env_clear()` + one enumerated allow-list,
+instrument armed per-child. Every term common to both — prelude load, macro
+expansion, the 0889 residual — cancels, and the instrument stays valid unchanged
+after 0889 is fixed (the common term simply goes to zero).
+
+**The harness has its own capability fence**
+(`tests/marginal_harness_capability.rs`) and it is not optional reading: a
+marginal that cannot see a real leak is a false green in every cell built on it.
+It pins the resolution at one block (the M3 plant's single suppressed dealloc),
+the zero-marginal polarity for identical children, and — load-bearing — that the
+ambient residual is *deterministic run-to-run*, so subtracting it is exact rather
+than approximate.
+
+Worked callsites: `tests/ms_p8_conj_leak.rs`,
+`tests/intrinsics_m3_detection_s116.rs`, `tests/macro_turn_marshal_leak_0889.rs`.
 
 ## Test isolation (prelude & stdlib)
 
