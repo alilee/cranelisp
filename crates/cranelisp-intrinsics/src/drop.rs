@@ -111,6 +111,14 @@ unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
         // SAFETY: caller guarantees ptr is a valid heap base with rc > 0.
         unsafe { rc::nonatomic_rc_rmw(ptr, -1) }
     } else {
+        // SAFETY: this fn's `# Safety` contract requires `ptr` be a valid heap
+        // base with `rc > 0`, and every caller below applies the nullary-tag
+        // guard first, so `ptr` is a real allocation base. `RC_OFFSET` (8) lies
+        // inside the 16-byte header that `alloc::alloc_with_rc` writes on every
+        // allocation, and the base is 8-aligned, so the cell is a valid,
+        // correctly-aligned `AtomicI64`. The borrow lives only for the
+        // `fetch_sub` below — no other reference to the cell is created here,
+        // and concurrent decs go through the same atomic.
         let rc_ptr = unsafe {
             &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
         };
@@ -151,9 +159,24 @@ pub fn consume_slist(mut ptr: i64) {
             return; // SNil or bare tag
         }
         // Read fields BEFORE dec so we can recurse on the last-ref path.
+        // SAFETY: `ptr` cleared the nullary-tag guard immediately above, so per
+        // this fn's `# Safety` contract it is a live SCons base — and the dec
+        // below has not run yet, so the reference that brought us here still
+        // holds the allocation. An SCons node is `[header | tag@16 | head@24 |
+        // tail@32]`, so `FIELD0_OFFSET` (24) is an 8-aligned cell inside it.
         let head = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
+        // SAFETY: same still-owned, pre-dec SCons base as the read above (no
+        // mutation between them), and `FIELD1_OFFSET` (32) is that node's tail
+        // cell — the last field of the two-field SCons allocation, so also in
+        // bounds and 8-aligned. Reading both fields before the dec is what makes
+        // the last-ref path sound: the values are in registers by the time the
+        // node is freed below.
         let tail = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) };
 
+        // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`.
+        // `ptr` passed the nullary-tag guard and, per this fn's `# Safety`
+        // contract, names a live SCons node; this call releases exactly the one
+        // reference the caller handed us.
         let old_rc = unsafe { atomic_dec_rc(ptr) };
         if old_rc != 1 {
             return; // not last ref — head/tail stay owned by siblings
@@ -163,6 +186,12 @@ pub fn consume_slist(mut ptr: i64) {
         // Last ref: recursively release head (Sexp), then dealloc this node,
         // then iterate to tail to avoid unbounded recursion on long chains.
         consume_sexp(head);
+        // SAFETY: `old_rc == 1` means this thread just dropped the final
+        // reference, so no other holder can observe the node; the Acquire fence
+        // above orders every prior owner's writes before this free. The dec does
+        // not free, so `ptr` is still the un-freed `alloc_with_rc` base this
+        // frame owns — exactly `dealloc`'s contract — and `head`/`tail` were
+        // copied out before the free.
         unsafe { alloc::dealloc(ptr as *mut u8) };
         ptr = tail;
     }
@@ -188,9 +217,22 @@ pub fn consume_sexp(ptr: i64) {
     }
     // Read tag + field0 before dec so the recursive step has them on the
     // last-ref path.
+    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
+    // `# Safety` contract it is a live Sexp base, and the dec below has not run
+    // — our caller's reference still holds the allocation. Every heap Sexp is a
+    // data-constructor allocation `[header | tag@16 | field0@24]`, so
+    // `TAG_OFFSET` (16) is in bounds and 8-aligned.
     let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
+    // SAFETY: same still-owned, pre-dec Sexp base. Every Sexp constructor that
+    // is heap-allocated is unary (nullary ones are bare tags, excluded by the
+    // guard), so `FIELD0_OFFSET` (24) is a present, in-bounds, 8-aligned cell
+    // whatever `tag` turned out to be — the read is sound before the tag is
+    // interpreted below.
     let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
 
+    // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
+    // passed the nullary-tag guard and is a live Sexp node per this fn's
+    // `# Safety` contract. This call releases the caller's one reference.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
@@ -211,6 +253,11 @@ pub fn consume_sexp(ptr: i64) {
             // SexpInt/Float/Bool (tags 0/1/2) — field0 is a scalar, no RC.
         }
     }
+    // SAFETY: reached only with `old_rc == 1`, i.e. this thread dropped the last
+    // reference and no other holder can observe the node; the Acquire fence
+    // above orders prior owners' writes before the free. `atomic_dec_rc` does
+    // not free, so `ptr` is still the un-freed `alloc_with_rc` base, and
+    // `tag`/`field0` were copied out before this point.
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 
@@ -234,12 +281,28 @@ pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
+    // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
+    // passed the nullary-tag guard above and, per this fn's `# Safety` contract,
+    // is a live Vec-struct base. This call releases the caller's reference.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
     }
     std::sync::atomic::fence(Ordering::Acquire);
 
+    // SAFETY (whole block): reached only on the last-ref path (`old_rc == 1`),
+    // so this thread is the sole owner of a still-allocated Vec struct — the dec
+    // does not free; the `alloc::dealloc` at the foot of this block is the one
+    // free — and the Acquire fence above orders every prior owner's stores
+    // before the reads. Per this fn's `# Safety` contract the base is a Vec
+    // struct `[header | len@16 | cap@24 | data_ptr@32]` (`vec_runtime`'s locked
+    // offsets), so the three reads are in bounds and 8-aligned. `data` is the
+    // `cap * 8` element buffer that struct exclusively owns, so `data.add(i)`
+    // for `i < len <= cap` stays inside it; the caller's contract makes
+    // `elem_consume` safe on those in-Vec i64s. Both frees are the matching
+    // deallocations for the Vec's two allocations (`free_data_buffer` takes the
+    // same `data`/`cap` pair just read from the struct; `dealloc` takes the
+    // `alloc_with_rc` base), each executed exactly once on this sole-owner path.
     unsafe {
         let base = ptr as *mut u8;
         // Layout authority: `vec_runtime`'s locked offsets. Mechanical access:
@@ -292,18 +355,36 @@ pub fn consume_io_tree(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
+    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
+    // `# Safety` contract it is a live IO-tree node base, and the dec below has
+    // not run — the caller's reference still holds the allocation. Every IO node
+    // is a data-constructor allocation `[header | tag@16 | field0@24 | …]`, so
+    // `TAG_OFFSET` (16) is in bounds and 8-aligned.
     let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
 
     // Snapshot fields needed for recursion on the last-ref path.
+    // SAFETY: same still-owned, pre-dec IO node. Field 0 is present on every IO
+    // constructor this module dispatches (Pure payload, Effect thunk, Bind
+    // inner, Par count, EffectPoll state-closure, Launch sub-tree, Select
+    // carrier), so `FIELD0_OFFSET` (24) is in bounds whatever `tag` holds —
+    // including the `_` unknown-tag arm, which only discards the value.
     let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
 
     // For Bind/Par we also need field1/branches.
     let field1 = if tag == IO_TAG_BIND {
+        // SAFETY: same still-owned, pre-dec IO node, and this read is reached
+        // only under `tag == IO_TAG_BIND` — a Bind is the two-field allocation
+        // `[header | tag | inner@24 | cont@32]`, so `FIELD1_OFFSET` (32) is in
+        // bounds here. The tag test is load-bearing: the one-field constructors
+        // (Pure/Effect-poll/Launch/Select) have no cell at 32.
         unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) }
     } else {
         0
     };
 
+    // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
+    // passed the nullary-tag guard and is a live IO node per this fn's
+    // `# Safety` contract. This call releases the caller's one reference.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
@@ -389,6 +470,12 @@ pub fn consume_io_tree(ptr: i64) {
             // Unknown IO tag — treat conservatively as scalar fields.
         }
     }
+    // SAFETY: reached only with `old_rc == 1` — this thread dropped the last
+    // reference, so no other holder can observe the node, and the Acquire fence
+    // above orders prior owners' writes before the free. `atomic_dec_rc` does
+    // not free, so `ptr` is still the un-freed `alloc_with_rc` base; every field
+    // the arms above needed was read (or, for PAR/SELECT, walked by
+    // `free_io_branches`) before this point.
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 
@@ -417,9 +504,21 @@ pub fn consume_io_tree(ptr: i64) {
 /// `IO_TAG_PAR` or `IO_TAG_SELECT`.
 fn free_io_branches(ptr: i64, tag: i64) {
     if tag == IO_TAG_PAR {
+        // SAFETY: per this fn's `# Safety` contract `ptr` is a still-allocated
+        // IO node base — both callers reach here on their last-ref path, after
+        // the dec but strictly before their `alloc::dealloc`, so the node's
+        // memory is live and solely owned by this thread. This branch is guarded
+        // by `tag == IO_TAG_PAR`, whose layout is `[header | tag@16 | count@24 |
+        // branch_0@32 | …]`, so `FIELD0_OFFSET` (24) is the in-bounds,
+        // 8-aligned count cell.
         let count = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) } as usize;
         for i in 0..count {
             // Branches live at FIELD1_OFFSET + i*8.
+            // SAFETY: same still-allocated, solely-owned Par node. `count` was
+            // just read from that node's own count field, and the backend
+            // allocates exactly `count` branch cells starting at
+            // `FIELD1_OFFSET`, so `FIELD1_OFFSET + i*8` for `i < count` stays
+            // inside the allocation and stays 8-aligned.
             let branch = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET + (i as isize) * 8) };
             consume_io_tree(branch);
         }
@@ -427,6 +526,10 @@ fn free_io_branches(ptr: i64, tag: i64) {
         // IO_TAG_SELECT (literal 6 — the constant is `concurrency`-gated in
         // cranelisp-platform and this file is ungated; same style as the
         // `consume_io_tree` SELECT arm).
+        // SAFETY: same still-allocated, solely-owned node the `# Safety`
+        // contract promises (read before the caller's `dealloc`), here under
+        // `tag == IO_TAG_SELECT`, whose field 0 is the branch-carrier
+        // `Vec (IO a)` pointer — an in-bounds, 8-aligned cell of the node.
         let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
         consume_vec_with(field0, consume_io_tree);
     }
@@ -476,13 +579,25 @@ pub fn dec_shallow_io(ptr: i64) {
     // state-closure that the `EffectPoll` releases at resolve, so this shallow dec
     // frees the closure only at true rc→0 (when both refs have dropped) — field-0 is
     // untouched (no sentinel), so this stays a plain unconditional dec.
+    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
+    // `# Safety` contract it is a live IO ADT node with `rc > 0`, and the dec
+    // below has not run — the caller's reference still holds the allocation.
+    // `TAG_OFFSET` (16) is the tag cell every IO node carries directly after the
+    // header, so the read is in bounds and 8-aligned.
     let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
     let poll_closure = if tag == 4 {
+        // SAFETY: same still-owned, pre-dec IO node, guarded by `tag == 4`
+        // (`IO_TAG_EFFECT_POLL`) — that node carries its state-closure at field
+        // 0, so `FIELD0_OFFSET` (24) is an in-bounds, 8-aligned cell. It must be
+        // read here, before the dec-and-free below, because the node is gone by
+        // the time the value is used.
         unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) }
     } else {
         0
     };
-    // SAFETY: caller guarantees `ptr` is a valid heap base with rc > 0.
+    // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
+    // passed the nullary-tag guard and is a live IO node per this fn's
+    // `# Safety` contract. This call releases the caller's one reference.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return; // other references remain; outer allocation stays live.
@@ -507,6 +622,12 @@ pub fn dec_shallow_io(ptr: i64) {
     // Last ref — free the outer allocation. For non-PAR/SELECT tags the fields
     // are intentionally NOT walked; the caller has transferred ownership of
     // every heap-typed field to another holder (see §3.5.4).
+    // SAFETY: reached only with `old_rc == 1` — this thread dropped the last
+    // reference, so no other holder can observe the node, and the Acquire fence
+    // above orders prior owners' writes before the free. `atomic_dec_rc` does
+    // not free, so `ptr` is still the un-freed `alloc_with_rc` base; the poll
+    // closure and any PAR/SELECT branches were released above, before the node
+    // holding their pointers goes away.
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 
@@ -533,8 +654,19 @@ pub fn consume_closure(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
+    // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
+    // `# Safety` contract it is a live closure base, and the dec below has not
+    // run — the caller's reference still holds the allocation. A backend-emitted
+    // HeapClosure is `[header | code_ptr@16 | drop_glue_ptr@24 | captures@32…]`
+    // (Decision 11), so `CLOSURE_DROP_GLUE_OFFSET` (24) is an in-bounds,
+    // 8-aligned cell present on every closure, capture-carrying or not. Reading
+    // it before the dec is what leaves the glue pointer available on the
+    // last-ref path, after the allocation is freed below.
     let drop_glue_ptr = unsafe { heap_access::read_i64(ptr, CLOSURE_DROP_GLUE_OFFSET) };
 
+    // SAFETY: `atomic_dec_rc` requires a valid heap base with `rc > 0`; `ptr`
+    // passed the nullary-tag guard and is a live closure per this fn's
+    // `# Safety` contract. This call releases the caller's one reference.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
@@ -544,10 +676,23 @@ pub fn consume_closure(ptr: i64) {
     // If the closure has captures, call the backend-generated drop-glue
     // function (signature: fn(closure_ptr) -> ()).
     if drop_glue_ptr != 0 {
+        // SAFETY: a non-zero `drop_glue_ptr` at offset 24 is, by the Decision-11
+        // closure layout the `# Safety` contract assumes, a pointer to a
+        // backend-generated drop-glue function with signature
+        // `extern "C" fn(i64)` — the same shape being transmuted to, so the call
+        // ABI matches. The code it points at is JIT- or object-resident for the
+        // lifetime of the module that emitted the closure, which outlives this
+        // closure instance, and we are on the last-ref path so the captures it
+        // decs are still live and solely ours.
         let drop_fn: extern "C" fn(i64) =
             unsafe { std::mem::transmute(drop_glue_ptr as *const ()) };
         drop_fn(ptr);
     }
+    // SAFETY: reached only with `old_rc == 1` — this thread dropped the last
+    // reference, so no other holder can observe the closure, and the Acquire
+    // fence above orders prior owners' writes before the free. `atomic_dec_rc`
+    // does not free, so `ptr` is still the un-freed `alloc_with_rc` base, and
+    // the drop glue (which reads the captures through `ptr`) has already run.
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 
