@@ -170,15 +170,25 @@ fn decision24_sconcat_rc_balanced() {
 // =====================================================================
 
 /// Read the RC word of a heap value through the canonical header offset.
-/// Nullary tags carry no header, so passing one is a test-authoring error.
-fn rc_of(ptr: i64) -> i64 {
+///
+/// # Safety
+///
+/// `ptr` MUST be a **live, not-yet-released base pointer** produced by this
+/// module's allocators (`alloc_adt_2` / `alloc_adt_3` / `alloc_string`, i.e.
+/// `alloc_with_rc`) and still owned by the caller across the read.
+///
+/// That is a **caller** property and the reason this is an `unsafe fn`: the
+/// `NULLARY_THRESHOLD` assert below establishes neither provenance, liveness,
+/// nor shape — *any* `i64` above the threshold clears it. The assert is a
+/// tripwire for the one misuse a live value can legitimately be (a bare
+/// nullary tag, which carries no header at all), not a proof of validity.
+unsafe fn rc_of(ptr: i64) -> i64 {
     assert!(
         ptr >= NULLARY_THRESHOLD,
         "rc_of called on the bare nullary tag {ptr} — it has no header"
     );
-    // SAFETY: `ptr` cleared the nullary-tag guard, so it is a base pointer
-    // from `alloc_with_rc`; `RC_OFFSET` (8) is inside the header every such
-    // allocation carries.
+    // SAFETY: the caller guarantees `ptr` is a live `alloc_with_rc` base, so
+    // `RC_OFFSET` (8) is inside the header every such allocation carries.
     unsafe { read_i64(ptr, HeapHeader::RC_OFFSET as usize) }
 }
 
@@ -193,17 +203,32 @@ fn heap_slist(n: usize) -> i64 {
 /// Every SCons node and every heap-typed element of an SList, head first —
 /// the complete set of reference holders RE-1 says an embed must not touch
 /// beyond the head.
-fn nodes_and_elements(mut ptr: i64) -> (Vec<i64>, Vec<i64>) {
+///
+/// # Safety
+///
+/// `ptr` MUST be a **live, well-formed SList**: either `TAG_SNIL` (or another
+/// bare nullary tag) or a not-yet-released three-slot `TAG_SCONS` base from
+/// `alloc_adt_3`, whose tail cell recursively satisfies the same contract and
+/// whose whole chain the caller still owns across the walk.
+///
+/// The loop condition (`ptr >= NULLARY_THRESHOLD`) is a *termination* test, not
+/// a validity test: it cannot distinguish an SCons base from any other above-
+/// threshold `i64`, so provenance, liveness and three-slot shape are the
+/// caller's to guarantee — hence `unsafe fn`. The returned element pointers
+/// inherit that guarantee and are only as valid as the chain they were read
+/// from.
+unsafe fn nodes_and_elements(mut ptr: i64) -> (Vec<i64>, Vec<i64>) {
     let (mut nodes, mut elements) = (Vec::new(), Vec::new());
     while ptr >= NULLARY_THRESHOLD {
         nodes.push(ptr);
-        // SAFETY: `ptr` is a live SCons base (nullary-tag guard above); both
-        // field offsets are inside its three-slot payload.
+        // SAFETY: the caller guarantees `ptr` is a live three-slot SCons base,
+        // so both field offsets are inside its payload.
         let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
         if head >= NULLARY_THRESHOLD {
             elements.push(head);
         }
-        // SAFETY: as above — `FIELD1_OFFSET` is the same node's tail cell.
+        // SAFETY: as above — `FIELD1_OFFSET` is the same node's tail cell, and
+        // the caller's contract extends to the chain it points at.
         ptr = unsafe { read_i64(ptr, FIELD1_OFFSET) };
     }
     (nodes, elements)
@@ -296,9 +321,9 @@ fn re1_sconcat_residual_does_not_move_with_element_depth() {
 }
 
 // spec: design/runtime/s118-structural-embedding-ownership.md §5 — the
-// INC-COUNT FENCE, asserted against the reference counts themselves rather
-// than by inspection, so a deep-inc regression fails here even if some future
-// accounting change re-balanced the totals.
+// NET-DELTA half of the inc-count fence, asserted against the reference counts
+// themselves rather than by inspection, so a deep-inc regression fails here
+// even if some future accounting change re-balanced the totals.
 //
 // Across one `sconcat` call the whole of `ys` must see a NET RC delta of
 // zero at every node and every element: the head takes the single embed inc
@@ -306,6 +331,13 @@ fn re1_sconcat_residual_does_not_move_with_element_depth() {
 // epilogue, and nothing else in the structure is touched at all. The summed
 // delta is size-independent by construction — under the deep walk it is
 // `(n + h) − 1`, which GROWS with `|ys|`.
+//
+// SCOPE (FIXME 0885): this row proves interior holders were UNTOUCHED and that
+// the surplus does not scale with `|ys|`. It cannot see the difference between
+// "one inc paired with one consume" and "neither" — both net to zero — so it
+// does NOT pin the §3 ruling that the pair stays unconditional and explicit.
+// That is the GROSS-TALLY half's job:
+// `re1_embed_inc_tally_is_one_per_call_plus_one_per_copied_item` below.
 #[test]
 fn re1_embed_takes_exactly_one_reference_whatever_the_tail_size() {
     for n in [1usize, 2, 4, 8] {
@@ -314,12 +346,29 @@ fn re1_embed_takes_exactly_one_reference_whatever_the_tail_size() {
 
         let xs = build_runtime_list(&[make_sexp_sym("x")]);
         let ys = heap_slist(n);
-        let (nodes, elements) = nodes_and_elements(ys);
-        let before: Vec<i64> = nodes.iter().chain(&elements).map(|p| rc_of(*p)).collect();
+        // SAFETY: `ys` is the well-formed SList `heap_slist` just built and this
+        // test still owns; nothing has released it.
+        let (nodes, elements) = unsafe { nodes_and_elements(ys) };
+        // SAFETY: every pointer here was just read out of that live chain — the
+        // nodes are its SCons bases, the elements its heap-typed heads — and the
+        // chain is still owned, so each is a live `alloc_with_rc` base.
+        let before: Vec<i64> = nodes
+            .iter()
+            .chain(&elements)
+            .map(|p| unsafe { rc_of(*p) })
+            .collect();
 
         let result = sconcat(xs, ys);
 
-        let after: Vec<i64> = nodes.iter().chain(&elements).map(|p| rc_of(*p)).collect();
+        // SAFETY: the same live pointers. `sconcat` took a reference on the
+        // embedded head and released only the references it was handed, so the
+        // whole of `ys` is still owned here — through `result`, which this test
+        // has not released yet.
+        let after: Vec<i64> = nodes
+            .iter()
+            .chain(&elements)
+            .map(|p| unsafe { rc_of(*p) })
+            .collect();
         let deltas: Vec<i64> = before.iter().zip(&after).map(|(b, a)| a - b).collect();
         let summed: i64 = deltas.iter().sum();
         assert_eq!(
@@ -344,6 +393,214 @@ fn re1_embed_takes_exactly_one_reference_whatever_the_tail_size() {
     }
 }
 
+// =====================================================================
+// The GROSS inc tally (FIXME 0885) — the structural pin for the §3 ruling
+// =====================================================================
+//
+// WHY A SECOND FENCE. The net-delta row above proves the RC words of `ys` come
+// back where they started. It is blind to the §3-REJECTED "move instead of
+// inc-then-consume" variant (delete BOTH `shallow_rc_inc(ys)` and
+// `consume_slist(ys)`), because deleting a +1 and a −1 leaves every net delta
+// exactly as it was — and that variant also passes every balance row and the
+// shared-tail row. So the ruling that the pair stays UNCONDITIONAL and EXPLICIT
+// (Principle 18 — enforce invariants structurally; Principle 26) had no fence.
+//
+// WHAT THIS ROW ADDS. The RC-stats `rc_inc` tally counts RC operations, not net
+// effect, so it separates "one inc plus one consume" from "neither". The
+// arithmetic pins BOTH terms of RE-1's licensed count independently:
+//
+//     tally(one sconcat call) = |xs items copied| + 1 embed
+//
+// Two scenario children run the SAME four-size tail matrix and differ only in
+// `|xs|` (1 vs 3), against a control child that builds and releases identical
+// fixtures without concatenating. With `C = TALLY_TAIL_SIZES.len()` calls:
+//
+//     D1 = C × (1 + e)        D3 = C × (3 + e)
+//
+// so `(D3 − D1) / (2C) = 1` is the per-copied-item rate and `D1/C − 1 = e` is
+// the per-CALL embed constant. Two equations, two unknowns, both forced to 1.
+//
+// WHY THIS EXCLUDES THE MOVE VARIANT. Deleting the embed inc sets `e = 0`, so
+// the expected pair `(D1, D3) = (8, 16)` becomes `(4, 12)` and both halves of
+// the assertion fail. The exclusion argument has to live in this comment and in
+// the arithmetic rather than in a committed red row: the rejected variant is a
+// DELETION of shipped code, so it cannot be committed alongside the fix. What
+// is committed is an assertion whose expected values are derived from the
+// mechanism (`e = 1`), not observed from the implementation — `e` appears as a
+// named constant below precisely so the derivation is auditable.
+//
+// WHY SUBPROCESSES. The `rc_inc` tally is a process-global counter gated on
+// `CRANELISP_RC_STATS`, published only by the at-exit `[RC_STATS]` line. Arming
+// is child-`Command` + `env_clear` ONLY — never `set_var` (a `LazyLock` already
+// forced makes `set_var` a no-op that merely LOOKS armed; the standing gate is
+// `tests/detector_arming_discipline_guard.rs`), and never suite-global. The
+// three child bodies are ordinary non-`#[ignore]`d tests that assert their own
+// alloc/dealloc balance, so the normal suite executes all of them unarmed on
+// every run; only the parent reads their tallies.
+
+/// The tail sizes every tally child sweeps. `|ys|` must not move the count.
+const TALLY_TAIL_SIZES: [usize; 4] = [1, 2, 4, 8];
+
+/// The embed constant RE-1 licenses: ONE reference per structural embed,
+/// whatever the size and depth of the embedded structure. Derived from the
+/// contract, not from the implementation — it is what this row asserts.
+const EMBED_INCS_PER_CALL: i64 = 1;
+
+/// One real `rc_inc`, paired with its release. Every tally child runs this
+/// first: `rc_stats_enabled()` (and with it the at-exit `[RC_STATS]` printer)
+/// is only forced by the first above-threshold `rc_inc`, so without it the
+/// control child — which performs no incs of its own — would print no line at
+/// all. It contributes exactly 1 to every child and cancels in the differences.
+fn arm_rc_stats_printer() {
+    let cell = alloc_adt_2(TAG_SEXP_INT, 0);
+    shallow_rc_inc(cell);
+    consume_sexp(cell);
+    consume_sexp(cell);
+}
+
+/// The fixture set every tally child builds, identically, for one tail size: a
+/// one-item `xs`, a three-item `xs`, and a tail of size `n` for each. Building
+/// and releasing an SList performs no RC incs; making the fixtures common
+/// anyway means anything that is NOT `sconcat`'s inc traffic is identical
+/// across the three children and cancels in the parent's differences.
+fn tally_fixtures(n: usize) -> (i64, i64, i64, i64) {
+    (heap_slist(1), heap_slist(3), heap_slist(n), heap_slist(n))
+}
+
+/// CONTROL child: builds the fixtures, concatenates NOTHING, releases both
+/// pairs directly. Its tally is the process floor the scenarios subtract.
+#[test]
+fn re1_tally_child_control() {
+    let (a0, d0) = (alloc_count(), dealloc_count());
+    arm_rc_stats_printer();
+    for n in TALLY_TAIL_SIZES {
+        let (xs1, xs3, ys_a, ys_b) = tally_fixtures(n);
+        consume_slist(xs1);
+        consume_slist(ys_a);
+        consume_slist(xs3);
+        consume_slist(ys_b);
+    }
+    assert_eq!(
+        alloc_count() - a0,
+        dealloc_count() - d0,
+        "the tally control child must balance"
+    );
+}
+
+/// SCENARIO child, `|xs| = 1`: one `sconcat` per tail size; the three-item
+/// fixture is released directly so the allocation work matches the control.
+#[test]
+fn re1_tally_child_xs1() {
+    let (a0, d0) = (alloc_count(), dealloc_count());
+    arm_rc_stats_printer();
+    for n in TALLY_TAIL_SIZES {
+        let (xs1, xs3, ys_a, ys_b) = tally_fixtures(n);
+        consume_slist(sconcat(xs1, ys_a));
+        consume_slist(xs3);
+        consume_slist(ys_b);
+    }
+    assert_eq!(
+        alloc_count() - a0,
+        dealloc_count() - d0,
+        "the |xs|=1 tally child must balance"
+    );
+}
+
+/// SCENARIO child, `|xs| = 3`: the same shape with the other fixture pair
+/// routed through `sconcat`, isolating the per-copied-item term.
+#[test]
+fn re1_tally_child_xs3() {
+    let (a0, d0) = (alloc_count(), dealloc_count());
+    arm_rc_stats_printer();
+    for n in TALLY_TAIL_SIZES {
+        let (xs1, xs3, ys_a, ys_b) = tally_fixtures(n);
+        consume_slist(sconcat(xs3, ys_b));
+        consume_slist(xs1);
+        consume_slist(ys_a);
+    }
+    assert_eq!(
+        alloc_count() - a0,
+        dealloc_count() - d0,
+        "the |xs|=3 tally child must balance"
+    );
+}
+
+/// The libtest name of a child body in this binary (`module::path::fn`, with
+/// the crate name stripped — libtest names are crate-root-relative).
+fn tally_child_path(name: &str) -> String {
+    let m = module_path!();
+    let m = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+    format!("{m}::{name}")
+}
+
+/// Run ONE child body in a fresh process with the RC-stats tally armed, and
+/// return its at-exit `rc_inc` count. `env_clear` + an enumerated allow-list:
+/// the arming reaches this child and nothing else, and no ambient `CRANELISP_*`
+/// is inherited.
+fn rc_inc_tally_of_child(child: &str) -> i64 {
+    let exe = std::env::current_exe().expect("current_exe for the RC-stats tally child");
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.env_clear();
+    // The one inherited value: the dynamic-loader path this binary may need.
+    if let Some(p) = std::env::var_os("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", p);
+    }
+    cmd.env("CRANELISP_RC_STATS", "1");
+    cmd.args([&tally_child_path(child), "--exact", "--nocapture"]);
+    let out = cmd.output().expect("spawn the RC-stats tally child");
+    let mut text = String::from_utf8_lossy(&out.stderr).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stdout));
+    assert!(
+        out.status.success(),
+        "[{child}] the tally child must exit normally:\n{text}"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.contains("[RC_STATS]"))
+        .unwrap_or_else(|| panic!("[{child}] no [RC_STATS] line in child output:\n{text}"));
+    let tok = line
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("rc_inc="))
+        .unwrap_or_else(|| panic!("[{child}] [RC_STATS] line carries no rc_inc field: {line}"));
+    tok.parse()
+        .unwrap_or_else(|e| panic!("[{child}] rc_inc={tok:?} is not an integer: {e}"))
+}
+
+// spec: design/runtime/s118-structural-embedding-ownership.md §3 (the
+// unconditional inc/consume ruling; "move instead of inc-then-consume" listed
+// under Rejected mechanism alternatives) + §5 — the GROSS-TALLY half of the
+// inc-count fence. See the block comment above for the derivation and for why
+// the move-variant exclusion argument lives in the arithmetic.
+#[test]
+fn re1_embed_inc_tally_is_one_per_call_plus_one_per_copied_item() {
+    let control = rc_inc_tally_of_child("re1_tally_child_control");
+    let one_item = rc_inc_tally_of_child("re1_tally_child_xs1");
+    let three_items = rc_inc_tally_of_child("re1_tally_child_xs3");
+
+    let calls = TALLY_TAIL_SIZES.len() as i64;
+    let (d1, d3) = (one_item - control, three_items - control);
+    let (want1, want3) = (
+        calls * (1 + EMBED_INCS_PER_CALL),
+        calls * (3 + EMBED_INCS_PER_CALL),
+    );
+    assert_eq!(
+        (d1, d3),
+        (want1, want3),
+        "RE-1 gross inc tally over {calls} `sconcat` calls (tail sizes \
+         {TALLY_TAIL_SIZES:?}): each call must perform exactly |xs| copy incs \
+         plus {EMBED_INCS_PER_CALL} embed inc, independent of |ys|. Expected \
+         |xs|=1 -> {want1} and |xs|=3 -> {want3}; got {d1} and {d3} (raw \
+         tallies control={control} xs1={one_item} xs3={three_items}).\n\
+         \x20 - Both LOW by {calls} (i.e. {}, {}): the embed inc is gone. If the \
+         `consume_slist(ys)` epilogue went with it the totals still balance and \
+         every other RE-1 row stays green — that is the §3-REJECTED move variant, \
+         and this row is its only fence (Principle 18).\n\
+         \x20 - Growing with |ys|: a deep walk has returned (RE-1 corollary).",
+        want1 - calls * EMBED_INCS_PER_CALL,
+        want3 - calls * EMBED_INCS_PER_CALL
+    );
+}
+
 // spec: design/runtime/s118-structural-embedding-ownership.md §5 (shared
 // tail) — the case the head inc is LOAD-BEARING for, and the fence against
 // the rejected deep-consume fix. The caller still holds `ys` after the call
@@ -366,7 +623,14 @@ fn re1_shared_tail_survives_the_results_release() {
     // premature free here would be a stale read; under M1 quarantine it is a
     // detector hit, and in this profile the double-free assert in
     // `alloc::dealloc` catches the release below.)
-    assert_eq!(rc_of(ys), 1, "the tail the caller still holds must survive");
+    // SAFETY: `ys` is the caller's own still-owned reference — the test took an
+    // extra one with `shallow_rc_inc` before the call, and only the call's
+    // reference has been released.
+    assert_eq!(
+        unsafe { rc_of(ys) },
+        1,
+        "the tail the caller still holds must survive"
+    );
     // SAFETY: `ys` is the caller's still-owned SList.
     let items = unsafe { read_slist(ys) };
     assert_eq!(items.len(), 2, "the shared tail must still read correctly");
@@ -391,7 +655,9 @@ fn re1_tail_aliasing_a_suffix_of_xs_balances_and_reads() {
     let d0 = dealloc_count();
 
     let xs = heap_slist(3);
-    let (nodes, _) = nodes_and_elements(xs);
+    // SAFETY: `xs` is the well-formed SList `heap_slist` just built and this
+    // test still owns; nothing has released it.
+    let (nodes, _) = unsafe { nodes_and_elements(xs) };
     let ys = nodes[2]; // the last SCons of xs
     // Passing the suffix as a second owned argument takes its own reference.
     shallow_rc_inc(ys);

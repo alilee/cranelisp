@@ -148,6 +148,38 @@ small enough that the S101 per-submodule split left them alone; (b) the 665-line
 `src/tests.rs` was **left un-split by intent** (audit-blessed, one concern: table population +
 static-backing + content/behavioural/docstring/ownership harnesses) at S106 Phase 1.
 
+## Raw-heap test helpers are `unsafe fn` (FIXME 0884)
+
+`marshal/tests.rs`'s `rc_of` / `nodes_and_elements` deref integer-derived raw
+pointers. They are `unsafe fn` with a `# Safety` doc naming the real precondition
+(a **live, not-yet-released** base pointer from this module's allocators, still
+owned across the read), and justification lives at the **call sites** — the file's
+pre-existing convention, and the only place local provenance is actually known.
+The `NULLARY_THRESHOLD` assert/loop-condition is a termination test and a
+bare-tag tripwire, **never** a validity proof: every `i64` above the threshold
+clears it, so it establishes neither provenance nor liveness nor shape. Do not
+"simplify" these back to safe fns whose SAFETY comment cites the threshold guard.
+
+## Counting RC ops in a unit test = child process, never `set_var` (FIXME 0885)
+
+`rc_inc`'s tally is a process-global counter gated on `CRANELISP_RC_STATS` and
+published only by the at-exit `[RC_STATS]` line. `marshal/tests.rs`'s gross-tally
+fence (`re1_embed_inc_tally_is_one_per_call_plus_one_per_copied_item`) therefore
+re-execs this test binary via `current_exe()` + `env_clear` + `--exact`, three
+children (control / `|xs|=1` / `|xs|=3`), and reads `rc_inc=` out of each child's
+stderr. Rules that make it work and must survive edits:
+
+- **Arming is child-`Command` only.** `set_var` against an already-forced
+  `LazyLock` is a silent no-op that reads GREEN forever (`tests/detector_arming_
+  discipline_guard.rs` is the standing gate for the sibling detector family).
+- **The children are ordinary non-`#[ignore]`d tests** asserting their own
+  alloc/dealloc balance, so the normal suite executes every body unarmed.
+- **The floor is subtracted, not assumed.** Each child runs a one-inc arming
+  preamble (the printer only registers on the first above-threshold `rc_inc`) and
+  builds identical fixtures; only the parent's *differences* carry meaning.
+- The tally counts only above-threshold incs — `rc_inc`'s nullary guard returns
+  before `tally_rc_inc()`.
+
 ## Known asymmetries (not bugs)
 
 - **Harvest-only shims** `neq-i64`/`neq-f64`/`neq-bool`/`sconcat` appear in the harvest projection
