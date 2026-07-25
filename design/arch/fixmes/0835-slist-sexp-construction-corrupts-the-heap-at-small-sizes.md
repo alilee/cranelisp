@@ -1,15 +1,50 @@
 ---
 number: 0835
-target: /qa
+target: /design (intrinsics)
 filed_by: /stdlib
 filed_at: 2026-07-21
 sprint_filed: 115
-refers_to: src/bootstrap.rs:435-545 (synthetic `macros` module — SList/Sexp
-  ADTs + `sconcat`); stdlib/derive/helpers.cl (the surface that fails);
-  design/arch/fixmes/0815 (the derive-visible face of this);
-  design/arch/safety-invariants.md (memory-safety invariant register)
+refers_to: crates/cranelisp-primitives/src/marshal.rs:160-217
+  (deep_rc_inc_slist, sconcat — the confirmed asymmetry writer);
+  crates/cranelisp-intrinsics/src/drop.rs:134-155 (consume_slist — the
+  consume-owner contract in question); src/bootstrap.rs:435-545 (synthetic
+  `macros` module — SList/Sexp ADTs + `sconcat`); stdlib/derive/helpers.cl
+  (the surface that fails); design/arch/safety-invariants.md (memory-safety
+  invariant register); tests/plan/s118-test-plan.md §4.5 (the attribution
+  ruling of record)
 status: open
 ---
+
+> **S118 /qa ATTRIBUTION RULING (2026-07-25; supersedes the request-2 open
+> question below; FIXME 0877 disposed into this).** The mechanism is
+> **runtime-library-owned**, not backend: `marshal::deep_rc_inc_slist`
+> (called by `sconcat` for its `ys` tail-embed) adds +1 to every interior
+> `SCons` node and every element — references no structural owner holds —
+> while intrinsics `consume_slist` correctly implements tree-ownership drop
+> glue (dec the head; descend only on last ref), so the interior +1s are
+> undischargeable: a per-call leak proportional to `|ys|`. Confirmed
+> empirically at HEAD `4c1aa80b` via 0877's falsification recipe (repro-B
+> shape under `CRANELISP_RC_STATS=1`, fresh tempdir per session): residual
+> `allocs - deallocs` grows per `sconcat` call (+3, then +4) and doubles
+> when `|ys|` doubles (+3 → +6) at CONSTANT type nesting depth — falsifying
+> the transitive-discharge (backend glue) hypothesis, whose residual would
+> track type depth. Full evidence table: `tests/plan/s118-test-plan.md`
+> §4.5.
+>
+> Dispositions: (1) Track-B backend slice S2 is REMOVED from the backend
+> wave — order S0→S1→S3→S4→S5→S6, no waiting (arch ruling 1(d)'s "0835
+> first" ordered the transitive-discharge class, which 0835 does not join).
+> (2) `/testing` lands repros A + B below as failing-not-ignored cells with
+> process-abort guards in S118 W1 (satisfies FIXME 0765's precondition).
+> (3) `/design`(intrinsics) — the new target — rules the consume-owner
+> contract first: does embedding a list as a shared tail take a HEAD-ONLY
+> inc (making `deep_rc_inc_slist`'s deep walk the defect; fix in primitives
+> `marshal.rs`) or does `consume_*` become deep (wrong for genuinely shared
+> tails)? Then `/dev` on the runtime pair. (4) Honesty caveat: the probe
+> confirms the LEAK face; the abort face (glibc corruption at ~6 cells) is
+> characterized by the committed repro's reduction — if it survives the
+> runtime fix, that is a NEW `/qa` attribution question, not a re-opening of
+> the migrated backend seams.
 
 # Building a ~6-cell `SList` of `Sexp` corrupts the heap — in ORDINARY code, no macro involved
 

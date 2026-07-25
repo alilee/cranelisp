@@ -104,8 +104,9 @@ bullet had no durable record; `/qa` attributes before any fix dispatch).
 | 0835 | /dev(backend) | Track B first consumer | SList construction; arch-ruled migration order. |
 | 0810 | /dev(backend) | Track B must-ship | All ten match-scrutinee cells. |
 | 0760 / 0796 | /dev(backend) | resolved as FIXMEs (P3) — work ships in Track B | Design asks satisfied and files deleted 2026-07-25; the committed REDs #11–#13 + the balance-exclusion removal cell are the sole record/trigger. |
-| 0877 | /qa | filed P3, gates slice S2 | 0835 has no repro and a non-backend mechanism candidate (intrinsics `consume_slist` non-descent); attribute before any S2 dispatch. |
-| 0878 | /qa | filed P3 | Ruling-10 grep fence misses the second glue-identity home (`vec_codegen` local mangle); extend the fence cell. |
+| 0877 | /qa | **resolved P3** — attribution ruled (a) runtime-owned | Falsification probe run: residual scales with list length at constant type depth; backend hypothesis falsified. S2 rerouted out of backend order. |
+| 0878 | /qa | **resolved P3** — fence extended | Plan §4.3 grep-zero now covers `build_adt_drop_glue_fn`/`build_elem_dec_fn`/`adt_drop_glue_name`. |
+| 0835 | /design(intrinsics) → /dev(runtime pair) | retargeted P3 | Runtime consume-owner defect (`deep_rc_inc_slist` over-inc vs. correct tree-ownership `consume_slist`); `/design`(intrinsics) rules head-only-inc vs deep-consume first; `/testing` lands repros A+B in W1; decoupled from backend W3. Abort-face survival after the fix is a new attribution, never a backend re-open. |
 | 0745 | /dev(src+exe-bundle) | Track B must-ship | Program-result owner; design of record exists. |
 | 0782 | /dev(backend) | Track B | Var-pattern arm double-release — same consumer family. |
 | 0694 / 0604 / 0818 | /qa | Track C | Load-dependent characterization with armed detectors. |
@@ -197,6 +198,12 @@ Plan of record: `design/int/result-owner.md` (264→609 lines; §§1–5 semanti
 
 **Next skills:** `/dev`(int + exe-bundle) per §8 I0–I5 after backend W3; `/review` against §5/§7/§11; `/testing` re-locus rider; 0863 wave after 0745 per ruling 11.
 
+### `/qa` reconciliation — COMPLETE (2026-07-25)
+
+- **0877 ruled (a): 0835 is runtime-library-owned.** Both evidence legs: code-reading (`deep_rc_inc_slist` adds +1s no structural owner corresponds to; `consume_slist` is *correct* tree-ownership glue, so the interior +1s are undischargeable) and the falsification probe run live (4 fresh-tempdir subprocess sessions, RC_STATS armed: residual +3/+7/+6 scaling per-call and per-|ys| at constant type depth — the backend transitive-discharge hypothesis is falsified). Backend Track-B order becomes **S0→S1→S3→S4→S5→S6 with no waiting**. `/testing` lands 0835 repros A+B as abort-guarded W1 REDs (satisfies 0765); fix routes `/design`(intrinsics) → `/dev`(runtime pair) in the intrinsics windows. Honesty caveat recorded: the probe confirms the leak face; if the glibc abort face survives the runtime fix, that is a new attribution question.
+- **0878 disposed**: the ruling-10 structural fence now greps-zero the second glue-identity home; `adt_instantiation_mangle` stays out of the fence (its deletion is conditioned in §8; a surviving consumer-less mangle is a `/review` dead-code catch, not a fence FAIL).
+- **Plan deltas**: 0796's real acceptance (balance-exclusion entry removal) added to the flip change-set obligations; cell #15's `// defect:` re-locus rides I3; invariance pins extended to backend S0/S1; result-owner error-path negatives folded into the unit-matrix obligation; precheck-hoist sequencing note added (a positive failing before the hoist is a sequencing artifact, not detector evidence).
+
 ### `/design` (platform) — COMPLETE, /arch GATE PENDING (2026-07-25)
 
 Plan of record: `design/platform/adt-marker-binding.md` (current-contract-only, right-sized; cited from `platform.md` §12). FIXME 0873 stays open with progress recorded (`blocked_on: /arch selection gate`).
@@ -222,6 +229,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | P3 | /design | cranelisp-backend: transitive-drop-glue consumer-migration refresh (Track B + ruling 10) | opus[1m] (shim) | high | — |
 | P3 | /design | Binary/int: result-owner refresh (0745) + 0863 sequencing check | opus[1m] (shim) | high | — |
 | P3 | /design | cranelisp-platform: marker-binding ergonomics (0873, Track E) | opus[1m] (shim) | high | — |
+| P3 | /qa | reconciliation: 0877 attribution, 0878 fence, plan deltas vs. refreshed designs | fable (shim) | xhigh | — |
 
 ## Notes
 

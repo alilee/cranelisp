@@ -120,7 +120,11 @@ set and do not alter the 28-baseline arithmetic (S116 W1 precedent):
 - the 0867 polymorphic-accessor repro (§6.2) — RED until its `/dev`
   attribution and fix (this sprint fixes it only if capacity allows; it is
   not in the pre-authorized carry list, so an unfixed 0867 repro at close
-  needs an explicit user-approved carry).
+  needs an explicit user-approved carry);
+- the 0835 repros A + B (§4.5) — failing-not-ignored with **process-abort
+  guards** (the failure is a SIGABRT; a bare value assertion takes the
+  harness down). RED until the runtime-library fix (attribution ruled §4.5;
+  the fix is NOT a Track-B backend flip).
 
 Every addition carries `// spec:` and (for defect repros) one `// defect:`
 line; no `#[ignore]`; no baseline name renamed or deleted.
@@ -168,6 +172,17 @@ Acceptance per row (all four required; asserted-but-unproven is worth zero):
    tempdir, `--no-cache`, no inherited `CRANELISP_*`;
 4. unarmed byte-inertness: with the arm variable absent there is no state
    construction, counter adjustment, or new failure (unit-pinned).
+
+Two sequencing/shape notes from the refreshed design
+(`diagnostic-modes.md` §7.5–§7.7): the **§7.5 precheck hoist gates the
+triplets** — as built, gated seam checks run after their mutation (and after
+always-on `debug_assert!` twins), so a positive proof attempted before the
+hoist lands fails against a *working* detector; such a failure is a
+sequencing artifact, not detector evidence, and the hoist's own revert is
+itself a detected regression (design §7.7 row 2). And the §7.6 harness shape
+— plant children as ordinary non-ignored tests that no-op unarmed — makes
+byte-inertness continuously executed and is compliant with §1's arming
+discipline (arming happens only inside the child `Command` construction).
 
 The M3 **e2e pair is already committed** (`intrinsics_m3_detection_s116`,
 cells #22/#23) and flips here; e2e proves composition
@@ -256,11 +271,18 @@ displacement; typed-context exits; both analysis toggles; REPL/`--run`/
 |---|---|---|
 | Depth 1/2/4 shallow control, 5/>5 cliff (both toggles), recursive 0/1/many | landed S116 W1 (static gate §8 verified) — cells #13/#14 + green controls | nothing to author; cells flip at W3 |
 | Match eliminator (ctor/var × inline/let-bound × payload) | committed cells #1–#10 + 4 green controls | nothing to author; flip at W3 |
-| Capture/curry teardown | cells #11–#12 + green capture controls | `/dev` unit matrix per `transitive-drop-glue.md` §7 (capture/environment glue row) |
+| Capture/curry teardown | cells #11–#12 + green capture controls | `/dev` unit matrix per `transitive-drop-glue.md` §7 (capture/environment glue row); **W3: 0796 exclusion removal** — `/testing` removes the `curried_partial_application` entry from `tests/gen_ownership_flows.rs::balance_exclusion` IN the S4 flipping change-set, and the harness must then run clean over that position for every owning type under both toggles. The removal IS the 0796 acceptance (`transitive-drop-glue.md` §7.4): a fix that flips #11–#13 while the exclusion stays is incomplete |
 | TCO displacement predicate | cells #5/#8/#9, #19–#20, `adt_wrapped_supersede_leak_0720` greens | `/dev` unit cells for the §6 predicate table (transfer vs replacement polarity, borrowed-alias rejection) |
-| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6; no new e2e owed |
+| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6 **including the §5 error-path negative rows** (`/qa` verifies at Phase 6, with the §9.2 armed legs); no new e2e owed. **Flip rider (`result-owner.md` §9.1):** cell #15's `// defect:` line still reads `locus=…rc_emission.rs::protect_return_value` (`tests/adt_drop_glue_underkey.rs:258`) — both mechanisms at that locus are falsified; `/testing` re-locuses it onto the int result-value lifetime seam IN the flipping change-set (I3), or the `locus=` hotspot analysis keeps mis-attributing this defect to backend |
 | Eliminator axis in the generative harness | MISSING (FIXME 0830) | §4.2 — W1 |
 | Mixed-arm whole-match approximation tripwire | MISSING (FIXME 0726) | §4.2 — W1 |
+
+**Behaviour-neutral slice invariance (S0/S1):** the §3.2 invariance pin
+extends to backend slices S0 (registry reshape) and S1 (glue-call emitter
+swap), which are behaviour-neutral by design (`transitive-drop-glue.md`
+§7.0–§7.1, §9): every baseline RED stays byte-identically RED through them —
+a RED that flips during S0/S1 re-opens attribution rather than counting as a
+win — and the 0753 controls (`moded_arg_rc_tests`) stay green at S1.
 
 **Armed acceptance legs (new, detectors-first dividend):** the Track-B fix
 waves must additionally demonstrate their flips under armed detectors —
@@ -300,6 +322,20 @@ the same wave**. `/testing` authors one structural fence cell in W1
   `crates/cranelisp-backend/src/`;
 - the inline recursive drop-glue emission path in `rc_emission.rs` is absent
   (assert on its named seam, not a line number);
+- **grep-zero the second glue-identity home** (FIXME 0878 — resolved by this
+  extension; aligns the structural fence with `transitive-drop-glue.md` §8's
+  deletion enumeration): `build_adt_drop_glue_fn`, `build_elem_dec_fn`, and
+  `adt_drop_glue_name` in `crates/cranelisp-backend/src/`. Without this the
+  fence would pass while `vec_codegen` still mints named per-instantiation
+  ADT glue under the backend-local `adt_instantiation_mangle` key — two
+  type-directed glue mechanisms and two identity schemes alive, the exact
+  state ruling 10 exists to prevent. (`adt_instantiation_mangle` itself is
+  expected to delete with the pair — verified at HEAD `4c1aa80b` to have no
+  non-glue production consumer, only `adt_drop_glue_name` and
+  `build_elem_dec_fn` reach it — but it stays OUT of the grep-zero cell
+  because §8 conditions its deletion on that check holding at migration
+  time; a surviving consumer-less mangle is a `/review` dead-code catch, not
+  a fence FAIL.);
 - RED today by construction; flips exactly at the W3 migration change-set. A
   wave that flips the behavior cells while this fence stays RED is the
   partial-migration state ruling 10 declares a `/review` REJECT.
@@ -312,6 +348,60 @@ stays RED after the W3 wave, that is a NEW attribution question routed to
 `/qa` — not a threshold adjustment (the exemplar bound stays at ≤1400), not a
 per-seam patch, and not grounds to re-open the migrated seams without a
 reduction.
+
+### 4.5 0835 attribution ruling (FIXME 0877 — RULED 2026-07-25, /qa)
+
+**Ruling: 0835's mechanism is runtime-library-owned (the S116 ruling-2
+inventory's second row — known runtime protocol trees → their intrinsics
+`consume_*` owner), not backend. Track-B slice S2 is removed from the backend
+wave; the backend migration proceeds S0 → S1 → S3 → S4 → S5 → S6 without
+waiting. Arch ruling 1(d)'s "0835 first" ordered the transitive-discharge
+class, which 0835 does not join.**
+
+Evidence (probe run 2026-07-25, HEAD `4c1aa80b`, debug binary, fresh tempdir
+per session, `CRANELISP_RC_STATS=1`, 0835 repro B shape):
+
+| sconcat calls | `\|ys\|` | residual (`allocs - deallocs`) delta vs control |
+|---:|---:|---:|
+| 0 (control) | — | 0 |
+| 1 | 2 | +3 |
+| 2 | 2 | +7 (+4 for the second call) |
+| 1 | 4 | +6 |
+
+The residual grows with each `sconcat` call and doubles when `|ys|` doubles,
+at **constant** type nesting depth (`SList<Sexp>` in every session) — the
+recipe's confirmation arm. The transitive-discharge hypothesis (residual
+proportional to type depth, or vanishing when backend consumers migrate) is
+falsified: backend emission contributes only the unchanged call-site
+consuming-arg protocol here. Code seams: `marshal::deep_rc_inc_slist`
+(`crates/cranelisp-primitives/src/marshal.rs:160-171`, called by `sconcat`
+at `:195-217`) adds +1 to every interior `SCons` node and every element —
+references no structural owner corresponds to — while
+`consume_slist` (`crates/cranelisp-intrinsics/src/drop.rs:134-155`)
+correctly implements tree-ownership drop glue (dec the head; descend only on
+last ref), so the interior +1s are undischargeable: a per-call leak
+proportional to `|ys|`.
+
+Dispositions:
+
+1. **W1 (`/testing`):** land 0835 repros A + B as failing-not-ignored cells
+   with process-abort guards (§2.3). This also satisfies FIXME 0765's
+   no-fix-without-repro precondition for the runtime fix.
+2. **Fix routing:** `/design`(intrinsics) rules the consume-owner contract
+   first — whether embedding a list as a shared tail takes a head-only inc
+   (making `deep_rc_inc_slist`'s deep walk the defect, fix in primitives
+   `marshal.rs`) or `consume_*` becomes deep (wrong for genuinely shared
+   tails) — then `/dev` on the runtime pair. `/sprint` slots this in the
+   intrinsics/runtime windows; it does not gate, and is not gated by, the
+   backend W3 wave.
+3. **Honesty caveat:** the probe confirms the LEAK face; 0835's abort face
+   (glibc corruption at ~6 cells) is characterized by the committed repro's
+   reduction. No backend mechanism is implicated at this seam; if the abort
+   face survives the runtime fix, that is a NEW attribution question routed
+   to `/qa` (§4.4 discipline), never a silent re-opening of the migrated
+   backend seams.
+4. FIXME 0877 is fully disposed and deleted; FIXME 0835 stays open,
+   retargeted to `/design`(intrinsics) with this ruling appended.
 
 ## 5. Track C — load-dependent characterization and certification
 
@@ -484,9 +574,12 @@ otherwise S119 with the repro as the durable handoff.
 3. All eight detector rows have positive + clean + fail-on-revert evidence;
    0857 regrade landed into the amended (0768) vocabulary; no
    asserted-but-unproven grade survives.
-4. Ruling-10 fence GREEN (legacy emitter + depth constant gone) in the same
-   wave as the consumer flips; ruling-7 subtractive baseline landed; zero
-   schema deltas outside the 0869 window.
+4. Ruling-10 fence GREEN (legacy emitter + depth constant + the second
+   glue-identity home — §4.3 extended cell — all gone) in the same wave as
+   the consumer flips; the 0796 balance-exclusion removal landed with S4
+   (§4.1); cell #15's `// defect:` re-locus landed with its flip (§4.1);
+   ruling-7 subtractive baseline landed; zero schema deltas outside the
+   0869 window.
 5. 0859 dispositioned: closed with a committed witness, or returned to the
    user as disposition 2 — never silently carried.
 6. No new ignores; every new cell carries `// spec:` (+ `// defect:` where a
@@ -498,8 +591,14 @@ otherwise S119 with the repro as the durable handoff.
 ## Next skills
 
 - `/testing` — W1: baseline reconciliation (§2.2), the §2.3 intended-RED
-  additions (fence, 0726 cells, 0830 rows, 0867 repro), static arming-
-  discipline gate (§1).
+  additions (extended fence, 0726 cells, 0830 rows, 0867 repro, 0835
+  repros A+B with process-abort guards), static arming-discipline gate
+  (§1); later, riding their flipping change-sets: the 0796
+  balance-exclusion removal (§4.1) and the cell-#15 `// defect:` re-locus
+  (§4.1).
+- `/design`(intrinsics) → `/dev`(runtime pair) — 0835 per the §4.5 ruling:
+  consume-owner contract first, fix after the W1 repros land; decoupled
+  from the backend W3 wave.
 - `/design`(intrinsics) → `/dev`(intrinsics) — Track A per §3; the triplet
   revert records are `/qa`'s regrade input.
 - `/design`/`/dev`(backend) — Track B per §4 + `transitive-drop-glue.md`;
