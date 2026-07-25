@@ -99,7 +99,8 @@ bullet had no durable record; `/qa` attributes before any fix dispatch).
 |---|---|---|---|
 | 0848 | /dev(intrinsics) | Track A must-ship | Detection proofs for M1/M2/M3/A1–A4; the two M3 REDs flip here. |
 | 0857 | /qa | Track A must-ship | Honest regrade after fail-on-revert evidence. |
-| 0850 | /dev(intrinsics) | Track A must-ship | Aged past 2× escalation; user-confirmed ship. |
+| 0850 | /dev(intrinsics) | **resolved W2a** — deleted | Convergence landed with byte-identical-RED invariance verified; aged FIXME closed after S87-era origin. |
+| 0879 | /design(intrinsics) | filed W2a | §7.5 alignment clause false-positives on ragged HeapString sizes; corrected Layout-validity predicate implemented; design doc owes the delta. |
 | 0859 | /qa → narrow owners | Track A | ProjectionOf production witness via the smallest admissible instrument. |
 | 0835 | /dev(backend) | Track B first consumer | SList construction; arch-ruled migration order. |
 | 0810 | /dev(backend) | Track B must-ship | All ten match-scrutinee cells. |
@@ -244,7 +245,9 @@ Baseline reconciliation of the two low-confidence cells from the captured log; 0
 
 ### W2 — Track A intrinsics (serial sub-waves)
 
-**W2a** `/dev`(intrinsics) per `diagnostic-modes.md` §10 six steps — precheck hoist FIRST (step 1 gates 3–4), plant protocol, eight detection-proof triplets with per-row fail-on-revert records, then 0850 convergence + ruling-7 subtractive removal in one change-set → `/review`(intrinsics) with §7.4/§9.6 reject criteria. **W2b** 0835 runtime fix: `/design`(intrinsics) rules the consume-owner contract (head-only inc vs deep consume) → `/dev`(runtime pair) → `/review`. Gate: M3 e2e pair green; all eight triplet rows recorded; baseline REDs byte-identically unchanged by 0850/S-slices; 0835 repros green; `/qa` witnesses fail-on-revert and lands the 0857 regrade into the amended vocabulary.
+**W2a** `/dev`(intrinsics) per `diagnostic-modes.md` §10 six steps — precheck hoist FIRST (step 1 gates 3–4), plant protocol, eight detection-proof triplets with per-row fail-on-revert records, then 0850 convergence + ruling-7 subtractive removal in one change-set → `/review`(intrinsics) with §7.4/§9.6 reject criteria.
+
+**W2a `/dev` — COMPLETE 2026-07-25** (commits `cd935cae` hoist / `09c7f81e` plants+triplets / `64b4f1dd` 0850+ruling-7). All eight triplet rows committed green with recorded per-row fail-on-revert evidence (7 revert experiments; E6/E7 prove the *ordering* is load-bearing — reverting the hoist alone breaks A1/A2 with detectors present). **Baseline cell #22 (M3 positive detection) flips GREEN — first flip of the sprint**; #23 untouched per the ambient-residue record. 0850 invariance verified: eight affected binaries 22 RED/20 GREEN identical before/after; FIXME 0850 resolved and deleted after ~31 sprints of aging. Ruling-7 subtractive two-line baseline diff landed with grep-zero pin (judgement call flagged for review: the consumer-less private `BYTES_PEAK` CAS loop went with the accessor). Crate gate 320/320; clippy zero; arming-discipline guard 4/4. **FIXME 0879 filed** (`/design`): §7.5's literal alignment clause false-positives on ragged `HeapString` sizes; implemented the corrected Layout-validity form, fenced by a ragged-string clean control. Honest deviations recorded: plant config-error timing at first hook call; dead `PostFree.withheld` payload carried per contract. **W2b** 0835 runtime fix: `/design`(intrinsics) rules the consume-owner contract (head-only inc vs deep consume) → `/dev`(runtime pair) → `/review`. Gate: M3 e2e pair green; all eight triplet rows recorded; baseline REDs byte-identically unchanged by 0850/S-slices; 0835 repros green; `/qa` witnesses fail-on-revert and lands the 0857 regrade into the amended vocabulary.
 
 ### W3 — Track B backend consumers
 
@@ -284,6 +287,7 @@ Baseline reconciliation of the two low-confidence cells from the captured log; 0
 | P3 | /arch | exit gate: 0869 carrier ruling, 0873 selection, 0876/0768, interface-set sign-off | fable (shim) | xhigh | — |
 | W1 | /testing | sprint-wide RED surface: reconciliation, 0835 repros, arming gate, fence, 0726/0830/0867 | opus[1m] (shim) | high | — |
 | W1+ | /qa | promotion pass: ambient-residue attribution (user macro-expansion lead), #10 green, 0867/0830 dispositions | fable (shim) | xhigh | — |
+| W2a | /dev | cranelisp-intrinsics: precheck hoist, plant protocol, 8 detection triplets, 0850 + ruling-7 | opus[1m] (shim) | high | — |
 
 ## Notes
 
