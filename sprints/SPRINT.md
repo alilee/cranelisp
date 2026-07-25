@@ -1,6 +1,6 @@
 # Sprint 118: Instrumented Ownership Closure
 
-**Status**: PHASE 2 ARCH REVIEW
+**Status**: PHASE 3 DESIGN
 
 **Goal**: Land the memory-diagnostic instrumentation as the sprint's foundation, then drive the attributed RED baseline down by migrating the ownership consumers onto the canonical drop glue — every fix proven by a detector that has itself been proven to detect.
 
@@ -23,7 +23,8 @@ The S116 Wave-7 remainder, now central:
 1. Implement the closed test-only fault-injection plant protocol at the intrinsics alloc/diagnostics seam per `design/intrinsics/diagnostic-modes.md` (crate-private, armed only by exact child-environment values, byte-inert while off). Prove M1, M2, M3 and A1–A4 detect their planted faults: positive, clean-control, and disabled-detector fail-on-revert polarity for all eight detector rows (FIXME 0848). The two committed M3 e2e guards flip green here.
 2. `/qa` witnesses the fail-on-revert evidence and regrades R8/detector modes honestly — asserted-but-unproven grades are replaced by proven or downgraded (FIXME 0857).
 3. Converge the raw heap-read owner: `drop.rs` → `heap_access`/`vec_runtime` (FIXME 0850 — **aged: first flagged S87-era, already at its user-signed third deferral in S117; it ships this sprint**).
-4. Close the remaining R-2 gap: the ProjectionOf production-artifact sensitivity witness that ordinary evidence could not reach in S117 (FIXME 0859) — the smallest admissible seam, now that instrumentation is permitted.
+4. Close the remaining R-2 gap: the ProjectionOf production-artifact sensitivity witness that ordinary evidence could not reach in S117 (FIXME 0859) — per arch ruling 2: the existing detector surface as oracle, no new seam, graduating only after the detection proofs land.
+5. Land the owed S116 ruling-5 subtractive API change (arch ruling 7): remove `reset_counts()` and `bytes_peak()` from `cranelisp-intrinsics`, clean their rustdoc references, regenerate the baseline — riding the 0850 change-set. Deferred once under the cyber constraint; does not slip again silently.
 
 ### Track B — ownership consumers onto canonical glue (the RED clearance payload)
 
@@ -75,7 +76,7 @@ Tracks A–C for their surfaces.
 
 ### Capacity honesty
 
-Tracks A+B+C are the full S116 remainder plus certification — more than S116 itself absorbed. The declared priority order is A → B → C → D. If capacity forces a cut: Track D's 0868/0869 defer first (with rationale), then Track C's three-run loaded certification (characterization evidence still required), and 0863 is renegotiated with the user rather than silently dropped (it carries a prior user commitment to S118). Track A and Track B items 1–2 are not cuttable — they are the sprint.
+Tracks A+B+C are the full S116 remainder plus certification — more than S116 itself absorbed. The declared priority order is A → B → C → D. If capacity forces a cut (refined per arch ruling 8): 0869's *implementation* defers first (schema-bearing; its carrier ruling still lands this sprint), then 0868 (schema-free, survives a 0869 cut independently), then Track C's three-run loaded certification (characterization evidence still required), and 0863 is renegotiated with the user rather than silently dropped (it carries a prior user commitment to S118). Track A and Track B items 1–2 are not cuttable — they are the sprint, and per arch ruling 10 the Track-B atomic legacy-emitter deletion is architecturally binding, not just capacity policy.
 
 ## Phase 1 user decisions — RESOLVED 2026-07-25
 
@@ -119,7 +120,23 @@ Remaining open FIXMEs (49 total) are carried without sprint action unless a trac
 
 ## Architecture review (Phase 2)
 
-_Pending — issued after user scope approval. Standing questions routed there: 0869's cache-carrier shape; whether 0859's smallest admissible instrument stays within the S116-approved detector seam; R3 if accepted._
+**Verdict: PASS AFTER REQUIRED REVISIONS (2026-07-25).** Technically coherent; the instrumentation-first inversion is sound; Tracks A–B execute already-approved plans of record with no new interim architecture. Sign-off granted upon transcription of R7 (applied below). Rulings:
+
+1. **0869 requires a typed cache carrier; the ruling is the S118 deliverable, implementation capacity-conditional.** A writer-side typed record (canonical `FQTraitName` + `FQTypeName` + writer module + method names + visibility — no mangled-name parsing, no foreign-table scan), persisted with the writer module's cache metadata, restored through one idempotent enrolment helper reusing fresh registration's conflict/coherence checks. Takes `CACHE_SCHEMA_VERSION` 23→24 in its own window; **no other S118 track is authorized a schema bump**. If capacity cuts the implementation, 0869 defers to S119 carrying the settled ruling.
+2. **0859: no new seam.** The instrument is the existing env-gated detector surface (M1/M2/M3 + RC/parity counters) as oracle over isolated-declaration-mutation experiments in fresh subprocesses; the §7 fault-plant protocol is *not* the instrument (plants prove detectors, they don't witness declarations). The witness may only graduate after Track A's detection proofs land (0768 rule). If every production shape remains emission-inert, that is the FIXME's disposition 2 — returned to the user, not overridden with test-only facts.
+3. **Ordering inversion confirmed — no dependency violation.** Detection proofs are self-contained plant triplets assuming nothing about consumer/glue state; the dependency runs the other way (§6 acceptance needs consumer REDs still red, which detectors-first preserves). Binding caution: consumer migration runs with **lane/subprocess-scoped arming only, never suite-global** — a globally-armed M3 aborts every still-red leak guard.
+4. **0872 scheduled into S118's `/arch` Phase-7 close window** (doc-only, gates nothing); defers to S119 only if close is compressed.
+5. **Track E R4/0873 — no pre-authorization.** Any mechanism touching `cranelisp-platform`'s public surface (new trait, derive crate, `CLAdtType` contract) returns to `/arch` before selection is final; docs and crate-internal choices need no gate.
+6. **0850 target stands, verified at HEAD**: S117 W5 converged only the buffer-lifecycle half; `drop.rs` still carries a private `read_i64` and copied Vec offsets. Delete both, delegate to `heap_access`/`vec_runtime` layout authority; behavior-invariant, zero public-API delta.
+7. **(REQUIRED — applied)** S116 ruling 5 is approved-but-unlanded: `reset_counts()`/`bytes_peak()` are still public and still baselined; retaining `reset_counts()` can invalidate M3's monotonic-counter evidence. Named explicitly in Track A; rides the 0850 change-set; subtractive intrinsics baseline regeneration.
+8. **(Recommended — adopted)** Cut order split: 0869 defers first (schema-bearing, ruling-gated); 0868 is schema-free and ruling-free and survives a cut that drops 0869.
+9. **S116 rulings status**: 1/2/3/6/7/8 stand unchanged and bind Tracks A–B; 4/9/10 landed in S116 and are executed facts; 5 is R7.
+10. **The Principle-8 bridge closes this sprint.** The canonical `DropGlueRegistry` coexisting with the legacy inline emitter (`MAX_DROP_GLUE_DEPTH = 4` still live) was an approved transitional state whose closure condition is exactly Track B item 1: consumers migrate and the depth constant + inline emitter delete **atomically in the same wave**. Track B items 1–2 "not cuttable" is architecturally binding, not just capacity policy; a partial migration leaving both mechanisms is a `/review` REJECT.
+11. **0863 confirmed READY**: int-only, no public API/types/cache change; serialize as a late wave after 0745 (same `src/` publication/result-owner seams; must not interleave).
+12. **`/arch` self-obligations**: FIXME 0768 (register status vocabulary) actioned in the same window as `/qa`'s 0857 regrade so the regrade lands into the amended vocabulary; 0872 per ruling 4.
+13. **0810 labelling nuance**: it is a test-record defect (the committed test file is the durable record); no FIXME file exists or should be created.
+
+**Public-API impact**: `cranelisp-intrinsics` subtractive only (ruling 7); all other crates zero-delta / zero-diff checks; `cranelisp-types` delta only if 0869 implements (gated on ruling 1). No new cross-crate types for Tracks A–C.
 
 ## Skill plans (Phase 3)
 
@@ -133,9 +150,11 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 
 | Wave | Agent | Surface | Model | Effort | Non-default reason |
 |---|---|---|---|---|---|
+| P2 | /arch | sprint-wide scope review + standing questions a–f | fable (shim) | xhigh | — |
 
 ## Notes
 
 - 2026-07-25: Phase 1 draft authored from the S117 close record, the verified 28-RED baseline, `audits/cranelisp-platform-s117.md`, and the user's direction: instrumentation central, clearing failing tests the goal. The user's clarification that allocator instrumentation is correctness work (not security-sensitive) is recorded as standing context; it removes the S117 deferral rationale for 0848/0850/0857/0859 and the ownership waves.
 - 2026-07-25: `/review` delegation to Codex ratified and validated pre-sprint (commit 46c9a0b3). This sprint's review rows are the first production use; dispatch log records reviewer identity per row.
 - 2026-07-25: Phase 1 COMPLETE. USER approved scope as drafted (Tracks A–D + cut order + 0850 ships). USER accepted all five platform-audit recommendations; R4 pulled into S118. Filed 0870–0874 (audit) and 0875 (exemplar Link parity). Track E added. Advanced to Phase 2 architecture review.
+- 2026-07-25: Phase 2 COMPLETE. `/arch` PASS AFTER REQUIRED REVISIONS; R7 (ruling-5 API removal into Track A) and R8 (cut-order split) transcribed and applied. Key rulings: 0869 carrier ruling is an S118 deliverable with schema 23→24 in its own window (no other track bumps schema); 0859 uses the existing detector surface, no new seam; the instrumentation-first inversion is confirmed sound with lane-scoped arming only; Track B's atomic legacy-emitter deletion is architecturally binding (P8 bridge closes this sprint). Advanced to Phase 3 design; `/qa` test plan dispatched first, then serialized narrow designs (intrinsics, backend, int, platform) and the `/arch` 0869 carrier ruling.
