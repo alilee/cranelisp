@@ -103,7 +103,9 @@ bullet had no durable record; `/qa` attributes before any fix dispatch).
 | 0859 | /qa → narrow owners | Track A | ProjectionOf production witness via the smallest admissible instrument. |
 | 0835 | /dev(backend) | Track B first consumer | SList construction; arch-ruled migration order. |
 | 0810 | /dev(backend) | Track B must-ship | All ten match-scrutinee cells. |
-| 0760 / 0796 | /dev(backend) | Track B must-ship | Capture/curry teardown through capture-glue builder. |
+| 0760 / 0796 | /dev(backend) | resolved as FIXMEs (P3) — work ships in Track B | Design asks satisfied and files deleted 2026-07-25; the committed REDs #11–#13 + the balance-exclusion removal cell are the sole record/trigger. |
+| 0877 | /qa | filed P3, gates slice S2 | 0835 has no repro and a non-backend mechanism candidate (intrinsics `consume_slist` non-descent); attribute before any S2 dispatch. |
+| 0878 | /qa | filed P3 | Ruling-10 grep fence misses the second glue-identity home (`vec_codegen` local mangle); extend the fence cell. |
 | 0745 | /dev(src+exe-bundle) | Track B must-ship | Program-result owner; design of record exists. |
 | 0782 | /dev(backend) | Track B | Var-pattern arm double-release — same consumer family. |
 | 0694 / 0604 / 0818 | /qa | Track C | Load-dependent characterization with armed detectors. |
@@ -168,6 +170,20 @@ Plan of record: `design/intrinsics/diagnostic-modes.md` (+575/−120; §7.1–§
 
 **Next skills:** `/dev`(intrinsics) per §10 order; `/arch` for 0876 + subtractive baseline approval; `/qa` 0857 regrade after step-6 records exist; `/review`(intrinsics) with §7.4 + §9.6 as reject criteria.
 
+### `/design` (backend) — COMPLETE (2026-07-25)
+
+Plan of record: `design/backend/transitive-drop-glue.md` (264→884 lines; §§1–6 are the S116 contract re-verified at HEAD, §§0/1.1/3.4/5.1/6.1/7–10 new); `backend.md` §8 rows updated.
+
+- **As-built drift D1 (BLOCKING — why Waves 4–5 could not have run as designed):** the landed registry holds `&mut M` and so does `FnCompiler` — both cannot exist; and the registry is constructed *and finished* before body compilation. Resolution designed: reshape the registry module-borrow-free (module/symbol-tables become call arguments), `FnCompiler` gains a disjoint `glue` field, `finish()` moves after bodies. Mid-body definition proven safe from the existing capture path.
+- **The glue census is five mechanisms, not two** (D3): `vec_codegen` mints a *second* named per-instantiation ADT glue under a backend-local mangle — same defect class, second identity scheme; it deletes with the inline emitter. A fourth unnamed inline consumer (`apply::emit_post_call_decs`) is absorbed by slice S1. Filed **0878** (`/qa`): the plan's grep-zero fence would pass with that second identity home alive — fence must extend.
+- **D9 confirms the S116 per-arm plans and TCO predicate survive HEAD unchanged** — the S117 trait-identity work is whitespace-only across the five relevant backend files.
+- **Serial slices S0–S6**: S0 registry reshape (behavior-neutral, invariance-pinned) → S1 `emit_typed_rc_dec` becomes the glue-call emitter → S2 0835 (**attribution-gated**, below) → S3 match per-arm (0782 ruled: var-pattern binder borrows; the release-gate deletes, the predicate survives for liveness) → S4 capture/curry (`CaptureRelease::Plain` → canonical glue) → S5 TCO (one pure `TransferOldOwner | Replace | BorrowedInvalid` predicate folding four HEAD fragments; two load-bearing fold constraints) → S6 deletion. After S1 the legacy emitter has exactly two call sites, so **the §8 atomic deletion (12 symbols/paths) is the final commit of S5's change-set** — satisfying arch ruling 10.
+- **0835 finding (most wave-affecting):** no repro exists (no test, no PLAN row, absent from the 28-name baseline) — FIXME 0765's no-fix-without-repro rule blocks slice S2 as scheduled. Mechanism candidate read at HEAD: `marshal::sconcat` deep-incs every node/element, but intrinsics `consume_slist` returns at the first `old_rc != 1` node and never descends — a per-call leak proportional to list length, living in S116 ruling-2's *intrinsics consume-owner* inventory row, not the backend glue row. Filed **0877** (`/qa`) with a falsification recipe: attribution before S2; consumer migration does not reach it. Slice order otherwise unaffected.
+- **FIXMEs 0760 and 0796 resolved and deleted** (design asks satisfied: site census explicit, curried reaching context folded in). Their acceptance obligations are transcribed into §7.4/§9 — notably 0796's real acceptance is *removing* the `curried_partial_application` balance-exclusion entry, not just flipping REDs #11–#13. The committed REDs are now the sole record/trigger.
+- §9 records the armed-detector acceptance leg per slice (lane-scoped, cross-referenced to intrinsics §7.1).
+
+**Next skills:** `/qa` (0877 attribution before S2; 0878 fence extension; confirm the 0796 exclusion-removal cell) → `/dev`(backend) per §7 with §8 deletion in S5's change-set → `/review`(backend) against §8/§11 reject criteria. W3 sequences after Track A's W2 (armed legs depend on 0848).
+
 ## Waves (Phase 4)
 
 _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baseline reconciliation + missing detection-proof/0867 cells) → W2 intrinsics D/D/R (Track A) → W3 backend D/D/R (Track B consumers) → W4 int/exe-bundle D/D/R (0745) → W5 `/qa` certification + Track C → W6 src/ (Track D) → Phase 6._
@@ -179,6 +195,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | P2 | /arch | sprint-wide scope review + standing questions a–f | fable (shim) | xhigh | — |
 | P3 | /qa | sprint-wide test plan (`tests/plan/s118-test-plan.md`) | fable (shim) | xhigh | — |
 | P3 | /design | cranelisp-intrinsics: diagnostic-modes refresh (0848/0850/0859 + rulings 2/3/6/7) | opus[1m] (shim) | high | — |
+| P3 | /design | cranelisp-backend: transitive-drop-glue consumer-migration refresh (Track B + ruling 10) | opus[1m] (shim) | high | — |
 
 ## Notes
 
