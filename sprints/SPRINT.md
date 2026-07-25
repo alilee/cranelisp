@@ -1,6 +1,6 @@
 # Sprint 118: Instrumented Ownership Closure
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 5 LANGUAGE (ACTIVE)
 
 **Goal**: Land the memory-diagnostic instrumentation as the sprint's foundation, then drive the attributed RED baseline down by migrating the ownership consumers onto the canonical drop glue — every fix proven by a detector that has itself been proven to detect.
 
@@ -215,9 +215,48 @@ Plan of record: `design/platform/adt-marker-binding.md` (current-contract-only, 
 
 **Next skills:** `/arch` settles the selection at the Phase-3 exit gate; `/dev`(platform) implements S119+.
 
-## Waves (Phase 4)
+### `/arch` exit gate — PASS (2026-07-25)
 
-_Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baseline reconciliation + missing detection-proof/0867 cells) → W2 intrinsics D/D/R (Track A) → W3 backend D/D/R (Track B consumers) → W4 int/exe-bundle D/D/R (0745) → W5 `/qa` certification + Track C → W6 src/ (Track D) → Phase 6._
+- **0869 ruling authored**: `design/arch/trait-impl-cache-carrier.md` (binding). `WrittenTraitImpl { trait_name, impl_type, impl_module, methods, visibility }` as a serde-visible `SymbolTable` field (no serde-default; absence is a hard error), living in `cranelisp-types` — the only candidate public delta, landing with the implementation. Producer: typecheck's impl-check transaction success point, same resolved values as the D45 shell. Restore: one types-owned idempotent `enrol_written_trait_impl` (hard-error-on-divergence) + one hoisted `trait_impl_key` mint that also discharges the two hand-rolled `impl$` format sites. Schema 23→24 in the implementing change-set only; P7 second-home justification and five rejected alternatives recorded. FIXME 0869 open, ruling in force even if implementation defers.
+- **0873 APPROVED (Option 3)** for S119+: one platform `public-api.txt` line + the `adts:` macro key; three conditions on the implementing change-set (grammar-coupling rustdoc both sides, baseline/rustdoc/BC-note same change-set, `resolve_field` diagnostic fix rides).
+- **0876 resolved, 0768 actioned — both FIXMEs deleted.** BC §4b invariant 8 now records the *absence* of a reset seam as the load-bearing property. `safety-invariants.md` §4 vocabulary amended (cited capability proof required for `asserted`/`gated`/`dynamic-lane`); row re-audit in the same edit: R10/R13/R9 proven, R5 and R6 honestly downgraded to `asserted-but-unproven`, R8 deliberately awaits the 0857 regrade — the ruling-12 sequencing.
+- **Interface set complete**: intrinsics subtractive-only; backend zero-delta (D1 reshape internal, consistent with S116 ruling 9 — only `finish()` moves, still before finalize); int/exe-bundle zero-delta; types zero-delta unless 0869 implements; typecheck zero even under 0869; platform S118-zero. 0877/0878 dispositions consistent with rulings 2/10; D2's STOP-and-FIXME escalation shape endorsed. 0872 remains in the `/arch` Phase-7 window.
+
+## Waves (Phase 4 — organized 2026-07-25)
+
+Source edits and test runs are serialized throughout; review rows are executed by the delegated Codex reviewer with the dispatching agent adjudicating (`.claude/commands/review.md` §Delegated execution). Armed-detector acceptance legs in W3+ depend on W2's detection proofs (0848).
+
+### W1 — QA-first test surface (`/testing`, sprint-wide)
+
+Baseline reconciliation of the two low-confidence cells from the captured log; 0835 repros A+B (abort-guarded, failing-not-ignored); the arming-discipline static grep gate; the extended ruling-10 fence cell (second glue-identity home included); 0726 tripwire cells; 0830 eliminator harness rows; 0867 polymorphic-accessor repro; remaining missing cells per `tests/plan/s118-test-plan.md` §2.3. Gate: intended REDs in place with correct polarity; 28-name baseline reconciled; `/qa` static check.
+
+### W2 — Track A intrinsics (serial sub-waves)
+
+**W2a** `/dev`(intrinsics) per `diagnostic-modes.md` §10 six steps — precheck hoist FIRST (step 1 gates 3–4), plant protocol, eight detection-proof triplets with per-row fail-on-revert records, then 0850 convergence + ruling-7 subtractive removal in one change-set → `/review`(intrinsics) with §7.4/§9.6 reject criteria. **W2b** 0835 runtime fix: `/design`(intrinsics) rules the consume-owner contract (head-only inc vs deep consume) → `/dev`(runtime pair) → `/review`. Gate: M3 e2e pair green; all eight triplet rows recorded; baseline REDs byte-identically unchanged by 0850/S-slices; 0835 repros green; `/qa` witnesses fail-on-revert and lands the 0857 regrade into the amended vocabulary.
+
+### W3 — Track B backend consumers
+
+`/dev`(backend) slices S0→S1→S3→S4→S5→S6 per `transitive-drop-glue.md` §7, review per slice group; the §8 twelve-symbol atomic deletion is the final commit of S5's change-set; extended fence cell green. Armed re-demonstration legs per slice. Gate: 0810 ×10, 0760/0796 REDs (+ balance-exclusion entry removal), TCO cells green in both toggles and required modes; grep-zero fence passes; no per-seam private releaser.
+
+### W4 — Track B result owner (int/exe-bundle)
+
+`/dev`(int + exe-bundle) I0–I5 per `result-owner.md` §8 → `/review` against §5/§7/§11. `/testing` re-locuses cell #15's `// defect:` line within I3's change-set. Gate: the three program-result REDs + cell #15 green across run/REPL/link; exact-once ordering pins; error-path negatives.
+
+### W5 — Track C load characterization + certification (`/qa`-led)
+
+0694 D1→D2→D3 with armed lanes; 0818 contamination experiment (cheap-first); `launch_grid` reduction; then certification: two identical captured deterministic full runs + ≥3 captured loaded runs. `conj`/exemplar cells verified as consequents of W2b/W3 (residual RED = new attribution). 0875 attribution after W4 (adjacent link seams).
+
+### W6 — Track D (`src/`; capacity-conditional per the cut order)
+
+0868 cache-hit lifecycle parity (`/dev`(src), schema-free); 0863 prepared-presentation transaction (`/dev`(src) → `/review`) strictly after W4 lands and reviews (ruling 11), rebasing on §6.5's two W7 deltas; 0869 implementation ONLY if capacity survives — `/arch` types change-set (carrier + helper + schema 23→24) then `/dev` narrow for the typecheck/int seams.
+
+### W7 — Track E platform slice
+
+`/dev`(platform): 0870 facade repair + 0874 shared fixture (doc/test-support only; zero-delta). May run opportunistically in any serialization gap after W1. 0873 implementation is S119+ (approved with conditions).
+
+### W8 — Phase 5 gate
+
+`/qa` evidence reconciliation (name-for-name flip accounting, no unexpected regressions); `/arch` public-API re-gate (intrinsics subtractive diff; all other baselines zero-diff; types/schema only if 0869 shipped); full `cargo nextest run --no-fail-fast`; open-FIXME wave-gate scan. Then Phase 6a/6b + `/audit`(cranelisp-types) and Phase 7 close with the user.
 
 ## Dispatch log
 
@@ -230,6 +269,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | P3 | /design | Binary/int: result-owner refresh (0745) + 0863 sequencing check | opus[1m] (shim) | high | — |
 | P3 | /design | cranelisp-platform: marker-binding ergonomics (0873, Track E) | opus[1m] (shim) | high | — |
 | P3 | /qa | reconciliation: 0877 attribution, 0878 fence, plan deltas vs. refreshed designs | fable (shim) | xhigh | — |
+| P3 | /arch | exit gate: 0869 carrier ruling, 0873 selection, 0876/0768, interface-set sign-off | fable (shim) | xhigh | — |
 
 ## Notes
 
@@ -237,3 +277,4 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 - 2026-07-25: `/review` delegation to Codex ratified and validated pre-sprint (commit 46c9a0b3). This sprint's review rows are the first production use; dispatch log records reviewer identity per row.
 - 2026-07-25: Phase 1 COMPLETE. USER approved scope as drafted (Tracks A–D + cut order + 0850 ships). USER accepted all five platform-audit recommendations; R4 pulled into S118. Filed 0870–0874 (audit) and 0875 (exemplar Link parity). Track E added. Advanced to Phase 2 architecture review.
 - 2026-07-25: Phase 2 COMPLETE. `/arch` PASS AFTER REQUIRED REVISIONS; R7 (ruling-5 API removal into Track A) and R8 (cut-order split) transcribed and applied. Key rulings: 0869 carrier ruling is an S118 deliverable with schema 23→24 in its own window (no other track bumps schema); 0859 uses the existing detector surface, no new seam; the instrumentation-first inversion is confirmed sound with lane-scoped arming only; Track B's atomic legacy-emitter deletion is architecturally binding (P8 bridge closes this sprint). Advanced to Phase 3 design; `/qa` test plan dispatched first, then serialized narrow designs (intrinsics, backend, int, platform) and the `/arch` 0869 carrier ruling.
+- 2026-07-25: Phase 3 COMPLETE, exit gate PASS. Every design pass caught a would-have-failed-in-implementation defect: intrinsics precheck-hoist (§7.5), backend registry borrow conflict (D1), int stale seams + the S117-already-landed glue routing, platform poll-frame containment asymmetry. `/qa` empirically re-attributed 0835 to the runtime pair (falsification probe: residual scales with list length, not type depth) — backend order S0→S1→S3→S4→S5→S6, no waiting. `/arch` authored the 0869 carrier ruling, approved 0873 Option 3 (S119+), resolved 0876, actioned 0768 with an honest register re-audit. FIXME motion this phase: filed 0876/0877/0878, resolved 0877/0878/0876/0768, resolved-by-design 0760/0796, retargeted 0835. Phase 4 waves organized; advanced to Phase 5; W1 `/testing` dispatched.

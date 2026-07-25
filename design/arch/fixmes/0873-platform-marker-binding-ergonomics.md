@@ -10,7 +10,7 @@ refers_to: audits/cranelisp-platform-s117.md §R4;
   platforms/shapes-badabi/src/lib.rs;
   exemplar/platforms/web/src/lib.rs
 status: open
-blocked_on: /arch selection gate (S118 arch ruling 5) — design delivered
+blocked_on: /dev(platform) implementation window (S119+) — /arch gate PASSED 2026-07-25
 ---
 
 # Decide marker-binding ergonomics — deferral trigger has fired (audit R4)
@@ -82,3 +82,41 @@ distinctly.
 Next: `/arch` reviews the selection; on approval, `/dev`(platform) implements in
 a follow-on wave (S119+). No test cells this sprint per
 `tests/plan/s118-test-plan.md` §7.
+
+## `/arch` selection gate — APPROVED (2026-07-25, S118 Phase-3 exit)
+
+**Option 3 is APPROVED as designed** (`design/platform/adt-marker-binding.md`).
+Grounds: it is the Principle-18 structural form — schema-name agreement becomes
+a build error across every marker, including construct-only markers runtime
+never checks — at Principle-6 minimum cost (one `pub const fn` + one macro arm,
+no new crate, no build dependency, no `CLAdtType`/`CLAdt`/`Schema`/types/cache/
+artifact-grammar change). The two rejections are sound: the derive (Option 2)
+adds a build dependency and a second public surface on the external facade and
+STILL needs a second non-tracked source of truth for the artifact path (a
+Principle-7 violation by construction); keep-explicit-impls (Option 1) founders
+on the call-path asymmetry the design isolated — poll-shape `extern "C"` frames
+have no fault containment, so a marker mismatch there is an unattributable
+process abort, and "accept runtime failure with diagnostics" would first
+require poll-boundary containment, strictly more work than the cure. Option 1
+stands as the documented fallback (design §11) only if implementation
+falsifies the const-scanner premise.
+
+**Approved public-surface delta** (lands S119+ with the implementation, per
+baseline-diff discipline): one `crates/cranelisp-platform/public-api.txt` line
+(`pub const fn schema_declares_type`) + the `adts:` key on `declare_platform!`
+as external-author surface. Conditions on the implementing change-set:
+
+1. **Grammar coupling is named at both sites.** The const byte-scanner is a
+   second reader of the schema-artifact text (beside the runtime parser). That
+   is acceptable on the `extract_layout_hash` precedent (const context cannot
+   reach the runtime parser), but the rustdoc of `schema_declares_type` AND of
+   the runtime parser's grammar home must each cite the other, so an
+   artifact-grammar change is a named two-site change, not a silent drift.
+2. Baseline regeneration + source-rustdoc surface record + the BC §5 note ride
+   the same change-set (no pre-implementation BC edit — the design doc is the
+   record until then).
+3. The adjacent `resolve_field` type-key-miss diagnostic fix (`adt.rs:359-370`)
+   rides the implementation as designed (crate-internal, no gate).
+
+FIXME stays OPEN for the S119+ implementation; the selection question is
+CLOSED.

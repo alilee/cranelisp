@@ -69,3 +69,26 @@ records.
 ## Plan handoff
 
 This Phase 6b defect needs a `/qa` PLAN row and sprint disposition.
+
+## Ruling — 2026-07-25, `/arch`, S118 Phase 3 (the Phase-2 ruling-1 deliverable)
+
+**The binding contract is `design/arch/trait-impl-cache-carrier.md`.** Summary:
+writer-side typed record `WrittenTraitImpl` (canonical `FQTraitName` +
+`FQTypeName` + writer module + method names + visibility) as a serde-visible
+`SymbolTable.written_trait_impls` field in **`cranelisp-types`** (placement
+structurally forced — the carrier rides the types-defined `SymbolTable`; the
+public delta is types-only). Produced once at typecheck's `check_trait_impl`
+success point from the same resolved values as the shell (P24/P26). Restored
+through ONE idempotent types-owned helper `enrol_written_trait_impl`
+(Enrolled / AlreadyEnrolled / hard error on divergence — never a silent pick)
+plus the hoisted single key mint `trait_impl_key`, both shared with fresh
+registration; called at both `register_module_cached{,_no_object}` restore
+paths after the writer's dependency closure installs. Load-side validation is
+an R6 `CacheStale` trust-boundary check landing in the introducing change-set.
+`CACHE_SCHEMA_VERSION` 23→24, the sole S118 window; pre-24 sidecars are
+invalidated wholesale (no `#[serde(default)]` back-compat).
+
+**Status: OPEN — the ruling is settled; the implementation remains** (Track D,
+capacity-conditional per the S118 cut order; if cut, this FIXME carries to
+S119 with the ruling in force). Target stays `/dev` (types change-set is
+`/arch`-owned; typecheck producer + int restore seams are `/dev` narrow).
