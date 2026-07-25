@@ -197,6 +197,17 @@ Plan of record: `design/int/result-owner.md` (264→609 lines; §§1–5 semanti
 
 **Next skills:** `/dev`(int + exe-bundle) per §8 I0–I5 after backend W3; `/review` against §5/§7/§11; `/testing` re-locus rider; 0863 wave after 0745 per ruling 11.
 
+### `/design` (platform) — COMPLETE, /arch GATE PENDING (2026-07-25)
+
+Plan of record: `design/platform/adt-marker-binding.md` (current-contract-only, right-sized; cited from `platform.md` §12). FIXME 0873 stays open with progress recorded (`blocked_on: /arch selection gate`).
+
+- **Recommended (Option 3, minimal form):** an optional `adts:` key on `declare_platform!`'s schema arm emits each marker (struct + `impl CLAdtType`, author rustdoc preserved) plus a `const _: () = assert!(…)` against a new `pub const fn schema_declares_type` — a const byte-scanner beside `extract_layout_hash`, checking exactly the bytes the runtime parser sees. Name agreement becomes a **build error**, including for construct-only markers runtime never checks. Cost: one const fn + one macro arm + five call-site migrations; no new crate/dependency/`CLAdtType` change.
+- **Derive rejected** (build dependency + second public surface on the external facade, and it *still* can't check the name without a second non-tracked source of truth). **Keep-explicit-impls rejected as primary** on a call-path asymmetry the audit hadn't separated: blocking effects are DLL-locally contained, but poll-shape leaves have no containment anywhere — a marker mismatch there is a process abort with no attribution, so "accept runtime failure with diagnostics" would first require poll-boundary containment (more work than the cure). Retained as documented fallback.
+- Adjacent diagnostic defect recorded (rides the implementation): `resolve_field` misattributes a type-key miss as a field miss — the exact message a debugging author would read.
+- **`/arch` gate delta**: one `public-api.txt` line + the `adts:` macro key as external-author surface; everything else unchanged. Implementation is S119+.
+
+**Next skills:** `/arch` settles the selection at the Phase-3 exit gate; `/dev`(platform) implements S119+.
+
 ## Waves (Phase 4)
 
 _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baseline reconciliation + missing detection-proof/0867 cells) → W2 intrinsics D/D/R (Track A) → W3 backend D/D/R (Track B consumers) → W4 int/exe-bundle D/D/R (0745) → W5 `/qa` certification + Track C → W6 src/ (Track D) → Phase 6._
@@ -210,6 +221,7 @@ _Pending Phase 3. Indicative shape, serialized as always: W1 `/testing` (baselin
 | P3 | /design | cranelisp-intrinsics: diagnostic-modes refresh (0848/0850/0859 + rulings 2/3/6/7) | opus[1m] (shim) | high | — |
 | P3 | /design | cranelisp-backend: transitive-drop-glue consumer-migration refresh (Track B + ruling 10) | opus[1m] (shim) | high | — |
 | P3 | /design | Binary/int: result-owner refresh (0745) + 0863 sequencing check | opus[1m] (shim) | high | — |
+| P3 | /design | cranelisp-platform: marker-binding ergonomics (0873, Track E) | opus[1m] (shim) | high | — |
 
 ## Notes
 
