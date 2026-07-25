@@ -468,6 +468,62 @@ fn dec_shallow_io_preserves_shared_reference() {
     assert_eq!(dealloc_count() - deallocs, 1);
 }
 
+// spec: design/runtime/s118-structural-embedding-ownership.md §2 RE-2 —
+// `consume_*` are TREE-OWNERSHIP drop glue and stay so. The S118 W2b ruling
+// fixed the producer (`marshal::sconcat`'s tail embed) and left this consumer
+// untouched; deep-consume was rejected because it would tear down genuinely
+// shared tails.
+//
+// The fence: `a = [x, y]`; `b = SCons(z, a)` takes its own reference to `a`.
+// Releasing `b` must descend only as far as the first node that is NOT on its
+// last reference — `a` — and stop there, leaving `a` readable. A change that
+// made `consume_slist` descend past a live reference fails here.
+#[test]
+fn re2_consume_slist_stops_at_a_live_interior_reference() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    let x = make_sexp_sym(alloc_string(b"x") as i64);
+    let y = make_sexp_sym(alloc_string(b"y") as i64);
+    let z = make_sexp_sym(alloc_string(b"z") as i64);
+    let a = make_scons(x, make_scons(y, 0));
+    // `b` embeds `a` structurally: exactly ONE inc on the node it stores
+    // (RE-1, the producer rule this consumer is the dual of).
+    crate::rc::rc_inc(a);
+    let b = make_scons(z, a);
+
+    consume_slist(b);
+
+    // `a` is still on a live reference and must be intact.
+    // SAFETY: `a` is still owned by this frame — `consume_slist(b)` released
+    // only `b`'s reference to it (rc 2 -> 1).
+    unsafe {
+        assert_eq!(
+            crate::heap_access::read_i64(a, HeapHeader::RC_OFFSET as isize),
+            1,
+            "RE-2: b's release must dec a's rc by exactly one, not free it"
+        );
+        assert_eq!(
+            crate::heap_access::read_i64(a, FIELD0_OFFSET),
+            x,
+            "the shared tail must still read correctly after b's release"
+        );
+    }
+    // b's own node + z + z's string: three frees, and nothing from `a`.
+    assert_eq!(
+        dealloc_count() - deallocs,
+        3,
+        "RE-2: the walk stops at the first node not on its last reference"
+    );
+
+    consume_slist(a);
+    assert_eq!(
+        alloc_count() - allocs,
+        dealloc_count() - deallocs,
+        "both releases together balance exactly (no leak, no double-free)"
+    );
+}
+
 // spec: design/arch/CLAUDE.md Decision 24 — nullary tag is a no-op
 #[test]
 fn decision24_consume_slist_skips_nullary() {

@@ -141,33 +141,22 @@ unsafe fn write_i64(base: i64, offset: usize, value: i64) {
 /// Increment the reference count of a heap-allocated value (shallow).
 ///
 /// No-op for nullary tags (bare values < NULLARY_TAG_THRESHOLD).
-/// Used by `sconcat` to keep items alive when they are copied from `xs`
-/// into a new SList (the original `xs` SCons chain may be freed by the
-/// caller's drop glue after the call).
+///
+/// This is the ONLY inc these bodies perform, in both of the two roles the
+/// producers have (`design/runtime/s118-structural-embedding-ownership.md`
+/// §2, RE-3): one inc per **copied** reference (`sconcat`'s `xs` items, each
+/// stored into a fresh `SCons`; `quote_sexp_build`'s re-used `String`
+/// pointers), and exactly one inc on the node **shared** by a structural
+/// embed (`sconcat`'s `ys` tail, RE-1).
 ///
 /// Routes through the blessed `cranelisp_intrinsics::rc::rc_inc` entry point —
 /// the single owner of the shallow-inc discipline (Principle 7). The
-/// nullary-tag skip lives inside `rc_inc`. This replaces the former *non-atomic*
+/// nullary-tag skip lives inside `rc_inc`, which is what makes it safe to
+/// call on a `ys` that is `SNil`. This replaces the former *non-atomic*
 /// `*rc_ptr += 1` (audit MED-1), which became a genuine data race once the S85
 /// auto-IO wiring let a spark fork a callee sharing a value inc'd here.
 fn shallow_rc_inc(val: i64) {
     cranelisp_intrinsics::rc::rc_inc(val);
-}
-
-/// Deeply increment the reference count of a runtime SList and all its
-/// elements. Used by `sconcat` to keep the `ys` chain alive when it is
-/// embedded as the tail of the result.
-fn deep_rc_inc_slist(mut slist: i64) {
-    loop {
-        if slist < NULLARY_THRESHOLD {
-            break; // SNil (nullary tag) — no heap alloc to inc
-        }
-        shallow_rc_inc(slist); // inc the SCons node itself
-        let head = unsafe { read_i64(slist, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(slist, FIELD1_OFFSET) };
-        shallow_rc_inc(head); // inc the Sexp element
-        slist = tail;
-    }
 }
 
 /// Concatenate two runtime SList values (xs ++ ys).
@@ -175,33 +164,46 @@ fn deep_rc_inc_slist(mut slist: i64) {
 /// Reads all items from xs, then builds a new list prepending them onto ys.
 /// This is the runtime backing for quasiquote `~@` (unquote-splicing).
 ///
-/// **RC ownership**: The result shares data from both inputs:
-/// - Items from `xs` are extracted and placed in new SCons nodes. Each item
-///   gets a shallow RC inc so it survives if the caller frees the original
-///   `xs` chain.
-/// - The `ys` chain is used directly as the tail of the result. It gets a
-///   deep RC inc (every SCons node and every element) so it survives if the
-///   caller's scope cleanup dec's the original `ys` variable.
+/// **RC ownership** — the result shares data from both inputs, and the two
+/// halves are different producer choices with different reference rules
+/// (`design/runtime/s118-structural-embedding-ownership.md` §2; the
+/// primitives invariant table, `design/primitives/primitives.md` §4 #13):
+///
+/// - Items from `xs` are **copied**: each is stored into a fresh `SCons`
+///   node, so each takes one inc — one new owner, one reference (RE-3).
+/// - The `ys` chain is **shared**: it is embedded by pointer as the tail of
+///   the result, so it takes exactly **ONE** inc, on the node stored (RE-1).
+///   Its interior nodes are owned by their parent node and its elements by
+///   the node holding them; embedding does not change those owners, so
+///   re-counting them would mint references no owner holds — and tree-
+///   ownership drop glue (`consume_slist`, RE-2) is structurally incapable
+///   of discharging them. The inc count for the embed is 1 whatever the size
+///   and depth of `ys`.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention. `sconcat` inc's
-/// the items of `xs` into new SCons nodes, inc's the `ys` chain deeply so
-/// the result can use it as a tail, then releases the original `xs` and
-/// `ys` via `consume_slist` (runtime-side recursive drop glue). Callers
-/// compile args through `compile_consuming_arg_list` (heap-typed Vars are
-/// inc'd at the call site so the caller's binding survives our dec).
+/// the items of `xs` into new SCons nodes, takes the single embed inc on
+/// `ys`, then releases the original `xs` and `ys` via `consume_slist`
+/// (runtime-side recursive drop glue). Callers compile args through
+/// `compile_consuming_arg_list` (heap-typed Vars are inc'd at the call site
+/// so the caller's binding survives our dec). The inc/consume pair is kept
+/// unconditional and explicit rather than cancelled into a move: it keeps
+/// the epilogue uniform with every sibling complex-heap extern and states
+/// the reference taken locally at the embed site (Principle 18).
 ///
 /// Registered in the JIT as "sconcat" and in the `macros` module typechecker
 /// so that `macros/sconcat` resolves correctly.
 pub(crate) fn sconcat(xs: i64, ys: i64) -> i64 {
     let items = unsafe { read_slist(xs) };
     let result = if items.is_empty() {
-        // No items from xs: result IS ys. Inc it so the caller can't free
-        // the result by freeing ys.
-        deep_rc_inc_slist(ys);
+        // No items from xs: the result IS ys. One inc on the node returned —
+        // nullary-safe, so an SNil `ys` is skipped inside `rc_inc`.
+        shallow_rc_inc(ys);
         ys
     } else {
-        // Inc the ys chain so it survives consumption of the original variable.
-        deep_rc_inc_slist(ys);
+        // RE-1: one inc on the node embedded as the tail. Not a walk — the
+        // interior nodes and elements already have owners, unchanged by the
+        // embed.
+        shallow_rc_inc(ys);
         let mut acc = ys;
         for &item in items.iter().rev() {
             // Inc each item so it survives when the original xs chain is freed.
