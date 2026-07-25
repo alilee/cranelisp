@@ -4,7 +4,6 @@ pub fn cranelisp_intrinsics::alloc::alloc_count() -> usize
 pub fn cranelisp_intrinsics::alloc::alloc_with_rc(usize) -> *mut u8
 pub fn cranelisp_intrinsics::alloc::bytes_allocated() -> usize
 pub fn cranelisp_intrinsics::alloc::bytes_current() -> usize
-pub fn cranelisp_intrinsics::alloc::bytes_peak() -> usize
 #[no_mangle] pub c fn cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag(u32, u32, *const i64) -> i64
 pub unsafe fn cranelisp_intrinsics::alloc::dealloc(*mut u8)
 pub fn cranelisp_intrinsics::alloc::dealloc_count() -> usize
@@ -12,7 +11,6 @@ pub fn cranelisp_intrinsics::alloc::dealloc_count() -> usize
 #[no_mangle] pub c fn cranelisp_intrinsics::alloc::heap_alloc_payload(i64) -> i64
 #[export_name = "runtime/dealloc"] pub c fn cranelisp_intrinsics::alloc::heap_dealloc(i64) -> i64
 pub fn cranelisp_intrinsics::alloc::is_live(usize) -> bool
-pub fn cranelisp_intrinsics::alloc::reset_counts()
 pub mod cranelisp_intrinsics::catalog
 pub struct cranelisp_intrinsics::catalog::IntrinsicEntry
 pub cranelisp_intrinsics::catalog::IntrinsicEntry::has_return: bool

@@ -46,7 +46,11 @@ use cranelisp_types::{
 };
 
 use crate::alloc;
+use crate::heap_access;
 use crate::rc;
+// Vec layout authority — the blessed, `const _: () = assert!(…)`-locked offsets
+// (FIXME 0245). This module reads them; it does not restate them.
+use crate::vec_runtime::{CAP_OFFSET, DATA_PTR_OFFSET, LEN_OFFSET};
 
 /// NULLARY_TAG_THRESHOLD as i64 for comparison with pointer values.
 const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
@@ -55,18 +59,22 @@ const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
 // Heap field access
 // ---------------------------------------------------------------------------
 
-const TAG_OFFSET: usize = 16; // HeapHeader::SIZE
-const FIELD0_OFFSET: usize = 24;
-const FIELD1_OFFSET: usize = 32;
+// ADT field geometry (NOT Vec layout — that is `vec_runtime`'s). Derived from
+// the header-layout authority `cranelisp_types::HeapHeader` rather than
+// restating `16` (Principle 7 — this file had the third magic-number copy of the
+// header size). `isize` so they feed `heap_access`'s offset type directly, so
+// the `usize`→`isize` adaptation happens ONCE, here, not at thirteen call sites.
+const TAG_OFFSET: isize = HeapHeader::SIZE as isize;
+const FIELD0_OFFSET: isize = TAG_OFFSET + 8;
+const FIELD1_OFFSET: isize = TAG_OFFSET + 16;
 
-/// Read an i64 at `base + offset`.
-///
-/// # Safety
-/// `base` must be a valid heap pointer with at least `offset + 8` readable bytes.
-#[inline]
-unsafe fn read_i64(base: i64, offset: usize) -> i64 {
-    unsafe { *((base as *const u8).add(offset) as *const i64) }
-}
+// The raw `*(base + off)` primitive is `heap_access::{read_i64, write_i64}` —
+// the single mechanical owner (MED-1 / FIXME 0370 / 0850). This module used to
+// carry a private `read_i64` twin with a `usize` offset; it is deleted, and
+// every read below goes through the owner the crate's `CLAUDE.md` already
+// declared. `heap_access` does NOT own the header layout (`HeapHeader`) nor the
+// Vec layout (`vec_runtime`) nor the consuming dec sequences (per-module by
+// design) — only the accessor.
 
 /// Atomically decrement the RC at `ptr` with Release ordering.
 /// Returns the OLD RC value.
@@ -143,8 +151,8 @@ pub fn consume_slist(mut ptr: i64) {
             return; // SNil or bare tag
         }
         // Read fields BEFORE dec so we can recurse on the last-ref path.
-        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
+        let head = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
+        let tail = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) };
 
         let old_rc = unsafe { atomic_dec_rc(ptr) };
         if old_rc != 1 {
@@ -180,8 +188,8 @@ pub fn consume_sexp(ptr: i64) {
     }
     // Read tag + field0 before dec so the recursive step has them on the
     // last-ref path.
-    let tag = unsafe { read_i64(ptr, TAG_OFFSET) };
-    let field0 = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
+    let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
 
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
@@ -210,11 +218,6 @@ pub fn consume_sexp(ptr: i64) {
 // Vec consumption
 // ---------------------------------------------------------------------------
 
-/// Vec layout offsets (must match `crate::vec`).
-const VEC_LEN_OFFSET: usize = 16;
-const VEC_CAP_OFFSET: usize = 24;
-const VEC_DATA_PTR_OFFSET: usize = 32;
-
 /// Per-element consume callback pointer.
 type ElemConsumeFn = fn(i64);
 
@@ -239,9 +242,11 @@ pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
 
     unsafe {
         let base = ptr as *mut u8;
-        let len = *(base.add(VEC_LEN_OFFSET) as *const i64);
-        let cap = *(base.add(VEC_CAP_OFFSET) as *const i64);
-        let data = *(base.add(VEC_DATA_PTR_OFFSET) as *const *mut i64);
+        // Layout authority: `vec_runtime`'s locked offsets. Mechanical access:
+        // `heap_access`. Neither is restated here (0850).
+        let len = heap_access::read_i64(ptr, LEN_OFFSET as isize);
+        let cap = heap_access::read_i64(ptr, CAP_OFFSET as isize);
+        let data = heap_access::read_i64(ptr, DATA_PTR_OFFSET as isize) as *mut i64;
         crate::vec_runtime::debug_assert_live_buffer(data as *const i64, cap, "consume_vec_with");
 
         for i in 0..len as usize {
@@ -287,14 +292,14 @@ pub fn consume_io_tree(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    let tag = unsafe { read_i64(ptr, TAG_OFFSET) };
+    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
 
     // Snapshot fields needed for recursion on the last-ref path.
-    let field0 = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+    let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
 
     // For Bind/Par we also need field1/branches.
     let field1 = if tag == IO_TAG_BIND {
-        unsafe { read_i64(ptr, FIELD1_OFFSET) }
+        unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET) }
     } else {
         0
     };
@@ -412,17 +417,17 @@ pub fn consume_io_tree(ptr: i64) {
 /// `IO_TAG_PAR` or `IO_TAG_SELECT`.
 fn free_io_branches(ptr: i64, tag: i64) {
     if tag == IO_TAG_PAR {
-        let count = unsafe { read_i64(ptr, FIELD0_OFFSET) } as usize;
+        let count = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) } as usize;
         for i in 0..count {
             // Branches live at FIELD1_OFFSET + i*8.
-            let branch = unsafe { read_i64(ptr, FIELD1_OFFSET + i * 8) };
+            let branch = unsafe { heap_access::read_i64(ptr, FIELD1_OFFSET + (i as isize) * 8) };
             consume_io_tree(branch);
         }
     } else if tag == 6 {
         // IO_TAG_SELECT (literal 6 — the constant is `concurrency`-gated in
         // cranelisp-platform and this file is ungated; same style as the
         // `consume_io_tree` SELECT arm).
-        let field0 = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+        let field0 = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
         consume_vec_with(field0, consume_io_tree);
     }
 }
@@ -471,9 +476,9 @@ pub fn dec_shallow_io(ptr: i64) {
     // state-closure that the `EffectPoll` releases at resolve, so this shallow dec
     // frees the closure only at true rc→0 (when both refs have dropped) — field-0 is
     // untouched (no sentinel), so this stays a plain unconditional dec.
-    let tag = unsafe { read_i64(ptr, TAG_OFFSET) };
+    let tag = unsafe { heap_access::read_i64(ptr, TAG_OFFSET) };
     let poll_closure = if tag == 4 {
-        unsafe { read_i64(ptr, FIELD0_OFFSET) }
+        unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) }
     } else {
         0
     };
@@ -510,7 +515,11 @@ pub fn dec_shallow_io(ptr: i64) {
 // ---------------------------------------------------------------------------
 
 /// HeapClosure layout: `[header(16) | code_ptr(16) | drop_glue_ptr(24) | captures(32..)]`
-const CLOSURE_DROP_GLUE_OFFSET: usize = 24;
+/// (backend-emitted, Decision 11). The SINGLE home for this offset: `ivar.rs`
+/// imports it rather than keeping the second copy it carried until S118 (0850
+/// §9.3 — folded because the two spellings were byte-identical, `24` as `isize`).
+/// Derived from the header-layout authority, like the ADT offsets above.
+pub(crate) const CLOSURE_DROP_GLUE_OFFSET: isize = HeapHeader::SIZE as isize + 8;
 
 /// Consume a closure: atomically dec RC, and if last ref invoke the
 /// embedded drop glue function pointer (which dec's each heap-typed
@@ -524,7 +533,7 @@ pub fn consume_closure(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
-    let drop_glue_ptr = unsafe { read_i64(ptr, CLOSURE_DROP_GLUE_OFFSET) };
+    let drop_glue_ptr = unsafe { heap_access::read_i64(ptr, CLOSURE_DROP_GLUE_OFFSET) };
 
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {

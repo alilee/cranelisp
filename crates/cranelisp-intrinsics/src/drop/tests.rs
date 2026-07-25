@@ -9,10 +9,11 @@ fn alloc_slot(payload: usize) -> i64 {
     alloc_with_rc(payload) as i64
 }
 
-fn write_field(base: i64, offset: usize, value: i64) {
-    unsafe {
-        *((base as *mut u8).add(offset) as *mut i64) = value;
-    }
+/// Write a field through the single mechanical owner (0850) — the fixtures use
+/// the same accessor the production drop glue does.
+fn write_field(base: i64, offset: isize, value: i64) {
+    // SAFETY: `base` is a live fixture allocation with `offset + 8` bytes.
+    unsafe { crate::heap_access::write_i64(base, offset, value) }
 }
 
 fn make_scons(head: i64, tail: i64) -> i64 {
@@ -46,14 +47,14 @@ fn make_sexp_list(items: i64) -> i64 {
 
 fn make_vec_struct(cap: i64) -> (i64, *mut i64) {
     let base = alloc_slot(24); // len + cap + data_ptr
-    write_field(base, VEC_LEN_OFFSET, 0);
-    write_field(base, VEC_CAP_OFFSET, cap);
+    write_field(base, crate::vec_runtime::LEN_OFFSET as isize, 0);
+    write_field(base, crate::vec_runtime::CAP_OFFSET as isize, cap);
     // Allocate through the tracked path (Principle 7 / Principle 22): a raw
     // `alloc_zeroed` here would bypass `databuf_guard::on_alloc`, so the guard's
     // "NOT live" tripwire in `consume_vec_with` would fire on a never-registered
     // buffer. `consume_vec_with` frees via `free_data_buffer`, closing the pair.
     let data: *mut i64 = crate::vec_runtime::alloc_data_buffer(cap);
-    write_field(base, VEC_DATA_PTR_OFFSET, data as i64);
+    write_field(base, crate::vec_runtime::DATA_PTR_OFFSET as isize, data as i64);
     (base, data)
 }
 
@@ -157,7 +158,7 @@ fn decision24_consume_vec_of_string_frees_elements() {
         *data.add(1) = alloc_string(b"b") as i64;
         *data.add(2) = alloc_string(b"c") as i64;
     }
-    write_field(vec, VEC_LEN_OFFSET, 3);
+    write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 3);
 
     consume_vec_of_string(vec);
     assert_eq!(alloc_count() - allocs, 4); // vec struct + 3 strings
@@ -221,7 +222,7 @@ fn consume_io_select_frees_branch_vec_and_all_branches() {
         *data.add(0) = b0;
         *data.add(1) = b1;
     }
-    write_field(vec, VEC_LEN_OFFSET, 2);
+    write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 2);
 
     // The IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
     let node = alloc_slot(16); // tag + 1 field
@@ -265,7 +266,7 @@ fn dec_shallow_io_select_deep_frees_branch_vec_and_all_branches() {
         *data.add(0) = b0;
         *data.add(1) = b1;
     }
-    write_field(vec, VEC_LEN_OFFSET, 2);
+    write_field(vec, crate::vec_runtime::LEN_OFFSET as isize, 2);
 
     // Fresh IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
     let node = alloc_slot(16);
@@ -524,4 +525,91 @@ fn consume_launch_node_detached_field0_sentinel_is_noop() {
     consume_io_tree(launch);
     assert_eq!(alloc_count() - allocs, 1);
     assert_eq!(dealloc_count() - deallocs, 1);
+}
+
+// ---------------------------------------------------------------------------
+// 0850 — single-owner convergence (design §9.1–§9.3, §10 heap_access row)
+// ---------------------------------------------------------------------------
+
+// GREP-ZERO: `drop.rs` carries no local raw reader and no copy of the Vec layout
+// offsets. `heap_access::{read_i64, write_i64}` is the single mechanical owner
+// and `vec_runtime` the single Vec-layout authority — the crate's `CLAUDE.md`
+// has declared both for three sprints while the source contradicted it (the
+// third-sprint recurrence of S87 F3). This row makes the guidance true and keeps
+// it true: a re-introduced private reader or offset copy fails HERE, at the
+// seam, not in a later audit.
+// spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.1–§9.2, §10 grep-zero row)
+#[test]
+fn drop_module_declares_no_local_reader_or_layout_copy() {
+    let src = include_str!("../drop.rs");
+    assert!(
+        !src.contains("unsafe fn read_i64"),
+        "drop.rs must not define a private raw reader — heap_access owns it"
+    );
+    assert!(
+        !src.contains("fn write_i64"),
+        "drop.rs must not define a private raw writer — heap_access owns it"
+    );
+    for copy in ["VEC_LEN_OFFSET", "VEC_CAP_OFFSET", "VEC_DATA_PTR_OFFSET"] {
+        assert!(
+            !src.contains(copy),
+            "drop.rs must not copy {copy} — vec_runtime is the layout authority"
+        );
+    }
+    // The ADT field geometry stays here (it is not Vec layout) but must DERIVE
+    // from the header-layout authority rather than restating the header size.
+    assert!(
+        src.contains("const TAG_OFFSET: isize = HeapHeader::SIZE as isize;"),
+        "TAG_OFFSET must derive from HeapHeader::SIZE"
+    );
+}
+
+// The offsets this module reads with are the authorities' values — a derivation
+// that drifted would be caught here rather than by a wrong heap read.
+// spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.1–§9.3)
+#[test]
+fn derived_offsets_equal_their_layout_authorities() {
+    assert_eq!(TAG_OFFSET, HeapHeader::SIZE as isize);
+    assert_eq!(FIELD0_OFFSET, TAG_OFFSET + 8);
+    assert_eq!(FIELD1_OFFSET, TAG_OFFSET + 16);
+    // The closure drop-glue slot: ONE home, imported by `ivar.rs` (§9.3 fold —
+    // it was byte-identical, so it folded rather than filing).
+    assert_eq!(CLOSURE_DROP_GLUE_OFFSET, 24);
+    // Vec layout comes from `vec_runtime`, never a local copy.
+    assert_eq!(LEN_OFFSET, 16);
+    assert_eq!(CAP_OFFSET, 24);
+    assert_eq!(DATA_PTR_OFFSET, 32);
+}
+
+// A typed round-trip through the shared accessor at the Vec field offsets: the
+// three reads `consume_vec_with` performs now go through `heap_access` with
+// `vec_runtime`'s constants, and read back exactly what a Vec struct holds.
+// spec: 12-runtime §12.3 — R8 (diagnostic-modes §10 heap_access/vec_runtime row)
+#[test]
+fn vec_fields_round_trip_through_the_shared_accessor() {
+    let v = alloc_slot(24); // len + cap + data_ptr
+    let mut buf = [7i64, 8, 9];
+    write_field(v, LEN_OFFSET as isize, 3);
+    write_field(v, CAP_OFFSET as isize, 3);
+    write_field(v, DATA_PTR_OFFSET as isize, buf.as_mut_ptr() as i64);
+    // SAFETY: `v` is a live 40-byte allocation; all three offsets are payload.
+    unsafe {
+        assert_eq!(crate::heap_access::read_i64(v, LEN_OFFSET as isize), 3);
+        assert_eq!(crate::heap_access::read_i64(v, CAP_OFFSET as isize), 3);
+        let data = crate::heap_access::read_i64(v, DATA_PTR_OFFSET as isize) as *mut i64;
+        assert_eq!(data, buf.as_mut_ptr(), "the data pointer field round-trips");
+        assert_eq!(*data.add(2), 9, "and addresses the buffer");
+    }
+    // Largest field offset this module reads: a PAR node's last branch slot.
+    let par = alloc_slot(8 * 8);
+    write_field(par, FIELD1_OFFSET + 5 * 8, 0x1234);
+    // SAFETY: `par` has 64 payload bytes; FIELD1_OFFSET + 40 is within it.
+    unsafe {
+        assert_eq!(
+            crate::heap_access::read_i64(par, FIELD1_OFFSET + 5 * 8),
+            0x1234
+        );
+    }
+    crate::rc::consume_shallow(v);
+    crate::rc::consume_shallow(par);
 }

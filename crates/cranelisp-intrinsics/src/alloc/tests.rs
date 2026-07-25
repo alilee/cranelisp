@@ -175,3 +175,68 @@ fn test_zero_payload() {
     }
     unsafe { dealloc(base) };
 }
+
+// ---------------------------------------------------------------------------
+// Ruling 7 (S118) / S116 ruling 5 — the subtractive API change
+// ---------------------------------------------------------------------------
+
+// The counter family has NO reset seam, and no consumer-less peak accessor. This
+// is a structural property, not a style choice: `reset_counts()` could zero the
+// counters that are the M3 alloc/free-parity check's only evidence, so its
+// absence is what makes the ledger trustworthy (Principle 18). The row greps the
+// module source AND the committed public-API baseline, so a re-introduction
+// fails here rather than in a later audit — and the rustdoc cannot silently
+// resurrect a dangling `[`reset_counts`]` intra-doc link either.
+// spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.4; bounded-contexts §4b inv 8)
+#[test]
+fn counter_family_has_no_reset_seam_in_source_or_baseline() {
+    let src = include_str!("../alloc.rs");
+    let baseline = include_str!("../../public-api.txt");
+    for gone in ["reset_counts", "bytes_peak"] {
+        assert!(
+            !src.contains(gone),
+            "{gone} must be absent from alloc.rs source AND rustdoc (S118 ruling 7)"
+        );
+        assert!(
+            !baseline.contains(gone),
+            "{gone} must be absent from the committed public-api.txt baseline"
+        );
+    }
+    // The four survivors are still there — the change is subtractive only.
+    for kept in [
+        "alloc_count",
+        "dealloc_count",
+        "bytes_allocated",
+        "bytes_current",
+    ] {
+        assert!(baseline.contains(kept), "{kept} must survive");
+    }
+}
+
+// The surviving counters are process-lifetime evidence: the three monotonic ones
+// never decrease, and `bytes_current` tracks live bytes (falls on release). A
+// consumer needing a window snapshots and subtracts — which this row does.
+// spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.4)
+#[test]
+fn surviving_counters_are_monotonic_process_lifetime_evidence() {
+    let (a0, d0, b0, live0) = (
+        alloc_count(),
+        dealloc_count(),
+        bytes_allocated(),
+        bytes_current(),
+    );
+    let base = alloc_with_rc(24);
+    assert_eq!(alloc_count(), a0 + 1);
+    assert_eq!(bytes_allocated(), b0 + 40);
+    assert_eq!(bytes_current(), live0 + 40, "live bytes rise on alloc");
+    // SAFETY: `base` was just returned by `alloc_with_rc` and is unfreed.
+    unsafe { dealloc(base) };
+    assert_eq!(dealloc_count(), d0 + 1);
+    assert_eq!(
+        bytes_allocated(),
+        b0 + 40,
+        "cumulative bytes never decrease — no reset seam can zero them"
+    );
+    assert_eq!(bytes_current(), live0, "live bytes fall back on release");
+    assert!(alloc_count() >= a0 && dealloc_count() >= d0);
+}

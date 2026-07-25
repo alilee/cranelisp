@@ -4,9 +4,9 @@ use crate::heap_string::alloc_string;
 use crate::vec_runtime::{vec_drop, vec_new, vec_set_copy};
 use cranelisp_types::{TAG_SCONS, TAG_SEXP_LIST, TAG_SEXP_STR};
 
-const TAG_OFF: usize = TAG_OFFSET;
-const F0_OFF: usize = FIELD0_OFFSET;
-const F1_OFF: usize = FIELD1_OFFSET;
+const TAG_OFF: isize = TAG_OFFSET;
+const F0_OFF: isize = FIELD0_OFFSET;
+const F1_OFF: isize = FIELD1_OFFSET;
 
 /// Run `build`, capture the allocations it produced, run `release`, and
 /// assert the runtime allocator saw exactly as many deallocs as allocs.
@@ -28,10 +28,10 @@ fn assert_balanced<T>(build: impl FnOnce() -> T, release: impl FnOnce(T)) {
     );
 }
 
-fn write_field(base: i64, offset: usize, value: i64) {
+fn write_field(base: i64, offset: isize, value: i64) {
     // SAFETY: `base` is a live alloc with room for the offset (asserted by
     // the payload size each builder requests).
-    unsafe { *((base as *mut u8).add(offset) as *mut i64) = value };
+    unsafe { crate::heap_access::write_i64(base, offset, value) };
 }
 
 /// `extern "C" fn(i64) -> i64` element-dec for `vec_drop`, which transmutes
@@ -128,7 +128,7 @@ fn rc_balance_closure_captures_string() {
     // offset 32 (first capture slot), then return.
     extern "C" fn drop_glue_one_string_capture(closure_ptr: i64) {
         // SAFETY: closure_ptr is the live env; the capture i64 lives at +32.
-        let capture = unsafe { read_i64(closure_ptr, 32) };
+        let capture = unsafe { crate::heap_access::read_i64(closure_ptr, 32) };
         rc::consume_shallow(capture);
     }
     assert_balanced(
@@ -151,8 +151,8 @@ fn rc_balance_closure_captures_string() {
 fn rc_balance_closure_multiple_captures() {
     extern "C" fn drop_glue_two_string_captures(closure_ptr: i64) {
         // SAFETY: two captures at +32 and +40.
-        let c0 = unsafe { read_i64(closure_ptr, 32) };
-        let c1 = unsafe { read_i64(closure_ptr, 40) };
+        let c0 = unsafe { crate::heap_access::read_i64(closure_ptr, 32) };
+        let c1 = unsafe { crate::heap_access::read_i64(closure_ptr, 40) };
         rc::consume_shallow(c0);
         rc::consume_shallow(c1);
     }
@@ -177,11 +177,12 @@ fn fill_int_vec(v: i64, elems: &[i64]) {
     // SAFETY: `v` is a live Vec struct from `vec_new(cap)` with cap >= len;
     // the data buffer it owns has room for `elems.len()` i64s.
     unsafe {
-        let data = read_i64(v, VEC_DATA_PTR_OFFSET) as *mut i64;
+        let data = crate::heap_access::read_i64(v, crate::vec_runtime::DATA_PTR_OFFSET as isize)
+            as *mut i64;
         for (i, e) in elems.iter().enumerate() {
             *data.add(i) = *e;
         }
-        *((v as *mut u8).add(VEC_LEN_OFFSET) as *mut i64) = elems.len() as i64;
+        crate::heap_access::write_i64(v, crate::vec_runtime::LEN_OFFSET as isize, elems.len() as i64);
     }
 }
 

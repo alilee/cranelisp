@@ -25,7 +25,6 @@ static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static BYTES_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 static BYTES_CURRENT: AtomicUsize = AtomicUsize::new(0);
-static BYTES_PEAK: AtomicUsize = AtomicUsize::new(0);
 
 /// Live allocation map for double-free + header-integrity detection. Debug builds
 /// only. Maps base pointer → the `total_size` written into its header at alloc, so
@@ -60,31 +59,34 @@ pub(crate) fn freed_info(ptr: usize) -> Option<(usize, i64)> {
 // Public Rust API for tracking (used by /qa integration tests)
 // ---------------------------------------------------------------------------
 
-/// Total allocations since the last [`reset_counts`] (process-global stat;
-/// read by int's `/mem` slash command). No state across sessions — test
-/// contexts call [`reset_counts`] at session start.
+// The four counter accessors are **process-lifetime evidence, with no reset
+// seam** (S118 ruling 7 / S116 ruling 5; `bounded-contexts.md` §4b invariant 8).
+// The absence of a public reset is load-bearing, not an omission: the M3
+// alloc/free-parity check's ONLY evidence is these counters, so an API that can
+// zero them is an API that can break the instrument (Principle 18 — the ledger
+// is trustworthy because no way exists to falsify it). A consumer needing a
+// per-window delta snapshots and subtracts.
+
+/// Total allocations this process (monotonic, process-global; read by int's
+/// `/mem` slash command).
 pub fn alloc_count() -> usize {
     ALLOC_COUNT.load(Ordering::Relaxed)
 }
 
-/// Total deallocations since the last [`reset_counts`] (process-global stat).
+/// Total deallocations this process (monotonic, process-global).
 pub fn dealloc_count() -> usize {
     DEALLOC_COUNT.load(Ordering::Relaxed)
 }
 
-/// Cumulative bytes ever allocated since the last [`reset_counts`].
+/// Cumulative bytes ever allocated this process (monotonic).
 pub fn bytes_allocated() -> usize {
     BYTES_ALLOCATED.load(Ordering::Relaxed)
 }
 
-/// Bytes currently live (allocated minus freed) since the last [`reset_counts`].
+/// Bytes currently live this process — allocated minus freed. The one
+/// non-monotonic member of the family (it falls as blocks are released).
 pub fn bytes_current() -> usize {
     BYTES_CURRENT.load(Ordering::Relaxed)
-}
-
-/// High-water mark of live bytes since the last [`reset_counts`].
-pub fn bytes_peak() -> usize {
-    BYTES_PEAK.load(Ordering::Relaxed)
 }
 
 /// Check if a pointer is currently live (debug builds only).
@@ -115,22 +117,6 @@ pub(crate) fn live_alloc_snapshot() -> Vec<(usize, usize, i64)> {
             (addr, size, payload)
         })
         .collect()
-}
-
-/// Reset all counters. Called between tests for isolation.
-pub fn reset_counts() {
-    ALLOC_COUNT.store(0, Ordering::Relaxed);
-    DEALLOC_COUNT.store(0, Ordering::Relaxed);
-    BYTES_ALLOCATED.store(0, Ordering::Relaxed);
-    BYTES_CURRENT.store(0, Ordering::Relaxed);
-    BYTES_PEAK.store(0, Ordering::Relaxed);
-    #[cfg(debug_assertions)]
-    {
-        LIVE_ALLOCS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-    }
 }
 
 /// Debug + env-gated full-heap header scan (FIXME 0494 localization). When
@@ -200,19 +186,12 @@ pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
         *(base.add(HeapHeader::RC_OFFSET as usize) as *mut i64) = 1;
     }
 
-    // Update tracking counters.
+    // Update tracking counters. (The live-bytes high-water counter went with its
+    // accessor in S118 ruling 7: with no consumer left it was a per-allocation
+    // CAS loop no API could observe — cost, not evidence.)
     ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
     BYTES_ALLOCATED.fetch_add(total_size, Ordering::Relaxed);
-    let current = BYTES_CURRENT.fetch_add(total_size, Ordering::Relaxed) + total_size;
-    // Update peak (relaxed CAS loop).
-    let mut peak = BYTES_PEAK.load(Ordering::Relaxed);
-    while current > peak {
-        match BYTES_PEAK.compare_exchange_weak(peak, current, Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => break,
-            Err(actual) => peak = actual,
-        }
-    }
+    BYTES_CURRENT.fetch_add(total_size, Ordering::Relaxed);
 
     #[cfg(debug_assertions)]
     {

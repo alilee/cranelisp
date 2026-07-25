@@ -563,8 +563,10 @@ const RC_OFFSET: isize = 8;
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
 const CLOSURE_CODE_PTR_OFFSET: isize = 16;
 
-/// Offset of drop_glue_ptr within a closure from the base pointer.
-const CLOSURE_DROP_GLUE_OFFSET: isize = 24;
+/// Offset of drop_glue_ptr within a closure from the base pointer. Imported from
+/// its single home in `drop.rs` (the drop-glue / closure-teardown authority) —
+/// this file carried a byte-identical second copy until S118 (0850 §9.3).
+use crate::drop::CLOSURE_DROP_GLUE_OFFSET;
 
 /// Allocate an IVar cell. Sets state=PENDING, stores the thunk pointer.
 /// Returns the base pointer.
